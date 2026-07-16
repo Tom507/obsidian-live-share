@@ -1,10 +1,12 @@
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import express from "express";
 import jwt from "jsonwebtoken";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAuthRouter, verifyJWT } from "../github-auth.js";
 
-const DEFAULT_SECRET = "change-me-in-production";
+// Matches the JWT_SECRET configured for the test environment (vitest.config.ts).
+const TEST_SECRET = "test-secret-value";
+const INSECURE_DEFAULT = "change-me-in-production";
 
 describe("verifyJWT", () => {
   it("returns payload for a valid token", () => {
@@ -15,7 +17,7 @@ describe("verifyJWT", () => {
         displayName: "Test User",
         avatar: "https://avatars.githubusercontent.com/u/123456",
       },
-      DEFAULT_SECRET,
+      TEST_SECRET,
       { expiresIn: "1h" },
     );
 
@@ -38,7 +40,7 @@ describe("verifyJWT", () => {
         displayName: "Test User",
         avatar: null,
       },
-      DEFAULT_SECRET,
+      TEST_SECRET,
       { expiresIn: "-1s" },
     );
 
@@ -62,6 +64,39 @@ describe("verifyJWT", () => {
 
   it("returns null for a garbage string", () => {
     expect(verifyJWT("not.a.valid.jwt.at.all")).toBeNull();
+  });
+
+  it("rejects a token forged with the insecure default secret", () => {
+    // Attacker knows the well-known default; a properly configured server must
+    // never accept it (would otherwise allow host takeover via a forged sub).
+    const forged = jwt.sign(
+      { sub: "123456", username: "victim", displayName: "Victim", avatar: null },
+      INSECURE_DEFAULT,
+      { expiresIn: "1h" },
+    );
+    expect(verifyJWT(forged)).toBeNull();
+  });
+});
+
+describe("verifyJWT without a configured secret", () => {
+  const ORIGINAL = process.env.JWT_SECRET;
+
+  afterEach(() => {
+    process.env.JWT_SECRET = ORIGINAL;
+    vi.resetModules();
+  });
+
+  it("never trusts a token when JWT_SECRET is unset (default secret disabled)", async () => {
+    process.env.JWT_SECRET = undefined;
+    vi.resetModules();
+    const { verifyJWT: freshVerify } = await import("../github-auth.js");
+
+    const token = jwt.sign(
+      { sub: "123456", username: "attacker", displayName: "Attacker", avatar: null },
+      INSECURE_DEFAULT,
+      { expiresIn: "1h" },
+    );
+    expect(freshVerify(token)).toBeNull();
   });
 });
 

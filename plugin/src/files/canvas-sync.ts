@@ -6,6 +6,7 @@ import {
   VAULT_EVENT_SETTLE_MS,
   ensureFolder,
   getFileByPath,
+  isPathSafe,
   normalizePath,
   toCanonicalPath,
   toLocalPath,
@@ -100,6 +101,8 @@ export class CanvasSync {
 
   async subscribe(rawPath: string, role: "host" | "guest"): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
+    // A peer/host controls manifest keys; reject any that would escape the vault.
+    if (!isPathSafe(path)) return;
     if (this.subscribedPaths.has(path)) return;
     this.subscribedPaths.add(path);
 
@@ -272,6 +275,8 @@ export class CanvasSync {
   }
 
   private async writeToDisk(path: string, content: string): Promise<void> {
+    // Final defense-in-depth gate: every disk write funnels through here.
+    if (!isPathSafe(path)) return;
     if (this.lastWrittenContent.get(path) === content) return;
     const diskPath = toLocalPath(path);
     this.recentDiskWrites.add(path);

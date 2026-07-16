@@ -7,6 +7,7 @@ import {
   VAULT_EVENT_SETTLE_MS,
   ensureFolder,
   getFileByPath,
+  isPathSafe,
   isTextFile,
   normalizeLineEndings,
   normalizePath,
@@ -135,9 +136,7 @@ export class ManifestManager {
     const entries = Array.from(this.manifest.entries());
 
     for (const [path, entry] of entries) {
-      if (!path || path.startsWith("/") || path.startsWith("\\")) continue;
-      const segments = path.split(/[\\/]/);
-      if (segments.some((segment) => segment === ".." || segment === ".")) continue;
+      if (!isPathSafe(path)) continue;
 
       const diskPath = toLocalPath(path);
       if (entry.directory) {

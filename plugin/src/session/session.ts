@@ -1,6 +1,7 @@
 import { Notice, requestUrl } from "obsidian";
 
 import type LiveSharePlugin from "../main";
+import { generateSaltB64 } from "../sync/crypto";
 
 interface InvitePayload {
   s: string;
@@ -8,6 +9,7 @@ interface InvitePayload {
   t: string;
   e?: string;
   p?: string;
+  k?: string;
 }
 
 function generatePassphrase(): string {
@@ -55,6 +57,7 @@ export class SessionManager {
     settings.token = roomData.token;
     settings.role = "host";
     settings.encryptionPassphrase = generatePassphrase();
+    settings.encryptionSalt = generateSaltB64();
     await this.plugin.saveSettings();
 
     await this.copyInvite();
@@ -99,6 +102,7 @@ export class SessionManager {
     settings.roomId = parsedInvite.r;
     settings.token = parsedInvite.t;
     settings.encryptionPassphrase = parsedInvite.e ?? "";
+    settings.encryptionSalt = parsedInvite.k ?? "";
     if (parsedInvite.p) settings.serverPassword = parsedInvite.p;
     settings.role = "guest";
     await this.plugin.saveSettings();
@@ -130,6 +134,7 @@ export class SessionManager {
     settings.roomId = "";
     settings.token = "";
     settings.encryptionPassphrase = "";
+    settings.encryptionSalt = "";
     settings.role = null;
     settings.permission = "read-write";
     await this.plugin.saveSettings();
@@ -152,6 +157,7 @@ export class SessionManager {
       t: settings.token,
       e: settings.encryptionPassphrase || undefined,
       p: settings.serverPassword || undefined,
+      k: settings.encryptionSalt || undefined,
     };
     const invite = `obsliveshare:${btoa(JSON.stringify(payload))}`;
     await navigator.clipboard.writeText(invite);

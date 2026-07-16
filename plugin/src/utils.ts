@@ -37,6 +37,18 @@ export function normalizePath(filePath: string): string {
   return filePath.replace(/\\/g, "/");
 }
 
+/**
+ * Rejects paths that could escape the vault root. A path is safe only when it
+ * is relative (no leading "/" or "\") and contains no "." or ".." segments.
+ * Used as the single source of truth for validating any peer-supplied path
+ * before it is written to disk.
+ */
+export function isPathSafe(path: string): boolean {
+  if (!path || path.startsWith("/") || path.startsWith("\\")) return false;
+  const segments = path.split(/[\\/]/);
+  return !segments.some((segment) => segment === ".." || segment === ".");
+}
+
 export function normalizeLineEndings(content: string): string {
   return content.replace(/\r\n|\r/g, "\n");
 }

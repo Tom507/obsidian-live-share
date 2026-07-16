@@ -8,6 +8,16 @@ function passphraseSaltInput(passphrase: string): string {
   return `obsidian-live-share-salt:${passphrase}`;
 }
 
+/**
+ * Generate a random per-session salt for the KDF, base64-encoded for transport
+ * in the invite. Preferred over the legacy deterministic salt, which is a pure
+ * function of the passphrase and therefore enables precomputation against
+ * low-entropy manually chosen passphrases.
+ */
+export function generateSaltB64(): string {
+  return uint8ToBase64(crypto.getRandomValues(new Uint8Array(SALT_BYTES)));
+}
+
 async function deriveKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
   const raw = new TextEncoder().encode(passphrase);
   const base = await crypto.subtle.importKey("raw", raw, "PBKDF2", false, ["deriveKey"]);
@@ -39,15 +49,29 @@ export class E2ECrypto {
   private key: CryptoKey | null = null;
   private salt: Uint8Array | null = null;
   private passphrase: string;
+  private saltB64Override: string | null;
 
-  constructor(passphrase: string) {
+  /**
+   * @param passphrase shared secret used to derive the AES key.
+   * @param saltB64 optional base64 salt from the invite. When provided a random
+   *   per-session salt is used; when omitted (legacy invites) the derivation
+   *   falls back to the deterministic passphrase-derived salt for compatibility.
+   */
+  constructor(passphrase: string, saltB64?: string) {
     this.passphrase = passphrase;
+    this.saltB64Override = saltB64 && saltB64.length > 0 ? saltB64 : null;
   }
 
   async init(): Promise<void> {
-    const raw = new TextEncoder().encode(passphraseSaltInput(this.passphrase));
-    const hashBuf = await crypto.subtle.digest("SHA-256", raw);
-    this.salt = new Uint8Array(hashBuf).slice(0, SALT_BYTES);
+    if (this.saltB64Override) {
+      this.salt = base64ToUint8(this.saltB64Override).slice(0, SALT_BYTES);
+    } else {
+      // Legacy deterministic salt: kept only so invites created before random
+      // salts still decrypt. New sessions always pass an explicit random salt.
+      const raw = new TextEncoder().encode(passphraseSaltInput(this.passphrase));
+      const hashBuf = await crypto.subtle.digest("SHA-256", raw);
+      this.salt = new Uint8Array(hashBuf).slice(0, SALT_BYTES);
+    }
     this.key = await deriveKey(this.passphrase, this.salt);
   }
 

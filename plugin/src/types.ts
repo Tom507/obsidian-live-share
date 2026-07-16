@@ -14,6 +14,7 @@ export interface LiveShareSettings {
   sharedFolder: string;
   role: SessionRole;
   encryptionPassphrase: string;
+  encryptionSalt: string;
   permission: Permission;
   requireApproval: boolean;
   serverPassword: string;
@@ -39,6 +40,7 @@ export const DEFAULT_SETTINGS: LiveShareSettings = {
   sharedFolder: "",
   role: null,
   encryptionPassphrase: "",
+  encryptionSalt: "",
   permission: "read-write",
   requireApproval: false,
   serverPassword: "",

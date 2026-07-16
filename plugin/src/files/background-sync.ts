@@ -8,6 +8,7 @@ import {
   applyMinimalYTextUpdate,
   ensureFolder,
   getFileByPath,
+  isPathSafe,
   isTextFile,
   normalizeLineEndings,
   normalizePath,
@@ -66,6 +67,8 @@ export class BackgroundSync {
 
   async subscribe(rawPath: string): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
+    // A peer/host controls manifest keys; reject any that would escape the vault.
+    if (!isPathSafe(path)) return;
     if (this.observers.has(path) || this.subscribing.has(path)) return;
     this.cancelledSubscribes.delete(path);
     this.subscribing.add(path);
@@ -204,6 +207,7 @@ export class BackgroundSync {
       this.activeFile = normNew;
     }
 
+    if (!isPathSafe(normNew)) return;
     if (!isTextFile(normNew)) return;
 
     const docHandle = this.syncManager.getDoc(normNew);
@@ -318,6 +322,8 @@ export class BackgroundSync {
   }
 
   private writeToDisk(path: string, content: string): Promise<void> {
+    // Final defense-in-depth gate: every disk write funnels through here.
+    if (!isPathSafe(path)) return Promise.resolve();
     if (this.lastWrittenContent.get(path) === content) return Promise.resolve();
     this.writeQueue = this.writeQueue.then(() => this.doWriteToDisk(path, content));
     return this.writeQueue;

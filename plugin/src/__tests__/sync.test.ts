@@ -72,6 +72,7 @@ function makeSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSett
     cursorColor: "#000",
     sharedFolder: "",
     encryptionPassphrase: "",
+    encryptionSalt: "",
     autoReconnect: false,
     notificationsEnabled: false,
     debugLogging: false,

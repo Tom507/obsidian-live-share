@@ -6,6 +6,7 @@ import {
   arrayBufferToBase64,
   base64ToArrayBuffer,
   ensureFolder,
+  isPathSafe,
   isTextFile,
   normalizeLineEndings,
   normalizePath,
@@ -154,9 +155,7 @@ export class FileOpsManager {
   }
 
   private isPathSafe(path: string): boolean {
-    if (!path || path.startsWith("/") || path.startsWith("\\")) return false;
-    const segments = path.split(/[\\/]/);
-    return !segments.some((segment) => segment === ".." || segment === ".");
+    return isPathSafe(path);
   }
 
   private getOpPaths(op: FileOp): string[] {

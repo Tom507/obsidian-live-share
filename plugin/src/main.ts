@@ -31,6 +31,7 @@ import { LiveShareSettingTab } from "./ui/settings";
 import {
   VAULT_EVENT_SETTLE_MS,
   ensureFolder,
+  isPathSafe,
   isTextFile,
   normalizePath,
   parseJwtPayload,
@@ -92,6 +93,8 @@ export default class LiveSharePlugin extends Plugin {
             for (const oldPath of removed) {
               for (const newPath of added) {
                 if (renamedNewPaths.has(newPath)) continue;
+                // Reject peer-supplied rename targets that would escape the vault.
+                if (!isPathSafe(normalizePath(newPath))) continue;
                 const localOld = toLocalPath(oldPath);
                 const localNew = toLocalPath(newPath);
                 const oldFile = this.app.vault.getAbstractFileByPath(localOld);
@@ -581,7 +584,7 @@ export default class LiveSharePlugin extends Plugin {
 
     let e2e: E2ECrypto | undefined;
     if (this.settings.encryptionPassphrase) {
-      e2e = new E2ECrypto(this.settings.encryptionPassphrase);
+      e2e = new E2ECrypto(this.settings.encryptionPassphrase, this.settings.encryptionSalt);
       await e2e.init();
     }
 

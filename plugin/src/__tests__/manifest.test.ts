@@ -17,6 +17,7 @@ function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSe
     sharedFolder: "",
     role: "host",
     encryptionPassphrase: "",
+    encryptionSalt: "",
     permission: "read-write",
     requireApproval: false,
     serverPassword: "",
