@@ -2,6 +2,9 @@ import type { EditorView } from "@codemirror/view";
 import { MarkdownView, Menu, Notice, Plugin, TFile, requestUrl } from "obsidian";
 
 import { minimatch } from "minimatch";
+import { createCanvasAdapter } from "./canvas/canvas-adapter";
+import { CanvasOverlay, type OverlayHost } from "./canvas/canvas-overlay";
+import { type AwarenessLike, CanvasPresence } from "./canvas/canvas-presence";
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
@@ -61,6 +64,9 @@ export default class LiveSharePlugin extends Plugin {
   logger!: DebugLogger;
 
   canvasSync: CanvasSync | null = null;
+  // WP2/WP3: one presence controller per open, subscribed canvas (keyed by
+  // canonical path). Owns that canvas' cursor/lock awareness + DOM overlay.
+  private canvasPresences = new Map<string, CanvasPresence>();
   explorerIndicators: ExplorerIndicators | null = null;
   controlChannel: ControlChannel | null = null;
   remoteUsers = new Map<string, PresenceUser>();
@@ -341,6 +347,7 @@ export default class LiveSharePlugin extends Plugin {
     this.controlChannel = null;
     this.explorerIndicators?.destroy();
     this.explorerIndicators = null;
+    this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
     this.presenceManager?.destroy();
@@ -439,6 +446,7 @@ export default class LiveSharePlugin extends Plugin {
     }
     this.explorerIndicators?.destroy();
     this.explorerIndicators = null;
+    this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
     this.backgroundSync.setCollabBoundFile(null);
@@ -691,6 +699,28 @@ export default class LiveSharePlugin extends Plugin {
       }
       return true;
     });
+    // WP3: advisory per-node lock gates + diff-inferred fallback hook, backed by
+    // the per-canvas CanvasPresence controllers. When no presence is mounted
+    // (canvas not open) the gates default to allow so nothing is blocked.
+    this.canvasSync.setCanWriteNode((path, nodeId) => {
+      const presence = this.canvasPresences.get(path);
+      return presence ? presence.canWriteNode(nodeId) : true;
+    });
+    this.canvasSync.setCanDeleteNode((path, nodeId) => {
+      const presence = this.canvasPresences.get(path);
+      return presence ? presence.canDeleteNode(nodeId) : true;
+    });
+    this.canvasSync.setOnLocalNodeChange((path, nodeId) => {
+      this.canvasPresences.get(path)?.onDiffInferredChange(nodeId);
+    });
+    // WP1 reconnect seam (US4 AC3): re-claim only still-free nodes, never blindly.
+    this.syncManager.onReconnect(() => {
+      for (const presence of this.canvasPresences.values()) presence.onReconnect();
+    });
+    // Keep the mounted presences in sync with which canvases are open.
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.syncCanvasPresences()));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncCanvasPresences()));
+
     const entries = this.manifestManager.getEntries();
     const role = this.settings.role === "host" ? "host" : "guest";
     for (const [path] of entries) {
@@ -747,6 +777,11 @@ export default class LiveSharePlugin extends Plugin {
   }
 
   onActiveFileChange() {
+    // WP2: branch to canvas presence. Previously this method hard-returned for
+    // any non-MarkdownView (canvas included); now an open canvas mounts a
+    // presence overlay instead of being ignored.
+    this.syncCanvasPresences();
+
     const view = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (!view) return;
 
@@ -806,6 +841,84 @@ export default class LiveSharePlugin extends Plugin {
       this.currentScrollListener();
       this.currentScrollListener = null;
     }
+  }
+
+  // WP2/WP3: reconcile mounted canvas presences with the set of currently-open,
+  // subscribed canvas leaves. Mount for newly-opened shared canvases; tear down
+  // for closed ones. Defensive throughout — the Obsidian Canvas view is private.
+  private syncCanvasPresences() {
+    if (!this.canvasSync) return;
+    const activePaths = new Set<string>();
+    let leaves: Array<{ view?: unknown }> = [];
+    try {
+      leaves = this.app.workspace.getLeavesOfType("canvas") as Array<{ view?: unknown }>;
+    } catch {
+      leaves = [];
+    }
+    for (const leaf of leaves) {
+      const view = leaf.view as { file?: { path?: string } } | undefined;
+      const rawPath = view?.file?.path;
+      if (!rawPath || !this.canvasSync.isSubscribed(rawPath)) continue;
+      const canonical = toCanonicalPath(normalizePath(rawPath));
+      activePaths.add(canonical);
+      if (this.canvasPresences.has(canonical)) continue;
+      const presence = this.mountCanvasPresence(rawPath, leaf.view);
+      if (presence) this.canvasPresences.set(canonical, presence);
+    }
+    for (const [path, presence] of this.canvasPresences) {
+      if (!activePaths.has(path)) {
+        presence.destroy();
+        this.canvasPresences.delete(path);
+      }
+    }
+  }
+
+  private mountCanvasPresence(rawPath: string, view: unknown): CanvasPresence | null {
+    const handle = this.canvasSync?.getCanvasDocHandle(rawPath);
+    if (!handle) return null;
+    try {
+      const adapter = createCanvasAdapter(view);
+      const hostCandidate =
+        (adapter.getOverlayHost() as { createDiv?: unknown } | null) ??
+        ((view as { contentEl?: unknown; containerEl?: unknown })?.contentEl as
+          | { createDiv?: unknown }
+          | undefined) ??
+        null;
+      let overlay: CanvasOverlay | null = null;
+      if (hostCandidate && typeof hostCandidate.createDiv === "function") {
+        const overlayRoot = (
+          hostCandidate as unknown as { createDiv: (o: { cls: string }) => OverlayHost }
+        ).createDiv({ cls: "ls-canvas-overlay" });
+        overlay = new CanvasOverlay(overlayRoot);
+      }
+      const presence = new CanvasPresence({
+        path: toCanonicalPath(normalizePath(rawPath)),
+        awareness: handle.awareness as unknown as AwarenessLike,
+        identity: {
+          clientId: handle.doc.clientID,
+          name: this.settings.displayName,
+          color: this.settings.cursorColor,
+        },
+        overlay,
+        adapter,
+      });
+      presence.start();
+      return presence;
+    } catch (err) {
+      this.logger.error("canvas", "failed to mount canvas presence", err);
+      return null;
+    }
+  }
+
+  private teardownCanvasPresences() {
+    for (const presence of this.canvasPresences.values()) {
+      try {
+        presence.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.canvasPresences.clear();
   }
 
   updateStatusBar() {

@@ -30,6 +30,13 @@ const MAX_RECONNECT_ATTEMPTS = 15;
 // protocol-level pings, so a half-dead socket (no FIN) is otherwise undetectable.
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const PONG_TIMEOUT_MS = 10_000;
+// Awareness heartbeat: periodically re-assert the FULL local awareness state
+// (caret + any extra fields such as `lockedNodes`) so peers keep rendering a
+// static caret and never prune it under y-protocols' 30 s outdated-timeout.
+// Must be < 30 s; target 10-15 s. Ticks the awareness Lamport clock via
+// setLocalState(getLocalState()), which bumps the clock so peers refresh their
+// `lastUpdated` — a bare re-encode at the same clock would be a no-op on peers.
+export const AWARENESS_HEARTBEAT_INTERVAL_MS = 12_000;
 
 export interface DocHandle {
   doc: Y.Doc;
@@ -60,8 +67,13 @@ export class SyncManager {
   private isDestroyed = false;
   private onMaxReconnectCallback: (() => void) | null = null;
   private onConnectionChangeCallback: ((connected: boolean) => void) | null = null;
+  private onReconnectCallback: ((docIds: string[]) => void) | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private awarenessHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // True once a socket has successfully opened at least once, so we can tell a
+  // reconnect apart from the first connect.
+  private hasEverConnected = false;
 
   constructor(settings: LiveShareSettings) {
     this.settings = settings;
@@ -79,6 +91,18 @@ export class SyncManager {
     this.onConnectionChangeCallback = callback;
   }
 
+  /**
+   * Reconnect seam for lock-owning layers (WP3). Fired after a socket has been
+   * re-established (never on the first connect) with the currently-subscribed
+   * doc ids, BEFORE this manager ticks the awareness clock — so the lock layer
+   * can WITHHOLD any stale `lockedNodes` before the reconnect re-emit, and never
+   * blind-reasserts a lock a peer may have taken during the outage. WP3 defers
+   * re-claiming still-free nodes until peers' awareness has re-synced.
+   */
+  onReconnect(callback: (docIds: string[]) => void): void {
+    this.onReconnectCallback = callback;
+  }
+
   updateSettings(settings: LiveShareSettings) {
     this.settings = settings;
   }
@@ -92,6 +116,7 @@ export class SyncManager {
   disconnect(): void {
     this.shouldConnect = false;
     this.isConnected = false;
+    this.hasEverConnected = false;
     this.stopHeartbeat();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
@@ -241,6 +266,8 @@ export class SyncManager {
     this.ws = ws;
 
     ws.onopen = () => {
+      const isReconnect = this.hasEverConnected;
+      this.hasEverConnected = true;
       this.isConnected = true;
       this.reconnectAttempts = 0;
       for (const filePath of this.docs.keys()) {
@@ -248,6 +275,22 @@ export class SyncManager {
         this.sendSubscribe(filePath);
       }
       this.startHeartbeat();
+      if (isReconnect) {
+        // Hand control to the lock layer (WP3) FIRST, so it can WITHHOLD any stale
+        // locks before we tick the clock. Otherwise the clock-tick re-emit below
+        // would blindly re-assert `lockedNodes` a peer may have acquired during the
+        // outage and split the lock (US4 AC3/AC4, GAP-4). The lock layer clears its
+        // claims here and defers re-claiming still-free nodes until peers' awareness
+        // has re-synced — it never blind-reasserts locks.
+        this.onReconnectCallback?.([...this.awarenessMap.keys()]);
+        // Reconnect clock-tick (y-websocket #122): advance the awareness clock so
+        // our caret / (now withheld) canvas state re-renders on peers without the
+        // user typing. The doc + awareness (and therefore `clientID`) are reused
+        // across reconnect — no ghost duplicate identity is created.
+        for (const docId of this.awarenessMap.keys()) {
+          this.reemitLocalAwareness(docId);
+        }
+      }
       this.onConnectionChangeCallback?.(true);
     };
 
@@ -334,6 +377,9 @@ export class SyncManager {
         this.ws?.close();
       }, PONG_TIMEOUT_MS);
     }, HEARTBEAT_INTERVAL_MS);
+    this.awarenessHeartbeatTimer = setInterval(() => {
+      this.pulseAwarenessHeartbeat();
+    }, AWARENESS_HEARTBEAT_INTERVAL_MS);
   }
 
   private stopHeartbeat(): void {
@@ -341,7 +387,24 @@ export class SyncManager {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+    if (this.awarenessHeartbeatTimer) {
+      clearInterval(this.awarenessHeartbeatTimer);
+      this.awarenessHeartbeatTimer = null;
+    }
     this.clearPongDeadline();
+  }
+
+  /**
+   * Re-emit the full local awareness state for every subscribed doc. Driven by
+   * the awareness heartbeat timer, but also callable directly (WP5 latency
+   * harness / unit tests) to pulse a heartbeat deterministically without waiting
+   * on wall-clock time. No-op while the socket is not OPEN.
+   */
+  pulseAwarenessHeartbeat(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    for (const docId of this.awarenessMap.keys()) {
+      this.reemitLocalAwareness(docId);
+    }
   }
 
   private clearPongDeadline(): void {
@@ -392,13 +455,19 @@ export class SyncManager {
   private reemitLocalAwareness(docId: string): void {
     const awareness = this.awarenessMap.get(docId);
     if (!awareness) return;
-    // Only re-emit if we actually have a local awareness state to share.
+    // Bail ONLY when there is genuinely no local state to share. A merely-static
+    // (movement-free but non-null) caret MUST still be re-emitted — we never
+    // treat "no recent movement" as "nothing to send". This is the fix for the
+    // static-caret join race: a mid-sync joiner whose awareness clock for us is 0
+    // still applies our caret.
     if (awareness.getLocalState() === null) return;
-    // Goes through sendMux so it is encrypted when E2E is enabled.
-    const awarenessUpdate = awarenessProtocol.encodeAwarenessUpdate(awareness, [
-      awareness.doc.clientID,
-    ]);
-    this.sendMux(docId, MUX_AWARENESS, awarenessUpdate);
+    // Advance the local awareness clock and rebroadcast the FULL local state
+    // (caret + any extra fields such as `lockedNodes`). Re-setting the same state
+    // object bumps the y-protocols clock, which (a) makes peers refresh their
+    // 30 s outdated-prune timer so a static caret / idle lock survives, and
+    // (b) forces a newly-joined peer to apply it. The registered awareness
+    // 'update' handler performs the actual send via sendMux (encrypted under E2E).
+    awareness.setLocalState(awareness.getLocalState());
   }
 
   private handleSync(docId: string, payload: Uint8Array): void {

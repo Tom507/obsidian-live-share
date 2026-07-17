@@ -465,6 +465,129 @@ describe("BackgroundSync", () => {
     expect(vault.modify).not.toHaveBeenCalled();
   });
 
+  // Applies a delta to `doc` as a NON-LOCAL (remote) transaction, exactly as the
+  // yjs sync protocol would when integrating an in-flight remote update.
+  function applyRemoteDelta(doc: Y.Doc, buildDelta: (text: Y.Text) => void) {
+    const remoteDoc = new Y.Doc();
+    const remoteText = remoteDoc.getText("content");
+    buildDelta(remoteText);
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(remoteDoc));
+    remoteDoc.destroy();
+  }
+
+  // --- WP4 / US5 AC1 (text path): version/sequence-gated flush ---
+
+  it("WP4/US5-AC1: a stale local flush yields to an in-flight remote delta (remote survives)", async () => {
+    const entries = new Map([["bg.md", { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(mockFile("bg.md"));
+    vault.read.mockResolvedValue("");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    const startPromise = bg.startAll("guest");
+    await vi.advanceTimersByTimeAsync(2100);
+    await startPromise;
+    bg.setActiveFile("other.md"); // bg.md is a background file (observer active)
+    vault.adapter.write.mockClear();
+
+    // A whole-file flush was snapshotted at sequence 0 with now-stale content.
+    // Before it reaches disk, an in-flight remote delta arrives and is integrated
+    // into Y.Text (a non-local transaction bumps the per-file sequence to 1).
+    const { doc, text } = syncManager.getDoc("bg.md");
+    applyRemoteDelta(doc, (t) => t.insert(0, "remote survives"));
+
+    // Now the stale snapshot (captured at seq 0) tries to flush.
+    await (bg as any).writeToDisk("bg.md", "stale local snapshot", 0);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The stale snapshot must NOT clobber the remote change on disk.
+    expect(vault.adapter.write).not.toHaveBeenCalledWith("bg.md", "stale local snapshot");
+    // The remote change is intact in Y.Text and is what reaches disk.
+    expect(text.toString()).toBe("remote survives");
+
+    // The observer that integrated the remote delta scheduled its own flush of
+    // the newer content; that write (sequence matches) is the one that lands.
+    vi.advanceTimersByTime(600);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vault.adapter.write).toHaveBeenCalledWith("bg.md", "remote survives");
+  });
+
+  it("WP4/US5-AC1: a remote (non-local) delta advances the per-file sequence", async () => {
+    const entries = new Map([["bg.md", { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(mockFile("bg.md"));
+    vault.read.mockResolvedValue("");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    const startPromise = bg.startAll("guest");
+    await vi.advanceTimersByTimeAsync(2100);
+    await startPromise;
+
+    const { doc } = syncManager.getDoc("bg.md");
+    expect((bg as any).currentSeq("bg.md")).toBe(0);
+
+    applyRemoteDelta(doc, (t) => t.insert(0, "a"));
+    expect((bg as any).currentSeq("bg.md")).toBe(1);
+
+    applyRemoteDelta(doc, (t) => t.insert(1, "b"));
+    expect((bg as any).currentSeq("bg.md")).toBe(2);
+  });
+
+  it("WP4/US5-AC1: a flush whose sequence still matches writes normally", async () => {
+    const entries = new Map([["bg.md", { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(mockFile("bg.md"));
+    vault.read.mockResolvedValue("");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    const startPromise = bg.startAll("guest");
+    await vi.advanceTimersByTimeAsync(2100);
+    await startPromise;
+    bg.setActiveFile("other.md");
+    vault.adapter.write.mockClear();
+
+    const { doc } = syncManager.getDoc("bg.md");
+    applyRemoteDelta(doc, (t) => t.insert(0, "fresh"));
+    const seq = (bg as any).currentSeq("bg.md");
+
+    // No newer delta arrives; the snapshot sequence still matches -> write lands.
+    await (bg as any).writeToDisk("bg.md", "fresh", seq);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(vault.adapter.write).toHaveBeenCalledWith("bg.md", "fresh");
+  });
+
+  it("WP4/US5-AC4: the version gate does not weaken single-writer active/collab gating", async () => {
+    const entries = new Map([["note.md", { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(mockFile("note.md"));
+    vault.read.mockResolvedValue("");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    const startPromise = bg.startAll("guest");
+    await vi.advanceTimersByTimeAsync(2100);
+    await startPromise;
+
+    bg.setActiveFile("note.md");
+    bg.setCollabBoundFile("note.md");
+    vault.adapter.write.mockClear();
+
+    // A remote delta bumps the sequence, but the active/collab file must still
+    // never be disk-echoed by background-sync (yCollab owns it).
+    const { doc, text } = syncManager.getDoc("note.md");
+    applyRemoteDelta(doc, (t) => t.insert(0, "remote edit"));
+    expect((bg as any).currentSeq("note.md")).toBe(1); // sequence advanced...
+    vi.advanceTimersByTime(2000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vault.adapter.write).not.toHaveBeenCalled(); // ...but no disk echo
+
+    // handleLocalTextModify still refuses to push a disk edit of the active file
+    // into Y.Text (single-writer invariant intact).
+    vault.read.mockResolvedValue("edited on disk");
+    await bg.handleLocalTextModify("note.md");
+    expect(text.toString()).toBe("remote edit");
+  });
+
   it("destroy flushes pending debounced writes to disk", async () => {
     const entries = new Map([["flush.md", { hash: "abc", size: 5, mtime: 1 }]]);
     manifestManager = createManifestManager(entries);

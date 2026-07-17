@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as awarenessProtocol from "y-protocols/awareness";
+import * as Y from "yjs";
 import {
   MUX_AWARENESS,
   MUX_PING,
@@ -9,8 +11,27 @@ import {
   decodeMuxMessage,
   encodeMuxMessage,
 } from "../sync/mux-protocol";
-import { SyncManager } from "../sync/sync";
+import { AWARENESS_HEARTBEAT_INTERVAL_MS, SyncManager } from "../sync/sync";
 import type { LiveShareSettings } from "../types";
+
+/** Pull the raw awareness-update payloads for a doc out of a mock socket's sends. */
+function awarenessFrames(ws: MockWebSocket, docId: string): Uint8Array[] {
+  return ws.sent
+    .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+    .filter((msg) => msg.msgType === MUX_AWARENESS && msg.docId === docId)
+    .map((msg) => msg.payload);
+}
+
+/** Decode awareness frames the way a remote peer would, returning the applied states. */
+function decodeRemoteStates(frames: Uint8Array[]): Record<string, unknown>[] {
+  const doc = new Y.Doc();
+  const aw = new awarenessProtocol.Awareness(doc);
+  aw.setLocalState(null); // drop the default local {} so only applied states remain
+  for (const frame of frames) {
+    awarenessProtocol.applyAwarenessUpdate(aw, frame, "remote");
+  }
+  return [...aw.getStates().values()] as Record<string, unknown>[];
+}
 
 class MockWebSocket {
   static readonly CONNECTING = 0;
@@ -409,5 +430,157 @@ describe("SyncManager", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // ---- WP1: Awareness latency-resistance ----
+
+  // AC3/AC4 + US4 AC2: the heartbeat re-emits the FULL local state (incl.
+  // lockedNodes) on a fixed cadence < 30 s even with zero local edits.
+  it("heartbeat re-emits full local awareness (incl. lockedNodes) under 30 s with no edits", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      // A static caret plus a held lock — no further local edits after this.
+      handle.awareness.setLocalState({
+        user: { name: "Host", color: "#f00" },
+        cursor: { anchor: 0, head: 0 },
+        lockedNodes: { nodeA: { color: "#f00", name: "Host" } },
+      });
+      ws.sent = [];
+
+      // The heartbeat cadence must be under the 30 s y-protocols prune window.
+      expect(AWARENESS_HEARTBEAT_INTERVAL_MS).toBeLessThan(30_000);
+
+      vi.advanceTimersByTime(AWARENESS_HEARTBEAT_INTERVAL_MS);
+
+      const frames = awarenessFrames(ws, "notes/test.md");
+      expect(frames.length).toBeGreaterThan(0);
+
+      const states = decodeRemoteStates(frames);
+      const held = states.find((s) => (s as { lockedNodes?: unknown }).lockedNodes);
+      expect(held).toBeDefined();
+      expect((held as { lockedNodes: Record<string, unknown> }).lockedNodes.nodeA).toEqual({
+        color: "#f00",
+        name: "Host",
+      });
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // AC2/AC4: a static (non-moving) caret keeps being broadcast past 30 s and is
+  // never short-circuited by a "no recent movement" bail.
+  it("keeps broadcasting a static caret past 30 s without local movement", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      const staticState = { user: { name: "Host" }, cursor: { anchor: 3, head: 3 } };
+      handle.awareness.setLocalState(staticState);
+      ws.sent = [];
+
+      // Simulate 36 s of a completely idle, non-moving caret.
+      vi.advanceTimersByTime(36_000);
+
+      const frames = awarenessFrames(ws, "notes/test.md");
+      expect(frames.length).toBeGreaterThan(0);
+
+      // The caret never moved — cursor position is unchanged.
+      expect(handle.awareness.getLocalState()).toMatchObject({ cursor: { anchor: 3, head: 3 } });
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // AC4: a manual heartbeat pulse re-emits a static caret (no-bail seam usable by
+  // the WP5 latency harness).
+  it("pulseAwarenessHeartbeat re-emits a static caret (does not bail)", () => {
+    const sm = new SyncManager(makeSettings());
+    sm.connect();
+    const handle = sm.getDoc("notes/test.md")!;
+    const ws = mockWsInstances[0];
+    ws.simulateOpen();
+
+    handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+    ws.sent = [];
+
+    sm.pulseAwarenessHeartbeat();
+
+    expect(awarenessFrames(ws, "notes/test.md").length).toBeGreaterThan(0);
+    sm.destroy();
+  });
+
+  // AC5/AC6: on reconnect the awareness clock ticks (caret re-renders on peers)
+  // and the client keeps a single stable identity — no ghost duplicate.
+  it("reconnect ticks the awareness clock and keeps a single stable identity", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings({ autoReconnect: true }));
+      const onReconnect = vi.fn();
+      sm.onReconnect(onReconnect);
+      sm.connect();
+
+      const ws1 = mockWsInstances[0];
+      ws1.simulateOpen(); // first connect — no reconnect tick
+
+      const handle = sm.getDoc("notes/test.md")!;
+      const clientIdBefore = handle.doc.clientID;
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 1, head: 1 } });
+
+      // Drop the socket; the reconnect backoff should schedule a new attempt.
+      // Advance by a bounded amount (first backoff is 100 ms) rather than
+      // runAllTimers — the y-protocols Awareness keeps an internal interval alive
+      // that would otherwise trip vitest's infinite-timer guard.
+      ws1.close();
+      vi.advanceTimersByTime(500);
+
+      expect(mockWsInstances.length).toBeGreaterThanOrEqual(2);
+      const ws2 = mockWsInstances[mockWsInstances.length - 1];
+      ws2.sent = [];
+      ws2.simulateOpen();
+
+      // Caret re-renders on peers without typing → an awareness frame is emitted.
+      expect(awarenessFrames(ws2, "notes/test.md").length).toBeGreaterThan(0);
+      // WP3 reconnect seam fired with the active doc ids.
+      expect(onReconnect).toHaveBeenCalledTimes(1);
+      expect(onReconnect.mock.calls[0][0]).toContain("notes/test.md");
+
+      // Single stable identity: same clientID, exactly one local awareness entry.
+      const handleAfter = sm.getDoc("notes/test.md")!;
+      expect(handleAfter.doc.clientID).toBe(clientIdBefore);
+      expect(handleAfter.awareness.getStates().size).toBe(1);
+      expect(handleAfter.awareness.getStates().has(clientIdBefore)).toBe(true);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // AC5: the reconnect clock-tick does NOT fire on the very first connect.
+  it("does not fire the reconnect seam on the first connect", () => {
+    const sm = new SyncManager(makeSettings());
+    const onReconnect = vi.fn();
+    sm.onReconnect(onReconnect);
+    sm.connect();
+
+    sm.getDoc("notes/test.md");
+    mockWsInstances[0].simulateOpen();
+
+    expect(onReconnect).not.toHaveBeenCalled();
+    sm.destroy();
   });
 });

@@ -33,6 +33,13 @@ export class BackgroundSync {
   private collabBoundFile: string | null = null;
   private recentDiskWrites = new Set<string>();
   private lastWrittenContent = new Map<string, string>();
+  // Per-file monotonic counter of remote (non-local) Y.Text deltas applied to
+  // the doc. A whole-file disk flush snapshots this value when it captures its
+  // content; if the counter has advanced by the time the flush actually reaches
+  // disk, an in-flight remote delta arrived after the snapshot and the snapshot
+  // is stale — the flush must yield rather than clobber that remote change.
+  // This is a version/sequence gate, NOT a wall-clock debounce race.
+  private remoteSeq = new Map<string, number>();
   private writeQueue: Promise<void> = Promise.resolve();
   private role: SessionRole = "host";
   private running = false;
@@ -157,7 +164,7 @@ export class BackgroundSync {
       const docHandle = this.syncManager.getDoc(oldActive);
       if (docHandle) {
         const content = docHandle.text.toString();
-        void this.writeToDisk(oldActive, content);
+        void this.writeToDisk(oldActive, content, this.currentSeq(oldActive));
         if (this.role === "host") {
           const file = getFileByPath(this.vault, toLocalPath(oldActive));
           if (file) void this.manifestManager.updateFile(file, content);
@@ -184,6 +191,7 @@ export class BackgroundSync {
       this.writeTimers.delete(path);
     }
     this.writeFirstScheduled.delete(path);
+    this.remoteSeq.delete(path);
     const unobserve = this.observers.get(path);
     if (unobserve) {
       unobserve();
@@ -202,6 +210,7 @@ export class BackgroundSync {
       this.writeTimers.delete(normOld);
     }
     this.writeFirstScheduled.delete(normOld);
+    this.remoteSeq.delete(normOld);
     const unobserve = this.observers.get(normOld);
     if (unobserve) {
       unobserve();
@@ -302,11 +311,22 @@ export class BackgroundSync {
     this.collabBoundFile = null;
     this.recentDiskWrites.clear();
     this.lastWrittenContent.clear();
+    this.remoteSeq.clear();
+  }
+
+  private currentSeq(path: string): number {
+    return this.remoteSeq.get(path) ?? 0;
   }
 
   private attachObserver(path: string, text: Y.Text): void {
     const observer = (_event: Y.YTextEvent, transaction: Y.Transaction) => {
       if (transaction.local) return;
+      // A remote delta was just integrated into this doc's Y.Text. Advance the
+      // per-file sequence so any flush snapshotted before this point yields
+      // instead of overwriting the delta on disk. Bump BEFORE the active/collab
+      // gate returns: even the active file's version must advance so a queued
+      // background flush for it cannot clobber the remote change.
+      this.remoteSeq.set(path, this.currentSeq(path) + 1);
       // The active file is persisted by the editor / yCollab, never by
       // background-sync. Gate on active-file identity as well as collabBoundFile
       // so the currently-active file is never disk-echoed during the activation
@@ -327,7 +347,7 @@ export class BackgroundSync {
     this.writeFirstScheduled.delete(path);
     const docHandle = this.syncManager.getDoc(path);
     if (docHandle) {
-      void this.writeToDisk(path, docHandle.text.toString());
+      void this.writeToDisk(path, docHandle.text.toString(), this.currentSeq(path));
     }
   }
 
@@ -349,21 +369,38 @@ export class BackgroundSync {
       setTimeout(() => {
         this.writeTimers.delete(path);
         this.writeFirstScheduled.delete(path);
-        void this.writeToDisk(path, text.toString());
+        // Snapshot content and sequence together (no interleaving await) so the
+        // gate in doWriteToDisk can detect a remote delta arriving afterwards.
+        void this.writeToDisk(path, text.toString(), this.currentSeq(path));
       }, delay),
     );
   }
 
-  private writeToDisk(path: string, content: string): Promise<void> {
+  private writeToDisk(path: string, content: string, expectedSeq?: number): Promise<void> {
     // Final defense-in-depth gate: every disk write funnels through here.
     if (!isPathSafe(path)) return Promise.resolve();
     if (this.lastWrittenContent.get(path) === content) return Promise.resolve();
-    this.writeQueue = this.writeQueue.then(() => this.doWriteToDisk(path, content));
+    this.writeQueue = this.writeQueue.then(() => this.doWriteToDisk(path, content, expectedSeq));
     return this.writeQueue;
   }
 
-  private async doWriteToDisk(path: string, content: string): Promise<void> {
+  private async doWriteToDisk(
+    path: string,
+    content: string,
+    expectedSeq?: number,
+  ): Promise<void> {
     if (this.lastWrittenContent.get(path) === content) return;
+    // Version/sequence gate (US5 AC1): if a remote delta was applied to this
+    // doc's Y.Text after this flush snapshotted its content, the snapshot is
+    // stale. Writing it would overwrite the in-flight remote change on disk.
+    // Yield — the observer that integrated the remote delta scheduled its own
+    // flush of the newer content. Checked here (before the async read) and again
+    // just before the write so a delta arriving during the read still wins.
+    // Use strict "advanced" (>) not "!=": the sequence is monotonic per file, so
+    // only a genuine newer remote delta raises it above the snapshot. A reset
+    // (e.g. destroy() clearing the map) drops it to 0 and must NOT be read as
+    // staleness — the flushed content is still the latest Y.Text at that point.
+    if (expectedSeq !== undefined && this.currentSeq(path) > expectedSeq) return;
     const diskPath = toLocalPath(path);
     this.recentDiskWrites.add(path);
     this.fileOpsManager.mutePathEvents(diskPath);
@@ -376,6 +413,9 @@ export class BackgroundSync {
           return;
         }
       }
+      // Re-check the sequence: a remote delta may have been integrated while we
+      // awaited the disk read above. Yield rather than clobber it.
+      if (expectedSeq !== undefined && this.currentSeq(path) > expectedSeq) return;
       const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
       if (parentDir) await ensureFolder(this.vault, parentDir);
       await this.vault.adapter.write(diskPath, content);

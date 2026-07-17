@@ -55,6 +55,30 @@ function createMockFileOps() {
 
 const { CanvasSync } = await import("../files/canvas-sync");
 
+// Apply a NON-LOCAL (remote) mutation to a canvas doc, exactly as the yjs sync
+// protocol would when integrating an in-flight remote update. `build` mutates a
+// remote replica that has first been synced with `doc`, so a delete references
+// the SAME item and actually removes it on `doc`.
+function applyRemoteCanvasDelta(
+  doc: Y.Doc,
+  build: (nodes: Y.Map<Y.Map<unknown>>, edges: Y.Map<Y.Map<unknown>>) => void,
+) {
+  const remote = new Y.Doc();
+  Y.applyUpdate(remote, Y.encodeStateAsUpdate(doc));
+  build(
+    remote.getMap<Y.Map<unknown>>("nodes"),
+    remote.getMap<Y.Map<unknown>>("edges"),
+  );
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(remote));
+  remote.destroy();
+}
+
+function remoteNode(fields: Record<string, unknown>): Y.Map<unknown> {
+  const m = new Y.Map<unknown>();
+  for (const [k, v] of Object.entries(fields)) m.set(k, v);
+  return m;
+}
+
 describe("CanvasSync", () => {
   let vault: ReturnType<typeof createMockVault>;
   let syncManager: ReturnType<typeof createMockSyncManager>;
@@ -367,5 +391,218 @@ describe("CanvasSync", () => {
     await vi.advanceTimersByTimeAsync(300);
 
     expect(vault.adapter.write).toHaveBeenCalled();
+  });
+
+  // --- WP3: delete-wins / no-resurrect (US3 AC6, GAP-2, fix of :304-311) ---
+  it("does NOT resurrect a remote-deleted node even when the local user edits it", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+
+    // Remote delete of n1 (non-local transaction removes it from the shared doc).
+    applyRemoteCanvasDelta(docHandle.doc, (nodes) => nodes.delete("n1"));
+    expect(nodesMap.get("n1")).toBeUndefined();
+
+    // Local user edits n1 on disk (stale — still present locally).
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 500, y: 0 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    // Delete wins: the node stays deleted (never resurrected).
+    expect(nodesMap.get("n1")).toBeUndefined();
+  });
+
+  // --- WP3: canWriteNode gate drops non-holder writes (US3 AC5) ---
+  it("canWriteNode=false drops a local node edit in the diff path", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+    canvasSync.setCanWriteNode((_p, nodeId) => nodeId !== "n1");
+
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 999, y: 0 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    const nodesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("nodes");
+    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(0); // write dropped
+  });
+
+  it("canWriteNode=false drops a brand-new local node", async () => {
+    vault._files.set("test.canvas", JSON.stringify({ nodes: [], edges: [] }));
+    await canvasSync.subscribe("test.canvas", "host");
+    canvasSync.setCanWriteNode(() => false);
+
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n2", x: 1, y: 1 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    const nodesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("nodes");
+    expect(nodesMap.get("n2")).toBeUndefined();
+  });
+
+  // --- WP3: canDeleteNode gate blocks deleting a peer-held node (US3 AC7) ---
+  it("canDeleteNode=false blocks a local delete of a peer-held node", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [
+          { id: "n1", x: 0, y: 0 },
+          { id: "n2", x: 1, y: 1 },
+        ],
+        edges: [],
+      }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+    canvasSync.setCanDeleteNode((_p, nodeId) => nodeId !== "n2");
+
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    const nodesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("nodes");
+    expect(nodesMap.get("n2")).toBeDefined(); // delete dropped, node still present
+  });
+
+  // --- WP3: diff-inferred fallback fires on first key change (US3 AC2) ---
+  it("onLocalNodeChange fires on the first local key change (diff-inferred fallback, private API absent)", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const claimed: string[] = [];
+    canvasSync.setOnLocalNodeChange((_p, nodeId) => claimed.push(nodeId));
+
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 42, y: 0 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    expect(claimed).toContain("n1"); // lock acquired on first key change, no private API
+  });
+
+  // --- WP4 (US5 AC2): drop-unflushed-on-remote-lock ---
+  it("drops an un-flushed local edit when a remote peer holds the node (US5 AC2)", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+    // A remote holder set n1.x = 999; our advisory gate reports the node locked.
+    canvasSync.setCanWriteNode((_p, nodeId) => nodeId !== "n1");
+
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+    applyRemoteCanvasDelta(docHandle.doc, (nodes) => {
+      (nodes.get("n1") as Y.Map<unknown>).set("x", 999);
+    });
+
+    // Local un-flushed edit to the same node.
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 50, y: 0 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    // Local edit dropped; the remote holder's value stands.
+    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(999);
+  });
+
+  // --- WP4 (US5 AC3): edge cascade/prune ---
+  it("prunes edges in the shared doc when their endpoint node is locally deleted (GAP-5)", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [
+          { id: "n1", x: 0, y: 0 },
+          { id: "n2", x: 1, y: 1 },
+        ],
+        edges: [{ id: "e1", fromNode: "n1", toNode: "n2" }],
+      }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    // Local user deletes n2 (edge e1 left in the file to prove cascade-prune).
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [{ id: "n1", x: 0, y: 0 }],
+        edges: [{ id: "e1", fromNode: "n1", toNode: "n2" }],
+      }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    const edgesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("edges");
+    expect(edgesMap.get("e1")).toBeUndefined(); // cascade-pruned
+  });
+
+  it("never serializes a dangling edge to disk (US5 AC3)", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    vault.adapter.write.mockClear();
+    // A remote delta adds an edge whose toNode never existed.
+    applyRemoteCanvasDelta(docHandle.doc, (_nodes, edges) => {
+      edges.set("e2", remoteNode({ id: "e2", fromNode: "n1", toNode: "ghost" }));
+    });
+
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(vault.adapter.write).toHaveBeenCalled();
+    const written = vault.adapter.write.mock.calls.at(-1)![1] as string;
+    const parsed = JSON.parse(written);
+    expect(parsed.edges).toHaveLength(0); // dangling edge pruned on serialize
+    expect(parsed.nodes).toHaveLength(1);
+  });
+
+  // --- WP4 (US5 AC1): canvas flush version/sequence gate ---
+  it("a stale canvas flush yields to an in-flight remote delta (US5 AC1)", async () => {
+    vault._files.set("test.canvas", JSON.stringify({ nodes: [], edges: [] }));
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    // Remote delta integrated -> per-path sequence advances past the snapshot 0.
+    applyRemoteCanvasDelta(docHandle.doc, (nodes) => {
+      nodes.set("n1", remoteNode({ id: "n1", x: 1 }));
+    });
+    vault.adapter.write.mockClear();
+
+    // A flush snapshotted at seq 0 (stale) must NOT clobber the newer remote state.
+    await (canvasSync as unknown as {
+      writeToDisk: (p: string, c: string, s?: number) => Promise<void>;
+    }).writeToDisk("test.canvas", "STALE", 0);
+
+    expect(vault.adapter.write).not.toHaveBeenCalledWith(expect.anything(), "STALE");
+
+    // A flush whose snapshot sequence still matches writes normally.
+    const seq = (canvasSync as unknown as { currentSeq: (p: string) => number }).currentSeq(
+      "test.canvas",
+    );
+    await (canvasSync as unknown as {
+      writeToDisk: (p: string, c: string, s?: number) => Promise<void>;
+    }).writeToDisk("test.canvas", "FRESH", seq);
+
+    expect(vault.adapter.write).toHaveBeenCalledWith(expect.anything(), "FRESH");
   });
 });
