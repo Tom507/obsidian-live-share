@@ -705,8 +705,11 @@ describe("Multi-client integration", () => {
     expect(count).toBe(1);
     const removedId = decoding.readVarUint(decoder);
     expect(removedId).toBe(CLIENT_A_ID);
+    // Bug D fix: the removal clock must be lastClock + 1 (not a hardcoded 0, which
+    // applyAwarenessUpdate would ignore, leaving a ghost caret). Client A sent no
+    // awareness update, so its tracked clock defaults to 0 → removal clock = 1.
     const clockOrState = decoding.readVarUint(decoder);
-    expect(clockOrState).toBe(0);
+    expect(clockOrState).toBe(1);
     const stateStr = decoding.readVarString(decoder);
     expect(stateStr).toBe("null");
   });

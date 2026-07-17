@@ -13,9 +13,11 @@ type Handler<T extends ControlMessageType = ControlMessageType> = (
   msg: ControlMessageMap[T],
 ) => void;
 
-const RECONNECT_BASE_MS = 1000;
+const RECONNECT_BASE_MS = 300;
 const RECONNECT_MAX_MS = 30_000;
 const MAX_RECONNECT_ATTEMPTS = 10;
+const PING_INTERVAL_MS = 15_000;
+const PONG_TIMEOUT_MS = 10_000;
 
 export class ControlChannel {
   private ws: WebSocket | null = null;
@@ -31,7 +33,9 @@ export class ControlChannel {
 
   private latencyMs = 0;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
   private lastPingTime = 0;
+  private awaitingPong = false;
 
   private shouldConnect = false;
   private reconnectAttempts = 0;
@@ -88,9 +92,15 @@ export class ControlChannel {
         ) as ControlMessage & { encrypted?: boolean };
 
         if (msg.type === "pong") {
-          if (this.lastPingTime > 0) {
+          // A pong proves the socket is still alive: clear the pong deadline so
+          // the half-dead-socket detector does not force a close.
+          if (this.awaitingPong) {
             this.latencyMs = Date.now() - this.lastPingTime;
-            this.lastPingTime = 0;
+            this.awaitingPong = false;
+          }
+          if (this.pongTimer) {
+            clearTimeout(this.pongTimer);
+            this.pongTimer = null;
           }
         }
 
@@ -189,12 +199,24 @@ export class ControlChannel {
 
   private startPing(): void {
     this.stopPing();
-    this.pingTimer = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
-        this.lastPingTime = Date.now();
-        this.ws.send(JSON.stringify({ type: "ping", timestamp: this.lastPingTime }));
+    this.pingTimer = setInterval(() => this.sendPing(), PING_INTERVAL_MS);
+  }
+
+  private sendPing(): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.lastPingTime = Date.now();
+    this.awaitingPong = true;
+    this.ws.send(JSON.stringify({ type: "ping", timestamp: this.lastPingTime }));
+    // Arm a pong deadline: a half-dead socket (Wi-Fi drop, no FIN) keeps
+    // sending into the void, so if no pong arrives in time force a close and
+    // let the existing reconnect logic re-establish the channel.
+    if (this.pongTimer) clearTimeout(this.pongTimer);
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = null;
+      if (this.awaitingPong && this.ws?.readyState === WebSocket.OPEN) {
+        this.ws.close();
       }
-    }, 30_000);
+    }, PONG_TIMEOUT_MS);
   }
 
   private stopPing(): void {
@@ -202,6 +224,11 @@ export class ControlChannel {
       clearInterval(this.pingTimer);
       this.pingTimer = null;
     }
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
+    }
+    this.awaitingPong = false;
   }
 
   private async encryptAndSend(msg: ControlMessage): Promise<void> {

@@ -100,6 +100,30 @@ describe("OfflineQueue", () => {
     expect(ops[0]).toEqual({ type: "rename", oldPath: "a.md", newPath: "b.md" });
   });
 
+  it("preserves an offline modify across a rename by converting it to create (Bug F)", () => {
+    const queue = new OfflineQueue();
+    queue.enqueue({ type: "modify", path: "B.png", content: "NEW", binary: true } as any);
+    queue.enqueue({ type: "rename", oldPath: "B.png", newPath: "C.png" });
+
+    const ops = queue.drain();
+    expect(ops).toHaveLength(2);
+    // The modify onto the (not-yet-existing) rename target becomes a create so
+    // the new content is not dropped on drain.
+    expect(ops[0]).toEqual({ type: "create", path: "C.png", content: "NEW", binary: true });
+    expect(ops[1]).toEqual({ type: "rename", oldPath: "B.png", newPath: "C.png" });
+  });
+
+  it("still rewrites non-modify op paths across a rename", () => {
+    const queue = new OfflineQueue();
+    queue.enqueue({ type: "create", path: "B.md", content: "hi" });
+    queue.enqueue({ type: "rename", oldPath: "B.md", newPath: "C.md" });
+
+    const ops = queue.drain();
+    expect(ops).toHaveLength(2);
+    expect(ops[0]).toEqual({ type: "create", path: "C.md", content: "hi" });
+    expect(ops[1]).toEqual({ type: "rename", oldPath: "B.md", newPath: "C.md" });
+  });
+
   it("handles folder-create operations", () => {
     const queue = new OfflineQueue();
     queue.enqueue({ type: "folder-create", path: "subdir" });

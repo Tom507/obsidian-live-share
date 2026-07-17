@@ -16,6 +16,10 @@ import {
 
 const CHUNK_SIZE = 512 * 1024;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
+// Yield to the event loop every N chunks so a large binary (>100 chunks) does
+// not emit its whole burst synchronously and self-trip the control-channel
+// rate limit (Bug L5).
+const CHUNK_PACING_BATCH = 32;
 const RENAME_RETRY_DELAY_MS = 300;
 const STALE_TRANSFER_MS = 5 * 60 * 1000;
 
@@ -425,7 +429,7 @@ export class FileOpsManager {
         }
         const content = arrayBufferToBase64(binaryContent);
         if (content.length > CHUNK_SIZE) {
-          this.sendChunked(wirePath, content, true);
+          void this.sendChunked(wirePath, content, true);
         } else {
           this.emitOp({
             type: "modify",
@@ -472,7 +476,7 @@ export class FileOpsManager {
 
   private sendFileContent(path: string, content: string, binary: boolean) {
     if (content.length > CHUNK_SIZE) {
-      this.sendChunked(path, content, binary);
+      void this.sendChunked(path, content, binary);
     } else {
       this.emitOp(
         binary
@@ -482,7 +486,7 @@ export class FileOpsManager {
     }
   }
 
-  private sendChunked(path: string, content: string, binary: boolean) {
+  private async sendChunked(path: string, content: string, binary: boolean) {
     if (!this.sendOp) return;
     const transferId = crypto.randomUUID();
     const totalChunks = Math.ceil(content.length / CHUNK_SIZE);
@@ -513,6 +517,11 @@ export class FileOpsManager {
         data: chunk,
         transferId,
       });
+      // Pace the burst: yield periodically so we never emit >100 frames in a
+      // single synchronous tick and self-trip the server rate limit (Bug L5).
+      if ((i + 1) % CHUNK_PACING_BATCH === 0 && i + 1 < totalChunks) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
     this.emitOp({ type: "chunk-end", path, transferId });
   }

@@ -92,7 +92,10 @@ export class CollabManager {
       }
     }
 
-    if (role === "host") {
+    if (role === "host" && docHandle.text.length === 0) {
+      // Seed only when Y.Text is empty (mirror the guest logic). Force-seeding
+      // on every activation would clobber concurrent guest edits whenever the
+      // CM6 doc is momentarily stale relative to Y.Text.
       const localContent = normalizeLineEndings(view.state.doc.toString());
       applyMinimalYTextUpdate(docHandle.doc, docHandle.text, localContent);
     }

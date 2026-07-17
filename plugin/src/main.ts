@@ -31,8 +31,12 @@ import { LiveShareSettingTab } from "./ui/settings";
 import {
   VAULT_EVENT_SETTLE_MS,
   ensureFolder,
+  hashBuffer,
+  hashContent,
   isPathSafe,
   isTextFile,
+  matchRenamesByHash,
+  normalizeLineEndings,
   normalizePath,
   parseJwtPayload,
   toCanonicalPath,
@@ -90,8 +94,43 @@ export default class LiveSharePlugin extends Plugin {
           const renamedOldPaths = new Set<string>();
           const renamedNewPaths = new Set<string>();
           if (added.length > 0 && removed.length > 0) {
+            // Bug E: pair removed→added by content hash, not iteration order, so
+            // concurrent renames (removed=[A,C], added=[D,B]) map A→B / C→D by
+            // identity instead of A→D. The removed file still exists on local
+            // disk here, so its hash is the pre-rename content hash; the added
+            // entry's hash is already in the manifest.
+            const removedHashes = new Map<string, string>();
             for (const oldPath of removed) {
-              for (const newPath of added) {
+              const oldFileForHash = this.app.vault.getAbstractFileByPath(toLocalPath(oldPath));
+              if (!(oldFileForHash instanceof TFile)) continue;
+              try {
+                if (isTextFile(oldPath)) {
+                  const content = normalizeLineEndings(await this.app.vault.read(oldFileForHash));
+                  removedHashes.set(oldPath, await hashContent(content));
+                } else {
+                  const buf = await this.app.vault.readBinary(oldFileForHash);
+                  removedHashes.set(oldPath, await hashBuffer(buf));
+                }
+              } catch {
+                // Unreadable file — fall back to positional pairing for it.
+              }
+            }
+            const manifestEntries = this.manifestManager.getEntries();
+            const preferredNew = matchRenamesByHash(
+              removed,
+              added,
+              (p) => removedHashes.get(p),
+              (p) => manifestEntries.get(p)?.hash,
+            );
+
+            for (const oldPath of removed) {
+              // Try the hash-matched target first, then fall back to the
+              // original manifest order for anything left unmatched.
+              const preferred = preferredNew.get(oldPath);
+              const orderedAdded = preferred
+                ? [preferred, ...added.filter((p) => p !== preferred)]
+                : added;
+              for (const newPath of orderedAdded) {
                 if (renamedNewPaths.has(newPath)) continue;
                 // Reject peer-supplied rename targets that would escape the vault.
                 if (!isPathSafe(normalizePath(newPath))) continue;
@@ -638,6 +677,20 @@ export default class LiveSharePlugin extends Plugin {
 
     this.explorerIndicators = new ExplorerIndicators();
     this.canvasSync = new CanvasSync(this.app.vault, this.syncManager, this.fileOpsManager);
+    // Defense-in-depth client guard: never push local canvas edits when the effective
+    // permission is read-only (global read-only OR a host-designated read-only pattern).
+    // Authoritative enforcement is server-side in ws-handler; this stops a read-only
+    // guest from diverging locally. `path` is the canonical canvas path.
+    this.canvasSync.setCanWrite((path) => {
+      if (this.settings.permission === "read-only") return false;
+      if (
+        this.settings.role === "guest" &&
+        this.remoteReadOnlyPatterns.some((p) => minimatch(path, p))
+      ) {
+        return false;
+      }
+      return true;
+    });
     const entries = this.manifestManager.getEntries();
     const role = this.settings.role === "host" ? "host" : "guest";
     for (const [path] of entries) {
@@ -707,7 +760,14 @@ export default class LiveSharePlugin extends Plugin {
         ? toCanonicalPath(normalizePath(filePath))
         : null;
     this.backgroundSync.setActiveFile(sharedPath);
-    this.backgroundSync.setCollabBoundFile(null);
+    // Single-writer invariant: mark the active file as collab-bound SYNCHRONOUSLY,
+    // before the async activation. Previously this was nulled here and only
+    // restored in the activateForFile().then() up to 10 s later, opening a window
+    // where background-sync treated the active file as a background file and both
+    // yCollab AND background-sync wrote the same disk-originated frontmatter edit
+    // into Y.Text (duplicated/interleaved YAML). sharedPath is null for
+    // non-shared files, which correctly clears the guard.
+    this.backgroundSync.setCollabBoundFile(sharedPath);
     let effectivePermission = this.settings.permission;
     if (
       sharedPath &&
@@ -716,22 +776,21 @@ export default class LiveSharePlugin extends Plugin {
     ) {
       effectivePermission = "read-only";
     }
-    void this.collabManager
-      .activateForFile(
-        cmView,
-        sharedPath,
-        this.syncManager,
-        this.settings.role,
-        effectivePermission,
-        {
-          name: this.settings.displayName,
-          color: this.settings.cursorColor,
-          colorLight: `${this.settings.cursorColor}33`,
-        },
-      )
-      .then(() => {
-        this.backgroundSync.setCollabBoundFile(sharedPath);
-      });
+    // collabBoundFile is set synchronously above; do NOT restore it in a
+    // .then() after activation resolves, or a stale activation could clobber
+    // the guard back to a file the user has already switched away from.
+    void this.collabManager.activateForFile(
+      cmView,
+      sharedPath,
+      this.syncManager,
+      this.settings.role,
+      effectivePermission,
+      {
+        name: this.settings.displayName,
+        color: this.settings.cursorColor,
+        colorLight: `${this.settings.cursorColor}33`,
+      },
+    );
 
     this.removeScrollListener();
     const scrollDOM = cmView.scrollDOM;

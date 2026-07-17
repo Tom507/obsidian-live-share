@@ -95,6 +95,11 @@ export function createApp(
   server.on("upgrade", (req, socket, head) => {
     const url = new URL(req.url || "", `http://${req.headers.host}`);
 
+    // Disable Nagle's algorithm so small control/MUX frames are sent immediately
+    // instead of being coalesced (~40 ms/hop latency). Applies to both WS servers.
+    const rawSocket = socket as unknown as import("node:net").Socket;
+    if (typeof rawSocket.setNoDelay === "function") rawSocket.setNoDelay(true);
+
     if (SERVER_PASSWORD) {
       const provided = url.searchParams.get("password");
       if (!provided || !safeTokenCompare(provided, SERVER_PASSWORD)) {

@@ -9,6 +9,8 @@ export const MUX_SUBSCRIBED = 4;
 export const MUX_SYNC_REQUEST = 6;
 export const MUX_SYNC_ENCRYPTED = 7;
 export const MUX_AWARENESS_ENCRYPTED = 8;
+export const MUX_PING = 9;
+export const MUX_PONG = 10;
 
 export function encodeMuxMessage(docId: string, msgType: number, payload?: Uint8Array): Uint8Array {
   const encoder = encoding.createEncoder();

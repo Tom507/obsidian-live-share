@@ -210,4 +210,162 @@ describe("CanvasSync", () => {
     const nodesMap = docHandle.doc.getMap("nodes");
     expect(nodesMap.size).toBe(0);
   });
+
+  // Bug C: a local modify of one node must NOT revert an un-flushed remote move
+  // of a DIFFERENT node just because that remote delta is not yet on disk.
+  it("local move of one node does not clobber an un-flushed remote move of another", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [
+          { id: "n1", x: 0, y: 0 },
+          { id: "n2", x: 100, y: 100 },
+        ],
+        edges: [],
+      }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+
+    // Un-flushed remote move of n2 (mutate the Y map, do NOT flush to disk).
+    docHandle.doc.transact(() => {
+      (nodesMap.get("n2") as Y.Map<unknown>).set("y", 999);
+    });
+
+    // Local user drags n1 only; on-disk file is stale for n2 (still y:100).
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [
+          { id: "n1", x: 50, y: 0 },
+          { id: "n2", x: 100, y: 100 },
+        ],
+        edges: [],
+      }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    const n1 = nodesMap.get("n1") as Y.Map<unknown>;
+    const n2 = nodesMap.get("n2") as Y.Map<unknown>;
+    expect(n1.get("x")).toBe(50); // local change applied
+    expect(n2.get("y")).toBe(999); // un-flushed remote move preserved, NOT reverted
+  });
+
+  // Bug C: adding a node locally must not clobber an un-flushed remote key edit
+  // on an existing node.
+  it("local add-node does not clobber an un-flushed remote key edit", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+
+    // Un-flushed remote edit: n1 gains text.
+    docHandle.doc.transact(() => {
+      (nodesMap.get("n1") as Y.Map<unknown>).set("text", "remote");
+    });
+
+    // Local user adds n2; on-disk n1 is stale (no text).
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [
+          { id: "n1", x: 0, y: 0 },
+          { id: "n2", x: 200, y: 200 },
+        ],
+        edges: [],
+      }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    expect(nodesMap.size).toBe(2);
+    expect((nodesMap.get("n1") as Y.Map<unknown>).get("text")).toBe("remote");
+    expect((nodesMap.get("n2") as Y.Map<unknown>).get("x")).toBe(200);
+  });
+
+  // Bug C: a genuine local delete must still propagate (delete the node in Y).
+  it("genuine local delete removes the node from the Y map", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [
+          { id: "n1", x: 0, y: 0 },
+          { id: "n2", x: 100, y: 100 },
+        ],
+        edges: [],
+      }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+
+    // Local user deletes n2.
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("test.canvas");
+
+    expect(nodesMap.size).toBe(1);
+    expect(nodesMap.get("n2")).toBeUndefined();
+  });
+
+  // Bug G: when the injected canWrite guard returns false, local edits must not
+  // be pushed into the shared Y doc.
+  it("read-only guard prevents pushing local edits", async () => {
+    vault._files.set(
+      "ro.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    await canvasSync.subscribe("ro.canvas", "host");
+    canvasSync.setCanWrite(() => false);
+
+    // Local user tries to move n1.
+    vault._files.set(
+      "ro.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 500, y: 0 }], edges: [] }),
+    );
+    await canvasSync.handleLocalModify("ro.canvas");
+
+    const docHandle = syncManager.getDoc("__canvas__:ro.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(0); // unchanged
+  });
+
+  // Bug L1: with the max-wait cap, a continuous stream of remote updates still
+  // flushes to disk within ~MAX_WAIT_MS rather than resetting forever.
+  it("max-wait cap flushes remote stream to disk under ~500ms of churn", async () => {
+    vault._files.set("stream.canvas", JSON.stringify({ nodes: [], edges: [] }));
+    await canvasSync.subscribe("stream.canvas", "host");
+
+    const docHandle = syncManager.getDoc("__canvas__:stream.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+
+    // Seed a node remotely so there is something to flush.
+    docHandle.doc.transact(() => {
+      const n = new Y.Map<unknown>();
+      n.set("id", "n1");
+      n.set("x", 0);
+      nodesMap.set("n1", n);
+    });
+
+    vault.adapter.write.mockClear();
+    // Churn every 100ms (< DEBOUNCE_MS=200) for 600ms; a pure trailing debounce
+    // would never fire. The max-wait cap (500ms) must force at least one flush.
+    for (let i = 1; i <= 6; i++) {
+      docHandle.doc.transact(() => {
+        (nodesMap.get("n1") as Y.Map<unknown>).set("x", i);
+      });
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(vault.adapter.write).toHaveBeenCalled();
+  });
 });

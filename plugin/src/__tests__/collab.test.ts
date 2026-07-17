@@ -199,14 +199,17 @@ describe("CollabManager", () => {
       expect(syncManager._text.insert).not.toHaveBeenCalled();
     });
 
-    it("host overwrites remote doc when content differs", async () => {
+    it("host does NOT re-seed when Y.Text already has content", async () => {
+      // Bug fix (host re-seed clobber): force-seeding on every activation would
+      // delete concurrent guest edits whenever the CM6 doc is momentarily stale
+      // vs Y.Text. The host now only seeds an EMPTY Y.Text.
       const view = createMockView();
       const syncManager = createMockSyncManager({ textLength: 42 });
 
       await collab.activateForFile(view as any, "test.md", syncManager as any, "host");
 
-      expect(syncManager._text.delete).toHaveBeenCalledWith(0, 6);
-      expect(syncManager._text.insert).toHaveBeenCalledWith(0, "local content");
+      expect(syncManager._text.delete).not.toHaveBeenCalled();
+      expect(syncManager._text.insert).not.toHaveBeenCalled();
     });
 
     it("activates yCollab extension after successful sync", async () => {

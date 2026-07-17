@@ -27,6 +27,14 @@ export class OfflineQueue {
       const newPath = normalizePath(op.newPath);
       this.queue = this.queue.map((prev) => {
         if ("path" in prev && normalizePath(prev.path) === oldPath) {
+          if (prev.type === "modify") {
+            // A pending `modify` rewritten onto the rename target would be
+            // replayed before the file exists at newPath and silently dropped
+            // (file-ops only mutates existing files) — losing the edit (Bug F).
+            // Convert it to a `create` so the content survives regardless of
+            // replay ordering; a following rename then reconciles the old path.
+            return { ...prev, type: "create", path: newPath } as FileOp;
+          }
           return { ...prev, path: newPath };
         }
         return prev;

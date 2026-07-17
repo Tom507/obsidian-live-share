@@ -53,6 +53,14 @@ export function normalizeLineEndings(content: string): string {
   return content.replace(/\r\n|\r/g, "\n");
 }
 
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
 export function applyMinimalYTextUpdate(
   doc: { transact: (fn: () => void) => void },
   text: {
@@ -81,6 +89,26 @@ export function applyMinimalYTextUpdate(
     newSuffix--;
   }
 
+  // Snap the diff boundaries off surrogate pairs so delete/insert never cut
+  // between a high (\uD800-\uDBFF) and low (\uDC00-\uDFFF) surrogate. If the
+  // prefix landed right after a *matched* high surrogate, its low-surrogate
+  // partner differs (otherwise prefix would have advanced past it) -> the pair
+  // is being split, so back the boundary off the whole code point.
+  while (prefix > 0 && isHighSurrogate(oldContent.charCodeAt(prefix - 1))) {
+    prefix--;
+  }
+  // If the retained suffix would start on a lone low surrogate, its matched
+  // high-surrogate partner is inside the delete region -> extend the boundary
+  // to keep the whole code point together.
+  while (
+    oldSuffix < oldContent.length &&
+    isLowSurrogate(oldContent.charCodeAt(oldSuffix)) &&
+    oldSuffix > prefix
+  ) {
+    oldSuffix++;
+    newSuffix++;
+  }
+
   doc.transact(() => {
     if (oldSuffix > prefix) text.delete(prefix, oldSuffix - prefix);
     if (newSuffix > prefix) text.insert(prefix, newContent.slice(prefix, newSuffix));
@@ -89,6 +117,47 @@ export function applyMinimalYTextUpdate(
 
 export function toWsUrl(httpUrl: string): string {
   return httpUrl.replace(/^http/, "ws");
+}
+
+export async function hashBuffer(buf: ArrayBuffer): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hash))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export function hashContent(content: string): Promise<string> {
+  return hashBuffer(new TextEncoder().encode(content).buffer);
+}
+
+/**
+ * Pairs concurrently-removed manifest paths to concurrently-added ones by
+ * matching content hash, so `removed=[A,C], added=[D,B]` renames A→B and C→D
+ * (content identity) instead of A→D (iteration order). Returns a map of
+ * oldPath -> newPath for the confident, hash-matched renames only; callers fall
+ * back to positional pairing for anything left unmatched.
+ */
+export function matchRenamesByHash(
+  removed: string[],
+  added: string[],
+  removedHashOf: (path: string) => string | undefined,
+  addedHashOf: (path: string) => string | undefined,
+): Map<string, string> {
+  const pairs = new Map<string, string>();
+  const usedNew = new Set<string>();
+  for (const oldPath of removed) {
+    const oldHash = removedHashOf(oldPath);
+    if (!oldHash) continue;
+    for (const newPath of added) {
+      if (usedNew.has(newPath)) continue;
+      if (addedHashOf(newPath) === oldHash) {
+        pairs.set(oldPath, newPath);
+        usedNew.add(newPath);
+        break;
+      }
+    }
+  }
+  return pairs;
 }
 
 const TEXT_EXTENSIONS = new Set([

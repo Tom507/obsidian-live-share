@@ -18,13 +18,17 @@ import {
 import type { FileOpsManager } from "./file-ops";
 import type { ManifestManager } from "./manifest";
 
-const DEBOUNCE_MS = 1000;
+const DEBOUNCE_MS = 300;
+// Cap so a continuous incoming stream still flushes to disk at least this often,
+// instead of the trailing debounce resetting on every update and starving it.
+const MAX_WAIT_MS = 500;
 
 export class BackgroundSync {
   private observers = new Map<string, () => void>();
   private subscribing = new Set<string>();
   private cancelledSubscribes = new Set<string>();
   private writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private writeFirstScheduled = new Map<string, number>();
   private activeFile: string | null = null;
   private collabBoundFile: string | null = null;
   private recentDiskWrites = new Set<string>();
@@ -179,6 +183,7 @@ export class BackgroundSync {
       clearTimeout(timer);
       this.writeTimers.delete(path);
     }
+    this.writeFirstScheduled.delete(path);
     const unobserve = this.observers.get(path);
     if (unobserve) {
       unobserve();
@@ -196,6 +201,7 @@ export class BackgroundSync {
       clearTimeout(timer);
       this.writeTimers.delete(normOld);
     }
+    this.writeFirstScheduled.delete(normOld);
     const unobserve = this.observers.get(normOld);
     if (unobserve) {
       unobserve();
@@ -249,6 +255,12 @@ export class BackgroundSync {
   async handleLocalTextModify(rawPath: string): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
     if (this.recentDiskWrites.has(path)) return;
+    // Single-writer invariant: the active file is owned exclusively by yCollab
+    // (in the CM6 editor). Gate on the active-file identity in addition to the
+    // racy collabBoundFile so background-sync never diffs/echoes a disk-only
+    // edit (e.g. a Properties-UI frontmatter write) that yCollab is also
+    // applying, regardless of activation timing.
+    if (path === this.activeFile) return;
     if (path === this.collabBoundFile) return;
 
     const docHandle = this.syncManager.getDoc(path);
@@ -257,6 +269,9 @@ export class BackgroundSync {
     const file = getFileByPath(this.vault, toLocalPath(path));
     if (!file) return;
 
+    // Read disk then apply against a FRESH Y.Text snapshot. applyMinimalYTextUpdate
+    // recomputes its diff base from text.toString() with no interleaving await, so
+    // the base cannot go stale between the read and the transaction.
     const localContent = normalizeLineEndings(await this.vault.read(file));
     if (localContent === docHandle.text.toString()) return;
 
@@ -277,6 +292,7 @@ export class BackgroundSync {
     for (const path of [...this.writeTimers.keys()]) {
       this.flushWrite(path);
     }
+    this.writeFirstScheduled.clear();
     for (const [, unobserve] of this.observers) {
       unobserve();
     }
@@ -291,6 +307,11 @@ export class BackgroundSync {
   private attachObserver(path: string, text: Y.Text): void {
     const observer = (_event: Y.YTextEvent, transaction: Y.Transaction) => {
       if (transaction.local) return;
+      // The active file is persisted by the editor / yCollab, never by
+      // background-sync. Gate on active-file identity as well as collabBoundFile
+      // so the currently-active file is never disk-echoed during the activation
+      // race window.
+      if (path === this.activeFile) return;
       if (path === this.collabBoundFile) return;
       this.scheduleDiskWrite(path, text);
     };
@@ -303,6 +324,7 @@ export class BackgroundSync {
     if (!timer) return;
     clearTimeout(timer);
     this.writeTimers.delete(path);
+    this.writeFirstScheduled.delete(path);
     const docHandle = this.syncManager.getDoc(path);
     if (docHandle) {
       void this.writeToDisk(path, docHandle.text.toString());
@@ -310,14 +332,25 @@ export class BackgroundSync {
   }
 
   private scheduleDiskWrite(path: string, text: Y.Text): void {
+    const now = Date.now();
+    let firstAt = this.writeFirstScheduled.get(path);
+    if (firstAt === undefined) {
+      firstAt = now;
+      this.writeFirstScheduled.set(path, now);
+    }
     const existing = this.writeTimers.get(path);
     if (existing) clearTimeout(existing);
+    // Trailing debounce, but capped by MAX_WAIT_MS since the first pending
+    // update so a continuous stream still flushes at least every ~500 ms.
+    const remainingCap = MAX_WAIT_MS - (now - firstAt);
+    const delay = Math.max(0, Math.min(DEBOUNCE_MS, remainingCap));
     this.writeTimers.set(
       path,
       setTimeout(() => {
         this.writeTimers.delete(path);
+        this.writeFirstScheduled.delete(path);
         void this.writeToDisk(path, text.toString());
-      }, DEBOUNCE_MS),
+      }, delay),
     );
   }
 

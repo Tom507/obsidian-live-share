@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  MUX_AWARENESS,
+  MUX_PING,
+  MUX_PONG,
   MUX_SUBSCRIBE,
   MUX_SYNC_ENCRYPTED,
+  MUX_SYNC_REQUEST,
   decodeMuxMessage,
   encodeMuxMessage,
 } from "../sync/mux-protocol";
@@ -275,5 +279,135 @@ describe("SyncManager", () => {
     expect(handle.text.toString()).toBe("clean");
 
     sm.destroy();
+  });
+
+  // Bug A: an existing peer must re-emit its local (static) awareness when the
+  // server relays a SYNC_REQUEST for a newly-subscribing client.
+  it("re-emits local awareness on MUX_SYNC_REQUEST so a newcomer sees the cursor", () => {
+    const sm = new SyncManager(makeSettings());
+    sm.connect();
+
+    const handle = sm.getDoc("notes/test.md")!;
+    const ws = mockWsInstances[0];
+    ws.simulateOpen();
+
+    // Host sets its caret once (static awareness state).
+    handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+
+    // Ignore everything sent so far (subscribe + the initial awareness broadcast).
+    ws.sent = [];
+
+    // Server relays a SYNC_REQUEST to us because a new peer just subscribed.
+    const syncReq = encodeMuxMessage("notes/test.md", MUX_SYNC_REQUEST);
+    ws.onmessage?.({
+      data: (syncReq.buffer as ArrayBuffer).slice(
+        syncReq.byteOffset,
+        syncReq.byteOffset + syncReq.byteLength,
+      ),
+    });
+
+    const awarenessMsgs = ws.sent
+      .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+      .filter((msg) => msg.msgType === MUX_AWARENESS && msg.docId === "notes/test.md");
+    expect(awarenessMsgs.length).toBeGreaterThan(0);
+
+    sm.destroy();
+  });
+
+  it("does not re-emit awareness on SYNC_REQUEST when local state was cleared", () => {
+    const sm = new SyncManager(makeSettings());
+    sm.connect();
+
+    const handle = sm.getDoc("notes/test.md")!;
+    const ws = mockWsInstances[0];
+    ws.simulateOpen();
+    // Explicitly clear the default {} local state so getLocalState() is null.
+    handle.awareness.setLocalState(null);
+    ws.sent = [];
+
+    const syncReq = encodeMuxMessage("notes/test.md", MUX_SYNC_REQUEST);
+    ws.onmessage?.({
+      data: (syncReq.buffer as ArrayBuffer).slice(
+        syncReq.byteOffset,
+        syncReq.byteOffset + syncReq.byteLength,
+      ),
+    });
+
+    const awarenessMsgs = ws.sent
+      .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+      .filter((msg) => msg.msgType === MUX_AWARENESS);
+    expect(awarenessMsgs.length).toBe(0);
+
+    sm.destroy();
+  });
+
+  // Bug H: MUX liveness — periodic ping + pong deadline.
+  it("sends a MUX_PING heartbeat after the interval elapses", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+      ws.sent = [];
+
+      vi.advanceTimersByTime(15_000);
+
+      const pings = ws.sent
+        .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+        .filter((msg) => msg.msgType === MUX_PING);
+      expect(pings.length).toBe(1);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the socket when no MUX_PONG arrives before the deadline", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      vi.advanceTimersByTime(15_000); // ping sent, pong deadline armed
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+
+      vi.advanceTimersByTime(10_000); // pong deadline expires
+      expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the socket open when a MUX_PONG answers the ping", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      vi.advanceTimersByTime(15_000); // ping sent, pong deadline armed
+
+      const pong = encodeMuxMessage("", MUX_PONG);
+      ws.onmessage?.({
+        data: (pong.buffer as ArrayBuffer).slice(
+          pong.byteOffset,
+          pong.byteOffset + pong.byteLength,
+        ),
+      });
+
+      vi.advanceTimersByTime(10_000); // deadline would have fired — but pong cleared it
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

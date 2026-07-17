@@ -291,6 +291,91 @@ describe("BackgroundSync", () => {
     expect(text.toString()).toBe("initial");
   });
 
+  it("single-writer: active-file gate holds even before collabBoundFile is set", async () => {
+    // Reproduces the Bug B race window: onActiveFileChange now marks the file
+    // active synchronously, but collabBoundFile may still be racing. The gate on
+    // active-file identity must already suppress background-sync so a disk-only
+    // Properties-UI frontmatter write is NOT doubled into Y.Text.
+    const entries = new Map([["note.md", { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(mockFile("note.md"));
+    vault.read.mockResolvedValue("initial");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    await bg.startAll("host");
+
+    // Active set synchronously; collabBoundFile intentionally NOT set yet.
+    bg.setActiveFile("note.md");
+
+    // yCollab is the single owner: it applies the new property exactly once.
+    const { text } = syncManager.getDoc("note.md");
+    text.insert(text.length, "\ntags: x");
+
+    // The same edit also lands on disk (outside CM6) and fires a vault modify.
+    vault.read.mockResolvedValue("initial\ntags: x");
+    await bg.handleLocalTextModify("note.md");
+
+    // Background-sync must not echo it -> the property appears exactly once.
+    expect((text.toString().match(/tags: x/g) ?? []).length).toBe(1);
+    expect(text.toString()).toBe("initial\ntags: x");
+  });
+
+  it("does not disk-echo the active file even when collabBoundFile is unset", async () => {
+    const entries = new Map([["note.md", { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(mockFile("note.md"));
+    vault.read.mockResolvedValue("");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    const startPromise = bg.startAll("guest");
+    await vi.advanceTimersByTimeAsync(2100);
+    await startPromise;
+
+    bg.setActiveFile("note.md"); // collabBoundFile deliberately not set
+    vault.adapter.write.mockClear();
+
+    const { doc } = syncManager.getDoc("note.md");
+    const remoteDoc = new Y.Doc();
+    const remoteText = remoteDoc.getText("content");
+    remoteText.insert(0, "remote edit");
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(remoteDoc));
+    remoteDoc.destroy();
+
+    vi.advanceTimersByTime(1000);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(vault.adapter.write).not.toHaveBeenCalled();
+  });
+
+  it("flushes background writes at the lowered ~300ms debounce", async () => {
+    const entries = new Map([["bg.md", { hash: "abc", size: 5, mtime: 1 }]]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(mockFile("bg.md"));
+    vault.read.mockResolvedValue("");
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+
+    const startPromise = bg.startAll("guest");
+    await vi.advanceTimersByTimeAsync(2100);
+    await startPromise;
+    bg.setActiveFile("other.md");
+    vault.adapter.write.mockClear();
+
+    const { doc } = syncManager.getDoc("bg.md");
+    const remoteDoc = new Y.Doc();
+    const remoteText = remoteDoc.getText("content");
+    remoteText.insert(0, "background edit");
+    Y.applyUpdate(doc, Y.encodeStateAsUpdate(remoteDoc));
+    remoteDoc.destroy();
+
+    vi.advanceTimersByTime(150);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vault.adapter.write).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(200); // total 350ms > 300ms debounce
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vault.adapter.write).toHaveBeenCalledWith("bg.md", "background edit");
+  });
+
   it("handleLocalTextModify skips when writtenByUs", async () => {
     const entries = new Map([["note.md", { hash: "abc", size: 5, mtime: 1 }]]);
     manifestManager = createManifestManager(entries);

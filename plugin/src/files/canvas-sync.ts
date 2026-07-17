@@ -14,7 +14,11 @@ import {
 import type { FileOpsManager } from "./file-ops";
 
 const CANVAS_DOC_PREFIX = "__canvas__:";
-const DEBOUNCE_MS = 1000;
+// Bug L1: remote->disk write latency. Trailing debounce (short) plus a max-wait
+// cap so a continuous stream of remote updates still flushes to disk regularly
+// instead of the trailing timer resetting forever.
+const DEBOUNCE_MS = 200;
+const MAX_WAIT_MS = 500;
 
 interface CanvasData {
   nodes: Record<string, Record<string, unknown>>;
@@ -82,6 +86,38 @@ function applyToYMap(ymap: Y.Map<unknown>, obj: Record<string, unknown>): void {
   }
 }
 
+// True if any key differs between the two plain objects (shallow compare).
+function objChanged(base: Record<string, unknown>, next: Record<string, unknown>): boolean {
+  for (const key of Object.keys(next)) {
+    if (base[key] !== next[key]) return true;
+  }
+  for (const key of Object.keys(base)) {
+    if (!(key in next)) return true;
+  }
+  return false;
+}
+
+// Bug C: push ONLY the keys the local user actually changed relative to `base`
+// (the last content this client knew) into the existing Y.Map. Keys that are
+// unchanged relative to `base` are left untouched so an un-flushed remote delta
+// on that same key is never clobbered by this client's stale on-disk value.
+function applyKeyDiff(
+  ymap: Y.Map<unknown>,
+  base: Record<string, unknown>,
+  next: Record<string, unknown>,
+): void {
+  for (const [key, value] of Object.entries(next)) {
+    // Only touch keys the local user changed (or added) relative to base.
+    if (base[key] !== value) {
+      if (ymap.get(key) !== value) ymap.set(key, value);
+    }
+  }
+  // Keys the local user removed relative to base.
+  for (const key of Object.keys(base)) {
+    if (!(key in next)) ymap.delete(key);
+  }
+}
+
 export class CanvasSync {
   private vault: Vault;
   private syncManager: SyncManager;
@@ -89,14 +125,34 @@ export class CanvasSync {
   private subscribedPaths = new Set<string>();
   private observers = new Map<string, () => void>();
   private writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // Bug L1: timestamp of the first not-yet-flushed remote update per path, used
+  // to enforce the max-wait cap on the trailing debounce.
+  private writeFirstScheduled = new Map<string, number>();
   private recentDiskWrites = new Set<string>();
   private recentLocalEdits = new Set<string>();
   private lastWrittenContent = new Map<string, string>();
+  // Bug G (client-side guard): predicate deciding whether local edits to a
+  // canvas path may be pushed into the shared Y.Doc. Defaults to allow-all; the
+  // owner of permission state (main.ts) injects the real predicate via
+  // setCanWrite(). The argument is the CANONICAL path (toCanonicalPath).
+  private canWrite: (path: string) => boolean;
 
-  constructor(vault: Vault, syncManager: SyncManager, fileOpsManager: FileOpsManager) {
+  constructor(
+    vault: Vault,
+    syncManager: SyncManager,
+    fileOpsManager: FileOpsManager,
+    canWrite?: (path: string) => boolean,
+  ) {
     this.vault = vault;
     this.syncManager = syncManager;
     this.fileOpsManager = fileOpsManager;
+    this.canWrite = canWrite ?? (() => true);
+  }
+
+  // Bug G: inject/replace the client-side read-only guard after construction.
+  // `path` is the canonical canvas path (toCanonicalPath(normalizePath(rawPath))).
+  setCanWrite(predicate: (path: string) => boolean): void {
+    this.canWrite = predicate;
   }
 
   async subscribe(rawPath: string, role: "host" | "guest"): Promise<void> {
@@ -137,11 +193,20 @@ export class CanvasSync {
           this.applyCanvasToYMaps(nodesMap, edgesMap, data);
         });
         this.recentLocalEdits.delete(path);
+        // Bug C: establish the diff baseline so the first local modify diffs
+        // against what this client knows the file to be, not against nothing.
+        this.lastWrittenContent.set(path, content);
       }
     } else {
       if (nodesMap.size > 0 || edgesMap.size > 0) {
         const content = serializeCanvas(nodesMap, edgesMap);
-        await this.writeToDisk(path, content);
+        await this.writeToDisk(path, content); // also records the diff baseline
+      } else {
+        // No shared data yet: baseline is whatever is currently on disk.
+        const file = getFileByPath(this.vault, diskPath);
+        if (file) {
+          this.lastWrittenContent.set(path, await this.vault.read(file));
+        }
       }
     }
 
@@ -165,6 +230,7 @@ export class CanvasSync {
       clearTimeout(timer);
       this.writeTimers.delete(path);
     }
+    this.writeFirstScheduled.delete(path);
     const unobserve = this.observers.get(path);
     if (unobserve) {
       unobserve();
@@ -177,6 +243,9 @@ export class CanvasSync {
     const path = toCanonicalPath(normalizePath(rawPath));
     if (this.recentDiskWrites.has(path)) return;
     if (!this.subscribedPaths.has(path)) return;
+    // Bug G: never push local edits for a read-only canvas path (defense in
+    // depth; the authoritative check is server-side in ws-handler.ts).
+    if (!this.canWrite(path)) return;
 
     const docId = `${CANVAS_DOC_PREFIX}${path}`;
     const docHandle = this.syncManager.getDoc(docId);
@@ -186,15 +255,66 @@ export class CanvasSync {
     if (!file) return;
 
     const content = await this.vault.read(file);
-    const data = parseCanvas(content);
+    const next = parseCanvas(content);
+    // Bug C: diff the freshly-read local file against the last content THIS
+    // client knew (lastWrittenContent), and push ONLY the nodes/edges/keys the
+    // local user actually changed. Nodes that are un-flushed remote deltas are
+    // absent from both base and next, so they are never touched. A node that is
+    // missing only because the on-disk file is stale (present in neither base
+    // nor next) is NOT deleted; only nodes present in base but removed in next
+    // (a genuine local delete) are deleted.
+    const baseContent = this.lastWrittenContent.get(path);
+    const base = baseContent !== undefined ? parseCanvas(baseContent) : { nodes: {}, edges: {} };
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
     const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
 
     this.recentLocalEdits.add(path);
     docHandle.doc.transact(() => {
-      this.applyCanvasToYMaps(nodesMap, edgesMap, data);
+      this.applyLocalDiffToYMaps(nodesMap, base.nodes, next.nodes);
+      this.applyLocalDiffToYMaps(edgesMap, base.edges, next.edges);
     });
     this.recentLocalEdits.delete(path);
+    // Advance the baseline to the state now on disk so the next local modify
+    // diffs against current disk truth.
+    this.lastWrittenContent.set(path, content);
+  }
+
+  // Bug C: apply the local user's diff (base -> next) to the shared Y map,
+  // touching only entries the user actually added / modified / deleted.
+  private applyLocalDiffToYMaps(
+    ymap: Y.Map<Y.Map<unknown>>,
+    base: Record<string, Record<string, unknown>>,
+    next: Record<string, Record<string, unknown>>,
+  ): void {
+    for (const [id, obj] of Object.entries(next)) {
+      const baseObj = base[id];
+      const existing = ymap.get(id);
+      if (!baseObj) {
+        // Added locally (not in this client's last-known state).
+        let yObj = existing;
+        if (!yObj) {
+          yObj = new Y.Map<unknown>();
+          ymap.set(id, yObj);
+        }
+        applyToYMap(yObj, obj);
+      } else if (existing) {
+        // Present in both base and Y map: push only per-key local changes so
+        // an un-flushed remote change on a different key is preserved.
+        applyKeyDiff(existing, baseObj, obj);
+      } else if (objChanged(baseObj, obj)) {
+        // Present in this client's base but removed from the Y map by a remote
+        // delete, yet the local user changed it: re-create it. If unchanged,
+        // respect the remote delete (do nothing).
+        const yObj = new Y.Map<unknown>();
+        ymap.set(id, yObj);
+        applyToYMap(yObj, obj);
+      }
+      // else: unchanged locally -> leave the Y map untouched.
+    }
+    // Genuine local deletes: present in this client's base but removed in next.
+    for (const id of Object.keys(base)) {
+      if (!(id in next)) ymap.delete(id);
+    }
   }
 
   isRecentDiskWrite(rawPath: string): boolean {
@@ -210,6 +330,7 @@ export class CanvasSync {
       clearTimeout(timer);
     }
     this.writeTimers.clear();
+    this.writeFirstScheduled.clear();
     for (const [, unobserve] of this.observers) {
       unobserve();
     }
@@ -262,15 +383,26 @@ export class CanvasSync {
     nodesMap: Y.Map<Y.Map<unknown>>,
     edgesMap: Y.Map<Y.Map<unknown>>,
   ): void {
+    const now = Date.now();
+    let firstScheduled = this.writeFirstScheduled.get(path);
+    if (firstScheduled === undefined) {
+      firstScheduled = now;
+      this.writeFirstScheduled.set(path, now);
+    }
     const existing = this.writeTimers.get(path);
     if (existing) clearTimeout(existing);
+    // Trailing debounce (DEBOUNCE_MS) capped by a max wait since the first
+    // pending update (MAX_WAIT_MS), so a continuous stream of remote updates
+    // still flushes at least ~every MAX_WAIT_MS instead of resetting forever.
+    const delay = Math.max(0, Math.min(DEBOUNCE_MS, firstScheduled + MAX_WAIT_MS - now));
     this.writeTimers.set(
       path,
       setTimeout(() => {
         this.writeTimers.delete(path);
+        this.writeFirstScheduled.delete(path);
         const content = serializeCanvas(nodesMap, edgesMap);
         void this.writeToDisk(path, content);
-      }, DEBOUNCE_MS),
+      }, delay),
     );
   }
 

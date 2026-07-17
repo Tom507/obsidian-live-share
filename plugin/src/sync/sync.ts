@@ -10,6 +10,8 @@ import type { E2ECrypto } from "./crypto";
 import {
   MUX_AWARENESS,
   MUX_AWARENESS_ENCRYPTED,
+  MUX_PING,
+  MUX_PONG,
   MUX_SUBSCRIBE,
   MUX_SUBSCRIBED,
   MUX_SYNC,
@@ -24,6 +26,10 @@ const SYNC_STEP2 = 1;
 const RECONNECT_BASE_MS = 100;
 const RECONNECT_MAX_MS = 30_000;
 const MAX_RECONNECT_ATTEMPTS = 15;
+// MUX liveness: app-level ping/pong. The browser/Electron WebSocket cannot send
+// protocol-level pings, so a half-dead socket (no FIN) is otherwise undetectable.
+const HEARTBEAT_INTERVAL_MS = 15_000;
+const PONG_TIMEOUT_MS = 10_000;
 
 export interface DocHandle {
   doc: Y.Doc;
@@ -54,6 +60,8 @@ export class SyncManager {
   private isDestroyed = false;
   private onMaxReconnectCallback: (() => void) | null = null;
   private onConnectionChangeCallback: ((connected: boolean) => void) | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(settings: LiveShareSettings) {
     this.settings = settings;
@@ -84,6 +92,7 @@ export class SyncManager {
   disconnect(): void {
     this.shouldConnect = false;
     this.isConnected = false;
+    this.stopHeartbeat();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -238,6 +247,7 @@ export class SyncManager {
         this.synced.set(filePath, false);
         this.sendSubscribe(filePath);
       }
+      this.startHeartbeat();
       this.onConnectionChangeCallback?.(true);
     };
 
@@ -249,6 +259,7 @@ export class SyncManager {
     ws.onclose = () => {
       this.ws = null;
       this.isConnected = false;
+      this.stopHeartbeat();
       this.onConnectionChangeCallback?.(false);
       for (const filePath of this.docs.keys()) {
         this.setSynced(filePath, false);
@@ -303,6 +314,40 @@ export class SyncManager {
       case MUX_AWARENESS_ENCRYPTED:
         void this.handleAwarenessEncrypted(docId, payload);
         break;
+      case MUX_PONG:
+        this.clearPongDeadline();
+        break;
+    }
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState !== WebSocket.OPEN) return;
+      // A pong deadline is already pending — the previous ping went unanswered.
+      if (this.pongTimer) return;
+      this.ws.send(encodeMuxMessage("", MUX_PING));
+      this.pongTimer = setTimeout(() => {
+        this.pongTimer = null;
+        // No pong within the deadline: the socket is half-dead. Force-close so
+        // the existing reconnect/backoff logic takes over.
+        this.ws?.close();
+      }, PONG_TIMEOUT_MS);
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    this.clearPongDeadline();
+  }
+
+  private clearPongDeadline(): void {
+    if (this.pongTimer) {
+      clearTimeout(this.pongTimer);
+      this.pongTimer = null;
     }
   }
 
@@ -322,6 +367,10 @@ export class SyncManager {
 
     if (peerCount === 0) {
       this.setSynced(docId, true);
+    } else {
+      // Bug A: a newcomer must announce its own already-set (static) awareness
+      // state to peers that were present before it joined.
+      this.reemitLocalAwareness(docId);
     }
   }
 
@@ -332,6 +381,24 @@ export class SyncManager {
     const syncEncoder = encoding.createEncoder();
     syncProtocol.writeSyncStep1(syncEncoder, doc);
     this.sendMux(docId, MUX_SYNC, encoding.toUint8Array(syncEncoder));
+
+    // Bug A: the server relays a SYNC_REQUEST to existing peers whenever a new
+    // client subscribes. Re-emit our local awareness so the newcomer receives
+    // our already-set (static, never-moved) caret — otherwise it is never
+    // transferred and the newcomer never sees our cursor.
+    this.reemitLocalAwareness(docId);
+  }
+
+  private reemitLocalAwareness(docId: string): void {
+    const awareness = this.awarenessMap.get(docId);
+    if (!awareness) return;
+    // Only re-emit if we actually have a local awareness state to share.
+    if (awareness.getLocalState() === null) return;
+    // Goes through sendMux so it is encrypted when E2E is enabled.
+    const awarenessUpdate = awarenessProtocol.encodeAwarenessUpdate(awareness, [
+      awareness.doc.clientID,
+    ]);
+    this.sendMux(docId, MUX_AWARENESS, awarenessUpdate);
   }
 
   private handleSync(docId: string, payload: Uint8Array): void {

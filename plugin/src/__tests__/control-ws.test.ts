@@ -563,6 +563,60 @@ describe("ControlChannel", () => {
     });
   });
 
+  describe("heartbeat / pong timeout (Bug H)", () => {
+    it("sends a ping on the interval", () => {
+      vi.useFakeTimers();
+      try {
+        channel = new CC(createSettings());
+        const ws = connectAndGetWs(channel);
+
+        vi.advanceTimersByTime(15_000);
+
+        const pings = ws.sent.filter((s) => JSON.parse(s).type === "ping");
+        expect(pings.length).toBe(1);
+        expect(ws.readyState).toBe(MockWebSocket.OPEN);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("force-closes a half-dead socket when no pong arrives within the deadline", () => {
+      vi.useFakeTimers();
+      try {
+        channel = new CC(createSettings());
+        const ws = connectAndGetWs(channel);
+
+        // First ping goes out at the interval, arming the pong deadline.
+        vi.advanceTimersByTime(15_000);
+        expect(ws.sent.some((s) => JSON.parse(s).type === "ping")).toBe(true);
+        expect(ws.readyState).toBe(MockWebSocket.OPEN);
+
+        // No pong replied → after the pong deadline the socket is force-closed.
+        vi.advanceTimersByTime(10_000);
+        expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the socket open when a pong is received before the deadline", () => {
+      vi.useFakeTimers();
+      try {
+        channel = new CC(createSettings());
+        const ws = connectAndGetWs(channel);
+
+        vi.advanceTimersByTime(15_000);
+        ws.simulateMessage(JSON.stringify({ type: "pong", timestamp: Date.now() }));
+
+        // Deadline passes, but a pong already cleared the liveness flag.
+        vi.advanceTimersByTime(10_000);
+        expect(ws.readyState).toBe(MockWebSocket.OPEN);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   describe("URL construction", () => {
     it("constructs WebSocket URL with room and token", () => {
       channel = new CC(

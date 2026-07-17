@@ -45,6 +45,25 @@ async function createRoom(name: string): Promise<RoomInfo> {
   return res.json() as Promise<RoomInfo>;
 }
 
+async function createRoomWith(body: Record<string, unknown>): Promise<RoomInfo> {
+  const res = await fetch(`http://localhost:${port}/rooms`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return res.json() as Promise<RoomInfo>;
+}
+
+// Build a raw y-protocols awareness update: <len><clientID><clock><stateJSON>.
+function buildAwarenessUpdate(clientId: number, clock: number, state: unknown): Uint8Array {
+  const encoder = encoding.createEncoder();
+  encoding.writeVarUint(encoder, 1);
+  encoding.writeVarUint(encoder, clientId);
+  encoding.writeVarUint(encoder, clock);
+  encoding.writeVarString(encoder, JSON.stringify(state));
+  return encoding.toUint8Array(encoder);
+}
+
 function connectMux(
   roomId: string,
   token?: string,
@@ -429,5 +448,161 @@ describe("Mux WebSocket relay", () => {
 
     rwDoc.destroy();
     roDoc.destroy();
+  });
+
+  // Bug D: the disconnect-removal must carry a clock strictly greater than the
+  // peer's current awareness clock, otherwise applyAwarenessUpdate ignores it.
+  it("sends an awareness removal with clock lastClock+1 when a peer disconnects", async () => {
+    const room = await createRoom("ghost-caret");
+    const docId = "notes/ghost.md";
+
+    const clientA = await connectMux(room.id, room.token);
+    subscribe(clientA.ws, docId);
+    await waitForMessages(clientA.messages, 1);
+
+    const clientB = await connectMux(room.id, room.token);
+    subscribe(clientB.ws, docId);
+    await waitForMessages(clientB.messages, 1);
+
+    await new Promise((r) => setTimeout(r, 100));
+
+    // A publishes awareness at clock 5.
+    const awClientId = 987654;
+    clientA.ws.send(
+      encodeMuxMessage(docId, MUX_AWARENESS, buildAwarenessUpdate(awClientId, 5, { user: {} })),
+    );
+    await new Promise((r) => setTimeout(r, 100));
+
+    const msgCountBefore = clientB.messages.length;
+    clientA.ws.close();
+
+    await waitForMessages(clientB.messages, msgCountBefore + 1);
+
+    const removal = findMessages(clientB.messages, docId, MUX_AWARENESS).at(-1);
+    expect(removal).toBeDefined();
+    const decoder = decoding.createDecoder(removal!.payload);
+    const len = decoding.readVarUint(decoder);
+    expect(len).toBe(1);
+    const removedClientId = decoding.readVarUint(decoder);
+    const removedClock = decoding.readVarUint(decoder);
+    expect(removedClientId).toBe(awClientId);
+    expect(removedClock).toBe(6); // lastClock (5) + 1, NOT the old hardcoded 0
+  });
+
+  // Bug G: readOnlyPatterns must be enforced server-side for non-host clients.
+  it("blocks a non-host write to a readOnlyPatterns path", async () => {
+    const room = await createRoomWith({
+      name: "ro-pattern",
+      hostUserId: "host-user",
+      readOnlyPatterns: ["secret/**"],
+    });
+    const docId = "secret/notes.md";
+
+    const host = await connectMux(room.id, room.token, "host-user");
+    subscribe(host.ws, docId);
+    await waitForMessages(host.messages, 1);
+
+    const guest = await connectMux(room.id, room.token, "guest-user");
+    subscribe(guest.ws, docId);
+    await waitForMessages(guest.messages, 1);
+
+    await new Promise((r) => setTimeout(r, 200));
+    const msgCountBefore = host.messages.length;
+
+    const doc = new Y.Doc();
+    doc.getText("content").insert(0, "blocked write");
+    sendUpdate(guest.ws, docId, Y.encodeStateAsUpdate(doc));
+
+    await new Promise((r) => setTimeout(r, 400));
+    expect(host.messages.length).toBe(msgCountBefore);
+
+    doc.destroy();
+  });
+
+  it("allows a non-host write to a path that matches no readOnlyPatterns", async () => {
+    const room = await createRoomWith({
+      name: "ro-pattern-allow",
+      hostUserId: "host-user",
+      readOnlyPatterns: ["secret/**"],
+    });
+    const docId = "public/notes.md";
+
+    const host = await connectMux(room.id, room.token, "host-user");
+    subscribe(host.ws, docId);
+    await waitForMessages(host.messages, 1);
+
+    const guest = await connectMux(room.id, room.token, "guest-user");
+    subscribe(guest.ws, docId);
+    await waitForMessages(guest.messages, 1);
+
+    await new Promise((r) => setTimeout(r, 200));
+    const msgCountBefore = host.messages.length;
+
+    const doc = new Y.Doc();
+    doc.getText("content").insert(0, "allowed write");
+    sendUpdate(guest.ws, docId, Y.encodeStateAsUpdate(doc));
+
+    await waitForMessages(host.messages, msgCountBefore + 1);
+    expect(host.messages.length).toBeGreaterThan(msgCountBefore);
+
+    doc.destroy();
+  });
+
+  it("blocks a non-host write to a read-only canvas doc (__canvas__: prefix)", async () => {
+    const room = await createRoomWith({
+      name: "ro-canvas",
+      hostUserId: "host-user",
+      readOnlyPatterns: ["secret/**"],
+    });
+    const docId = "__canvas__:secret/board.canvas";
+
+    const host = await connectMux(room.id, room.token, "host-user");
+    subscribe(host.ws, docId);
+    await waitForMessages(host.messages, 1);
+
+    const guest = await connectMux(room.id, room.token, "guest-user");
+    subscribe(guest.ws, docId);
+    await waitForMessages(guest.messages, 1);
+
+    await new Promise((r) => setTimeout(r, 200));
+    const msgCountBefore = host.messages.length;
+
+    const doc = new Y.Doc();
+    doc.getMap("nodes").set("n1", "moved");
+    sendUpdate(guest.ws, docId, Y.encodeStateAsUpdate(doc));
+
+    await new Promise((r) => setTimeout(r, 400));
+    expect(host.messages.length).toBe(msgCountBefore);
+
+    doc.destroy();
+  });
+
+  it("allows the host to write a read-only pattern path", async () => {
+    const room = await createRoomWith({
+      name: "ro-host-exempt",
+      hostUserId: "host-user",
+      readOnlyPatterns: ["secret/**"],
+    });
+    const docId = "secret/notes.md";
+
+    const guest = await connectMux(room.id, room.token, "guest-user");
+    subscribe(guest.ws, docId);
+    await waitForMessages(guest.messages, 1);
+
+    const host = await connectMux(room.id, room.token, "host-user");
+    subscribe(host.ws, docId);
+    await waitForMessages(host.messages, 1);
+
+    await new Promise((r) => setTimeout(r, 200));
+    const msgCountBefore = guest.messages.length;
+
+    const doc = new Y.Doc();
+    doc.getText("content").insert(0, "host write");
+    sendUpdate(host.ws, docId, Y.encodeStateAsUpdate(doc));
+
+    await waitForMessages(guest.messages, msgCountBefore + 1);
+    expect(guest.messages.length).toBeGreaterThan(msgCountBefore);
+
+    doc.destroy();
   });
 });

@@ -1,11 +1,13 @@
 import { Platform } from "obsidian";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as Y from "yjs";
 import {
   applyMinimalYTextUpdate,
   arrayBufferToBase64,
   base64ToArrayBuffer,
   ensureFolder,
   isTextFile,
+  matchRenamesByHash,
   normalizeLineEndings,
   normalizePath,
   parseJwtPayload,
@@ -199,6 +201,117 @@ describe("applyMinimalYTextUpdate", () => {
     const text = createMockText("hello 🌍 world");
     applyMinimalYTextUpdate(mockDoc, text, "hello 🌎 world");
     expect(text.toString()).toBe("hello 🌎 world");
+  });
+});
+
+describe("applyMinimalYTextUpdate — real Y.Text surrogate safety", () => {
+  function run(initial: string, next: string): { result: string; ops: Array<[string, number, unknown]> } {
+    const doc = new Y.Doc();
+    const text = doc.getText("content");
+    if (initial) text.insert(0, initial);
+
+    // Record the raw Y.Text ops to prove no operation ever cuts a surrogate pair.
+    const ops: Array<[string, number, unknown]> = [];
+    const wrapped = {
+      toString: () => text.toString(),
+      get length() {
+        return text.length;
+      },
+      delete: (pos: number, len: number) => {
+        ops.push(["delete", pos, len]);
+        text.delete(pos, len);
+      },
+      insert: (pos: number, s: string) => {
+        ops.push(["insert", pos, s]);
+        text.insert(pos, s);
+      },
+    };
+    applyMinimalYTextUpdate({ transact: (fn) => doc.transact(fn) }, wrapped, next);
+    const result = text.toString();
+    doc.destroy();
+    return { result, ops };
+  }
+
+  function splitsSurrogate(s: string): boolean {
+    // A lone surrogate half means a code point was cut.
+    if (s.length && s.charCodeAt(0) >= 0xdc00 && s.charCodeAt(0) <= 0xdfff) return true;
+    const last = s.charCodeAt(s.length - 1);
+    if (s.length && last >= 0xd800 && last <= 0xdbff) return true;
+    return false;
+  }
+
+  it("swaps a BMP-boundary emoji without splitting the pair", () => {
+    const { result, ops } = run("hello 🌍 world", "hello 🌎 world");
+    expect(result).toBe("hello 🌎 world");
+    for (const [kind, , arg] of ops) {
+      if (kind === "insert") expect(splitsSurrogate(arg as string)).toBe(false);
+    }
+  });
+
+  it("swaps adjacent emoji (prefix boundary mid-pair)", () => {
+    const { result, ops } = run("🌍🌏", "🌍🌎");
+    expect(result).toBe("🌍🌎");
+    for (const [kind, , arg] of ops) {
+      if (kind === "insert") expect(splitsSurrogate(arg as string)).toBe(false);
+    }
+  });
+
+  it("swaps a leading emoji", () => {
+    const { result } = run("🌏 tail", "🌎 tail");
+    expect(result).toBe("🌎 tail");
+  });
+
+  it("swaps a trailing cross-plane code point that shares its low surrogate", () => {
+    // U+1D400 (D835 DC00) vs U+10000 (D800 DC00): same low surrogate, so the
+    // naive suffix match would stop mid-pair and splice a lone high surrogate.
+    const { result, ops } = run("x\u{1D400}", "x\u{10000}");
+    expect(result).toBe("x\u{10000}");
+    for (const [kind, , arg] of ops) {
+      if (kind === "insert") expect(splitsSurrogate(arg as string)).toBe(false);
+    }
+  });
+
+  it("inserts an emoji in the middle", () => {
+    const { result } = run("ab", "a🌍b");
+    expect(result).toBe("a🌍b");
+  });
+});
+
+describe("matchRenamesByHash", () => {
+  it("pairs removed→added by content hash, not iteration order", () => {
+    // Intended: A→B and C→D. Iteration order would mispair A→D.
+    const hashes: Record<string, string> = { A: "h1", B: "h1", C: "h2", D: "h2" };
+    const pairs = matchRenamesByHash(
+      ["A", "C"],
+      ["D", "B"],
+      (p) => hashes[p],
+      (p) => hashes[p],
+    );
+    expect(pairs.get("A")).toBe("B");
+    expect(pairs.get("C")).toBe("D");
+  });
+
+  it("does not reuse an added path for two removed paths", () => {
+    const hashes: Record<string, string> = { A: "h", C: "h", B: "h", D: "hx" };
+    const pairs = matchRenamesByHash(
+      ["A", "C"],
+      ["B", "D"],
+      (p) => hashes[p],
+      (p) => hashes[p],
+    );
+    expect(pairs.get("A")).toBe("B");
+    // C has no remaining hash-matching target -> left unmatched for positional fallback.
+    expect(pairs.has("C")).toBe(false);
+  });
+
+  it("skips removed paths whose hash is unknown", () => {
+    const pairs = matchRenamesByHash(
+      ["A"],
+      ["B"],
+      () => undefined,
+      () => "h",
+    );
+    expect(pairs.size).toBe(0);
   });
 });
 
