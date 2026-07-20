@@ -605,4 +605,63 @@ describe("CanvasSync", () => {
 
     expect(vault.adapter.write).toHaveBeenCalledWith(expect.anything(), "FRESH");
   });
+
+  // --- Initial-sync fix: freshly-mounted view must be reconcilable from shared truth ---
+  it("getCanvasSnapshot returns the dangling-edge-pruned shared snapshot", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({
+        nodes: [{ id: "n1", x: 5, y: 6, width: 100, height: 80 }],
+        edges: [
+          { id: "e1", fromNode: "n1", toNode: "n1" }, // valid
+          { id: "e2", fromNode: "n1", toNode: "ghost" }, // dangling -> pruned
+        ],
+      }),
+    );
+    await canvasSync.subscribe("test.canvas", "host");
+
+    const snap = canvasSync.getCanvasSnapshot("test.canvas");
+    expect(snap).not.toBeNull();
+    expect(snap!.nodes).toHaveLength(1);
+    expect((snap!.nodes[0] as { id: string }).id).toBe("n1");
+    expect(snap!.edges).toHaveLength(1); // dangling e2 pruned
+    expect((snap!.edges[0] as { id: string }).id).toBe("e1");
+  });
+
+  it("getCanvasSnapshot returns null when not subscribed or shared doc empty", async () => {
+    expect(canvasSync.getCanvasSnapshot("nope.canvas")).toBeNull();
+    vault._files.set("empty.canvas", JSON.stringify({ nodes: [], edges: [] }));
+    await canvasSync.subscribe("empty.canvas", "host");
+    expect(canvasSync.getCanvasSnapshot("empty.canvas")).toBeNull(); // subscribed but empty
+  });
+
+  it("guest subscribe fires onRemoteCanvasUpdate so an already-open view snaps to shared truth", async () => {
+    // Pre-seed the shared doc as if the host already populated it.
+    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+    nodesMap.set("n1", remoteNode({ id: "n1", x: 50, y: 60, width: 100, height: 80 }));
+    vault._files.set("test.canvas", JSON.stringify({ nodes: [], edges: [] }));
+
+    const seen: Array<{ nodes: unknown[]; edges: unknown[] }> = [];
+    canvasSync.setOnRemoteCanvasUpdate((_p, data) => seen.push(data));
+
+    await canvasSync.subscribe("test.canvas", "guest");
+
+    expect(seen).toHaveLength(1); // fired exactly once on the seed
+    expect(seen[0].nodes).toHaveLength(1);
+    expect((seen[0].nodes[0] as { id: string }).id).toBe("n1");
+  });
+
+  it("host subscribe does NOT fire onRemoteCanvasUpdate (its own view is source of truth)", async () => {
+    vault._files.set(
+      "test.canvas",
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+    );
+    const seen: unknown[] = [];
+    canvasSync.setOnRemoteCanvasUpdate((_p, data) => seen.push(data));
+
+    await canvasSync.subscribe("test.canvas", "host");
+
+    expect(seen).toHaveLength(0);
+  });
 });

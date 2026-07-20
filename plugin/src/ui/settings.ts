@@ -236,7 +236,42 @@ export class LiveShareSettingTab extends PluginSettingTab {
       });
 
     new SettingGroup(containerEl)
+      .setHeading("Canvas")
+      .addSetting((setting) => {
+        setting
+          .setName("Show canvas cursors")
+          .setDesc("Display other collaborators' live cursors on shared canvases")
+          .addToggle((toggle) =>
+            toggle.setValue(settings.showCanvasCursors).onChange(async (value) => {
+              settings.showCanvasCursors = value;
+              await this.plugin.saveSettings();
+            }),
+          );
+      })
+      .addSetting((setting) => {
+        setting
+          .setName("Show canvas presence")
+          .setDesc("Highlight cards other collaborators are selecting, editing, or holding")
+          .addToggle((toggle) =>
+            toggle.setValue(settings.showCanvasPresence).onChange(async (value) => {
+              settings.showCanvasPresence = value;
+              await this.plugin.saveSettings();
+            }),
+          );
+      });
+
+    new SettingGroup(containerEl)
       .setHeading("Debug")
+      .addSetting((setting) => {
+        setting
+          .setName("Open status console")
+          .setDesc("Open the live Live Share log / status console in the sidebar")
+          .addButton((button) =>
+            button.setButtonText("Open console").onClick(() => {
+              void this.plugin.activateLogView();
+            }),
+          );
+      })
       .addSetting((setting) => {
         setting
           .setName("Debug logging")

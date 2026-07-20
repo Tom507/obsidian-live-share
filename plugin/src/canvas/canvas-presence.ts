@@ -186,6 +186,38 @@ export function resolveHighlights(
   }));
 }
 
+/**
+ * Ring bookkeeping (pure, DOM-free, unit-tested). Given the node ids currently
+ * decorated with a held-ring (nodeId → applied color) and the desired highlight
+ * set, decide which rings to add, remove, or recolor. The DOM apply/remove layer
+ * (which touches real `nodeEl` elements) is inherently not unit-testable and just
+ * consumes this delta.
+ */
+export interface RingDelta {
+  add: HeldHighlight[];
+  recolor: HeldHighlight[];
+  remove: string[];
+}
+
+export function computeRingDelta(
+  applied: Map<string, string>,
+  desired: HeldHighlight[],
+): RingDelta {
+  const desiredIds = new Set(desired.map((h) => h.nodeId));
+  const add: HeldHighlight[] = [];
+  const recolor: HeldHighlight[] = [];
+  const remove: string[] = [];
+  for (const h of desired) {
+    const cur = applied.get(h.nodeId);
+    if (cur === undefined) add.push(h);
+    else if (cur !== h.color) recolor.push(h);
+  }
+  for (const nodeId of applied.keys()) {
+    if (!desiredIds.has(nodeId)) remove.push(nodeId);
+  }
+  return { add, recolor, remove };
+}
+
 // ---- Presence controller ----------------------------------------------------
 
 export interface CanvasPresenceOptions {
@@ -202,6 +234,23 @@ export interface CanvasPresenceOptions {
   // re-claims only still-free nodes (US4 AC3/AC4, GAP-4). Injectable so tests can
   // drive the defer deterministically; defaults to RECONNECT_RECLAIM_DEFER_MS.
   reclaimDeferMs?: number;
+  // WP2/WP3 display toggles (default true). `showCursors` gates the free-cursor
+  // overlay + local pointer broadcast; `showPresence` gates the per-node held
+  // ring + name tag. Both respected live via setDisplayOptions().
+  showCursors?: boolean;
+  showPresence?: boolean;
+  // Optional status-console logger for throttled cursor-coordinate telemetry
+  // (diagnosing the broadcast↔render transform). No-op when absent.
+  logger?: { debug(category: string, message: string): void } | null;
+}
+
+// Structural view of the private canvas node card element the ring is applied to.
+// Kept minimal so this module never hard-depends on a browser DOM at runtime
+// (the ring path only runs when a real adapter/canvas is present).
+interface RingRecord {
+  color: string;
+  el: HTMLElement;
+  tag: HTMLElement;
 }
 
 export class CanvasPresence {
@@ -212,6 +261,12 @@ export class CanvasPresence {
   private readonly adapter: CanvasAdapter | null;
   private readonly onRevert?: (nodeId: string) => void;
   private readonly reclaimDeferMs: number;
+  private showCursors: boolean;
+  private showPresence: boolean;
+  private readonly logger: { debug(category: string, message: string): void } | null;
+  // Throttle for coordinate telemetry (ms of monotonic-ish wall clock).
+  private lastBcastLog = 0;
+  private lastRenderLog = 0;
 
   private lockedNodes: Record<string, LockEntry> = {};
   private nodeId: string | null = null;
@@ -220,6 +275,8 @@ export class CanvasPresence {
   private disposers: Array<() => void> = [];
   private awarenessListener: (() => void) | null = null;
   private reclaimTimer: ReturnType<typeof setTimeout> | null = null;
+  // nodeId → applied held-ring record, so rings are diffed and cleaned up cleanly.
+  private appliedRings = new Map<string, RingRecord>();
 
   constructor(opts: CanvasPresenceOptions) {
     this.path = opts.path;
@@ -229,6 +286,16 @@ export class CanvasPresence {
     this.adapter = opts.adapter ?? null;
     this.onRevert = opts.onRevert;
     this.reclaimDeferMs = opts.reclaimDeferMs ?? RECONNECT_RECLAIM_DEFER_MS;
+    this.showCursors = opts.showCursors ?? true;
+    this.showPresence = opts.showPresence ?? true;
+    this.logger = opts.logger ?? null;
+  }
+
+  /** Live-toggle the display options (called when the user flips the settings). */
+  setDisplayOptions(showCursors: boolean, showPresence: boolean): void {
+    this.showCursors = showCursors;
+    this.showPresence = showPresence;
+    this.refresh();
   }
 
   /** Whether the private Canvas API acquisition path is live for this canvas. */
@@ -252,10 +319,14 @@ export class CanvasPresence {
       this.disposers.push(
         this.adapter.onNodeInteractionStart((nodeId) => this.acquireLock(nodeId)),
         this.adapter.onNodeInteractionEnd((nodeId) => this.releaseLock(nodeId)),
+        // Pointer capture rides the adapter's patched pointermove → posFromEvt and
+        // already yields CANVAS-space coords, which we broadcast verbatim. Peers
+        // convert back to their own screen space when rendering.
         this.adapter.onPointerMove((cx, cy) => {
-          const p = this.adapter?.clientToCanvas(cx, cy);
-          if (p) this.updateCursor(p.x, p.y);
+          if (this.showCursors) this.updateCursor(cx, cy);
         }),
+        // Pan/zoom must reposition the screen-space cursor overlay.
+        this.adapter.onViewportChange(() => this.refresh()),
       );
     }
 
@@ -381,6 +452,17 @@ export class CanvasPresence {
   updateCursor(x: number, y: number): void {
     this.x = x;
     this.y = y;
+    if (this.logger) {
+      const now = Date.now();
+      if (now - this.lastBcastLog > 300) {
+        this.lastBcastLog = now;
+        const vp = this.adapter?.getViewport();
+        this.logger.debug(
+          "canvas-cursor",
+          `BCAST canvas=(${x.toFixed(0)},${y.toFixed(0)}) vp=(${vp ? `${vp.x.toFixed(0)},${vp.y.toFixed(0)},z${vp.zoom.toFixed(2)}` : "?"})`,
+        );
+      }
+    }
     this.emitLocalState();
   }
 
@@ -389,13 +471,88 @@ export class CanvasPresence {
   }
 
   refresh(): void {
-    if (!this.overlay) return;
     const states = this.awareness.getStates();
     const myId = this.awareness.clientID;
-    this.overlay.render({
-      cursors: resolveCursors(myId, this.path, states),
-      highlights: resolveHighlights(myId, this.path, states),
-    });
+
+    // (a) Free cursors → screen space. resolveCursors yields peer CANVAS coords;
+    // convert each to a wrapper-relative SCREEN point via the adapter so the dumb
+    // overlay can paint it. Highlights are anchored to nodeEl (below), so the
+    // overlay draws cursors ONLY (no floating held boxes).
+    if (this.overlay) {
+      const cursors = this.showCursors ? resolveCursors(myId, this.path, states) : [];
+      const screenCursors: CursorMarker[] = [];
+      for (const c of cursors) {
+        const s = this.adapter?.canvasToScreenRelativeToWrapper(c.x, c.y);
+        screenCursors.push(s ? { ...c, x: s.x, y: s.y } : c);
+      }
+      if (this.logger && cursors.length > 0) {
+        const now = Date.now();
+        if (now - this.lastRenderLog > 300) {
+          this.lastRenderLog = now;
+          const c = cursors[0];
+          const s = this.adapter?.canvasToScreenRelativeToWrapper(c.x, c.y);
+          const vp = this.adapter?.getViewport();
+          this.logger.debug(
+            "canvas-cursor",
+            `RENDER peer=${c.clientId} canvas=(${c.x.toFixed(0)},${c.y.toFixed(0)}) -> screen=(${s ? `${s.x.toFixed(0)},${s.y.toFixed(0)}` : "?"}) vp=(${vp ? `${vp.x.toFixed(0)},${vp.y.toFixed(0)},z${vp.zoom.toFixed(2)}` : "?"})`,
+          );
+        }
+      }
+      this.overlay.render({ cursors: screenCursors, highlights: [] });
+    }
+
+    // (b) Per-node held ring anchored to the real card DOM (fixes the invisible
+    // highlight: resolveHighlights carries no geometry — we style nodeEl instead).
+    const desired = this.showPresence ? resolveHighlights(myId, this.path, states) : [];
+    this.applyRings(desired);
+  }
+
+  // ---- Held-ring DOM application (not unit-testable; diff via computeRingDelta) --
+  private applyRings(desired: HeldHighlight[]): void {
+    if (!this.adapter) return;
+    const appliedColors = new Map<string, string>();
+    for (const [id, rec] of this.appliedRings) appliedColors.set(id, rec.color);
+    const delta = computeRingDelta(appliedColors, desired);
+    for (const nodeId of delta.remove) this.removeRing(nodeId);
+    for (const h of delta.recolor) {
+      this.removeRing(h.nodeId);
+      this.addRing(h);
+    }
+    for (const h of delta.add) this.addRing(h);
+  }
+
+  private addRing(h: HeldHighlight): void {
+    const el = this.adapter?.getNodeEl(h.nodeId) ?? null;
+    if (!el) return;
+    try {
+      el.classList.add("ls-canvas-held-ring");
+      el.style.setProperty("--ls-hold-color", h.color);
+      const tag = el.ownerDocument.createElement("div");
+      tag.className = "ls-canvas-held-tag";
+      tag.textContent = h.name;
+      tag.style.background = h.color;
+      el.appendChild(tag);
+      this.appliedRings.set(h.nodeId, { color: h.color, el, tag });
+    } catch {
+      /* DOM shape drift must never throw into the plugin */
+    }
+  }
+
+  private removeRing(nodeId: string): void {
+    const rec = this.appliedRings.get(nodeId);
+    if (!rec) return;
+    try {
+      rec.el.classList.remove("ls-canvas-held-ring");
+      rec.el.style.removeProperty("--ls-hold-color");
+      rec.tag.remove();
+    } catch {
+      /* ignore */
+    }
+    this.appliedRings.delete(nodeId);
+  }
+
+  private clearRings(): void {
+    for (const nodeId of [...this.appliedRings.keys()]) this.removeRing(nodeId);
   }
 
   private emitLocalState(): void {
@@ -423,6 +580,10 @@ export class CanvasPresence {
     }
     this.lockedNodes = {};
     this.nodeId = null;
+    // Remove every injected ring/tag from peer cards — no leaked DOM/classes.
+    this.clearRings();
+    // Restore all patched canvas methods + detach adapter listeners.
+    this.adapter?.destroy();
     // Clear our awareness slot so peers drop our cursor + any held highlight.
     this.awareness.setLocalState(null);
     this.overlay?.destroy();

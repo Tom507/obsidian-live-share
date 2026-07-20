@@ -2,7 +2,7 @@ import type { EditorView } from "@codemirror/view";
 import { MarkdownView, Menu, Notice, Plugin, TFile, requestUrl } from "obsidian";
 
 import { minimatch } from "minimatch";
-import { createCanvasAdapter } from "./canvas/canvas-adapter";
+import { type CanvasAdapter, createCanvasAdapter } from "./canvas/canvas-adapter";
 import { CanvasOverlay, type OverlayHost } from "./canvas/canvas-overlay";
 import { type AwarenessLike, CanvasPresence } from "./canvas/canvas-presence";
 import { DebugLogger } from "./debug-logger";
@@ -16,6 +16,7 @@ import { ManifestManager } from "./files/manifest";
 import { registerVaultEvents } from "./files/vault-events";
 import { AuthManager } from "./session/auth";
 import { registerCommands } from "./session/commands";
+import { LOG_VIEW_TYPE, LogView } from "./session/log-view";
 import { PresenceManager } from "./session/presence-manager";
 import { PRESENCE_VIEW_TYPE, type PresenceUser, PresenceView } from "./session/presence-view";
 import { SessionManager } from "./session/session";
@@ -46,8 +47,23 @@ import {
   toLocalPath,
 } from "./utils";
 
+// Build-time flag injected by esbuild `define` (esbuild.config.mjs): `false` in
+// the production build, `true` in dev. Guards the E2E control-server import so
+// the entire `plugin/src/testing/` module is dead-code-eliminated from the
+// production `main.js` (US7 AC1). Declared here so `tsc` typechecks; never
+// referenced at runtime except inside the folded branch below.
+declare const __LS_E2E__: boolean;
+
 function getCmView(view: MarkdownView): EditorView | undefined {
   return (view.editor as unknown as { cm?: EditorView }).cm;
+}
+
+// Structural equality of two string sets (used to detect add/remove vs pure moves
+// during live-canvas reconciliation).
+function sameStringSet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) if (!b.has(v)) return false;
+  return true;
 }
 
 export default class LiveSharePlugin extends Plugin {
@@ -62,11 +78,20 @@ export default class LiveSharePlugin extends Plugin {
   backgroundSync!: BackgroundSync;
   connectionState!: ConnectionStateManager;
   logger!: DebugLogger;
+  // Flag-gated E2E control-server handle (dev/test only). Always null on
+  // production paths — the only assignment lives in a dead-code branch that is
+  // eliminated from the production bundle. Typed inline to avoid importing from
+  // the tree-shaken testing/ module.
+  private testControlHandle: { close(): void } | null = null;
 
   canvasSync: CanvasSync | null = null;
   // WP2/WP3: one presence controller per open, subscribed canvas (keyed by
   // canonical path). Owns that canvas' cursor/lock awareness + DOM overlay.
   private canvasPresences = new Map<string, CanvasPresence>();
+  // WP-scatter: live Canvas adapters keyed by canonical path, so remote deltas can
+  // patch the OPEN canvas view (Obsidian ignores external .canvas writes). Kept in
+  // lockstep with canvasPresences (same mount/teardown sites).
+  private canvasAdapters = new Map<string, CanvasAdapter>();
   explorerIndicators: ExplorerIndicators | null = null;
   controlChannel: ControlChannel | null = null;
   remoteUsers = new Map<string, PresenceUser>();
@@ -292,6 +317,13 @@ export default class LiveSharePlugin extends Plugin {
       return view;
     });
 
+    // Phase A: live status console backed by the DebugLogger ring buffer.
+    this.registerView(LOG_VIEW_TYPE, (leaf) => {
+      const view = new LogView(leaf);
+      view.setLogger(this.logger);
+      return view;
+    });
+
     const ribbonEl = this.addRibbonIcon("users", "Collaborators", () => {
       void this.activatePresenceView();
     });
@@ -339,9 +371,25 @@ export default class LiveSharePlugin extends Plugin {
         });
       });
     }
+
+    // Flag-gated E2E control server (US4). `__LS_E2E__` is folded to `false` by
+    // the production esbuild build, so this whole branch — and the dynamic
+    // import of the testing/ module — is dead-code-eliminated from `main.js`.
+    // The `typeof` guard also keeps this safe under vitest, where the define is
+    // absent. When present, the module itself only listens if the runtime port
+    // flag (LIVESHARE_E2E env / hidden e2eControlPort setting) is set.
+    if (typeof __LS_E2E__ !== "undefined" && __LS_E2E__) {
+      void import("./testing/e2e-control")
+        .then((m) => {
+          this.testControlHandle = m.maybeStartE2EControlServer(this);
+        })
+        .catch((err) => this.logger.error("e2e", "control server failed to start", err));
+    }
   }
 
   onunload() {
+    this.testControlHandle?.close();
+    this.testControlHandle = null;
     this.logger.destroy();
     this.controlChannel?.destroy();
     this.controlChannel = null;
@@ -404,6 +452,13 @@ export default class LiveSharePlugin extends Plugin {
     this.manifestManager.updateSettings(this.settings);
     this.logger.updateSettings(this.settings.debugLogging, this.settings.debugLogPath);
     this.exclusionManager.setPatterns(this.settings.excludePatterns);
+    // Live-apply the canvas display toggles to every mounted presence.
+    for (const presence of this.canvasPresences.values()) {
+      presence.setDisplayOptions(
+        this.settings.showCanvasCursors,
+        this.settings.showCanvasPresence,
+      );
+    }
   }
 
   notify(msg: string): void {
@@ -685,6 +740,7 @@ export default class LiveSharePlugin extends Plugin {
 
     this.explorerIndicators = new ExplorerIndicators();
     this.canvasSync = new CanvasSync(this.app.vault, this.syncManager, this.fileOpsManager);
+    this.canvasSync.setLogger(this.logger);
     // Defense-in-depth client guard: never push local canvas edits when the effective
     // permission is read-only (global read-only OR a host-designated read-only pattern).
     // Authoritative enforcement is server-side in ws-handler; this stops a read-only
@@ -713,6 +769,8 @@ export default class LiveSharePlugin extends Plugin {
     this.canvasSync.setOnLocalNodeChange((path, nodeId) => {
       this.canvasPresences.get(path)?.onDiffInferredChange(nodeId);
     });
+    // Scatter fix: patch the OPEN canvas view from every integrated remote delta.
+    this.canvasSync.setOnRemoteCanvasUpdate((path, data) => this.reconcileLiveCanvas(path, data));
     // WP1 reconnect seam (US4 AC3): re-claim only still-free nodes, never blindly.
     this.syncManager.onReconnect(() => {
       for (const presence of this.canvasPresences.values()) presence.onReconnect();
@@ -855,13 +913,39 @@ export default class LiveSharePlugin extends Plugin {
     } catch {
       leaves = [];
     }
+    this.logger.debug("canvas", `syncCanvasPresences: ${leaves.length} canvas leaf/leaves open`);
     for (const leaf of leaves) {
-      const view = leaf.view as { file?: { path?: string } } | undefined;
+      const view = leaf.view as { file?: { path?: string }; getViewType?: () => string } | undefined;
       const rawPath = view?.file?.path;
-      if (!rawPath || !this.canvasSync.isSubscribed(rawPath)) continue;
+      // Lazily subscribe a shared canvas the user opened AFTER session start. The
+      // session-start loop only subscribes canvases present in the manifest at
+      // that moment; without this, opening/creating a canvas mid-session leaves it
+      // permanently unsubscribed and no presence overlay ever mounts.
+      if (
+        rawPath &&
+        !this.canvasSync.isSubscribed(rawPath) &&
+        this.manifestManager.isSharedPath(rawPath)
+      ) {
+        this.logger.debug("canvas", `lazy-subscribing shared canvas ${rawPath}`);
+        const role = this.settings.role === "host" ? "host" : "guest";
+        // subscribe() adds to subscribedPaths synchronously (before its first
+        // await), so isSubscribed() below already reads true and the mount
+        // proceeds this pass; awareness works before full doc sync. No re-call.
+        void this.canvasSync.subscribe(rawPath, role);
+      }
+      const subscribed = rawPath ? this.canvasSync.isSubscribed(rawPath) : false;
+      this.logger.debug("canvas", `  leaf path=${rawPath ?? "(none)"} subscribed=${subscribed}`);
+      if (!rawPath || !subscribed) continue;
       const canonical = toCanonicalPath(normalizePath(rawPath));
       activePaths.add(canonical);
       if (this.canvasPresences.has(canonical)) continue;
+      let viewType = "?";
+      try {
+        viewType = view?.getViewType?.() ?? "?";
+      } catch {
+        /* ignore */
+      }
+      this.logger.debug("canvas", `detected canvas leaf path=${rawPath} viewType=${viewType}`);
       const presence = this.mountCanvasPresence(rawPath, leaf.view);
       if (presence) this.canvasPresences.set(canonical, presence);
     }
@@ -869,7 +953,118 @@ export default class LiveSharePlugin extends Plugin {
       if (!activePaths.has(path)) {
         presence.destroy();
         this.canvasPresences.delete(path);
+        this.canvasAdapters.delete(path);
       }
+    }
+  }
+
+  // Scatter fix: patch the OPEN Obsidian canvas view to match a just-integrated
+  // remote delta. Obsidian's open canvas is authoritative over its file and
+  // ignores our external .canvas writes, so without this the view stays stale
+  // (cards "scattered") until a full reload. Geometry-only changes are applied
+  // per-node via moveAndResize (smooth, never interrupts an active drag);
+  // structural changes (node/edge add/remove) fall back to a full setData reload.
+  private reconcileLiveCanvas(
+    path: string,
+    data: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] },
+    opts?: { initial?: boolean },
+  ): void {
+    const canonical = toCanonicalPath(normalizePath(path));
+    const adapter = this.canvasAdapters.get(canonical);
+    if (!adapter || !adapter.isAvailable()) return; // canvas not open → file sync suffices
+    if (adapter.isBusy()) {
+      // Never reconcile mid-drag; the trailing disk write keeps data safe and the
+      // next delta (or a manual reload) will catch the view up once idle.
+      this.logger.debug("canvas", `reconcile ${canonical}: deferred (user dragging)`);
+      return;
+    }
+    // Detect structural (add/remove) changes vs pure geometry moves.
+    const desiredNodeIds = new Set(
+      data.nodes.map((n) => (typeof n.id === "string" ? n.id : "")).filter(Boolean),
+    );
+    const desiredEdgeIds = new Set(
+      data.edges.map((e) => (typeof e.id === "string" ? e.id : "")).filter(Boolean),
+    );
+    const liveNodeIds = adapter.getLiveNodeIds();
+    const liveEdgeIds = adapter.getLiveEdgeIds();
+    // Initial mount: the open view may hold a stale local file (wrong positions,
+    // disconnected edges) that Obsidian never refreshed from our disk write. Force
+    // a full setData so the whole view — nodes AND edge routing — snaps to shared
+    // truth in one shot, regardless of whether the id-sets happen to match.
+    const structural =
+      !!opts?.initial ||
+      !sameStringSet(desiredNodeIds, liveNodeIds) ||
+      !sameStringSet(desiredEdgeIds, liveEdgeIds);
+
+    // Nodes that are an endpoint of some edge. Moving one of these per-node only
+    // repositions the card; the live edges keep their OLD routing (fromSide/toSide)
+    // → arrows look detached and Obsidian re-saves its own recomputed routing,
+    // which fights the sync. This is why moving a card with >1 connection breaks
+    // sync. When such a node actually moves we escalate to a full setData so edges
+    // re-route from authoritative data.
+    const edgeEndpoints = new Set<string>();
+    for (const e of data.edges) {
+      if (typeof e.fromNode === "string") edgeEndpoints.add(e.fromNode);
+      if (typeof e.toNode === "string") edgeEndpoints.add(e.toNode);
+    }
+
+    const diskPath = toLocalPath(canonical);
+    // Live mutations may trigger Obsidian's own requestSave; mute our modify
+    // handler for the settle window so the reconcile never loops back into a sync.
+    this.fileOpsManager.mutePathEvents(diskPath);
+    try {
+      if (structural) {
+        const ok = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
+        this.logger.debug(
+          "canvas",
+          `reconcile ${canonical}: ${opts?.initial ? "initial " : ""}structural reload ` +
+            `${ok ? "ok" : "unsupported/skipped"} ` +
+            `(nodes ${liveNodeIds.size}->${desiredNodeIds.size}, edges ${liveEdgeIds.size}->${desiredEdgeIds.size})`,
+        );
+        return;
+      }
+      let applied = 0;
+      let interacting = 0;
+      let movedEndpoint = false;
+      for (const n of data.nodes) {
+        if (
+          typeof n.id !== "string" ||
+          typeof n.x !== "number" ||
+          typeof n.y !== "number" ||
+          typeof n.width !== "number" ||
+          typeof n.height !== "number"
+        ) {
+          continue;
+        }
+        const outcome = adapter.applyNodeGeometry(n.id, {
+          x: n.x,
+          y: n.y,
+          width: n.width,
+          height: n.height,
+        });
+        if (outcome === "applied") {
+          applied++;
+          if (edgeEndpoints.has(n.id)) movedEndpoint = true;
+        } else if (outcome === "interacting") interacting++;
+      }
+      // A connected node moved → the live edges need re-routing from authoritative
+      // data. Per-node geometry cannot do that, so reload once. Bounded: only fires
+      // when a card WITH edges actually moved (isolated-node moves stay smooth).
+      if (movedEndpoint) {
+        const ok = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
+        this.logger.debug(
+          "canvas",
+          `reconcile ${canonical}: geometry applied=${applied} deferred(interacting)=${interacting}` +
+            ` + edge reflow (setData ${ok ? "ok" : "skipped"})`,
+        );
+      } else if (applied || interacting) {
+        this.logger.debug(
+          "canvas",
+          `reconcile ${canonical}: geometry applied=${applied} deferred(interacting)=${interacting}`,
+        );
+      }
+    } finally {
+      setTimeout(() => this.fileOpsManager.unmutePathEvents(diskPath), VAULT_EVENT_SETTLE_MS);
     }
   }
 
@@ -878,6 +1073,32 @@ export default class LiveSharePlugin extends Plugin {
     if (!handle) return null;
     try {
       const adapter = createCanvasAdapter(view);
+      // Register for live-view reconciliation (kept in lockstep with the presence).
+      this.canvasAdapters.set(toCanonicalPath(normalizePath(rawPath)), adapter);
+      // Diagnostics: report whether the private Canvas API surface is usable and,
+      // if not, exactly which member is missing (the root-cause the user needs).
+      const available = adapter.isAvailable();
+      // Initial-sync fix: a canvas opened AFTER the CRDT already synced shows the
+      // stale on-disk file (Obsidian never reloads a canvas from an external write).
+      // Force one authoritative full reconcile now so the freshly-opened view snaps
+      // to shared truth — nodes at the right coords AND edges connected — instead of
+      // waiting for the next remote delta to nudge it. No-op when the shared doc is
+      // still empty (getCanvasSnapshot returns null).
+      if (available) {
+        const snapshot = this.canvasSync?.getCanvasSnapshot(rawPath);
+        if (snapshot) {
+          this.logger.debug(
+            "canvas",
+            `mount ${rawPath}: initial reconcile from shared snapshot ` +
+              `(nodes=${snapshot.nodes.length} edges=${snapshot.edges.length})`,
+          );
+          this.reconcileLiveCanvas(rawPath, snapshot, { initial: true });
+        }
+      }
+      this.logger.log(
+        "canvas",
+        `mount ${rawPath}: private API available=${available} (${adapter.availabilityReport()})`,
+      );
       const hostCandidate =
         (adapter.getOverlayHost() as { createDiv?: unknown } | null) ??
         ((view as { contentEl?: unknown; containerEl?: unknown })?.contentEl as
@@ -890,7 +1111,17 @@ export default class LiveSharePlugin extends Plugin {
           hostCandidate as unknown as { createDiv: (o: { cls: string }) => OverlayHost }
         ).createDiv({ cls: "ls-canvas-overlay" });
         overlay = new CanvasOverlay(overlayRoot);
+        this.logger.debug("canvas", `overlay mounted on ${rawPath} (host=wrapperEl)`);
+      } else {
+        this.logger.warn("canvas", `overlay host NOT found for ${rawPath}; cursors hidden`);
       }
+      let peerCount = 0;
+      try {
+        peerCount = Math.max(0, (handle.awareness.getStates?.().size ?? 1) - 1);
+      } catch {
+        /* ignore */
+      }
+      this.logger.debug("canvas", `awareness peers on ${rawPath}: ${peerCount}`);
       const presence = new CanvasPresence({
         path: toCanonicalPath(normalizePath(rawPath)),
         awareness: handle.awareness as unknown as AwarenessLike,
@@ -901,6 +1132,9 @@ export default class LiveSharePlugin extends Plugin {
         },
         overlay,
         adapter,
+        showCursors: this.settings.showCanvasCursors,
+        showPresence: this.settings.showCanvasPresence,
+        logger: this.logger,
       });
       presence.start();
       return presence;
@@ -919,6 +1153,7 @@ export default class LiveSharePlugin extends Plugin {
       }
     }
     this.canvasPresences.clear();
+    this.canvasAdapters.clear();
   }
 
   updateStatusBar() {
@@ -1040,6 +1275,19 @@ export default class LiveSharePlugin extends Plugin {
     const leaf = this.app.workspace.getRightLeaf(false);
     if (leaf) {
       await leaf.setViewState({ type: PRESENCE_VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    }
+  }
+
+  async activateLogView() {
+    const existing = this.app.workspace.getLeavesOfType(LOG_VIEW_TYPE);
+    if (existing.length > 0) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (leaf) {
+      await leaf.setViewState({ type: LOG_VIEW_TYPE, active: true });
       this.app.workspace.revealLeaf(leaf);
     }
   }

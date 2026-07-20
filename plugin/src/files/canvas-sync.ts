@@ -20,6 +20,21 @@ const CANVAS_DOC_PREFIX = "__canvas__:";
 const DEBOUNCE_MS = 200;
 const MAX_WAIT_MS = 500;
 
+// Scatter fix (v0.5.6): geometry keys that define WHERE a card sits. Obsidian
+// never removes these from a node that still exists — a live node losing x/y/w/h
+// is always a transient/partial disk read, never a real user intent. The key-diff
+// and full-merge paths therefore NEVER delete these keys, so a stray partial read
+// can no longer strip a node's position out of the shared CRDT (→ scatter on all
+// peers). They are still SET normally when a real new value is present.
+const GEOMETRY_KEYS = new Set(["x", "y", "width", "height"]);
+
+// Minimal structural logger so CanvasSync can narrate the data path into the
+// status console without importing the concrete DebugLogger (avoids a cycle).
+export interface CanvasSyncLogger {
+  debug(category: string, message: string): void;
+  warn(category: string, message: string): void;
+}
+
 interface CanvasData {
   nodes: Record<string, Record<string, unknown>>;
   edges: Record<string, Record<string, unknown>>;
@@ -46,7 +61,13 @@ function parseCanvas(content: string): CanvasData {
   }
 }
 
-function serializeCanvas(nodesMap: Y.Map<Y.Map<unknown>>, edgesMap: Y.Map<Y.Map<unknown>>): string {
+// Build the Obsidian .canvas data object ({nodes:[], edges:[]}) from the CRDT.
+// Shared by disk serialization AND live-view reconciliation so both see the exact
+// same (dangling-edge-pruned) snapshot.
+function buildCanvasData(
+  nodesMap: Y.Map<Y.Map<unknown>>,
+  edgesMap: Y.Map<Y.Map<unknown>>,
+): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } {
   const nodes: Record<string, unknown>[] = [];
   const edges: Record<string, unknown>[] = [];
   const nodeIds = new Set<string>(nodesMap.keys());
@@ -74,7 +95,43 @@ function serializeCanvas(nodesMap: Y.Map<Y.Map<unknown>>, edgesMap: Y.Map<Y.Map<
     edges.push(obj);
   }
 
-  return JSON.stringify({ nodes, edges }, null, "\t");
+  return { nodes, edges };
+}
+
+function serializeCanvas(nodesMap: Y.Map<Y.Map<unknown>>, edgesMap: Y.Map<Y.Map<unknown>>): string {
+  return JSON.stringify(buildCanvasData(nodesMap, edgesMap), null, "\t");
+}
+
+// Flatten a CRDT map-of-maps to plain id→object records (for semantic compare).
+function ymapToRecords(m: Y.Map<Y.Map<unknown>>): Record<string, Record<string, unknown>> {
+  const out: Record<string, Record<string, unknown>> = {};
+  for (const [id, ymap] of m) {
+    const obj: Record<string, unknown> = {};
+    for (const [k, v] of ymap) obj[k] = v;
+    out[id] = obj;
+  }
+  return out;
+}
+
+// Order-independent semantic equality of two canvas record maps (values are
+// primitives in .canvas, so a shallow per-key compare is exact).
+function canvasRecordsEqual(
+  a: Record<string, Record<string, unknown>>,
+  b: Record<string, Record<string, unknown>>,
+): boolean {
+  const aIds = Object.keys(a);
+  if (aIds.length !== Object.keys(b).length) return false;
+  for (const id of aIds) {
+    const av = a[id];
+    const bv = b[id];
+    if (!bv) return false;
+    const aKeys = Object.keys(av);
+    if (aKeys.length !== Object.keys(bv).length) return false;
+    for (const k of aKeys) {
+      if (av[k] !== bv[k]) return false;
+    }
+  }
+  return true;
 }
 
 function applyToYMap(ymap: Y.Map<unknown>, obj: Record<string, unknown>): void {
@@ -90,6 +147,9 @@ function applyToYMap(ymap: Y.Map<unknown>, obj: Record<string, unknown>): void {
     existingKeys.delete(key);
   }
   for (const key of existingKeys) {
+    // Scatter fix: never strip a live node's geometry because a partial/transient
+    // disk read omitted it. Only non-geometry keys are removed here.
+    if (GEOMETRY_KEYS.has(key)) continue;
     ymap.delete(key);
   }
 }
@@ -122,7 +182,13 @@ function applyKeyDiff(
   }
   // Keys the local user removed relative to base.
   for (const key of Object.keys(base)) {
-    if (!(key in next)) ymap.delete(key);
+    if (!(key in next)) {
+      // Scatter fix: a live node never legitimately loses its geometry. If a
+      // partial disk read dropped x/y/w/h, keep the CRDT value instead of
+      // deleting it (which would scatter the card on every peer).
+      if (GEOMETRY_KEYS.has(key)) continue;
+      ymap.delete(key);
+    }
   }
 }
 
@@ -152,6 +218,13 @@ export class CanvasSync {
   // a node's keys, so the presence layer can acquire the lock even when the
   // private Canvas API is absent. Null until wired.
   private onLocalNodeChange: ((path: string, nodeId: string) => void) | null = null;
+  // Scatter fix (live-view reconciliation): fired whenever a REMOTE (non-local)
+  // delta is integrated, carrying the full post-delta canvas data so main.ts can
+  // patch the OPEN Obsidian canvas view (which ignores external file writes). Null
+  // until wired. `path` is canonical.
+  private onRemoteCanvasUpdate:
+    | ((path: string, data: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }) => void)
+    | null = null;
   // WP4 (US5 AC1): per-path monotonic counter of remote (non-local) Yjs
   // transactions applied to the canvas doc. A whole-file disk flush snapshots
   // this; if it has advanced by write time, an in-flight remote delta arrived
@@ -159,6 +232,9 @@ export class CanvasSync {
   // version/sequence gate, NOT a wall-clock debounce race.
   private remoteSeq = new Map<string, number>();
   private seqHandlers = new Map<string, () => void>();
+  // Optional status-console logger for narrating the canvas data path (disk
+  // writes, geometry/edge anomalies). Null until main.ts injects it.
+  private logger: CanvasSyncLogger | null = null;
 
   constructor(
     vault: Vault,
@@ -194,11 +270,43 @@ export class CanvasSync {
     this.onLocalNodeChange = cb;
   }
 
+  // Inject the status-console logger (optional; no-op until set).
+  setLogger(logger: CanvasSyncLogger): void {
+    this.logger = logger;
+  }
+
+  // Register the live-view reconciliation hook (scatter fix). Called on every
+  // integrated REMOTE delta with the full canvas data.
+  setOnRemoteCanvasUpdate(
+    cb: (path: string, data: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }) => void,
+  ): void {
+    this.onRemoteCanvasUpdate = cb;
+  }
+
   // WP2: expose the canvas doc handle (incl. its own awareness channel) so the
   // presence layer can read/write canvas cursors + locks on getDoc().awareness.
   getCanvasDocHandle(rawPath: string): DocHandle | null {
     const path = toCanonicalPath(normalizePath(rawPath));
     return this.syncManager.getDoc(`${CANVAS_DOC_PREFIX}${path}`);
+  }
+
+  // Initial-sync fix: expose the current CRDT snapshot (dangling-edge-pruned) so
+  // main.ts can force a freshly-MOUNTED live view to match shared truth on the
+  // very first sync (Obsidian's open canvas ignores external .canvas writes, and
+  // the observer only fires on SUBSEQUENT remote deltas — never the seed). Returns
+  // null when not subscribed, no doc, or the shared doc is still empty (nothing
+  // authoritative to apply yet → keep the local view untouched).
+  getCanvasSnapshot(
+    rawPath: string,
+  ): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } | null {
+    const path = toCanonicalPath(normalizePath(rawPath));
+    if (!this.subscribedPaths.has(path)) return null;
+    const docHandle = this.syncManager.getDoc(`${CANVAS_DOC_PREFIX}${path}`);
+    if (!docHandle) return null;
+    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
+    const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
+    if (nodesMap.size === 0) return null;
+    return buildCanvasData(nodesMap, edgesMap);
   }
 
   private currentSeq(path: string): number {
@@ -273,6 +381,17 @@ export class CanvasSync {
 
     const observer = () => {
       if (this.recentLocalEdits.has(path)) return;
+      // REMOTE delta: (1) patch the OPEN canvas view directly — Obsidian ignores
+      // external .canvas writes while the view is open, so a file-only sync leaves
+      // the view stale/scattered until a full reload. (2) still flush to disk so
+      // closed canvases and cold opens stay correct.
+      if (this.onRemoteCanvasUpdate) {
+        try {
+          this.onRemoteCanvasUpdate(path, buildCanvasData(nodesMap, edgesMap));
+        } catch {
+          /* live reconciliation must never break disk sync */
+        }
+      }
       this.scheduleDiskWrite(path, nodesMap, edgesMap);
     };
     nodesMap.observeDeep(observer);
@@ -281,6 +400,20 @@ export class CanvasSync {
       nodesMap.unobserveDeep(observer);
       edgesMap.unobserveDeep(observer);
     });
+
+    // Initial-sync fix: the observer above only fires on SUBSEQUENT remote deltas,
+    // never on the seed that just completed via waitForSync. If the guest already
+    // had this canvas OPEN, its live view is still showing the stale local file
+    // (wrong positions / disconnected edges) — Obsidian ignores the disk write we
+    // just did. Drive one authoritative reconcile now so the open view snaps to
+    // shared truth. Host's own view IS the source of truth, so only guests need it.
+    if (role === "guest" && this.onRemoteCanvasUpdate && nodesMap.size > 0) {
+      try {
+        this.onRemoteCanvasUpdate(path, buildCanvasData(nodesMap, edgesMap));
+      } catch {
+        /* live reconciliation must never break subscribe */
+      }
+    }
   }
 
   unsubscribe(rawPath: string): void {
@@ -335,6 +468,21 @@ export class CanvasSync {
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
     const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
 
+    // Echo breaker (bidirectional-edit fix): if the disk already equals the shared
+    // CRDT state, there is NOTHING local to push. This is the save Obsidian emits
+    // right after our live-view reconciliation moved a node to match a remote
+    // delta — pushing it back would echo to the peer, whose reconcile re-saves,
+    // ad infinitum (the oscillation seen only when BOTH sides edit). Semantic (not
+    // byte) compare, because Obsidian's serialization differs from ours.
+    if (
+      canvasRecordsEqual(ymapToRecords(nodesMap), next.nodes) &&
+      canvasRecordsEqual(ymapToRecords(edgesMap), next.edges)
+    ) {
+      this.lastWrittenContent.set(path, content);
+      this.logger?.debug("canvas-sync", `local modify ${path}: no-op (disk == shared state)`);
+      return;
+    }
+
     const deletedNodeIds: string[] = [];
     this.recentLocalEdits.add(path);
     docHandle.doc.transact(() => {
@@ -350,6 +498,35 @@ export class CanvasSync {
     // Advance the baseline to the state now on disk so the next local modify
     // diffs against current disk truth.
     this.lastWrittenContent.set(path, content);
+
+    // Telemetry: what did the local user's edit actually push? Correlate this with
+    // any SCATTER/DETACH signature on the following disk write.
+    if (this.logger) {
+      const added: string[] = [];
+      const changed: string[] = [];
+      for (const [id, obj] of Object.entries(next.nodes)) {
+        if (!base.nodes[id]) added.push(id);
+        else if (objChanged(base.nodes[id], obj)) changed.push(id);
+      }
+      const removed = Object.keys(base.nodes).filter((id) => !(id in next.nodes));
+      // A node the local user "changed" to a state missing geometry is the direct
+      // upstream cause of a scatter — flag it at the source, not just on write.
+      const changedNoGeo = changed.filter((id) => {
+        const n = next.nodes[id];
+        return typeof n.x !== "number" || typeof n.y !== "number";
+      });
+      this.logger.debug(
+        "canvas-sync",
+        `local modify ${path}: +${added.length} ~${changed.length} -${removed.length} node(s)` +
+          (deletedNodeIds.length ? ` deleted=[${deletedNodeIds.join(", ")}]` : ""),
+      );
+      if (changedNoGeo.length) {
+        this.logger.warn(
+          "canvas-sync",
+          `local disk read missing geometry for: ${changedNoGeo.join(", ")} (guard kept CRDT geometry)`,
+        );
+      }
+    }
   }
 
   // Bug C: apply the local user's diff (base -> next) to the shared Y map,
@@ -529,10 +706,55 @@ export class CanvasSync {
         // interleaving await) so writeToDisk can detect a remote delta that lands
         // afterwards and yield instead of clobbering it (US5 AC1).
         const seq = this.currentSeq(path);
+        this.auditCanvasState(path, nodesMap, edgesMap);
         const content = serializeCanvas(nodesMap, edgesMap);
         void this.writeToDisk(path, content, seq);
       }, delay),
     );
+  }
+
+  // Scatter/detach telemetry: inspect the CRDT snapshot about to be serialized and
+  // surface the two corruption signatures to the status console — (1) a live node
+  // missing geometry (→ card scatter) and (2) an edge whose endpoint node is absent
+  // (→ arrow detach; pruned from disk this write, self-heals when the node returns).
+  private auditCanvasState(
+    path: string,
+    nodesMap: Y.Map<Y.Map<unknown>>,
+    edgesMap: Y.Map<Y.Map<unknown>>,
+  ): void {
+    if (!this.logger) return;
+    const nodeIds = new Set<string>(nodesMap.keys());
+    const noGeo: string[] = [];
+    for (const [id, node] of nodesMap) {
+      if (typeof node.get("x") !== "number" || typeof node.get("y") !== "number") noGeo.push(id);
+    }
+    const danglingEdges: string[] = [];
+    for (const [id, edge] of edgesMap) {
+      const from = edge.get("fromNode");
+      const to = edge.get("toNode");
+      if (
+        (typeof from === "string" && !nodeIds.has(from)) ||
+        (typeof to === "string" && !nodeIds.has(to))
+      ) {
+        danglingEdges.push(id);
+      }
+    }
+    this.logger.debug(
+      "canvas-sync",
+      `disk write ${path}: nodes=${nodeIds.size} edges=${edgesMap.size}`,
+    );
+    if (noGeo.length) {
+      this.logger.warn(
+        "canvas-sync",
+        `SCATTER signature: ${noGeo.length} node(s) missing geometry: ${noGeo.join(", ")}`,
+      );
+    }
+    if (danglingEdges.length) {
+      this.logger.warn(
+        "canvas-sync",
+        `DETACH signature: ${danglingEdges.length} edge(s) pruned (endpoint absent): ${danglingEdges.join(", ")}`,
+      );
+    }
   }
 
   private async writeToDisk(path: string, content: string, expectedSeq?: number): Promise<void> {

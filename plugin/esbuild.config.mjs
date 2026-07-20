@@ -18,6 +18,13 @@ const ctx = await esbuild.context({
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
+  // Build-time flag for the WP4 E2E control server. `false` in the production
+  // build folds the flag-gated dynamic import in main.ts to dead code, so the
+  // entire `src/testing/` module is eliminated from `main.js` (US7 AC1). In dev
+  // the module is bundled but only listens when its runtime port flag is set.
+  define: {
+    __LS_E2E__: prod ? "false" : "true",
+  },
   outfile: "main.js",
   platform: "node",
 });

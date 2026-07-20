@@ -105,6 +105,8 @@ function makeSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSett
     excludePatterns: [] as string[],
     requireApproval: false,
     approvalTimeoutSeconds: 60,
+    showCanvasCursors: true,
+    showCanvasPresence: true,
     permission: "read-write" as const,
     readOnlyPatterns: [] as string[],
     ...overrides,

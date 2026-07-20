@@ -65,6 +65,8 @@ function createSettings(overrides?: Partial<LiveShareSettings>): LiveShareSettin
     excludePatterns: [],
     readOnlyPatterns: [],
     approvalTimeoutSeconds: 60,
+    showCanvasCursors: true,
+    showCanvasPresence: true,
     ...overrides,
   };
 }

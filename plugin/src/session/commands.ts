@@ -62,6 +62,12 @@ export function registerCommands(plugin: LiveSharePlugin): void {
   });
 
   plugin.addCommand({
+    id: "open-status-console",
+    name: "Open status console",
+    callback: () => void plugin.activateLogView(),
+  });
+
+  plugin.addCommand({
     id: "log-in",
     name: "Log in with GitHub",
     callback: () => void plugin.authManager.authenticate(),

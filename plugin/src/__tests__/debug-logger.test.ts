@@ -116,3 +116,77 @@ describe("DebugLogger", () => {
     logger.destroy();
   });
 });
+
+describe("DebugLogger ring buffer / status console (Phase A)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("records to the in-memory ring even when file logging is disabled", () => {
+    const vault = mockVault();
+    const logger = new DebugLogger(vault, "debug.md", false);
+    logger.log("cat", "hello");
+    logger.warn("cat", "careful");
+    // No file writes while disabled...
+    expect(vault.adapter.append).not.toHaveBeenCalled();
+    // ...but the ring buffer is populated for the live console.
+    const entries = logger.getEntries();
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ level: "info", category: "cat", message: "hello" });
+    expect(entries[1]).toMatchObject({ level: "warn", category: "cat", message: "careful" });
+    logger.destroy();
+  });
+
+  it("filters below the configured min-level", () => {
+    const vault = mockVault();
+    const logger = new DebugLogger(vault, "debug.md", false);
+    logger.setLevel("warn");
+    logger.debug("c", "d");
+    logger.log("c", "i");
+    logger.warn("c", "w");
+    logger.error("c", "e");
+    const levels = logger.getEntries().map((e) => e.level);
+    expect(levels).toEqual(["warn", "error"]);
+    logger.destroy();
+  });
+
+  it("fans out new entries to subscribers and null on clear", () => {
+    const vault = mockVault();
+    const logger = new DebugLogger(vault, "debug.md", false);
+    const seen: Array<string | null> = [];
+    const unsub = logger.subscribe((e) => seen.push(e === null ? null : e.message));
+    logger.log("c", "one");
+    logger.log("c", "two");
+    logger.clear();
+    expect(seen).toEqual(["one", "two", null]);
+    expect(logger.getEntries()).toHaveLength(0);
+    unsub();
+    logger.log("c", "three");
+    expect(seen).toEqual(["one", "two", null]); // unsubscribed
+    logger.destroy();
+  });
+
+  it("caps the ring buffer at 500 entries (oldest dropped)", () => {
+    const vault = mockVault();
+    const logger = new DebugLogger(vault, "debug.md", false);
+    for (let i = 0; i < 520; i++) logger.log("c", `m${i}`);
+    const entries = logger.getEntries();
+    expect(entries).toHaveLength(500);
+    expect(entries[0].message).toBe("m20");
+    expect(entries[499].message).toBe("m519");
+    logger.destroy();
+  });
+
+  it("uppercases the level in the file line for new levels", () => {
+    const vault = mockVault();
+    const logger = new DebugLogger(vault, "debug.md", true);
+    logger.warn("net", "slow");
+    vi.advanceTimersByTime(500);
+    const written = vault.adapter.append.mock.calls[0][1] as string;
+    expect(written).toContain("[WARN] [net] slow");
+    logger.destroy();
+  });
+});

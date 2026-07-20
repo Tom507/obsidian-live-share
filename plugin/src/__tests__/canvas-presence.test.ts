@@ -5,9 +5,11 @@ import {
   CanvasPresence,
   computeCanDeleteNode,
   computeCanWriteNode,
+  computeRingDelta,
   resolveCursors,
   resolveHighlights,
 } from "../canvas/canvas-presence";
+import type { HeldHighlight } from "../canvas/canvas-overlay";
 
 const PATH = "board.canvas";
 
@@ -90,6 +92,44 @@ describe("canvas-presence pure decision functions", () => {
     ]);
     const highlights = resolveHighlights(1, PATH, states);
     expect(highlights).toEqual([{ nodeId: "n1", color: "#0f0", name: "Bob" }]);
+  });
+});
+
+describe("computeRingDelta (held-ring nodeEl bookkeeping)", () => {
+  const h = (nodeId: string, color: string): HeldHighlight => ({ nodeId, color, name: nodeId });
+
+  it("adds rings for newly-held nodes", () => {
+    const delta = computeRingDelta(new Map(), [h("n1", "#f00"), h("n2", "#0f0")]);
+    expect(delta.add.map((x) => x.nodeId)).toEqual(["n1", "n2"]);
+    expect(delta.recolor).toEqual([]);
+    expect(delta.remove).toEqual([]);
+  });
+
+  it("removes rings no longer desired", () => {
+    const applied = new Map([
+      ["n1", "#f00"],
+      ["n2", "#0f0"],
+    ]);
+    const delta = computeRingDelta(applied, [h("n1", "#f00")]);
+    expect(delta.add).toEqual([]);
+    expect(delta.recolor).toEqual([]);
+    expect(delta.remove).toEqual(["n2"]);
+  });
+
+  it("recolors a held node when the holder color changed", () => {
+    const applied = new Map([["n1", "#f00"]]);
+    const delta = computeRingDelta(applied, [h("n1", "#00f")]);
+    expect(delta.add).toEqual([]);
+    expect(delta.recolor.map((x) => x.color)).toEqual(["#00f"]);
+    expect(delta.remove).toEqual([]);
+  });
+
+  it("no-ops when the applied set already matches the desired set", () => {
+    const applied = new Map([["n1", "#f00"]]);
+    const delta = computeRingDelta(applied, [h("n1", "#f00")]);
+    expect(delta.add).toEqual([]);
+    expect(delta.recolor).toEqual([]);
+    expect(delta.remove).toEqual([]);
   });
 });
 

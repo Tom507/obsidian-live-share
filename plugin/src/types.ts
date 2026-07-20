@@ -26,6 +26,9 @@ export interface LiveShareSettings {
   excludePatterns: string[];
   readOnlyPatterns: string[];
   approvalTimeoutSeconds: number;
+  // WP2/WP3 canvas presence display toggles (default ON).
+  showCanvasCursors: boolean;
+  showCanvasPresence: boolean;
 }
 
 export const DEFAULT_SETTINGS: LiveShareSettings = {
@@ -52,6 +55,8 @@ export const DEFAULT_SETTINGS: LiveShareSettings = {
   excludePatterns: [],
   readOnlyPatterns: [],
   approvalTimeoutSeconds: 60,
+  showCanvasCursors: true,
+  showCanvasPresence: true,
 };
 
 export interface FileCreateOp {
