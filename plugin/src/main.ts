@@ -3,17 +3,40 @@ import { MarkdownView, Menu, Notice, Plugin, TFile, requestUrl } from "obsidian"
 
 import { minimatch } from "minimatch";
 import { type CanvasAdapter, createCanvasAdapter } from "./canvas/canvas-adapter";
+import { CanvasBinding } from "./canvas/canvas-binding";
+import {
+  type CanvasModelBridgeHandle,
+  createCanvasModelBridge,
+} from "./canvas/canvas-model-bridge";
 import { CanvasOverlay, type OverlayHost } from "./canvas/canvas-overlay";
-import { type AwarenessLike, CanvasPresence } from "./canvas/canvas-presence";
+import { type AwarenessLike, CanvasPresence, resolveHolder } from "./canvas/canvas-presence";
+import {
+  type ApplyOutcome,
+  type SurfaceStateStore,
+  advanceFromReceipt,
+  buildApplyReceipt,
+  createSurfaceStateStore,
+  shadowToCanvasRecords,
+} from "./canvas/canvas-shadow";
+import { canvasIds, planReconcile } from "./canvas/reconcile-plan";
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
+import {
+  type CanvasPersistence,
+  attachCanvasPersistence,
+  createVaultPersistenceIO,
+} from "./files/canvas-persistence";
 import { CanvasSync } from "./files/canvas-sync";
 
 import { ExclusionManager } from "./files/exclusion";
 import { FileOpsManager } from "./files/file-ops";
 import { ManifestManager } from "./files/manifest";
-import { registerVaultEvents } from "./files/vault-events";
+import {
+  registerVaultEvents,
+  resetCanvasTextFallbackWarnings,
+  subscribeCanvasWithHandover,
+} from "./files/vault-events";
 import { AuthManager } from "./session/auth";
 import { registerCommands } from "./session/commands";
 import { LOG_VIEW_TYPE, LogView } from "./session/log-view";
@@ -58,14 +81,6 @@ function getCmView(view: MarkdownView): EditorView | undefined {
   return (view.editor as unknown as { cm?: EditorView }).cm;
 }
 
-// Structural equality of two string sets (used to detect add/remove vs pure moves
-// during live-canvas reconciliation).
-function sameStringSet(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const v of a) if (!b.has(v)) return false;
-  return true;
-}
-
 export default class LiveSharePlugin extends Plugin {
   settings!: LiveShareSettings;
   syncManager!: SyncManager;
@@ -92,6 +107,33 @@ export default class LiveSharePlugin extends Plugin {
   // patch the OPEN canvas view (Obsidian ignores external .canvas writes). Kept in
   // lockstep with canvasPresences (same mount/teardown sites).
   private canvasAdapters = new Map<string, CanvasAdapter>();
+  // WP5 (C5 AC1): the hand-over half of the reconcile receipt — which record ids
+  // the last CONFIRMED apply actually put on each surface, plus whether that view
+  // is open at all. This is the only per-path canvas structure `main.ts` still
+  // owns; the field-level basis is the ONE shared Surface-Shadow, obtained from
+  // `CanvasSync.getSurfaceShadow()` at every use site and never cached here.
+  // `path` is canonical, matching every other registry in this file.
+  private surfaceState: SurfaceStateStore = createSurfaceStateStore(
+    (path) => this.canvasAdapters.get(path)?.isAvailable() === true,
+  );
+  // Phase 2 (SPEC_04 §3): one CanvasBinding per open, subscribed canvas — ONLY
+  // constructed when `settings.useCanvasBinding` is ON. Its own doc observer
+  // drives the follower-apply path (applyRemote over the model bridge), replacing
+  // reconcileLiveCanvas. Kept in lockstep with canvasAdapters (same mount/teardown).
+  private canvasBindings = new Map<string, CanvasBinding>();
+  // Phase 3 (SPEC_04 §4): the model bridge behind each binding. Held so its
+  // capture subscriptions (adapter interaction hooks) are detached on teardown,
+  // in lockstep with canvasBindings.
+  private canvasModelBridges = new Map<string, CanvasModelBridgeHandle>();
+  // WP7 (US5 AC13): the SINGLE CRDT→disk writer for each subscribed canvas path,
+  // keyed by canonical path. Its lifetime tracks the CanvasSync SUBSCRIPTION, not
+  // the open view — a closed canvas must still be persisted when remote deltas
+  // arrive, which is the whole reason a writer exists. Torn down in
+  // `teardownCanvasPresences()`, i.e. in both destroy paths.
+  private canvasWriters = new Map<string, CanvasPersistence>();
+  // Paths whose writer attach is in flight (the cold open is awaited), so two
+  // subscribe call sites can never race a second writer onto one path.
+  private canvasWriterAttaching = new Set<string>();
   explorerIndicators: ExplorerIndicators | null = null;
   controlChannel: ControlChannel | null = null;
   remoteUsers = new Map<string, PresenceUser>();
@@ -297,6 +339,10 @@ export default class LiveSharePlugin extends Plugin {
       this.settings.debugLogPath,
       this.settings.debugLogging,
     );
+    // US6: SyncManager measures the awareness keep-alive gap whether or not a logger is
+    // attached, but only reports `AWARENESS GAP:` once one is. Attached here, right after
+    // the DebugLogger exists, because SyncManager is constructed before it.
+    this.syncManager.setLogger(this.logger);
     this.connectionStateUnsub = this.connectionState.onChange(() => this.updateStatusBar());
 
     this.registerEditorExtension(this.collabManager.getBaseExtension());
@@ -504,6 +550,8 @@ export default class LiveSharePlugin extends Plugin {
     this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
+    // WP6 (US6 AC5): `CANVAS TEXT FALLBACK:` is once per path per SESSION.
+    resetCanvasTextFallbackWarnings();
     this.backgroundSync.setCollabBoundFile(null);
     this.backgroundSync.destroy();
     this.syncManager.disconnect();
@@ -745,16 +793,7 @@ export default class LiveSharePlugin extends Plugin {
     // permission is read-only (global read-only OR a host-designated read-only pattern).
     // Authoritative enforcement is server-side in ws-handler; this stops a read-only
     // guest from diverging locally. `path` is the canonical canvas path.
-    this.canvasSync.setCanWrite((path) => {
-      if (this.settings.permission === "read-only") return false;
-      if (
-        this.settings.role === "guest" &&
-        this.remoteReadOnlyPatterns.some((p) => minimatch(path, p))
-      ) {
-        return false;
-      }
-      return true;
-    });
+    this.canvasSync.setCanWrite((path) => this.canWriteCanvasPath(path));
     // WP3: advisory per-node lock gates + diff-inferred fallback hook, backed by
     // the per-canvas CanvasPresence controllers. When no presence is mounted
     // (canvas not open) the gates default to allow so nothing is blocked.
@@ -769,8 +808,20 @@ export default class LiveSharePlugin extends Plugin {
     this.canvasSync.setOnLocalNodeChange((path, nodeId) => {
       this.canvasPresences.get(path)?.onDiffInferredChange(nodeId);
     });
+    // WP5 (C5 AC1): the surface-state seam WP4 left at its honest P0 default.
+    // The value comes from the same confirmed apply that advances the shared
+    // shadow, so the hand-over receipt and the field receipt cannot drift apart.
+    this.canvasSync.setSurfaceStateProvider((path) => this.surfaceState.stateFor(path));
     // Scatter fix: patch the OPEN canvas view from every integrated remote delta.
-    this.canvasSync.setOnRemoteCanvasUpdate((path, data) => this.reconcileLiveCanvas(path, data));
+    // Phase 2 (SPEC_04 §3): when `useCanvasBinding` is ON, the follower-apply path
+    // is driven by the per-canvas CanvasBinding's OWN doc observer (constructed in
+    // mountCanvasPresence), so this legacy reconcile is bypassed. When a binding is
+    // not mounted for the path there is likewise no adapter, so reconcileLiveCanvas
+    // would be a no-op anyway. Flag OFF ⇒ unchanged legacy behaviour.
+    this.canvasSync.setOnRemoteCanvasUpdate((path, data) => {
+      if (this.settings.useCanvasBinding) return;
+      this.reconcileLiveCanvas(path, data);
+    });
     // WP1 reconnect seam (US4 AC3): re-claim only still-free nodes, never blindly.
     this.syncManager.onReconnect(() => {
       for (const presence of this.canvasPresences.values()) presence.onReconnect();
@@ -783,7 +834,20 @@ export default class LiveSharePlugin extends Plugin {
     const role = this.settings.role === "host" ? "host" : "guest";
     for (const [path] of entries) {
       if (isTextFile(path) && path.endsWith(".canvas")) {
-        void this.canvasSync.subscribe(path, role);
+        // WP6 (US5 AC8/AC9): hand the path over to CanvasSync with
+        // `backgroundSync.unsubscribe` immediately before the subscribe, and
+        // install the announced raw-text fallback if the subscribe FAILS.
+        // WP7 (US5 AC13/AC17): once the path is genuinely canvas-owned — i.e.
+        // after `waitForSync` — attach its single CRDT→disk writer.
+        void subscribeCanvasWithHandover({
+          path,
+          role,
+          backgroundSync: this.backgroundSync,
+          canvasSync: this.canvasSync,
+          logger: this.logger,
+        }).then((owned) => {
+          if (owned) void this.attachCanvasWriter(path);
+        });
       }
     }
 
@@ -931,7 +995,20 @@ export default class LiveSharePlugin extends Plugin {
         // subscribe() adds to subscribedPaths synchronously (before its first
         // await), so isSubscribed() below already reads true and the mount
         // proceeds this pass; awareness works before full doc sync. No re-call.
-        void this.canvasSync.subscribe(rawPath, role);
+        // WP6 (US5 AC8/AC9): same handover as the session-start call site —
+        // `backgroundSync.unsubscribe` immediately precedes the subscribe (both
+        // still synchronous, so the mount below is unaffected), and a FAILED
+        // subscribe installs the announced raw-text fallback.
+        // WP7: same writer attach as the session-start site (idempotent per path).
+        void subscribeCanvasWithHandover({
+          path: rawPath,
+          role,
+          backgroundSync: this.backgroundSync,
+          canvasSync: this.canvasSync,
+          logger: this.logger,
+        }).then((owned) => {
+          if (owned) void this.attachCanvasWriter(rawPath);
+        });
       }
       const subscribed = rawPath ? this.canvasSync.isSubscribed(rawPath) : false;
       this.logger.debug("canvas", `  leaf path=${rawPath ?? "(none)"} subscribed=${subscribed}`);
@@ -954,6 +1031,19 @@ export default class LiveSharePlugin extends Plugin {
         presence.destroy();
         this.canvasPresences.delete(path);
         this.canvasAdapters.delete(path);
+        // WP5 (C5 AC1): drop the HAND-OVER receipt with the adapter — nothing is
+        // on a surface that no longer exists. The shared Surface-Shadow's path is
+        // deliberately NOT cleared: it is also the capture basis, so dropping it
+        // here would make the first save after a close read as pure intent and
+        // reopen the cascade window. A remount still classifies from scratch,
+        // because both remount paths force `initial: true`.
+        this.surfaceState.clearPath(path);
+        // Phase 2: tear down the binding (unobserve/unsubscribe) on canvas close.
+        this.canvasBindings.get(path)?.destroy();
+        this.canvasBindings.delete(path);
+        // Phase 3: detach the bridge's capture subscriptions from the adapter.
+        this.canvasModelBridges.get(path)?.destroy();
+        this.canvasModelBridges.delete(path);
       }
     }
   }
@@ -972,29 +1062,45 @@ export default class LiveSharePlugin extends Plugin {
     const canonical = toCanonicalPath(normalizePath(path));
     const adapter = this.canvasAdapters.get(canonical);
     if (!adapter || !adapter.isAvailable()) return; // canvas not open → file sync suffices
+    // WP5 (C5 AC1): the ONE shared Surface-Shadow, obtained fresh from CanvasSync
+    // at every use site. It is both the classifier basis below and the capture
+    // basis inside CanvasSync — never a copy, never cached in this file, so
+    // `setSurfaceShadow(...)` re-points both roles in the same call.
+    const shadow = this.canvasSync?.getSurfaceShadow();
+    if (!shadow) return; // canvas sync torn down → nothing to reconcile against
     if (adapter.isBusy()) {
       // Never reconcile mid-drag; the trailing disk write keeps data safe and the
       // next delta (or a manual reload) will catch the view up once idle.
       this.logger.debug("canvas", `reconcile ${canonical}: deferred (user dragging)`);
       return;
     }
-    // Detect structural (add/remove) changes vs pure geometry moves.
-    const desiredNodeIds = new Set(
-      data.nodes.map((n) => (typeof n.id === "string" ? n.id : "")).filter(Boolean),
-    );
-    const desiredEdgeIds = new Set(
-      data.edges.map((e) => (typeof e.id === "string" ? e.id : "")).filter(Boolean),
-    );
+    // WP5 (US3 AC1/AC2): the decision itself lives in the pure `planReconcile`
+    // module (unit-tested without Obsidian); this method only supplies its inputs
+    // and executes the plan. It classifies against the data we LAST APPLIED to
+    // this view, so a remote text/color/type/fromSide/toSide/label change is
+    // "structural" instead of falling into the geometry-only branch and never
+    // reaching the open canvas. `initial` still forces a full reload (AC8) and a
+    // live-view membership difference still does too.
+    const desiredNodeIds = canvasIds(data.nodes);
+    const desiredEdgeIds = canvasIds(data.edges);
     const liveNodeIds = adapter.getLiveNodeIds();
     const liveEdgeIds = adapter.getLiveEdgeIds();
-    // Initial mount: the open view may hold a stale local file (wrong positions,
-    // disconnected edges) that Obsidian never refreshed from our disk write. Force
-    // a full setData so the whole view — nodes AND edge routing — snaps to shared
-    // truth in one shot, regardless of whether the id-sets happen to match.
-    const structural =
-      !!opts?.initial ||
-      !sameStringSet(desiredNodeIds, liveNodeIds) ||
-      !sameStringSet(desiredEdgeIds, liveEdgeIds);
+    const plan = planReconcile({
+      desired: data,
+      lastApplied: shadowToCanvasRecords(shadow, canonical),
+      liveNodeIds,
+      liveEdgeIds,
+      initial: opts?.initial,
+    });
+    // US3 AC7: nothing differs — make no mutating adapter call and do not mute
+    // the path (muting would swallow an unrelated genuine local save).
+    if (plan === "noop") {
+      this.logger.debug(
+        "canvas",
+        `reconcile ${canonical}: noop (view already matches shared data)`,
+      );
+      return;
+    }
 
     // Nodes that are an endpoint of some edge. Moving one of these per-node only
     // repositions the card; the live edges keep their OLD routing (fromSide/toSide)
@@ -1012,59 +1118,143 @@ export default class LiveSharePlugin extends Plugin {
     // Live mutations may trigger Obsidian's own requestSave; mute our modify
     // handler for the settle window so the reconcile never loops back into a sync.
     this.fileOpsManager.mutePathEvents(diskPath);
+    // WP5 (C5): the two facts the receipt is built from. `main.ts` only collects
+    // them — what they MEAN for the shadow is decided in `buildApplyReceipt` /
+    // `advanceFromReceipt`, which are pure and tested without Obsidian.
+    let reloaded: boolean | undefined;
+    let nodeOutcomes: Map<string, ApplyOutcome> | undefined;
     try {
-      if (structural) {
-        const ok = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
+      if (plan === "structural") {
+        reloaded = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
         this.logger.debug(
           "canvas",
           `reconcile ${canonical}: ${opts?.initial ? "initial " : ""}structural reload ` +
-            `${ok ? "ok" : "unsupported/skipped"} ` +
+            `${reloaded ? "ok" : "unsupported/skipped"} ` +
             `(nodes ${liveNodeIds.size}->${desiredNodeIds.size}, edges ${liveEdgeIds.size}->${desiredEdgeIds.size})`,
         );
-        return;
-      }
-      let applied = 0;
-      let interacting = 0;
-      let movedEndpoint = false;
-      for (const n of data.nodes) {
-        if (
-          typeof n.id !== "string" ||
-          typeof n.x !== "number" ||
-          typeof n.y !== "number" ||
-          typeof n.width !== "number" ||
-          typeof n.height !== "number"
-        ) {
-          continue;
+      } else {
+        let applied = 0;
+        let interacting = 0;
+        let movedEndpoint = false;
+        nodeOutcomes = new Map<string, ApplyOutcome>();
+        for (const n of data.nodes) {
+          if (
+            typeof n.id !== "string" ||
+            typeof n.x !== "number" ||
+            typeof n.y !== "number" ||
+            typeof n.width !== "number" ||
+            typeof n.height !== "number"
+          ) {
+            continue;
+          }
+          const outcome = adapter.applyNodeGeometry(n.id, {
+            x: n.x,
+            y: n.y,
+            width: n.width,
+            height: n.height,
+          });
+          nodeOutcomes.set(n.id, outcome);
+          if (outcome === "applied") {
+            applied++;
+            if (edgeEndpoints.has(n.id)) movedEndpoint = true;
+          } else if (outcome === "interacting") interacting++;
         }
-        const outcome = adapter.applyNodeGeometry(n.id, {
-          x: n.x,
-          y: n.y,
-          width: n.width,
-          height: n.height,
-        });
-        if (outcome === "applied") {
-          applied++;
-          if (edgeEndpoints.has(n.id)) movedEndpoint = true;
-        } else if (outcome === "interacting") interacting++;
+        // A connected node moved → the live edges need re-routing from authoritative
+        // data. Per-node geometry cannot do that, so reload once. Bounded: only fires
+        // when a card WITH edges actually moved (isolated-node moves stay smooth).
+        if (movedEndpoint) {
+          reloaded = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
+          this.logger.debug(
+            "canvas",
+            `reconcile ${canonical}: geometry applied=${applied} deferred(interacting)=${interacting}` +
+              ` + edge reflow (setData ${reloaded ? "ok" : "skipped"})`,
+          );
+        } else if (applied || interacting) {
+          this.logger.debug(
+            "canvas",
+            `reconcile ${canonical}: geometry applied=${applied} deferred(interacting)=${interacting}`,
+          );
+        }
       }
-      // A connected node moved → the live edges need re-routing from authoritative
-      // data. Per-node geometry cannot do that, so reload once. Bounded: only fires
-      // when a card WITH edges actually moved (isolated-node moves stay smooth).
-      if (movedEndpoint) {
-        const ok = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
-        this.logger.debug(
-          "canvas",
-          `reconcile ${canonical}: geometry applied=${applied} deferred(interacting)=${interacting}` +
-            ` + edge reflow (setData ${ok ? "ok" : "skipped"})`,
-        );
-      } else if (applied || interacting) {
-        this.logger.debug(
-          "canvas",
-          `reconcile ${canonical}: geometry applied=${applied} deferred(interacting)=${interacting}`,
-        );
-      }
+      // WP5 (C5 AC1/AC2/AC3): one uniform receipt call site for every branch. The
+      // shadow advances per FIELD and only for records the surface confirmed, and
+      // the very same summary supplies the hand-over half of the seam, so the two
+      // can never drift apart.
+      const summary = advanceFromReceipt(
+        shadow,
+        buildApplyReceipt({ path: canonical, desired: data, plan, reloaded, nodeOutcomes }),
+      );
+      this.surfaceState.noteHandover(canonical, summary.handed);
     } finally {
       setTimeout(() => this.fileOpsManager.unmutePathEvents(diskPath), VAULT_EVENT_SETTLE_MS);
+    }
+  }
+
+  /**
+   * Defense-in-depth client write guard for a CANONICAL canvas path: never push
+   * local canvas edits when the effective permission is read-only (global
+   * read-only OR a host-designated read-only pattern for a guest). Shared by the
+   * legacy `CanvasSync.setCanWrite` seam and the Phase-3 `CanvasBinding` capture
+   * gate so both paths enforce identically. Server-side ws-handler stays
+   * authoritative; this only stops a read-only client from diverging locally.
+   */
+  private canWriteCanvasPath(path: string): boolean {
+    if (this.settings.permission === "read-only") return false;
+    if (
+      this.settings.role === "guest" &&
+      this.remoteReadOnlyPatterns.some((p) => minimatch(path, p))
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * WP7 (US5 AC13/AC16/AC17) — attach the SINGLE CRDT→disk writer for one canvas
+   * path. Wiring only: the ordering contract (`coldOpen()` after `waitForSync`,
+   * before `start()`) lives in the tested `attachCanvasPersistence` helper.
+   *
+   * Called only once the handover helper reports the path is canvas-owned, which
+   * is exactly when `CanvasSync.subscribe` has resolved — i.e. after
+   * `waitForSync`. `createVaultPersistenceIO` re-applies the `isPathSafe` +
+   * `ensureFolder` guarantees the retired `CanvasSync.writeToDisk` provided, and
+   * `onWritten` feeds every landed write back into `CanvasSync` so its diff
+   * baseline and its `isRecentDiskWrite` echo guard stay correct.
+   */
+  private async attachCanvasWriter(rawPath: string): Promise<void> {
+    const canonical = toCanonicalPath(normalizePath(rawPath));
+    if (this.canvasWriters.has(canonical) || this.canvasWriterAttaching.has(canonical)) return;
+    const handle = this.canvasSync?.getCanvasDocHandle(rawPath);
+    if (!handle) return;
+    this.canvasWriterAttaching.add(canonical);
+    const io = createVaultPersistenceIO(this.app.vault.adapter, this.fileOpsManager, {
+      isPathSafe: (diskPath) => isPathSafe(diskPath),
+      ensureFolder: (parentDir) => ensureFolder(this.app.vault, parentDir),
+    });
+    try {
+      const { persistence, coldOpen } = await attachCanvasPersistence(
+        handle.doc,
+        io,
+        toLocalPath(canonical),
+        {
+          logger: this.logger,
+          onWritten: (content) => this.canvasSync?.noteExternalDiskWrite(canonical, content),
+        },
+      );
+      // A session teardown may have raced the awaited cold open.
+      if (!this.canvasSync) {
+        persistence.destroy();
+        return;
+      }
+      this.canvasWriters.set(canonical, persistence);
+      this.logger.log(
+        "canvas",
+        `CANVAS WRITER: ${canonical} owner=CanvasPersistence attached (coldOpen=${coldOpen})`,
+      );
+    } catch (err) {
+      this.logger.error("canvas", `failed to attach canvas writer for ${canonical}`, err);
+    } finally {
+      this.canvasWriterAttaching.delete(canonical);
     }
   }
 
@@ -1072,7 +1262,16 @@ export default class LiveSharePlugin extends Plugin {
     const handle = this.canvasSync?.getCanvasDocHandle(rawPath);
     if (!handle) return null;
     try {
-      const adapter = createCanvasAdapter(view);
+      const adapter = createCanvasAdapter(view, {
+        // US6: attach the status console so `ADAPTER PATCH:` and `DRAG WATCHDOG:` are
+        // recorded instead of silently dropped. `CanvasAdapterLogger` declares `log`
+        // while `DebugLogger` (like `CanvasSyncLogger`/`SyncLogger`) exposes `debug`,
+        // so the two names are bridged here rather than churning the adapter's tests.
+        logger: {
+          log: (category, message) => this.logger.debug(category, message),
+          warn: (category, message) => this.logger.warn(category, message),
+        },
+      });
       // Register for live-view reconciliation (kept in lockstep with the presence).
       this.canvasAdapters.set(toCanonicalPath(normalizePath(rawPath)), adapter);
       // Diagnostics: report whether the private Canvas API surface is usable and,
@@ -1085,14 +1284,46 @@ export default class LiveSharePlugin extends Plugin {
       // waiting for the next remote delta to nudge it. No-op when the shared doc is
       // still empty (getCanvasSnapshot returns null).
       if (available) {
-        const snapshot = this.canvasSync?.getCanvasSnapshot(rawPath);
-        if (snapshot) {
+        if (this.settings.useCanvasBinding) {
+          // Phase 3 (SPEC_04 §4): construct the CanvasBinding over the FULL model
+          // bridge. Its constructor wires the doc observer AND seeds the model from
+          // the doc (one applyRemote) — this seed replaces the legacy forced-initial
+          // reconcile below. Capture is now LIVE: the bridge sources local intent
+          // from the adapter's interaction signals + snapshot-diff (SPEC_02 §4), so
+          // local edits flow model→CRDT via `captureLocal` (NOT the legacy
+          // canvasSync.handleLocalModify, which is skipped for bound paths — see
+          // vault-events.ts). `isApplying` back-references the binding so capture is
+          // suppressed for changes WE apply (I2); the binding is null only during
+          // its own constructor seed, when no interaction signal can fire.
+          const canonical = toCanonicalPath(normalizePath(rawPath));
+          let binding: CanvasBinding | null = null;
+          const bridge = createCanvasModelBridge(adapter, {
+            logger: this.logger,
+            isApplying: () => binding?.applyingRemote ?? false,
+          });
+          binding = new CanvasBinding(handle.doc, bridge, {
+            path: canonical,
+            logger: this.logger,
+            canWrite: (p) => this.canWriteCanvasPath(p),
+            canWriteNode: (p, id) => this.canvasPresences.get(p)?.canWriteNode(id) ?? true,
+            canDeleteNode: (p, id) => this.canvasPresences.get(p)?.canDeleteNode(id) ?? true,
+          });
+          this.canvasBindings.set(canonical, binding);
+          this.canvasModelBridges.set(canonical, bridge);
           this.logger.debug(
             "canvas",
-            `mount ${rawPath}: initial reconcile from shared snapshot ` +
-              `(nodes=${snapshot.nodes.length} edges=${snapshot.edges.length})`,
+            `mount ${rawPath}: CanvasBinding constructed (seeded from shared doc, capture live)`,
           );
-          this.reconcileLiveCanvas(rawPath, snapshot, { initial: true });
+        } else {
+          const snapshot = this.canvasSync?.getCanvasSnapshot(rawPath);
+          if (snapshot) {
+            this.logger.debug(
+              "canvas",
+              `mount ${rawPath}: initial reconcile from shared snapshot ` +
+                `(nodes=${snapshot.nodes.length} edges=${snapshot.edges.length})`,
+            );
+            this.reconcileLiveCanvas(rawPath, snapshot, { initial: true });
+          }
         }
       }
       this.logger.log(
@@ -1122,9 +1353,10 @@ export default class LiveSharePlugin extends Plugin {
         /* ignore */
       }
       this.logger.debug("canvas", `awareness peers on ${rawPath}: ${peerCount}`);
+      const awareness = handle.awareness as unknown as AwarenessLike;
       const presence = new CanvasPresence({
         path: toCanonicalPath(normalizePath(rawPath)),
-        awareness: handle.awareness as unknown as AwarenessLike,
+        awareness,
         identity: {
           clientId: handle.doc.clientID,
           name: this.settings.displayName,
@@ -1132,6 +1364,10 @@ export default class LiveSharePlugin extends Plugin {
         },
         overlay,
         adapter,
+        // WP4 (US2 AC6): supply the GAP-1 loser-revert callback that was declared,
+        // stored and invoked in canvas-presence.ts but never wired — dead code
+        // until now. Signature matches the call site (it passes the nodeId).
+        onRevert: (nodeId: string) => this.revertCanvasNode(rawPath, nodeId, awareness),
         showCursors: this.settings.showCanvasCursors,
         showPresence: this.settings.showCanvasPresence,
         logger: this.logger,
@@ -1144,6 +1380,30 @@ export default class LiveSharePlugin extends Plugin {
     }
   }
 
+  // WP4 (US2 AC7/AC8) — GAP-1 loser-revert. This client lost the lowest-clientID
+  // tiebreak on `nodeId`, so the lock seam denied its optimistic edit and that edit
+  // never reached the shared doc (canvas-sync holds its diff baseline back for the
+  // same reason). The LIVE view still shows the rejected position, so roll it back
+  // to shared truth with one authoritative full reconcile. A null snapshot (shared
+  // doc still empty) is a no-op — never wipe the view (BUILD_SPEC § 6).
+  private revertCanvasNode(rawPath: string, nodeId: string, awareness: AwarenessLike): void {
+    const canonical = toCanonicalPath(normalizePath(rawPath));
+    let winner: number | null = null;
+    try {
+      winner = resolveHolder(canonical, nodeId, awareness.getStates());
+    } catch {
+      /* awareness may be torn down mid-revert; the view rollback still runs */
+    }
+    const snapshot = this.canvasSync?.getCanvasSnapshot(rawPath) ?? null;
+    const noSnapshot = snapshot ? "" : " (no shared snapshot yet; view left untouched)";
+    this.logger.warn(
+      "canvas",
+      `LOCK REVERT: ${canonical} node=${nodeId} winner=${winner ?? "unknown"}${noSnapshot}`,
+    );
+    if (!snapshot) return;
+    this.reconcileLiveCanvas(rawPath, snapshot, { initial: true });
+  }
+
   private teardownCanvasPresences() {
     for (const presence of this.canvasPresences.values()) {
       try {
@@ -1152,8 +1412,43 @@ export default class LiveSharePlugin extends Plugin {
         /* ignore */
       }
     }
+    // Phase 2: destroy every mounted binding (no leaks on session end / unload).
+    for (const binding of this.canvasBindings.values()) {
+      try {
+        binding.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.canvasBindings.clear();
+    // Phase 3: detach every mounted bridge's capture subscriptions.
+    for (const bridge of this.canvasModelBridges.values()) {
+      try {
+        bridge.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.canvasModelBridges.clear();
+    // WP7 (US5 AC13): tear down every canvas disk writer. This runs on BOTH
+    // destroy paths (`onunload` and `cleanupSession`) and deliberately NOT when a
+    // single canvas view closes: the writer's whole purpose is to keep CLOSED
+    // canvases and cold opens correct while remote deltas keep arriving, so its
+    // lifetime tracks the CanvasSync subscription, not the open view.
+    for (const writer of this.canvasWriters.values()) {
+      try {
+        writer.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.canvasWriters.clear();
+    this.canvasWriterAttaching.clear();
     this.canvasPresences.clear();
     this.canvasAdapters.clear();
+    // WP5 (C5 AC1): the hand-over receipt lives and dies with the adapters. The
+    // shared Surface-Shadow belongs to CanvasSync and is torn down with it.
+    this.surfaceState.clearAll();
   }
 
   updateStatusBar() {

@@ -29,6 +29,11 @@ export interface LiveShareSettings {
   // WP2/WP3 canvas presence display toggles (default ON).
   showCanvasCursors: boolean;
   showCanvasPresence: boolean;
+  // Canvas-redesign rollout flag (SPEC_04). When ON, remote canvas updates are
+  // driven by the new CanvasBinding.applyRemote path instead of the legacy
+  // reconcileLiveCanvas. Default OFF ⇒ production behaviour is byte-identical.
+  // Experimental; removed in Phase 5.
+  useCanvasBinding: boolean;
 }
 
 export const DEFAULT_SETTINGS: LiveShareSettings = {
@@ -57,6 +62,7 @@ export const DEFAULT_SETTINGS: LiveShareSettings = {
   approvalTimeoutSeconds: 60,
   showCanvasCursors: true,
   showCanvasPresence: true,
+  useCanvasBinding: false,
 };
 
 export interface FileCreateOp {

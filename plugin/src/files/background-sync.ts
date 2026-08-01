@@ -12,6 +12,7 @@ import {
   isTextFile,
   normalizeLineEndings,
   normalizePath,
+  skipsAutoTextSync,
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
@@ -22,6 +23,12 @@ const DEBOUNCE_MS = 300;
 // Cap so a continuous incoming stream still flushes to disk at least this often,
 // instead of the trailing debounce resetting on every update and starving it.
 const MAX_WAIT_MS = 500;
+
+// WP6 / US5 AC1+AC2 — the `.canvas` skip consulted by all three event-driven
+// entry points below (`startAll`, `onFileAdded`, `onFileRenamed`) now lives in
+// `utils.ts` beside `isTextFile`, so `manifest.ts`'s `syncFromManifest` consults
+// the SAME predicate instead of growing a fourth private copy. Full rationale,
+// including why `subscribe()` is deliberately NOT guarded, is on the predicate.
 
 export class BackgroundSync {
   private observers = new Map<string, () => void>();
@@ -61,6 +68,8 @@ export class BackgroundSync {
     const entries = this.manifestManager.getEntries();
     for (const [path, entry] of entries) {
       if (!isTextFile(path) || entry.binary) continue;
+      // US5 AC2 — manifest-replay entry point. See `skipsAutoTextSync`.
+      if (skipsAutoTextSync(path)) continue;
       try {
         await this.subscribe(path);
       } catch {
@@ -180,6 +189,10 @@ export class BackgroundSync {
   async onFileAdded(rawPath: string): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
     if (!isTextFile(path)) return;
+    // US5 AC1 — CREATE entry point. A canvas created mid-session must not get a
+    // raw `Y.Text` doc alongside CanvasSync's structured one. See
+    // `skipsAutoTextSync`. Guarded here, not in the three callers.
+    if (skipsAutoTextSync(path)) return;
     await this.subscribe(path);
   }
 
@@ -224,6 +237,15 @@ export class BackgroundSync {
 
     if (!isPathSafe(normNew)) return;
     if (!isTextFile(normNew)) return;
+    // US5 AC1 — RENAME entry point, and the one that is NOT role-gated by its
+    // caller, so every peer observing an unmuted rename would otherwise create
+    // the doc. Deliberately placed AFTER the old path's teardown above (timers,
+    // remoteSeq, observer, releaseDoc) so a rename AWAY from a synced text file
+    // still tears down cleanly, and BEFORE `getDoc(normNew)` so no `Y.Text`
+    // document is ever created for the canvas. Note that this method does not
+    // route through `subscribe()` — it acquires its own doc below — so it needs
+    // its own guard. See `skipsAutoTextSync`.
+    if (skipsAutoTextSync(normNew)) return;
 
     const docHandle = this.syncManager.getDoc(normNew);
     if (!docHandle) return;

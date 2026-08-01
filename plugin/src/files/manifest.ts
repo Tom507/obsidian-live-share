@@ -11,6 +11,7 @@ import {
   isTextFile,
   normalizeLineEndings,
   normalizePath,
+  skipsAutoTextSync,
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
@@ -153,6 +154,24 @@ export class ManifestManager {
       }
 
       if (options?.skipText && !entry.binary && isTextFile(path)) continue;
+
+      // WP6 / US5 AC1 — the FOURTH entry point (F5/F6). The text branch below
+      // materialises a file from its bare-path `Y.Text`, but nothing populates
+      // that doc for a `.canvas` any more: `startAll`, `onFileAdded` and
+      // `onFileRenamed` all skip it, so `tempHandle.text.toString()` is `""` and
+      // the write below would create or overwrite the user's canvas EMPTY.
+      //
+      // Unconditional, NOT gated on `skipText`: only one of the six
+      // `syncFromManifest` call sites in `main.ts` passes it, and the other five
+      // are join / resume / reconnect / reload-from-host. Gating per-caller would
+      // also stop markdown syncing on join, which IS load-bearing — the skip
+      // belongs to the canvas extension, not the caller.
+      //
+      // A canvas's initial file materialisation is `CanvasPersistence.coldOpen`'s
+      // job. The R10 text-fallback case self-materialises inside
+      // `BackgroundSync.subscribe` (its guest branch waits for the host seed and
+      // writes to disk itself), so nothing depends on this branch for a canvas.
+      if (!entry.binary && skipsAutoTextSync(path)) continue;
 
       const localFile = getFileByPath(this.vault, diskPath);
 

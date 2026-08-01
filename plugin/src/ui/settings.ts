@@ -258,6 +258,20 @@ export class LiveShareSettingTab extends PluginSettingTab {
               await this.plugin.saveSettings();
             }),
           );
+      })
+      .addSetting((setting) => {
+        setting
+          .setName("Use new canvas binding (experimental)")
+          .setDesc(
+            "Drive remote canvas updates through the new CRDT binding instead of the " +
+              "legacy reconcile path. Experimental — leave OFF unless testing the redesign.",
+          )
+          .addToggle((toggle) =>
+            toggle.setValue(settings.useCanvasBinding).onChange(async (value) => {
+              settings.useCanvasBinding = value;
+              await this.plugin.saveSettings();
+            }),
+          );
       });
 
     new SettingGroup(containerEl)

@@ -18,7 +18,8 @@
 //     fire — this is the signal-injection fidelity the whole harness turns on.
 //   * Drag target is `canvas.nodeInteractionLayer.target` (`{ id } | null`).
 //   * Selection is `canvas.selection` (a Set of `{ id }`).
-//   * Live viewport is numeric `canvas.x` / `canvas.y` / `canvas.zoom`.
+//   * Live viewport is numeric `canvas.x` / `canvas.y` / `canvas.zoom` / `canvas.scale`,
+//     where `zoom` is `log2(scale)` (0 = 100 %) and `scale` is the linear factor.
 //   * A node has live `id/x/y/width/height` and a `moveAndResize` that mutates them.
 //   * `canvas.setData` / `canvas.requestFrame` / `canvas.requestSave` are the
 //     structural-reload surface (observable here via instrumentation).
@@ -147,7 +148,10 @@ export class DoubleEdge {
 export interface DoubleCanvas {
   nodes: Map<string, DoubleNode>;
   edges: Map<string, DoubleEdge>;
+  /** `log2(scale)` as in Obsidian — 0 is 100 %, not 1. See {@link CanvasDoubleOptions}. */
   zoom: number;
+  /** The linear factor the adapter multiplies by (`2 ** zoom` unless overridden). */
+  scale: number;
   x: number;
   y: number;
   selection: Set<{ id: string }>;
@@ -169,7 +173,14 @@ export interface DoubleView {
 export interface CanvasDoubleOptions {
   nodes?: DoubleNodeRecord[];
   edges?: DoubleEdgeRecord[];
+  /**
+   * Obsidian's `canvas.zoom` — `log2(scale)`, clamped `[-4, 1]`. **Defaults to `0`,
+   * which is 100 %.** (It defaulted to `1` = 200 %, so every harness case silently ran
+   * double-scaled; see US1 AC7.)
+   */
   zoom?: number;
+  /** Explicit linear factor. Defaults to `2 ** zoom`, matching the real controller. */
+  scale?: number;
   x?: number;
   y?: number;
 }
@@ -194,10 +205,15 @@ export class CanvasDouble {
     const edges = new Map<string, DoubleEdge>();
     for (const rec of opts.edges ?? []) edges.set(rec.id, new DoubleEdge(rec));
 
+    // CORRECTED (US1 AC7): the zoom default was `1`, i.e. 200 % in Obsidian, so every
+    // harness case ran double-scaled. `0` is 100 %; `scale` is the linear factor the
+    // adapter actually multiplies by and can be overridden independently.
+    const zoom = opts.zoom ?? 0;
     this.canvas = {
       nodes,
       edges,
-      zoom: opts.zoom ?? 1,
+      zoom,
+      scale: opts.scale ?? 2 ** zoom,
       x: opts.x ?? 0,
       y: opts.y ?? 0,
       selection: new Set<{ id: string }>(),

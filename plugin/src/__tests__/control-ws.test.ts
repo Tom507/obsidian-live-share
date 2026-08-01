@@ -67,6 +67,7 @@ function createSettings(overrides?: Partial<LiveShareSettings>): LiveShareSettin
     approvalTimeoutSeconds: 60,
     showCanvasCursors: true,
     showCanvasPresence: true,
+    useCanvasBinding: false,
     ...overrides,
   };
 }

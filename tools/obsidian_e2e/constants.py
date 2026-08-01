@@ -1,0 +1,257 @@
+"""Shared constants for the real-Obsidian E2E rig — the single owning module (WP43).
+
+Authority: ``workflowArtifacts/canvas-v2/T3_SharedContract.md``. Every value below is
+transcribed **verbatim** from that contract. WP44–WP49 import from here; no other module
+may re-declare any of these values or invent a variant name. If a value here looks wrong,
+the fix is to amend the contract and this file together — never to shadow it locally.
+
+Section markers in the comments (``§2``, ``§3``, …) refer to sections of the contract.
+
+This module is pure data plus three tiny pure helpers. It performs no I/O of any kind
+beyond reading ``%APPDATA%`` from the environment, and it never writes anything.
+"""
+
+from __future__ import annotations
+
+import os
+import secrets
+from datetime import datetime, timezone
+
+# ---------------------------------------------------------------------------
+# §1 — Verified environment facts (given; do not re-derive, do not probe for
+#      alternatives). These describe the owner's machine.
+# ---------------------------------------------------------------------------
+
+OBSIDIAN_EXE_PATH = r"C:\Users\tschm\AppData\Local\Programs\Obsidian\Obsidian.exe"
+OBSIDIAN_EXE_NAME = "Obsidian.exe"
+
+#: Vault registry — ``%APPDATA%\obsidian\obsidian.json``. Shared global state:
+#: **read-only, never rewritten**, not even to reformat (invariant S3, STANDING).
+VAULT_REGISTRY_REL = os.path.join("obsidian", "obsidian.json")
+VAULT_REGISTRY_PATH = os.path.join(
+    os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming"),
+    VAULT_REGISTRY_REL,
+)
+
+#: The owner's two live working vaults. Note the space in vault B — it is load-bearing.
+REAL_VAULT_PATH_A = r"H:\Developement\_NeuralAngels\ObsidianOrga"
+REAL_VAULT_PATH_B = r"H:\Developement\_NeuralAngels\ObsidianOrga - Kopie"
+
+# ---------------------------------------------------------------------------
+# §2 — Roles and identifiers
+# ---------------------------------------------------------------------------
+
+ROLE_A = "a"
+ROLE_B = "b"
+ROLES = (ROLE_A, ROLE_B)  # ordered; index 0 is always the host role
+
+#: Vault path per role — configuration, not a discovery result (WP43 §2 non-goal).
+REAL_VAULT_PATHS = {ROLE_A: REAL_VAULT_PATH_A, ROLE_B: REAL_VAULT_PATH_B}
+
+#: Client ids reused verbatim from the existing headless rig (``two-host-harness.ts``).
+CLIENT_ID_A = "e2e-a"
+CLIENT_ID_B = "e2e-b"
+CLIENT_IDS = {ROLE_A: CLIENT_ID_A, ROLE_B: CLIENT_ID_B}
+
+#: Canvas doc-id scheme, verbatim from ``two-host-harness.ts:34``: ``__canvas__:${path}``.
+CANVAS_DOC_ID_PREFIX = "__canvas__:"
+
+
+def canvas_doc_id(path: str) -> str:
+    """Return the shared-doc id for a canvas path (``__canvas__:<path>``)."""
+    return f"{CANVAS_DOC_ID_PREFIX}{path}"
+
+
+# ---------------------------------------------------------------------------
+# §3 — Ports. The real rig uses a pair disjoint from the headless rig's (D13) so a
+#      stale headless process can never satisfy a real-rig readiness check.
+# ---------------------------------------------------------------------------
+
+HEADLESS_RIG_PORT_A = 39421  # existing, launch_liveshare_e2e.py — unchanged, do not touch
+HEADLESS_RIG_PORT_B = 39422  # existing, launch_liveshare_e2e.py — unchanged, do not touch
+
+REAL_CONTROL_PORT_A = 39431
+REAL_CONTROL_PORT_B = 39432
+REAL_CONTROL_PORTS = {ROLE_A: REAL_CONTROL_PORT_A, ROLE_B: REAL_CONTROL_PORT_B}
+
+# ---------------------------------------------------------------------------
+# §4 — Plugin settings surface (WP44)
+# ---------------------------------------------------------------------------
+
+SETTINGS_PORT_KEY = "e2eControlPort"  # EXISTING hidden loose setting, read by resolvePort()
+PLUGIN_ID = "live-share"  # NOT "obsidian-live-share" — that is the repo folder name
+PLUGIN_DIR_REL = ".obsidian/plugins/live-share"
+PLUGIN_DATA_REL = ".obsidian/plugins/live-share/data.json"
+COMMUNITY_PLUGINS_REL = ".obsidian/community-plugins.json"
+
+#: The built plugin bundle. Presence of this file is what "plugin installed" means.
+PLUGIN_MAIN_REL = ".obsidian/plugins/live-share/main.js"
+
+# Byte-exact backup + provisioning marker — both live INSIDE the plugin dir (S4).
+SETTINGS_BACKUP_REL = ".obsidian/plugins/live-share/data.json.e2e-original"
+PROVISION_MARKER_REL = ".obsidian/plugins/live-share/.e2e-provision.json"
+
+#: Keys of the marker file, so a crashed run is recoverable. It records a sha256 of the
+#: original bytes and **never** the original content itself (S4, STANDING).
+PROVISION_MARKER_FIELDS = (
+    "runId",
+    "role",
+    "port",
+    "hadOriginal",
+    "originalSha256",
+    "pid",
+    "createdAt",
+)
+
+#: §1.1 — the installed build is a *production* build: ``__LS_E2E__`` is false, so
+#: ``./testing/e2e-control`` is tree-shaken out and there is no control server, whatever
+#: port is provisioned. Absence of all of these markers in ``main.js`` means the plugin is
+#: present, possibly enabled, and still structurally incapable of hosting a control
+#: endpoint → :data:`PLUGIN_NOT_E2E_CAPABLE`, never "port not provisioned".
+E2E_BUILD_MARKERS = ("e2eControlPort", "LIVESHARE_E2E", "e2e-control")
+
+# ---------------------------------------------------------------------------
+# §5 — Scratch artefacts (WP47)
+# ---------------------------------------------------------------------------
+
+SCRATCH_FOLDER = "_e2e-rig"  # vault-relative, rig-owned, created and removed per run
+SCRATCH_PREFIX = "e2e-scratch-"
+SCRATCH_EXT = ".canvas"
+
+#: Fingerprint (WP47 AC3) walks the vault excluding these; per file it records
+#: ``(relative_posix_path, size, sha256_of_bytes)`` — hash only, never content (S4).
+FINGERPRINT_EXCLUDED = (SCRATCH_FOLDER, PLUGIN_DIR_REL, ".git", ".trash")
+
+
+def new_run_id() -> str:
+    """Return a fresh run identity: ``<utc timestamp>-<pid>-<6 hex>``.
+
+    Timestamp + pid + 6 random hex means two concurrent runs cannot collide (WP47 AC4).
+    One generator for the whole batch: scratch name, marker file and log correlation all
+    use this and nothing else.
+    """
+    return f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{os.getpid()}-{secrets.token_hex(3)}"
+
+
+def scratch_rel_path(run_id: str) -> str:
+    """Vault-relative path of the scratch canvas for ``run_id`` (§5)."""
+    return f"{SCRATCH_FOLDER}/{SCRATCH_PREFIX}{run_id}{SCRATCH_EXT}"
+
+
+# ---------------------------------------------------------------------------
+# §6 — Control protocol. ``node:http`` on 127.0.0.1; POST /command -> {cmd, args},
+#      GET /events -> SSE. Existing command names are reused verbatim, never renamed.
+# ---------------------------------------------------------------------------
+
+CONTROL_HOST = "127.0.0.1"
+CONTROL_COMMAND_PATH = "/command"
+CONTROL_EVENTS_PATH = "/events"
+
+CMD_SESSION_INFO = "session.info"
+CMD_CANVAS_OPEN = "canvas.open"
+CMD_CANVAS_STATE = "canvas.state"
+CMD_CANVAS_BINDING = "canvas.binding"
+CMD_CANVAS_SIMULATE_EDIT = "canvas.simulateEdit"
+CMD_CANVAS_SET_FLAG = "canvas.setFlag"
+CMD_SYNC_WAIT_QUIESCENT = "sync.waitQuiescent"
+
+SYNC_WAIT_QUIESCENT_DEFAULT_TIMEOUT_MS = 2000
+
+# §6.1 — commands ADDED in this batch (exact names, pinned)
+CMD_SCRATCH_CREATE = "scratch.create"  # WP47
+CMD_SCRATCH_REMOVE = "scratch.remove"  # WP47
+CMD_CANVAS_FILE = "canvas.file"  # WP49 — read-back only; never writes or touches mtime
+
+# ---------------------------------------------------------------------------
+# §6.2 — ``session.info`` fields. The first four keep their existing names and
+#        semantics; the last five are added by WP46.
+# ---------------------------------------------------------------------------
+
+SESSION_INFO_CLIENT_ID = "clientId"
+SESSION_INFO_ROLE = "role"
+SESSION_INFO_ROOM_ID = "roomId"
+SESSION_INFO_CONNECTED = "connected"
+
+SESSION_INFO_VAULT_ID = "vaultId"
+SESSION_INFO_VAULT_NAME = "vaultName"
+SESSION_INFO_VAULT_PATH = "vaultPath"
+SESSION_INFO_PLUGIN_BUILD = "pluginBuild"
+SESSION_INFO_CANVAS_SURFACE = "canvasSurface"
+
+SESSION_INFO_FIELDS = (
+    SESSION_INFO_CLIENT_ID,
+    SESSION_INFO_ROLE,
+    SESSION_INFO_ROOM_ID,
+    SESSION_INFO_CONNECTED,
+    SESSION_INFO_VAULT_ID,
+    SESSION_INFO_VAULT_NAME,
+    SESSION_INFO_VAULT_PATH,
+    SESSION_INFO_PLUGIN_BUILD,
+    SESSION_INFO_CANVAS_SURFACE,
+)
+
+# ---------------------------------------------------------------------------
+# §7 — Named failure reasons. One enum, all WPs use it. Every abort names exactly one
+#      of these; no WP invents an ad-hoc reason string and no abort is reported as a
+#      bare exception.
+# ---------------------------------------------------------------------------
+
+VAULT_NOT_IN_REGISTRY = "VAULT_NOT_IN_REGISTRY"  # WP43 AC1
+VAULT_PATH_MISSING = "VAULT_PATH_MISSING"  # WP43 AC1
+PLUGIN_MISSING = "PLUGIN_MISSING"  # WP43 AC2
+PLUGIN_PRESENT_BUT_DISABLED = "PLUGIN_PRESENT_BUT_DISABLED"  # WP43 AC2 — distinct state
+PLUGIN_NOT_E2E_CAPABLE = "PLUGIN_NOT_E2E_CAPABLE"  # §1.1 — production build, no control server
+SETTINGS_RESTORE_MISMATCH = "SETTINGS_RESTORE_MISMATCH"  # WP44 AC2 — non-byte-exact restore
+PROVISION_CONFLICT = "PROVISION_CONFLICT"  # WP44 AC3
+LAUNCH_EXECUTABLE_MISSING = "LAUNCH_EXECUTABLE_MISSING"  # WP45 AC3
+RESTART_REQUIRED_OPERATOR = "RESTART_REQUIRED_OPERATOR"  # WP45 AC2 — stop and instruct
+READINESS_TIMEOUT = "READINESS_TIMEOUT"  # WP46 AC2/AC3
+IDENTITY_SAME_VAULT = "IDENTITY_SAME_VAULT"  # WP46 AC2 — both endpoints, same vault
+IDENTITY_UNKNOWN_VAULT = "IDENTITY_UNKNOWN_VAULT"  # WP46 AC3 — not one of the two configured
+ROOM_MISMATCH = "ROOM_MISMATCH"  # WP46 AC2
+ENDPOINT_LOST_MIDRUN = "ENDPOINT_LOST_MIDRUN"  # WP48 AC3
+FINGERPRINT_MISMATCH = "FINGERPRINT_MISMATCH"  # WP47 AC3 — vault changed; fails the run
+SCRATCH_STALE_UNRECLAIMED = "SCRATCH_STALE_UNRECLAIMED"  # WP47 AC4 / WP48 AC4
+DOC_CONVERGED_FILE_DIVERGED = "DOC_CONVERGED_FILE_DIVERGED"  # WP49 AC2 — the D17 defect class
+WAIT_TIMEOUT = "WAIT_TIMEOUT"  # WP48 AC2 — always names the awaited condition
+
+#: Every named failure reason, for validation ("is this a sanctioned reason?").
+FAILURE_REASONS = (
+    VAULT_NOT_IN_REGISTRY,
+    VAULT_PATH_MISSING,
+    PLUGIN_MISSING,
+    PLUGIN_PRESENT_BUT_DISABLED,
+    PLUGIN_NOT_E2E_CAPABLE,
+    SETTINGS_RESTORE_MISMATCH,
+    PROVISION_CONFLICT,
+    LAUNCH_EXECUTABLE_MISSING,
+    RESTART_REQUIRED_OPERATOR,
+    READINESS_TIMEOUT,
+    IDENTITY_SAME_VAULT,
+    IDENTITY_UNKNOWN_VAULT,
+    ROOM_MISMATCH,
+    ENDPOINT_LOST_MIDRUN,
+    FINGERPRINT_MISMATCH,
+    SCRATCH_STALE_UNRECLAIMED,
+    DOC_CONVERGED_FILE_DIVERGED,
+    WAIT_TIMEOUT,
+)
+
+#: Not a failure — the healthy plugin state. §7 enumerates only failure reasons, but a
+#: state field needs a value for the good case too. WP43-owned like everything else here;
+#: consumers import it rather than testing ``state is None``.
+PLUGIN_OK = "PLUGIN_OK"
+
+# ---------------------------------------------------------------------------
+# §8 — Entrypoints / rig kind (D13). A run record produced by the headless rig must be
+#      structurally impossible to mistake for a real run record.
+# ---------------------------------------------------------------------------
+
+RIG_KIND_HEADLESS_MOCK = "headless-mock"
+RIG_KIND_REAL_OBSIDIAN = "real-obsidian"
+
+# ---------------------------------------------------------------------------
+# §9 — Vault opening uses the Obsidian URI with the vault name URL-encoded (WP45 AC3).
+# ---------------------------------------------------------------------------
+
+OBSIDIAN_OPEN_URI_TEMPLATE = "obsidian://open?vault={vault}"

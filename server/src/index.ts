@@ -9,7 +9,12 @@ import rateLimit from "express-rate-limit";
 import { closeAuditLog, getLogs, initAuditLog } from "./audit-log.js";
 import { createControlWSS } from "./control-handler.js";
 import { createAuthRouter, verifyJWT } from "./github-auth.js";
-import { type Persistence, getDefaultPersistence } from "./persistence.js";
+import {
+  type BlobStore,
+  type Persistence,
+  createLevelBlobStore,
+  getDefaultPersistence,
+} from "./persistence.js";
 import { getRoom, initRooms, reapStaleRooms, roomRouter } from "./rooms.js";
 import { safeTokenCompare } from "./util.js";
 import { createYjsWSS } from "./ws-handler.js";
@@ -20,6 +25,10 @@ const SERVER_PASSWORD = process.env.SERVER_PASSWORD || "";
 export function createApp(
   persistence?: Persistence,
   externalServer?: Server,
+  // WP41: opaque per-roomId:docId frame store. Defaults to the opt-out store, so
+  // tests and embedders keep a purely in-flight relay unless they ask for
+  // retention (the noopPersistence precedent).
+  blobStore?: BlobStore,
 ): {
   app: express.Express;
   server: Server;
@@ -55,7 +64,7 @@ export function createApp(
 
   const server = externalServer ?? createServer(app);
 
-  const yjs = createYjsWSS();
+  const yjs = createYjsWSS(blobStore);
   const control = createControlWSS({
     onPermissionChange: (roomId, userId, permission) => {
       yjs.updatePermission(roomId, userId, permission);
@@ -179,6 +188,7 @@ export function createApp(
     yjs.closeAll();
     await closeAuditLog();
     if (persistence) await persistence.close();
+    if (blobStore) await blobStore.close();
     server.close();
   }
 
@@ -189,6 +199,9 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(imp
 
 if (isMain) {
   const persistence = getDefaultPersistence();
+  // WP41: the relay keeps the frames it relays so a room survives the absence of
+  // all peers. Its own LevelDB path — the room database is a separate store.
+  const blobStore = createLevelBlobStore(process.env.BLOB_STORE_PATH || "./data/frames");
   initAuditLog();
   initRooms(persistence)
     .then(async () => {
@@ -203,12 +216,12 @@ if (isMain) {
           cert: readFileSync(TLS_CERT),
           key: readFileSync(TLS_KEY),
         });
-        const appSetup = createApp(persistence, tlsServer);
+        const appSetup = createApp(persistence, tlsServer, blobStore);
         tlsServer.on("request", appSetup.app);
         server = tlsServer;
         shutdown = appSetup.shutdown;
       } else {
-        const appSetup = createApp(persistence);
+        const appSetup = createApp(persistence, undefined, blobStore);
         server = appSetup.server;
         shutdown = appSetup.shutdown;
       }

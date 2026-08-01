@@ -7,19 +7,27 @@ import * as Y from "yjs";
 import type { LiveShareSettings } from "../types";
 import { normalizePath, toWsUrl } from "../utils";
 import type { E2ECrypto } from "./crypto";
+import type { CheckpointTriggerReason, ReplayEndReason } from "./mux-protocol";
 import {
   MUX_AWARENESS,
   MUX_AWARENESS_ENCRYPTED,
+  MUX_CHECKPOINT,
   MUX_PING,
   MUX_PONG,
+  MUX_REPLAY_END,
   MUX_SUBSCRIBE,
   MUX_SUBSCRIBED,
   MUX_SYNC,
   MUX_SYNC_ENCRYPTED,
   MUX_SYNC_REQUEST,
   MUX_UNSUBSCRIBE,
+  createReplayGate,
+  decodeCheckpointBody,
   decodeMuxMessage,
+  decodeReplayEndBody,
+  encodeCheckpointBody,
   encodeMuxMessage,
+  shouldEmitCheckpoint,
 } from "./mux-protocol";
 
 const SYNC_STEP2 = 1;
@@ -30,13 +38,59 @@ const MAX_RECONNECT_ATTEMPTS = 15;
 // protocol-level pings, so a half-dead socket (no FIN) is otherwise undetectable.
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const PONG_TIMEOUT_MS = 10_000;
-// Awareness heartbeat: periodically re-assert the FULL local awareness state
+// Awareness keep-alive: periodically re-assert the FULL local awareness state
 // (caret + any extra fields such as `lockedNodes`) so peers keep rendering a
 // static caret and never prune it under y-protocols' 30 s outdated-timeout.
-// Must be < 30 s; target 10-15 s. Ticks the awareness Lamport clock via
-// setLocalState(getLocalState()), which bumps the clock so peers refresh their
-// `lastUpdated` — a bare re-encode at the same clock would be a no-op on peers.
-export const AWARENESS_HEARTBEAT_INTERVAL_MS = 12_000;
+// Ticks the awareness Lamport clock via setLocalState(getLocalState()), which
+// bumps the clock so peers refresh their `lastUpdated` — a bare re-encode at the
+// same clock would be a no-op on peers.
+//
+// The keep-alive is NOT a fixed-period timer: a fixed period only holds while
+// every tick fires on schedule, and Chromium throttles timers in occluded
+// windows to 1 Hz and then to roughly 1/min. IF a tick were to slip past the
+// 30 s outdated-timeout, every peer would prune this client's awareness state —
+// and the canvas locks live only inside that state. The pulse is therefore
+// driven by an ABSOLUTE-TIME DEADLINE: `lastPulseAt` is compared against the
+// wall clock and a pulse is emitted at the first OPPORTUNITY after
+// AWARENESS_PULSE_DEADLINE_MS has elapsed. There are two kinds of opportunity:
+//   (a) a short tick every AWARENESS_TICK_INTERVAL_MS, and
+//   (b) EVERY inbound framed mux message — socket delivery is not
+//       timer-throttled, so the first packet after a throttled window is what
+//       actually recovers liveness.
+// With tick period T and deadline D the worst-case gap between two pulses while
+// ticks fire on schedule is T + D = 4 000 + 8 000 = 12 000 ms < 30 000 ms.
+// No claim is made here about which mechanism causes a real-world gap: the gap
+// is measured on every pulse and warned above AWARENESS_GAP_WARN_MS, so a
+// keep-alive gap that approaches the 30 s prune window is observable in the log.
+export const AWARENESS_TICK_INTERVAL_MS = 4_000;
+export const AWARENESS_PULSE_DEADLINE_MS = 8_000;
+// Warn threshold for a measured pulse gap. Above the healthy worst case
+// (T + D = 12 000 ms) and 10 000 ms below y-protocols' 30 s prune window, so the
+// warn is recorded before peers could have pruned this client.
+export const AWARENESS_GAP_WARN_MS = 20_000;
+/**
+ * Worst-case bound (T + D) on the interval between two awareness pulses while
+ * ticks fire on schedule. Still exported, and still 12 000 ms, for existing
+ * importers — but it is a BOUND now, not the timer period.
+ */
+export const AWARENESS_HEARTBEAT_INTERVAL_MS =
+  AWARENESS_TICK_INTERVAL_MS + AWARENESS_PULSE_DEADLINE_MS;
+
+/** y-protocols' default awareness outdated-timeout; peers prune past this. */
+const AWARENESS_OUTDATED_TIMEOUT_MS = 30_000;
+
+/**
+ * Minimal structural logger so SyncManager can narrate keep-alive liveness into
+ * the status console without importing the concrete DebugLogger (avoids a
+ * cycle). Mirrors CanvasSyncLogger.
+ */
+export interface SyncLogger {
+  debug(category: string, message: string): void;
+  warn(category: string, message: string): void;
+}
+
+/** Which opportunity emitted a pulse — the diagnostic half of the gap log. */
+export type AwarenessPulseSource = "tick" | "message" | "manual";
 
 export interface DocHandle {
   doc: Y.Doc;
@@ -70,10 +124,31 @@ export class SyncManager {
   private onReconnectCallback: ((docIds: string[]) => void) | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  // Short deadline-evaluation tick (period T). It does NOT pulse on every fire —
+  // it asks whether the absolute deadline has expired.
   private awarenessHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  // Absolute-time baseline for the keep-alive deadline. `null` means no pulse has
+  // been recorded for the current socket, which counts as "deadline expired" so
+  // the first opportunity pulses.
+  private lastPulseAt: number | null = null;
+  private logger: SyncLogger | null = null;
   // True once a socket has successfully opened at least once, so we can tell a
   // reconnect apart from the first connect.
   private hasEverConnected = false;
+  // WP42: the replay readiness barrier. Frames that arrive between MUX_SUBSCRIBED
+  // and the relay's MUX_REPLAY_END are held, then released at once in arrival
+  // order, so the doc is never observed half-replayed.
+  private replayGate = createReplayGate();
+  // docId -> highest replayed relay seq. A recorded entry IS the blob-support
+  // signal: a WP41 relay terminates every subscribe with a marker (even with
+  // lastSeq 0), a legacy relay never sends one.
+  private relayLastSeq = new Map<string, number>();
+  // Any marker seen on this manager proves the relay understands blobs, which
+  // retires the legacy safety valve in handleMessage.
+  private relaySupportsBlobs = false;
+  // Last peer count announced with MUX_SUBSCRIBED, for the sole-peer trigger.
+  private peerCounts = new Map<string, number>();
+  private updatesSinceCheckpoint = new Map<string, number>();
 
   constructor(settings: LiveShareSettings) {
     this.settings = settings;
@@ -81,6 +156,14 @@ export class SyncManager {
 
   setE2E(e2e: E2ECrypto | null): void {
     this.e2e = e2e;
+  }
+
+  /**
+   * Attach the status-console logger so keep-alive gaps are recorded (US6). Until
+   * one is attached the gap is still measured, it is just not reported anywhere.
+   */
+  setLogger(logger: SyncLogger): void {
+    this.logger = logger;
   }
 
   onMaxReconnect(callback: () => void): void {
@@ -160,6 +243,10 @@ export class SyncManager {
     this.synced.set(filePath, false);
 
     const updateHandler = (update: Uint8Array, origin: unknown) => {
+      // WP42: every update that lands in the doc is one more delta the relay has
+      // to store, whoever authored it — that count, never a clock, is what drives
+      // the checkpoint threshold.
+      this.countUpdateForCheckpoint(filePath);
       if (origin === this) return;
       const syncEncoder = encoding.createEncoder();
       syncProtocol.writeUpdate(syncEncoder, update);
@@ -192,6 +279,12 @@ export class SyncManager {
   releaseDoc(rawPath: string): void {
     const filePath = normalizePath(rawPath);
 
+    // WP42: hand the relay one compacted frame before we leave, so the next
+    // client to enter the room replays a checkpoint instead of the whole delta
+    // history. Must precede the unsubscribe — the relay only accepts a
+    // checkpoint from a client still in the room.
+    this.maybeEmitCheckpoint(filePath, "release");
+
     this.sendUnsubscribe(filePath);
 
     const awareness = this.awarenessMap.get(filePath);
@@ -215,6 +308,12 @@ export class SyncManager {
 
     this.synced.delete(filePath);
     this.syncListeners.delete(filePath);
+
+    // WP42: drop this doc's replay bookkeeping with the doc itself.
+    this.replayGate.endReplay(filePath, "unsupported");
+    this.relayLastSeq.delete(filePath);
+    this.peerCounts.delete(filePath);
+    this.updatesSinceCheckpoint.delete(filePath);
   }
 
   waitForSync(rawPath: string, timeoutMs = 10_000): Promise<void> {
@@ -305,6 +404,10 @@ export class SyncManager {
       this.stopHeartbeat();
       this.onConnectionChangeCallback?.(false);
       for (const filePath of this.docs.keys()) {
+        // WP42: the socket died mid-batch — hand what did arrive to the doc
+        // rather than stranding it in the buffer; the resubscribe on reconnect
+        // opens a fresh barrier.
+        this.closeReplayBarrier(filePath, "unsupported");
         this.setSynced(filePath, false);
       }
       if (this.shouldConnect) {
@@ -338,6 +441,53 @@ export class SyncManager {
   private handleMessage(data: Uint8Array): void {
     const { docId, msgType, payload } = decodeMuxMessage(data);
 
+    // Every inbound framed message (MUX_SYNC / MUX_AWARENESS / MUX_PONG / any
+    // other) is an opportunity to evaluate the keep-alive deadline. Socket
+    // delivery is not timer-throttled, so this is the path that emits a pulse on
+    // the first packet after a period in which no tick fired.
+    this.tickAwarenessKeepAlive("message");
+
+    // WP42: a marker proves this relay stores blobs — even one with lastSeq 0,
+    // which is "capable but empty", not "no support". Recorded before the gate
+    // sees the frame so it also counts when the barrier is already closed and the
+    // marker arrives as a stray.
+    if (msgType === MUX_REPLAY_END) {
+      this.relaySupportsBlobs = true;
+      this.relayLastSeq.set(docId, decodeReplayEndBody(payload).lastSeq);
+    } else if (
+      !this.relaySupportsBlobs &&
+      this.replayGate.isReplaying(docId) &&
+      this.completesInitialSync(msgType, payload)
+    ) {
+      // Legacy-relay safety valve (AC3): a pre-WP41 relay never terminates the
+      // batch, so an optimistically opened barrier would also hold the very frame
+      // that completes the sync — and setSynced, the documented close trigger,
+      // would never run. Releasing on that frame keeps arrival order (the buffer
+      // is dispatched first) and needs no timer and no timing constant. Retired
+      // for good as soon as any marker has proven the relay is WP41-capable.
+      this.closeReplayBarrier(docId, "unsupported");
+    }
+
+    // The barrier: while a replay batch is open this returns [], and at the
+    // marker it returns the whole batch at once, in arrival order.
+    for (const frame of this.replayGate.accept({ docId, msgType, payload })) {
+      this.dispatchFrame(frame.docId, frame.msgType, frame.payload);
+    }
+
+    if (msgType === MUX_REPLAY_END) {
+      // The doc is now up to date with everything the relay had stored, so this
+      // is the point at which a sole peer can compact that history away.
+      this.maybeEmitCheckpoint(docId, "sole-peer-sync");
+    }
+  }
+
+  /**
+   * WP42: the frames the replay barrier has released, plus every frame that
+   * arrives outside a batch, take exactly the pre-WP42 dispatch path — replayed
+   * and live traffic are indistinguishable by design (WP41 replays under the
+   * original msgType), so there is one route, not two.
+   */
+  private dispatchFrame(docId: string, msgType: number, payload: Uint8Array): void {
     switch (msgType) {
       case MUX_SUBSCRIBED:
         this.handleSubscribed(docId, payload);
@@ -357,10 +507,95 @@ export class SyncManager {
       case MUX_AWARENESS_ENCRYPTED:
         void this.handleAwarenessEncrypted(docId, payload);
         break;
+      case MUX_CHECKPOINT:
+        this.handleCheckpoint(docId, payload);
+        break;
       case MUX_PONG:
         this.clearPongDeadline();
         break;
     }
+  }
+
+  /**
+   * WP42: a replayed checkpoint. WP41 stores the checkpoint's OPAQUE TAIL, so the
+   * payload that comes back is the bare Yjs update; the enveloped form is
+   * tolerated as well. Anything unparseable is dropped silently — an unreadable
+   * checkpoint is a persistence detail and must never surface to the user.
+   * Applied with `this` as the origin, so it is not echoed back to the relay.
+   */
+  private handleCheckpoint(docId: string, payload: Uint8Array): void {
+    const doc = this.docs.get(docId);
+    if (!doc || payload.length === 0) return;
+    try {
+      Y.applyUpdate(doc, payload, this);
+    } catch {
+      try {
+        const { payload: update } = decodeCheckpointBody(payload);
+        if (update.length > 0) Y.applyUpdate(doc, update, this);
+      } catch {
+        // Not a checkpoint this build can read — ignore it, exactly as an older
+        // peer ignores a frame type it does not know.
+      }
+    }
+  }
+
+  /**
+   * True for the sync frame that completes the initial handshake (SYNC_STEP2).
+   * The sync sub-type is the first varUint of the payload and stays in cleartext
+   * even for MUX_SYNC_ENCRYPTED, so no decryption is needed to recognise it.
+   */
+  private completesInitialSync(msgType: number, payload: Uint8Array): boolean {
+    if (msgType !== MUX_SYNC && msgType !== MUX_SYNC_ENCRYPTED) return false;
+    return payload.length > 0 && payload[0] === SYNC_STEP2;
+  }
+
+  /**
+   * WP42: close an open replay barrier and dispatch everything it held, in
+   * arrival order. A no-op when no batch is open, so it is safe to call from
+   * every completion path.
+   */
+  private closeReplayBarrier(docId: string, reason: ReplayEndReason): void {
+    if (!this.replayGate.isReplaying(docId)) return;
+    const release = this.replayGate.endReplay(docId, reason);
+    for (const frame of release.frames) {
+      this.dispatchFrame(frame.docId, frame.msgType, frame.payload);
+    }
+  }
+
+  /** WP42: one more stored delta for this doc; may cross the checkpoint threshold. */
+  private countUpdateForCheckpoint(docId: string): void {
+    this.updatesSinceCheckpoint.set(docId, (this.updatesSinceCheckpoint.get(docId) ?? 0) + 1);
+    this.maybeEmitCheckpoint(docId, "update-threshold");
+  }
+
+  /**
+   * WP42 (AC1): emit the full doc state as ONE update on a documented trigger.
+   *
+   * Silent no-op when the relay cannot store it (AC3) — and in an E2E room, where
+   * a checkpoint would hand the relay a plaintext Yjs update; the room keeps
+   * working over the sidecar + peer path instead.
+   */
+  private maybeEmitCheckpoint(docId: string, reason: CheckpointTriggerReason): void {
+    const doc = this.docs.get(docId);
+    if (!doc || this.e2e?.enabled) return;
+
+    const lastSeq = this.relayLastSeq.get(docId);
+    const emit = shouldEmitCheckpoint({
+      reason,
+      peerCount: this.peerCounts.get(docId) ?? 0,
+      updatesSinceCheckpoint: this.updatesSinceCheckpoint.get(docId) ?? 0,
+      // An empty doc encodes a one-byte state vector: nothing worth carrying.
+      hasLocalState: Y.encodeStateVector(doc).length > 1,
+      relayBlobSupport: lastSeq !== undefined,
+    });
+    if (!emit) return;
+
+    this.sendMux(
+      docId,
+      MUX_CHECKPOINT,
+      encodeCheckpointBody(lastSeq ?? 0, Y.encodeStateAsUpdate(doc)),
+    );
+    this.updatesSinceCheckpoint.set(docId, 0);
   }
 
   private startHeartbeat(): void {
@@ -377,9 +612,13 @@ export class SyncManager {
         this.ws?.close();
       }, PONG_TIMEOUT_MS);
     }, HEARTBEAT_INTERVAL_MS);
+    // Baseline the deadline on the socket we just opened, so a socket OUTAGE is
+    // not reported as a keep-alive gap: this metric measures pulse liveness on an
+    // OPEN socket, and the reconnect path (ws.onopen) has its own clock-tick.
+    this.lastPulseAt = Date.now();
     this.awarenessHeartbeatTimer = setInterval(() => {
-      this.pulseAwarenessHeartbeat();
-    }, AWARENESS_HEARTBEAT_INTERVAL_MS);
+      this.tickAwarenessKeepAlive("tick");
+    }, AWARENESS_TICK_INTERVAL_MS);
   }
 
   private stopHeartbeat(): void {
@@ -391,19 +630,62 @@ export class SyncManager {
       clearInterval(this.awarenessHeartbeatTimer);
       this.awarenessHeartbeatTimer = null;
     }
+    this.lastPulseAt = null;
     this.clearPongDeadline();
   }
 
   /**
-   * Re-emit the full local awareness state for every subscribed doc. Driven by
-   * the awareness heartbeat timer, but also callable directly (WP5 latency
-   * harness / unit tests) to pulse a heartbeat deterministically without waiting
-   * on wall-clock time. No-op while the socket is not OPEN.
+   * Re-emit the full local awareness state for every subscribed doc. Callable
+   * directly (WP5 latency harness / unit tests) to pulse a heartbeat
+   * deterministically without waiting on wall-clock time. UNCONDITIONAL by
+   * contract: every call pulses. No-op while the socket is not OPEN.
    */
   pulseAwarenessHeartbeat(): void {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
+    this.emitAwarenessPulse(Date.now(), "manual");
+  }
+
+  /**
+   * Deadline-driven keep-alive tick. Public so the deadline path is testable with
+   * fake timers and no wall-clock wait. Unlike {@link pulseAwarenessHeartbeat}
+   * this is CONDITIONAL: it pulses only when the absolute deadline has expired,
+   * so it is safe to call on every opportunity — the interval tick and every
+   * inbound framed message. Returns true when a pulse was emitted.
+   */
+  tickAwarenessKeepAlive(source: AwarenessPulseSource = "tick"): boolean {
+    if (this.ws?.readyState !== WebSocket.OPEN) return false;
+    const now = Date.now();
+    if (this.lastPulseAt !== null && now - this.lastPulseAt < AWARENESS_PULSE_DEADLINE_MS) {
+      return false;
+    }
+    this.emitAwarenessPulse(now, source);
+    return true;
+  }
+
+  /**
+   * One pulse: re-emit the full local awareness state for every subscribed doc,
+   * then record the gap since the previous pulse. Callers guarantee the socket is
+   * OPEN. The gap is reported as an observation only — a gap of this size was
+   * measured between two keep-alive pulses — and asserts nothing about its cause.
+   */
+  private emitAwarenessPulse(now: number, source: AwarenessPulseSource): void {
+    const previous = this.lastPulseAt;
+    this.lastPulseAt = now;
     for (const docId of this.awarenessMap.keys()) {
       this.reemitLocalAwareness(docId);
+    }
+    // No previous pulse on this socket → there is no gap to measure yet.
+    if (previous === null) return;
+    const gap = now - previous;
+    if (gap > AWARENESS_GAP_WARN_MS) {
+      this.logger?.warn(
+        "sync",
+        `AWARENESS GAP: ${gap}ms since the previous awareness pulse ` +
+          `(source=${source}, warn threshold ${AWARENESS_GAP_WARN_MS}ms, ` +
+          `prune window ${AWARENESS_OUTDATED_TIMEOUT_MS}ms)`,
+      );
+    } else {
+      this.logger?.debug("sync", `awareness pulse: gap ${gap}ms (source=${source})`);
     }
   }
 
@@ -418,6 +700,13 @@ export class SyncManager {
     const doc = this.docs.get(docId);
     if (!doc) return;
 
+    // WP42 (AC2): open the barrier BEFORE anything else can arrive for this doc.
+    // A WP41 relay sends MUX_SUBSCRIBED first and only then the stored batch, so
+    // this is the last moment at which the batch can still be held as a whole.
+    // Optimistic by necessity — blob support is only provable by the marker that
+    // ends the batch.
+    this.replayGate.beginReplay(docId);
+
     const syncEncoder = encoding.createEncoder();
     syncProtocol.writeSyncStep1(syncEncoder, doc);
     this.sendMux(docId, MUX_SYNC, encoding.toUint8Array(syncEncoder));
@@ -427,6 +716,8 @@ export class SyncManager {
       const decoder = decoding.createDecoder(payload);
       peerCount = decoding.readVarUint(decoder);
     }
+
+    this.peerCounts.set(docId, peerCount);
 
     if (peerCount === 0) {
       this.setSynced(docId, true);
@@ -532,6 +823,14 @@ export class SyncManager {
   private setSynced(docId: string, value: boolean): void {
     const prev = this.synced.get(docId);
     this.synced.set(docId, value);
+    // WP42 (AC3): the documented fallback release. A WP41 relay closes the
+    // barrier with its marker; a legacy relay never does, so sync completion is
+    // what ends the batch instead — no timer, no timing constant, and the buffer
+    // is dispatched before any waitForSync listener runs, so nothing observes a
+    // half-replayed doc and nothing is surfaced to the user.
+    if (value) {
+      this.closeReplayBarrier(docId, "unsupported");
+    }
     if (value && !prev) {
       const listeners = this.syncListeners.get(docId);
       if (listeners) {
@@ -555,6 +854,10 @@ export class SyncManager {
     } else if (msgType === MUX_AWARENESS) {
       this.sendQueue = this.sendQueue.then(() => this.sendEncryptedAwareness(docId, payload));
     } else {
+      // Non-encrypted passthrough: control frames plus WP42's MUX_CHECKPOINT and
+      // MUX_REPLAY_END. A checkpoint carries a Yjs update, so in an E2E room none
+      // is emitted at all (see maybeEmitCheckpoint) and this branch never carries
+      // plaintext document state.
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(encodeMuxMessage(docId, msgType, payload));
       }

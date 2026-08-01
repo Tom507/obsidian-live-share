@@ -10,7 +10,10 @@
 //       - `canvas.setDragging(bool)`   → drag start/end; hovered node is
 //         `canvas.nodeInteractionLayer?.target`.
 //       - `canvas.markViewportChanged()` → every pan/zoom → reposition overlay.
-//   * LIVE viewport is `canvas.x`, `canvas.y`, `canvas.zoom` (linear). `tx/ty/tZoom`
+//   * LIVE viewport is `canvas.x`, `canvas.y`, `canvas.zoom` — and `canvas.zoom` is
+//     NOT a multiplier: it is `log2(scale)`, clamped to `[-4, 1]` (so 0 = 100 %,
+//     -1 = 50 %, 1 = 200 %). The LINEAR factor is `canvas.scale` (`2 ** zoom`), and
+//     that is what every screen transform must multiply by. `tx/ty/tZoom`
 //     are ANIMATION TARGETS — never used for live rendering.
 //   * `canvas.posFromEvt(evt)` maps a client point to canvas space (preferred);
 //     manual fallback uses `canvas.wrapperEl.getBoundingClientRect()`.
@@ -21,12 +24,32 @@
 // The adapter degrades gracefully: when a member is missing `isAvailable()` is
 // false and the hooks become no-ops — the trigger for the DIFF-INFERRED FALLBACK
 // (lock on first node-key change) in canvas-sync.ts, a real, tested path.
+//
+// TWO STATES THIS FILE MAKES UNREACHABLE (both are observable in the log, neither
+// is a claim about any particular reported symptom):
+//   1. A drag flag that stays set forever. `isBusy()` is an INACTIVITY predicate
+//      bounded by DRAG_WATCHDOG_MS, not a raw flag read, and every consulting path
+//      goes through the same seam. Release emits `DRAG WATCHDOG:`.
+//   2. An adapter with no patches. `patch()` ADOPTS a wrapper another adapter over
+//      the same `view.canvas` already installed instead of returning early, so the
+//      newest adapter always owns the patch. Mount outcome emits `ADAPTER PATCH:`.
 
-// Live viewport transform (linear zoom). Read from canvas.x / canvas.y / canvas.zoom.
+// Live viewport transform. Read from canvas.x / canvas.y / canvas.zoom / canvas.scale.
 export interface CanvasViewport {
   x: number;
   y: number;
+  /**
+   * Obsidian's `canvas.zoom` — `log2(scale)`, clamped to `[-4, 1]`. It is a
+   * LOGARITHMIC value, never a multiplier: 0 = 100 %, -1 = 50 %, 1 = 200 %.
+   * Multiplying a canvas-space offset by it is a bug (0 collapses, negatives mirror).
+   */
   zoom: number;
+  /**
+   * The LINEAR scale factor as Obsidian reports it (`canvas.scale`). Absent when the
+   * private shape does not expose it; callers then derive `2 ** zoom`. Use
+   * {@link viewportScale} rather than reading this directly.
+   */
+  scale?: number;
 }
 
 export interface CanvasAdapter {
@@ -54,7 +77,13 @@ export interface CanvasAdapter {
   getLiveEdgeIds(): Set<string>;
   /** Live geometry of a node (canvas coords) or null if the node/coords are absent. */
   getNodeGeometry(nodeId: string): NodeGeometry | null;
-  /** True while the user is actively dragging a node (reconciliation must defer). */
+  /**
+   * True while the user is actively dragging a node (reconciliation must defer).
+   * INACTIVITY predicate, not a raw flag: true only while the drag flag is set AND a
+   * drag-related signal arrived within the last {@link DRAG_WATCHDOG_MS}. Consulting
+   * it is also what releases a flag that stopped being refreshed, so a `setDragging`
+   * pair that never closes cannot keep reconciliation switched off indefinitely.
+   */
   isBusy(): boolean;
   /**
    * Reposition/resize a LIVE node to match synced geometry. Never touches a node
@@ -96,9 +125,20 @@ export interface ScreenRect {
 }
 
 /**
+ * The LINEAR scale factor of a viewport — the only value a screen transform may
+ * multiply by. Prefers `canvas.scale` (what Obsidian itself renders with) and falls
+ * back to `2 ** zoom`, which is the same number because Obsidian defines
+ * `zoom = log2(scale)`. A non-finite `scale` is treated as absent (shape drift).
+ */
+export function viewportScale(vp: CanvasViewport): number {
+  return typeof vp.scale === "number" && Number.isFinite(vp.scale) ? vp.scale : 2 ** vp.zoom;
+}
+
+/**
  * Canvas-space → screen point relative to the wrapper element. Mirrors Obsidian's
- * transform: `s = (c - origin) * zoom + halfSize`. Because the overlay div is a
- * child of wrapperEl, the wrapper's own left/top are NOT added (coords are
+ * own `domFromPos`: `s = (c - origin) * scale + halfSize`, where `scale` is the
+ * LINEAR factor ({@link viewportScale}) and NOT `canvas.zoom`. Because the overlay
+ * div is a child of wrapperEl, the wrapper's own left/top are NOT added (coords are
  * already wrapper-relative).
  */
 export function canvasToScreenRel(
@@ -107,15 +147,17 @@ export function canvasToScreenRel(
   vp: CanvasViewport,
   size: { width: number; height: number },
 ): { x: number; y: number } {
+  const scale = viewportScale(vp);
   return {
-    x: (cx - vp.x) * vp.zoom + size.width / 2,
-    y: (cy - vp.y) * vp.zoom + size.height / 2,
+    x: (cx - vp.x) * scale + size.width / 2,
+    y: (cy - vp.y) * scale + size.height / 2,
   };
 }
 
 /**
  * Client (screen) point → canvas space, manual fallback when `posFromEvt` is
- * unavailable. Inverse of {@link canvasToScreenRel} including the wrapper offset.
+ * unavailable. Exact inverse of {@link canvasToScreenRel} including the wrapper
+ * offset — it divides by the same LINEAR factor.
  */
 export function clientToCanvasManual(
   clientX: number,
@@ -123,10 +165,14 @@ export function clientToCanvasManual(
   vp: CanvasViewport,
   rect: ScreenRect,
 ): { x: number; y: number } | null {
-  if (vp.zoom === 0) return null;
+  const scale = viewportScale(vp);
+  // Bail ONLY on a degenerate factor. Obsidian never produces one (`2 ** z > 0` for
+  // every finite z, so zoom === 0 is a perfectly valid 100 % viewport); this guards
+  // private-shape drift that yields 0 / NaN, not a legitimate zoom level.
+  if (scale === 0 || !Number.isFinite(scale)) return null;
   return {
-    x: (clientX - rect.left - rect.width / 2) / vp.zoom + vp.x,
-    y: (clientY - rect.top - rect.height / 2) / vp.zoom + vp.y,
+    x: (clientX - rect.left - rect.width / 2) / scale + vp.x,
+    y: (clientY - rect.top - rect.height / 2) / scale + vp.y,
   };
 }
 
@@ -156,7 +202,10 @@ interface PrivateCanvas {
   canvasEl?: HTMLElement;
   x?: number;
   y?: number;
+  /** `log2(scale)`, clamped `[-4, 1]` — logarithmic, never a multiplier. */
   zoom?: number;
+  /** The linear factor Obsidian renders with (`2 ** zoom`); may be absent. */
+  scale?: number;
   nodes?: Map<string, CanvasNode>;
   edges?: Map<string, unknown>;
   selection?: Set<{ id?: string }>;
@@ -187,12 +236,49 @@ type PatchedFn = AnyFn & {
   __lsWrapped?: true;
 };
 
+/** The canvas methods this adapter monkey-patches, in log order. */
+type PatchName = "updateSelection" | "setDragging" | "markViewportChanged";
+const PATCHED_METHODS: readonly PatchName[] = [
+  "updateSelection",
+  "setDragging",
+  "markViewportChanged",
+];
+
+/** What happened (or would happen) to one patched method for a given adapter. */
+type PatchOutcome = "installed" | "adopted" | "unavailable";
+
+/**
+ * INACTIVITY budget for the live-drag flag, in ms. The flag is set inside the
+ * `setDragging` patch and cleared by the matching `setDragging(false)`; if that
+ * closing call is never delivered, the flag would otherwise stay set for the whole
+ * lifetime of the view and `isBusy()` would keep reporting a drag that is not
+ * happening. This budget is therefore measured against the LAST drag-related signal
+ * (`setDragging`, `markViewportChanged`, `pointermove`) and NOT against the drag's
+ * total length: during a real drag those signals arrive continuously, so 5 s of
+ * complete silence is far outside anything an in-progress drag produces.
+ */
+export const DRAG_WATCHDOG_MS = 5000;
+
+/** Optional status-console logger (shape matches DebugLogger / CanvasSyncLogger). */
+export interface CanvasAdapterLogger {
+  log(category: string, message: string): void;
+  warn(category: string, message: string): void;
+}
+
+export interface CanvasAdapterOpts {
+  /** Diagnostics sink for the `ADAPTER PATCH:` and `DRAG WATCHDOG:` signatures. */
+  logger?: CanvasAdapterLogger;
+}
+
 /**
  * Build an adapter around an Obsidian canvas leaf view. `view` is deliberately
  * `unknown`; the private shape is validated defensively so a shape change can
- * never throw into the plugin. Patches are applied lazily (first subscription).
+ * never throw into the plugin. Patches are applied lazily (first subscription) and
+ * ADOPT any patch a previous adapter over the same canvas already owns, so the
+ * newest adapter for a canvas always has live patches.
  */
-export function createCanvasAdapter(view: unknown): CanvasAdapter {
+export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {}): CanvasAdapter {
+  const logger = opts.logger;
   const canvas = (view as PrivateCanvasView | null | undefined)?.canvas as PrivateCanvas | undefined;
   const hasCanvas = !!canvas && typeof canvas === "object";
 
@@ -207,22 +293,95 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
   // and setDragging(false); dragTargetId is the node under the drag, if known.
   let isDragging = false;
   let dragTargetId: string | null = null;
+  // Watchdog bookkeeping: timestamp of the last drag-related signal, and a one-shot
+  // guard so a released flag logs once per drag rather than once per poll (US6 AC5).
+  let lastDragSignalAt = 0;
+  let watchdogLogged = false;
   // Disposers for physical patches / DOM listeners (installed once, lazily).
   const unpatchers: Array<() => void> = [];
   const patchState = { selection: false, dragging: false, viewport: false, pointer: false };
 
-  function viewport(): CanvasViewport | null {
-    if (!hasCanvas) return null;
-    const { x, y, zoom } = canvas as PrivateCanvas;
-    if (typeof x !== "number" || typeof y !== "number" || typeof zoom !== "number") return null;
-    return { x, y, zoom };
+  /** Refresh the watchdog: a real drag-related signal reached the adapter. */
+  function noteDragSignal(): void {
+    lastDragSignalAt = Date.now();
   }
 
-  function patch(name: "updateSelection" | "setDragging" | "markViewportChanged", after: (args: unknown[]) => void): void {
+  /**
+   * Watchdog-aware live-drag predicate — the single seam `isBusy()`,
+   * `applyNodeGeometry()` and `reloadCanvasData()` all consult instead of reading the
+   * raw flag. When the flag is set but no drag-related signal arrived for a whole
+   * {@link DRAG_WATCHDOG_MS} window, the flag is released here and one
+   * `DRAG WATCHDOG:` warn is emitted. `dragTargetId` is deliberately RETAINED so the
+   * one card the user may still be holding stays protected while whole-canvas
+   * reconciliation becomes possible again.
+   */
+  function dragActive(): boolean {
+    if (!isDragging) return false;
+    const idleFor = Date.now() - lastDragSignalAt;
+    if (idleFor < DRAG_WATCHDOG_MS) return true;
+    isDragging = false;
+    if (!watchdogLogged) {
+      watchdogLogged = true;
+      logger?.warn(
+        "canvas-adapter",
+        `DRAG WATCHDOG: isDragging released after ${idleFor}ms with no drag signal ` +
+          `(limit ${DRAG_WATCHDOG_MS}ms); dragTargetId=${dragTargetId ?? "none"} retained`,
+      );
+    }
+    return false;
+  }
+
+  /**
+   * True when `nodeId` is the node the local user is — or may still be — holding.
+   * Sweeps the watchdog first, then compares against `dragTargetId`, which outlives a
+   * watchdog release and is cleared only by a genuine `setDragging(false)`.
+   */
+  function isDragTarget(nodeId: string): boolean {
+    dragActive();
+    return dragTargetId === nodeId;
+  }
+
+  function viewport(): CanvasViewport | null {
+    if (!hasCanvas) return null;
+    const { x, y, zoom, scale } = canvas as PrivateCanvas;
+    if (typeof x !== "number" || typeof y !== "number" || typeof zoom !== "number") return null;
+    // `scale` is the linear factor when the private shape exposes it; otherwise it is
+    // omitted and consumers derive `2 ** zoom` via viewportScale().
+    return typeof scale === "number" && Number.isFinite(scale)
+      ? { x, y, zoom, scale }
+      : { x, y, zoom };
+  }
+
+  /**
+   * Classify what patching `name` on this canvas means right now, WITHOUT mutating
+   * anything: `unavailable` when the private shape has no such method, `adopted` when
+   * some adapter already owns it (a duplicate or re-mount over the same `view.canvas`),
+   * `installed` when the method is still pristine. Single source of truth for both the
+   * `ADAPTER PATCH:` diagnostics line and `patch()`'s own decision.
+   */
+  function classifyPatch(name: PatchName): PatchOutcome {
+    if (!hasCanvas) return "unavailable";
+    const fn = (canvas as unknown as Record<string, PatchedFn | undefined>)[name];
+    if (typeof fn !== "function") return "unavailable";
+    return fn.__lsWrapped === true ? "adopted" : "installed";
+  }
+
+  function patch(name: PatchName, after: (args: unknown[]) => void): void {
     if (!hasCanvas) return;
     const c = canvas as unknown as Record<string, PatchedFn | undefined>;
-    const original = c[name];
-    if (typeof original !== "function" || original.__lsWrapped) return;
+    const existing = c[name];
+    if (typeof existing !== "function") return;
+    // ADOPTION (US4 AC14): an early return here would leave THIS adapter with no
+    // patch at all — invisible to every drag/selection signal — whenever another
+    // adapter over the same `view.canvas` got there first. Instead, unwrap the
+    // existing marked wrapper via its `__lsOriginal` and re-wrap the pristine
+    // method, so the newest adapter always owns the patch and no wrapper stacking
+    // (and no double invocation of the original) can accumulate. If the marker is
+    // present but the stored original is not usable, wrap what is there: never lose
+    // the method, and never leave this adapter patch-less.
+    const adopted = classifyPatch(name) === "adopted";
+    const unwrapped = adopted ? existing.__lsOriginal : undefined;
+    const original: AnyFn = typeof unwrapped === "function" ? unwrapped : existing;
     const wrapper: PatchedFn = function (this: unknown, ...args: unknown[]) {
       const result = original.apply(this, args);
       try {
@@ -279,7 +438,11 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
       const dragging = args[0] === true;
       const target = canvas?.nodeInteractionLayer?.target;
       const targetId = target && typeof target.id === "string" ? target.id : null;
-      // Track live-drag state for reconciliation deferral.
+      // Track live-drag state for reconciliation deferral. Either edge is a drag
+      // signal, so it also refreshes the watchdog and re-arms its one-shot warn:
+      // a genuine setDragging(false) leaves no stale flag and no stale target.
+      noteDragSignal();
+      watchdogLogged = false;
       isDragging = dragging;
       dragTargetId = dragging ? targetId : null;
       if (dragging && targetId) {
@@ -296,9 +459,24 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
     if (patchState.viewport) return;
     patchState.viewport = true;
     patch("markViewportChanged", () => {
+      // Pan/zoom is real interaction: refresh the watchdog so a long but ACTIVE drag
+      // never trips it (US4 AC10). Harmless outside a drag — the timestamp is only
+      // read while the drag flag is set.
+      noteDragSignal();
       for (const cb of viewportListeners) cb();
     });
   }
+
+  // Mount observability (US4 AC17 / US6): exactly ONE line per adapter construction,
+  // naming the patch outcome per method as classified by the same rule `patch()`
+  // applies. `adopted` on any method is the greppable signal that this canvas was
+  // already owned by another adapter — i.e. a duplicate or repeated mount — and
+  // `unavailable` names a private-shape member that is simply not there. Path-
+  // independent by construction: the adapter never learns the file path.
+  logger?.log(
+    "canvas-adapter",
+    `ADAPTER PATCH: ${PATCHED_METHODS.map((n) => `${n}=${classifyPatch(n)}`).join(" ")}`,
+  );
 
   return {
     isAvailable(): boolean {
@@ -395,7 +573,9 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
       // Ensure the dragging patch is live so isDragging reflects reality even if no
       // interaction listener was subscribed yet.
       ensureDraggingPatch();
-      return isDragging;
+      // Watchdog-aware, never the raw flag (US4 AC9): a drag flag that stopped being
+      // refreshed is released here rather than blocking every future reconcile.
+      return dragActive();
     },
 
     applyNodeGeometry(
@@ -405,8 +585,11 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
       ensureDraggingPatch();
       const node = canvas?.nodes?.get(nodeId);
       if (!node) return "missing";
-      // Never fight the user's own in-progress drag of THIS node.
-      if (isDragging && dragTargetId === nodeId) return "interacting";
+      // Never fight the user's own in-progress drag of THIS node. Routed through the
+      // same watchdog-aware seam as isBusy() (US4 AC12), so consulting it also
+      // releases a flag that stopped being refreshed — while the retained
+      // `dragTargetId` keeps protecting this one card (US4 AC11).
+      if (isDragTarget(nodeId)) return "interacting";
       if (typeof node.moveAndResize !== "function") return "unsupported";
       if (
         node.x === geo.x &&
@@ -425,7 +608,10 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
     },
 
     reloadCanvasData(data: unknown): boolean {
-      if (isDragging) return false; // never yank the view out from under an active drag
+      // Never yank the view out from under an ACTIVE drag — watchdog-aware, never the
+      // raw flag (US4 AC12), so a flag nobody refreshed can no longer keep structural
+      // reloads switched off for the lifetime of the view.
+      if (dragActive()) return false;
       const c = canvas as PrivateCanvas | undefined;
       if (!c || typeof c.setData !== "function") return false;
       try {
@@ -457,6 +643,10 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
       const wrapper = canvas?.wrapperEl;
       if (!wrapper || typeof wrapper.addEventListener !== "function") return NOOP;
       const listener = (e: Event) => {
+        // Pointer movement over the canvas is the primary drag-related signal: it
+        // refreshes the watchdog first, unconditionally, so an active drag never trips
+        // it even when the coordinate mapping fails (US4 AC10).
+        noteDragSignal();
         const evt = e as MouseEvent;
         const p = this.clientToCanvas(evt.clientX, evt.clientY);
         if (p) cb(p.x, p.y);
@@ -490,6 +680,10 @@ export function createCanvasAdapter(view: unknown): CanvasAdapter {
       patchState.dragging = false;
       patchState.viewport = false;
       patchState.pointer = false;
+      // A detached adapter must not keep reporting a drag it can no longer observe.
+      isDragging = false;
+      dragTargetId = null;
+      watchdogLogged = false;
     },
   };
 }

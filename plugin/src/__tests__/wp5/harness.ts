@@ -167,6 +167,7 @@ export function makeSettings(over: Partial<LiveShareSettings>): LiveShareSetting
     approvalTimeoutSeconds: 60,
     showCanvasCursors: true,
     showCanvasPresence: true,
+    useCanvasBinding: false,
     permission: "read-write",
     readOnlyPatterns: [],
     ...over,

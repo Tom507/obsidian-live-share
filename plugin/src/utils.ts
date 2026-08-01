@@ -225,6 +225,40 @@ export function isTextFile(path: string): boolean {
   return TEXT_EXTENSIONS.has(path.slice(dot + 1).toLowerCase());
 }
 
+/**
+ * WP6 / US5 AC1+AC2 — the ONE `.canvas` skip for every automatic raw-text sync
+ * path. Lives here, beside `isTextFile`, because it is the exception to it:
+ * `"canvas"` IS in `TEXT_EXTENSIONS` (a canvas is JSON text on disk) but a
+ * `.canvas` is owned by `CanvasSync`, which syncs it as a structured
+ * nodes/edges document.
+ *
+ * Without this skip a shared canvas ALSO gets a raw-`Y.Text` document of the
+ * same bytes — a second CRDT for a path `CanvasSync` already owns, whose
+ * character-level merge destroys edge endpoints.
+ *
+ * Every caller that would AUTOMATICALLY install or consume a bare-path
+ * `Y.Text` must consult this predicate:
+ *
+ *   files/background-sync.ts  startAll  ..... manifest replay
+ *                             onFileAdded ... vault create
+ *                             onFileRenamed . vault rename INTO a .canvas
+ *   files/manifest.ts         syncFromManifest text branch — join / resume /
+ *                             reconnect / reload-from-host
+ *
+ * The predicate is shared rather than copied per module deliberately: four
+ * private copies of `path.endsWith(".canvas")` is exactly how this defect class
+ * propagated (a guard added at one of N call sites).
+ *
+ * `BackgroundSync.subscribe()` is the ONE place that does NOT consult it: it is
+ * the explicit door of the announced R10 text fallback (BUILD_SPEC § 6.1
+ * TEXT-OWNED), entered only by `subscribeCanvasWithHandover` after a
+ * `CanvasSync` subscribe genuinely FAILED — i.e. precisely when `CanvasSync`
+ * does not own the path. That keeps the fallback exclusive, never concurrent.
+ */
+export function skipsAutoTextSync(path: string): boolean {
+  return path.endsWith(".canvas");
+}
+
 export function arrayBufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   let binary = "";

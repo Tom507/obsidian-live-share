@@ -105,6 +105,82 @@ describe("BackgroundSync", () => {
     expect(syncManager._docs.has("images/photo.png")).toBe(false);
   });
 
+  // --- WP6 / US5 AC2: no Y.Text document is ever created for a `.canvas` ---
+  //
+  // `"canvas"` IS in TEXT_EXTENSIONS (a .canvas is JSON text on disk), so before
+  // WP6 this loop subscribed every shared canvas as one raw Y.Text of the whole
+  // file — a SECOND, independent CRDT for bytes CanvasSync already owns as
+  // structured nodes/edges. Two writers over one file is what let a character-
+  // level JSON merge destroy edge endpoints.
+
+  it("WP6/US5-AC2: startAll creates no Y.Text document for a .canvas entry", async () => {
+    const entries = new Map([
+      ["notes/hello.md", { hash: "abc", size: 5, mtime: 1 }],
+      ["board.canvas", { hash: "def", size: 5, mtime: 1 }],
+    ]);
+    manifestManager = createManifestManager(entries);
+    vault.getAbstractFileByPath.mockReturnValue(null);
+    bg = new BackgroundSync(vault, syncManager, manifestManager, fileOpsManager);
+    const getDoc = vi.spyOn(syncManager, "getDoc");
+
+    await bg.startAll("host");
+
+    expect(getDoc.mock.calls.map((c: any[]) => c[0])).not.toContain("board.canvas");
+    expect(syncManager._docs.has("board.canvas")).toBe(false);
+    // ...while a markdown entry in the SAME manifest is unaffected.
+    expect(syncManager._docs.has("notes/hello.md")).toBe(true);
+  });
+
+  it("WP6/US5-AC9: the explicit text fallback can still subscribe a .canvas directly", async () => {
+    // The §6.1 TEXT-OWNED state: only a FAILED CanvasSync subscribe reaches this,
+    // and it is exclusive — never concurrent with CanvasSync.
+    vault.getAbstractFileByPath.mockReturnValue(null);
+
+    await bg.subscribe("board.canvas");
+
+    expect(syncManager._docs.has("board.canvas")).toBe(true);
+  });
+
+  // `startAll` is only ONE of three event-driven entry points into text sync.
+  // `onFileAdded` (create) and `onFileRenamed` (rename) reach it too, and each is
+  // called from three separate sites. The invariant is asserted at every entry
+  // point that can break it, not only where the guard happens to live.
+
+  it("WP6/US5-AC1: onFileAdded creates no Y.Text document for a .canvas", async () => {
+    vault.getAbstractFileByPath.mockReturnValue(null);
+
+    await bg.onFileAdded("board.canvas");
+    // ...while a markdown create on the SAME instance is unaffected.
+    await bg.onFileAdded("notes/hello.md");
+
+    expect(syncManager._docs.has("board.canvas")).toBe(false);
+    expect(syncManager._docs.has("notes/hello.md")).toBe(true);
+  });
+
+  it("WP6/US5-AC1: onFileRenamed creates no Y.Text doc for a .canvas NEW path, and still tears the OLD path down", async () => {
+    vault.getAbstractFileByPath.mockReturnValue(null);
+    await bg.subscribe("old.md");
+    expect(syncManager._docs.has("old.md")).toBe(true);
+    const releaseDoc = vi.spyOn(syncManager, "releaseDoc");
+
+    await bg.onFileRenamed("old.md", "board.canvas");
+
+    expect(syncManager._docs.has("board.canvas")).toBe(false);
+    // The early return must sit AFTER the old path's teardown, otherwise a
+    // rename into a .canvas leaks the old observer, timers and doc.
+    expect(releaseDoc).toHaveBeenCalledWith("old.md");
+    expect(syncManager._docs.has("old.md")).toBe(false);
+    expect((bg as any).observers.has("old.md")).toBe(false);
+  });
+
+  it("WP6/US5-AC1: the guard is not over-broad — renaming a .canvas to a .md still installs text sync", async () => {
+    vault.getAbstractFileByPath.mockReturnValue(null);
+
+    await bg.onFileRenamed("board.canvas", "board.md");
+
+    expect(syncManager._docs.has("board.md")).toBe(true);
+  });
+
   it("host seeds empty Y.Text from vault content", async () => {
     const entries = new Map([["test.md", { hash: "abc", size: 5, mtime: 1 }]]);
     manifestManager = createManifestManager(entries);

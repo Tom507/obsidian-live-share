@@ -8,6 +8,7 @@ import { verifyJWT } from "./github-auth.js";
 import {
   MUX_AWARENESS,
   MUX_AWARENESS_ENCRYPTED,
+  MUX_CHECKPOINT,
   MUX_PING,
   MUX_PONG,
   MUX_SUBSCRIBE,
@@ -16,11 +17,13 @@ import {
   MUX_SYNC_ENCRYPTED,
   MUX_SYNC_REQUEST,
   MUX_UNSUBSCRIBE,
+  decodeCheckpointBody,
   decodeMuxMessage,
   encodeMuxMessage,
+  encodeReplay,
 } from "./mux-protocol.js";
 import { getPermission } from "./permissions.js";
-import type { Permission } from "./persistence.js";
+import { type BlobStore, type Permission, noopBlobStore } from "./persistence.js";
 import { getRoom } from "./rooms.js";
 
 const SYNC_STEP2 = 1;
@@ -49,6 +52,11 @@ interface RoomState {
   // valid removal update on disconnect (Bug D) — applyAwarenessUpdate ignores a
   // removal whose clock is not strictly greater than the peer's current clock.
   awarenessClocks: Map<number, number>;
+  // WP41: clients whose stored-frame replay is still in flight. They are already
+  // in `clients` (so nothing produced meanwhile can be lost), but their live
+  // traffic is buffered here until the replay batch has been written to the
+  // socket — that is what makes "stored frames before any live traffic" hold.
+  replayQueues: Map<MuxClient, Uint8Array[]>;
   cleanupTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -59,7 +67,7 @@ function toUint8Array(raw: Buffer | ArrayBuffer | Buffer[]): Uint8Array {
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
 
-export function createYjsWSS() {
+export function createYjsWSS(blobStore: BlobStore = noopBlobStore) {
   const roomStates = new Map<string, RoomState>();
   const muxWss = new WebSocketServer({
     noServer: true,
@@ -88,9 +96,42 @@ export function createYjsWSS() {
       readOnlyClients: new Set(),
       clientAwarenessIds: new Map(),
       awarenessClocks: new Map(),
+      replayQueues: new Map(),
     };
     roomStates.set(roomId, state);
     return state;
+  }
+
+  // Fan-out to every peer but `exclude`. A peer whose replay is still in flight
+  // gets the message buffered instead of sent, so it never observes live traffic
+  // ahead of the stored frames.
+  function sendToPeers(state: RoomState, msg: Uint8Array, exclude?: MuxClient) {
+    for (const peer of state.clients) {
+      if (peer === exclude) continue;
+      const queued = state.replayQueues.get(peer);
+      if (queued) queued.push(msg);
+      else safeSend(peer.ws, msg);
+    }
+  }
+
+  function flushReplayQueue(state: RoomState, client: MuxClient) {
+    const queued = state.replayQueues.get(client);
+    state.replayQueues.delete(client);
+    if (!queued) return;
+    for (const msg of queued) safeSend(client.ws, msg);
+  }
+
+  // Store the frame exactly as it arrived. The relay knows the envelope type and
+  // nothing else — no parsing, no decryption, no validation of the payload.
+  function appendFrame(
+    baseRoomId: string,
+    docId: string,
+    msgType: number,
+    payload: Uint8Array,
+  ) {
+    blobStore.append(baseRoomId, docId, msgType, payload).catch((err) => {
+      console.error("[yjs-mux] failed to append frame:", err);
+    });
   }
 
   function scheduleRoomCleanup(roomId: string, state: RoomState) {
@@ -103,7 +144,7 @@ export function createYjsWSS() {
     }
   }
 
-  function handleSubscribe(client: MuxClient, docId: string, payload: Uint8Array) {
+  async function handleSubscribe(client: MuxClient, docId: string, payload: Uint8Array) {
     const roomId = `${client.baseRoomId}:${docId}`;
     const state = getOrCreateRoom(roomId);
 
@@ -111,6 +152,8 @@ export function createYjsWSS() {
 
     state.clients.add(client);
     client.subscribedRooms.add(roomId);
+    // Hold back live traffic for this client until its replay has been sent.
+    state.replayQueues.set(client, []);
 
     if (client.userId) {
       const permission = getPermission(client.baseRoomId, client.userId);
@@ -140,11 +183,48 @@ export function createYjsWSS() {
     safeSend(client.ws, msg);
 
     if (peerCount > 0) {
-      const syncRequestMsg = encodeMuxMessage(docId, MUX_SYNC_REQUEST);
-      for (const peer of state.clients) {
-        if (peer !== client) safeSend(peer.ws, syncRequestMsg);
-      }
+      sendToPeers(state, encodeMuxMessage(docId, MUX_SYNC_REQUEST), client);
     }
+
+    // WP41: everything the relay kept for this roomId:docId, in ascending seq,
+    // terminated by MUX_REPLAY_END — and only then the live stream.
+    try {
+      const frames = await blobStore.read(client.baseRoomId, docId);
+      if (state.clients.has(client)) {
+        for (const msg of encodeReplay(docId, frames)) safeSend(client.ws, msg);
+      }
+    } catch (err) {
+      console.error("[yjs-mux] failed to replay stored frames:", err);
+    } finally {
+      flushReplayQueue(state, client);
+    }
+  }
+
+  // A client-produced checkpoint: it supersedes everything up to the sequence
+  // number in its envelope. The relay reads that number, hands the opaque tail to
+  // the store, and does not broadcast it — a checkpoint is a storage
+  // instruction, not a document update.
+  function handleCheckpoint(client: MuxClient, docId: string, payload: Uint8Array) {
+    const roomId = `${client.baseRoomId}:${docId}`;
+    const state = roomStates.get(roomId);
+    if (!state || !state.clients.has(client)) return;
+
+    // A client that may not write may not compact either: same gate, same
+    // permission model, no new policy.
+    if (isClientReadOnly(client, state, docId)) return;
+
+    let upToSeq: number;
+    let body: Uint8Array;
+    try {
+      ({ upToSeq, payload: body } = decodeCheckpointBody(payload));
+    } catch (err) {
+      console.debug("[yjs-mux] malformed checkpoint envelope, skipping:", err);
+      return;
+    }
+
+    blobStore.checkpoint(client.baseRoomId, docId, upToSeq, body).catch((err) => {
+      console.error("[yjs-mux] failed to checkpoint:", err);
+    });
   }
 
   function handleUnsubscribe(client: MuxClient, docId: string) {
@@ -157,10 +237,7 @@ export function createYjsWSS() {
     const state = roomStates.get(roomId);
     if (!state || !state.clients.has(client)) return;
 
-    const isReadOnly =
-      state.readOnlyClients.has(client) ||
-      (client.userId && getPermission(client.baseRoomId, client.userId) === "read-only") ||
-      isPathReadOnlyForClient(client, docId);
+    const isReadOnly = isClientReadOnly(client, state, docId);
     if (isReadOnly && payload.length > 0) {
       const decoder = decoding.createDecoder(payload);
       const syncType = decoding.peekVarUint(decoder);
@@ -171,9 +248,18 @@ export function createYjsWSS() {
 
     const msgType = encrypted ? MUX_SYNC_ENCRYPTED : MUX_SYNC;
     const msg = encodeMuxMessage(docId, msgType, payload);
-    for (const peer of state.clients) {
-      if (peer !== client) safeSend(peer.ws, msg);
-    }
+    sendToPeers(state, msg, client);
+    // Only frames the relay actually relays are kept: a write suppressed by the
+    // read-only gate above never reaches this line.
+    appendFrame(client.baseRoomId, docId, msgType, payload);
+  }
+
+  function isClientReadOnly(client: MuxClient, state: RoomState, docId: string): boolean {
+    return (
+      state.readOnlyClients.has(client) ||
+      (!!client.userId && getPermission(client.baseRoomId, client.userId) === "read-only") ||
+      isPathReadOnlyForClient(client, docId)
+    );
   }
 
   function handleAwareness(
@@ -212,9 +298,8 @@ export function createYjsWSS() {
 
     const msgType = encrypted ? MUX_AWARENESS_ENCRYPTED : MUX_AWARENESS;
     const msg = encodeMuxMessage(docId, msgType, payload);
-    for (const peer of state.clients) {
-      if (peer !== client) safeSend(peer.ws, msg);
-    }
+    // Awareness is ephemeral presence, never persisted.
+    sendToPeers(state, msg, client);
   }
 
   function removeClientFromRoom(client: MuxClient, roomId: string) {
@@ -223,6 +308,7 @@ export function createYjsWSS() {
 
     state.clients.delete(client);
     state.readOnlyClients.delete(client);
+    state.replayQueues.delete(client);
     client.subscribedRooms.delete(roomId);
 
     const clientIds = state.clientAwarenessIds.get(client);
@@ -240,9 +326,7 @@ export function createYjsWSS() {
       const removalPayload = encoding.toUint8Array(removalEncoder);
       const docId = extractDocId(roomId);
       const msg = encodeMuxMessage(docId, MUX_AWARENESS, removalPayload);
-      for (const peer of state.clients) {
-        safeSend(peer.ws, msg);
-      }
+      sendToPeers(state, msg);
     }
     for (const id of clientIds ?? []) {
       state.awarenessClocks.delete(id);
@@ -286,7 +370,9 @@ export function createYjsWSS() {
         const { docId, msgType, payload } = decodeMuxMessage(data);
         switch (msgType) {
           case MUX_SUBSCRIBE:
-            handleSubscribe(client, docId, payload);
+            handleSubscribe(client, docId, payload).catch((err) => {
+              console.error("[yjs-mux] failed to handle subscribe:", err);
+            });
             break;
           case MUX_UNSUBSCRIBE:
             handleUnsubscribe(client, docId);
@@ -302,6 +388,9 @@ export function createYjsWSS() {
             break;
           case MUX_AWARENESS_ENCRYPTED:
             handleAwareness(client, docId, payload, true);
+            break;
+          case MUX_CHECKPOINT:
+            handleCheckpoint(client, docId, payload);
             break;
           case MUX_PING:
             // MUX liveness (Bug H): echo a pong so the client can detect a
