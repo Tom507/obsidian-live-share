@@ -20,9 +20,17 @@ import inspect
 import json
 import os
 import re
+import sys
 from pathlib import Path
 
-from obsidian_e2e import constants, ports
+# T3_SharedContract import rule: `import tools.…` resolves to the WORKSPACE `tools`
+# package (a regular package always beats a namespace portion), never to this repo's.
+# Put <repo>/tools on sys.path and import by the globally unique package name.
+_TOOLS = Path(__file__).resolve().parents[5] / "tools"
+if str(_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_TOOLS))
+
+from obsidian_e2e import constants, ports  # noqa: E402
 
 FAKE_SETTINGS = {
     "serverUrl": "wss://example.invalid/ws-mux/",

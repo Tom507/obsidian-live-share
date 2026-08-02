@@ -1,6 +1,6 @@
 # Task Charter — WP22: REMOVAL: `writeRecordMinimal` deletion
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP22
 **Phase:** P1
 **task_mode:** `standard`
@@ -128,27 +128,104 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 *Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
 
+Five test cases, 16 assertions-bearing `it()` blocks, all under Vitest 4.0.18 from
+`plugin/` (`npm test`, budget >= 90 s). No wall-clock sleep, no new `setTimeout` wait,
+no new timing constant, no fake timers at all — every oracle in this WP is synchronous
+doc state.
+
+**State is the oracle throughout.** Not one assertion reads a log line. The subject of
+this WP is which keys exist in a `Y.Map` after a write, so every test compares the doc's
+own JSON (or its key set) before and after, and the two source scans that exist (TC4's
+mirror body, TC5's `main.ts` gate) are *paired* with behavioural assertions rather than
+standing alone.
+
+**Both directions are pinned, deliberately.** The failure mode of a removal is
+over-correction: "stop deleting absent keys" trivially becomes "stop writing" or
+"always write". So each of TC1–TC3 carries a counter-assertion — a reported field must
+still land, a new key must still be added, an unchanged capture must still emit **zero**
+Yjs updates (I3), and the explicit record-level delete must still produce a real
+tombstone. TC1's I3 half and TC3's tombstone/creation halves pass before implementation
+by design; they are the over-correction guards, not the AC.
+
+**CRDT ordering.** Every register in every test has a single author, and replicas only
+integrate — updates are exchanged explicitly with `Y.encodeStateAsUpdate` /
+`Y.applyUpdate` in a fixed order, so each asserted value has a causal predecessor chain.
+No test asserts the winner of a concurrent same-key write, and no convergence claim is
+made from two replicas: TC1 uses **three** (author + two integrators).
+
+**AC2 scope.** The delete trigger asserted here is record-level, per the §4 amendment
+note. Explicit removal of a single optional field (S14, WP39 AC5) is deliberately NOT
+tested; what TC3 does assert is the consequence of its absence — that no entry point on
+the binding removes a field, down to a capture reporting nothing at all.
+
+### TC1 — Capturing `{id}` over a connected edge leaves both endpoints intact
+- Verifies AC: 1
+- Test file: `plugin/src/__tests__/v2/wp22/test_tp01_partial_edge_capture_keeps_endpoints_visible.test.ts`
+- What it checks: the R1 mechanism at its smallest. A five-key edge (`id`, `fromNode`, `fromSide`, `toNode`, `toSide`) is seeded into the doc; `captureLocal` reports `{id}` alone. Each endpoint key is asserted individually (so a failure names the key the sweep took) and then the whole record is asserted with one `toEqual`, so partial survival cannot pass. Second half: that same capture must still be an EMPTY diff — `doc.on("update")` counts **0**, because "no delete" must not become "always write" (I3). Third half: a partial capture carrying a genuinely new value (`{id, color}`) upserts it, and the resulting record — endpoints included — is what a three-replica exchange integrates on all three docs.
+- Test data channel: in-memory `Y.Doc` + fake `CanvasModelBridge`
+
+### TC2 — A multi-field partial capture touches only what it mentions
+- Verifies AC: 1
+- Test file: `plugin/src/__tests__/v2/wp22/test_tp02_multi_field_partial_capture_preserves_rest_visible.test.ts`
+- What it checks: the realistic shape of the same defect. An eight-key text card is dragged, so the capture reports `{id, x, y}` and nothing else; `type`, `text`, `color`, `width` and `height` must all survive, asserted both as a whole-record `toEqual` and key-by-key. Minimality is then pinned through the `setCanvasBindingInstrument` seam: exactly **one** `originUpdate` for a real two-field move, and **zero** for a capture that repeats values the doc already holds. Finally the upSERT half — a partial capture naming keys the doc has never held (`color`, `text`) adds them rather than being confused with a deletion signal.
+- Test data channel: in-memory `Y.Doc` + fake bridge + binding instrumentation hook
+
+### TC3 — The record-level delete trigger is the only surviving removal, and it tombstones
+- Verifies AC: 2
+- Test file: `plugin/src/__tests__/v2/wp22/test_tp03_record_delete_is_the_only_removal_visible.test.ts`
+- What it checks: the "ONLY" half runs progressively emptier observations of one record — full, geometry-only, `{id}`, and finally `{}` (an observation mentioning nothing at all) — and requires the doc record to be byte-identical after every one. The "TOMBSTONE" half drives `record: null` and asserts three separate things: the record is gone, a neighbouring record is untouched (the trigger is record-scoped), and the deletion is a real CRDT tombstone rather than local forgetting — proven by replaying the record's own creation update afterwards (no resurrection) and by a replica that still held the record losing it on integration. A third case pins that a partial capture for an unknown id CREATES, never silently deletes.
+- Test data channel: in-memory `Y.Doc` + fake bridge + explicit replica update exchange
+
+### TC4 — The rig's `upsertRecord` mirror cannot delete by omission either
+- Verifies AC: 3
+- Test file: `plugin/src/__tests__/v2/wp22/test_tp04_rig_mirror_is_upsert_only_visible.test.ts`
+- What it checks: the control server's own copy of the write shape, reached through the public command surface (`buildPluginHost(...).simulateEdit` and `routeCommand`) rather than by touching the private function — what matters is what the rig can DO. A partial edge edit (`{id}`) must leave the endpoints connected; a partial node edit through the router must upsert only the reported field and return `{ok:true,{applied:true}}`. The discriminating half: `removeNodes` / `removeEdges` must STILL delete, so "cannot reproduce the old behaviour" is not satisfied by making the command inert. A narrow source scan of the extracted `upsertRecord` body closes the respelling gap (no `delete` call at all inside it, `ymap.set` still present).
+- Test data channel: fake `E2EPluginLike` over a real `Y.Doc` + source scan of the extracted function body
+
+### TC5 — The binding is still dormant in production; the flag is not flipped here
+- Verifies AC: 4
+- Test file: `plugin/src/__tests__/v2/wp22/test_tp05_binding_stays_dormant_visible.test.ts`
+- What it checks: dormancy at both places it can be broken. The DEFAULT — `DEFAULT_SETTINGS.useCanvasBinding` is `false`, read from the module, with the literal in `types.ts` checked too so a runtime override cannot mask a changed default. The GATE — `main.ts` contains exactly **one** `new CanvasBinding(`, and a brace-depth walk over the comment-stripped source proves that site is lexically inside `if (this.settings.useCanvasBinding) {`; an ungated construction is dormancy lost even with the flag `false`, because the settings object is user-writable. The flag's other consumer (the legacy follower-apply bypass) is pinned separately, since dormancy is a property of both gates.
+- Test data channel: module import + source scan (`main.ts` has no test file — the `v2/wp5v2/test_tp07` precedent)
+
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+*Empty at handover.* No AC of C22 needed INTEGRATION_SCOPE. All four ACs are observable
+at module surfaces with in-memory `Y.Doc`s: AC1 and AC2 at `CanvasBinding.captureLocal`
+with a fake `CanvasModelBridge`, AC3 at `buildPluginHost` / `routeCommand` with a fake
+`E2EPluginLike`, AC4 as a module-value and source-structure claim. Nothing was deferred
+to Worker 4. **W4 Test Targets: `0`.**
 
 ---
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** `writeRecordMinimal` (`canvas-binding.ts:126–143`) set every
+  changed key of `next` and then swept `[...ymap.keys()]`, deleting each key not `in next`.
+  Because `captureLocal` forwards whatever the model reports, a partial observation such as
+  `{id}` deleted the record's remaining keys — R1. `upsertRecord` (`e2e-control.ts`) carried a
+  byte-identical sweep, so `canvas.simulateEdit` reproduced the same loss from the rig.
+- **Approach:** delete the sweep loop in both functions and nothing else. The upsert half, the
+  `changed` return value (I3's empty-diff ⇒ no Yjs update), the `CANVAS_BINDING_ORIGIN`
+  transaction, the explicit `record === null` record-delete in `captureLocal`, and the rig's
+  `removeNodes` / `removeEdges` commands are all untouched. Doc comments on both functions
+  restated to say why absence now carries no intent.
+- **Fallback path if all attempts fail:** n/a — the change landed on attempt 1.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs. Binding-side writes are upsert-only, the rig mirror
+  matches, the record-level delete trigger is the only removal and still tombstones, and
+  `useCanvasBinding` is untouched at `false`. 16 visible tests (5 files) + 27 blind tests
+  (10 files across both sets) green. **Zero tests deleted, zero amended** — the deletion
+  ledger in `ImplementationReport_WP22.md` is empty by outcome, not by omission.
+- **What remains open:** nothing in this WP's scope. Field-level explicit removal remains the
+  accepted regression S14 (WP39 AC5). Flipping the flag remains WP40.
+- **Final status:** DONE.
 
 ---
 

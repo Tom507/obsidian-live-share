@@ -9,6 +9,7 @@ import * as Y from "yjs";
 
 import {
   type BindingCounters,
+  E2E_BUILD_MARKER,
   type E2EPluginLike,
   buildPluginHost,
 } from "../../testing/e2e-control";
@@ -84,11 +85,23 @@ describe("WP49 AC1 blind2 — the activity seam is not the counter seam", () => 
     const { host } = fixture();
     await host.canvasOpen("a.canvas");
     await host.simulateEdit("a.canvas", { nodes: [{ id: "n1", x: 1, y: 1 }] });
+    // WP61 amendment (class B): this pinned the pre-WP46 four keys. WP46
+    // deliberately replaced the payload with nine (T3_SharedContract §6.2), so
+    // the pin was stale, not violated. Amended to the full nine-key payload with
+    // this fixture's honest-degradation values — no `app` and no `manifest`, so
+    // vaultId/vaultName degrade to "", vaultPath to null and the build to 0.0.0;
+    // `canvasSync` is present, so the canvas surface is true. Still a whole-object
+    // exact toEqual: a tenth key, a missing key or a changed value all fail it.
     expect(host.sessionInfo()).toEqual({
       clientId: "cid",
       role: "host",
       roomId: "room",
       connected: true,
+      vaultId: "",
+      vaultName: "",
+      vaultPath: null,
+      pluginBuild: `0.0.0+${E2E_BUILD_MARKER}`,
+      canvasSurface: true,
     });
   });
 });

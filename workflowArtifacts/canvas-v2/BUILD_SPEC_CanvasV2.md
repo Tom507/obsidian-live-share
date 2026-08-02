@@ -164,8 +164,16 @@ Containers are **created once and never replaced.** Record creation is a single 
 | `text` (text node), edge `label` | nested `Y.Text` | YATA sequence merge | Captured through the existing minimal-diff mechanism incl. surrogate snapping. |
 | `file`, `url`, `subpath` | LWW register | LWW | Genuine single values. |
 | `color` | LWW register | LWW, deletable | Deletion is an explicit delete event, never key absence. |
-| `from` = `{node, side, end?}` | one LWW register | atomic LWW | An edge endpoint is one unit. |
-| `to` = `{node, side, end?}` | one LWW register | atomic LWW | `from` ⊥ `to`; re-routing both ends commutes. |
+| `from` = `{node, side?, end?}` | one LWW register | atomic LWW | An edge endpoint is one unit. **`node` alone decides presence; `side` and `end` are optional components carried inside the one value.** |
+| `to` = `{node, side?, end?}` | one LWW register | atomic LWW | `from` ⊥ `to`; re-routing both ends commutes. Same optionality. |
+
+<!-- Updated: E1 ruling — `side` marked optional; the endpoint model could not represent a legal side-less JSON Canvas edge and refusal at the seed then deleted it from the user's file 2026-08-02 -->
+
+**Endpoint optionality (E1, 2026-08-02) — normative.** `fromSide`/`toSide` and `fromEnd`/`toEnd` are **optional** in the JSON Canvas file format. The earlier shape `{node, side, end?}` in this table and in CONCEPT_V2 Teil 4 marked only `end` optional; that was a transcription artefact of the torn-write argument, not a format claim. CONCEPT_V2 never cites the JSON Canvas spec and **Teil 11's own validity predicate is `Edge gültig ⟺ id ∧ from.node ∧ to.node`** — `side` was never in it. The corrected shape is therefore consistent with Teil 11 rather than a departure from it.
+
+**This does not weaken I8.** Teil 4's atomicity argument is about *granularity* — "die Granularität eines Registers definiert die atomare Einheit der Konfliktauflösung" — and the chimera it forbids is `fromNode` from author A combined with `fromSide` from author B. `{node, side?, end?}` remains **one** LWW register holding **one** value: a re-route replaces the whole endpoint or none of it. Optionality is a property of the *value's shape*, not of the *write granularity*. Splitting the pair back into separate keys would reintroduce W2 and is forbidden; making a component of the single value optional does not.
+
+**Two absences must stay distinguishable at the register level:** a register that is *absent* (no endpoint — the edge is dangling, and `Edge valid` fails) versus a register that is *present with no side* (the edge is attached to a node, side unspecified — legal, valid, and must round-trip). Reading the second as the first is the exact defect E1 corrects.
 | `ord` | LWW register, fractional-index string | LWW; allocation uses jitter + `(clientID)` suffix as tiebreak | Never written to the `.canvas` file. |
 | groups (`type:"group"`) | as normal nodes | — | Obsidian groups are geometric, not hierarchical. No tree CRDT. Multi-node drags are captured as **one transaction**. |
 | deletion | `deleted[id] = {t, by, on}` | LWW on `on` (Lamport `t`, tiebreak `by`) | `on:true` suppresses the record everywhere; undo is `on:false` and is lossless. GC on sidecar compaction. |
@@ -182,8 +190,13 @@ Containers are **created once and never replaced.** Record creation is a single 
 
 - **I1–I5 remain binding, unchanged** (`ARCHITECTURE.md` §"The five invariants"): I1 ONE OWNER, I2 ONE WRITER, I3 DOC IS TRUTH, I4 NO LOOPBACK, I5 DEGRADE.
 - **I6–I10 are new and binding** (CONCEPT_V2 Teil 3): I6 INTENT IS SHADOW-RELATIVE, I7 OBSERVATION NEVER DELETES, I8 ATOMIC IS WHAT BELONGS TOGETHER, I9 HISTORY IS THE TRUTH, I10 ONE MODE PER ROOM.
+- <!-- Updated: E2 ruling — I11 added; refusal at the seed composed with flush into silent deletion of the user's own file, which no AC ever authorised 2026-08-02 --> **I11 is new and binding — REFUSAL NEVER DESTROYS.** A record refused at ingest is not admitted to the shared state; it must not, *by that refusal*, be removed from the source it was read from. Where the source is a user file and the doc is the writer of that file, the **write-back is withheld** rather than the record dropped. Rejection and deletion are different acts, and no composition of correct steps may silently perform the second while intending only the first. → owned by **WP63**, derived from CONCEPT_V2 Teil 7: *"Destruktion wird von einem Timing-Nebeneffekt zu einer informierten Entscheidung."*
 - Ingest schema: `Node valid ⟺ id ∧ type ∧ pos ∧ size ∧ type-specific (file→file, text→text, …)`; `Edge valid ⟺ id ∧ from.node ∧ to.node`.
+  - <!-- Updated: E1 ruling 2026-08-02 --> **`side` is not a validity conjunct.** `Edge valid` reads `from.node` and `to.node` and nothing else about the endpoints. An endpoint register that carries a `node` and no `side` is **valid** and must be admitted. This is a restatement of the predicate as it was always written, not a relaxation of it.
+  - <!-- Updated: E1-b, second instance of the same class 2026-08-02 --> **The type-specific requirement is presence and correct type, and for `text` it is not non-emptiness.** `"text": ""` is a legal JSON Canvas text node — an empty card the user has not typed into yet, or one they cleared. Refusing it is refusing a legal document, and under the pre-I11 coupling that refusal deleted the card. `text` accepts **any** string including `""` (and, forward-compatibly, the `Y.Text` object shape). `file` and `url` keep their non-empty requirement: an empty path or URL addresses nothing, and under I11 a misjudgement there is no longer destructive.
 - Invalid records from **local** sources are rejected with a signature. Invalid records arriving as **remote deltas** are never rejected (that would diverge); they are quarantined by the auditor.
+  - <!-- Updated: E2 ruling — the seed's side of Teil 11's line, decided explicitly 2026-08-02 --> **The seed is a local source.** Teil 11 names Seed on the list of validated write boundaries but never assigns it to either side of the local/remote binary, so this spec decides it. The decisive test is Teil 11's own *stated reason* for the asymmetry — remote deltas are not rejected because *"das würde Divergenz erzeugen: Replikat A akzeptiert, B lehnt ab"*. The asymmetry is a **convergence** rule, not a trust rule. Refusing a seed record diverges nothing: the file is read by one replica, and every replica agrees the record is absent. The seed therefore sits with `CAPTURE_NET` and Import on the **local, rejected** side, and C18 AC1 stands.
+  - **Quarantine is not the alternative it appears to be.** A quarantined record is *"nie serialisiert"* (Teil 11) and `CanvasPersistence` writes `serialize(doc)` over the file — so quarantining a seed record removes it from the user's file just as surely as refusing it does. Quarantine protects the **doc**, not the **file**, and it is only non-destructive for records that live in shared state where a repair delta can reach them. It is the right instrument for C20's job (records already in the doc) and the wrong instrument at the seed. **The file guarantee is I11's job and is independent of the refuse-vs-quarantine choice.**
 - `CanvasPersistence` remains the **single** CRDT→disk writer; a remote delta still produces exactly one disk write; `CanvasPersistence` still emits **zero** CRDT writes.
 - `coldOpen` still runs **after `waitForSync` and before `start()`**.
 
@@ -200,6 +213,7 @@ Every new invariant is traceable to at least one WP (a hard requirement of this 
 | **I8** Atomic is what belongs together | WP9, WP10, WP15 | WP23 (torn-write assert) |
 | **I9** History is the truth | WP24, WP25, WP27, WP29, WP30 | WP35 |
 | **I10** One mode per room | WP31, WP32, WP33 | WP35 |
+| <!-- Updated: E2 ruling 2026-08-02 --> **I11** Refusal never destroys | **WP63** | WP20, WP23, WP7 (real-vault fingerprint, §7 data-safety gate) |
 | I1–I5 (preserved) | all wiring WPs | WP7 (E2E), WP34 (I5 for correctness, not just availability) |
 | <!-- Updated: T3 2026-08-01 --> **R2** (nothing verified behaviourally — the debt Teil 14 exists to discharge) | WP43–WP51 (the host layer that makes verification possible) | WP7 (P0 mechanisms on real Obsidian), WP54 (`CAPTURE_TRIGGERS` measured), WP40 (promotion licensed by that measurement) |
 
@@ -391,9 +405,13 @@ Conventions used in this section:
   2. Two concurrent re-routes of the same endpoint converge to exactly one submitted endpoint on every replica — never one author's `node` with another's `side`.
   3. Concurrent re-routing of `from` on one replica and `to` on another leaves both changes intact.
   4. An endpoint register is either wholly present or wholly absent; a partially populated endpoint cannot be constructed through the module's API.
-- Definition of Done: the "arrow points at a side where nothing hangs" class is unrepresentable.
+  5. <!-- Updated: E1 ruling — the model could not represent a legal side-less JSON Canvas edge, and the seed then deleted it from the user's file 2026-08-02 --> **A side-less endpoint is a first-class, representable endpoint.** `side` and `end` are optional components of the single register value (§4.3); `node` alone decides the register's presence. Specifically: an endpoint may be constructed from a `node` with no `side`; a register carrying a `node` and no `side` reads back as **present**, not absent; and it round-trips to the file as `fromNode`/`toNode` with the `fromSide`/`toSide` key **absent** — never `null`, never `""`. A register with no `node` is not a register.
+- Definition of Done: the "arrow points at a side where nothing hangs" class is unrepresentable, **and every edge legal under the JSON Canvas format is representable.**
 - Assigned to work package: **WP10**
 - Fuzzer link: WP23 `reroute` op + the schema invariant "no endpoint-less edge".
+
+<!-- Updated: E1 ruling — AC4's meaning restated because WP10 implemented it as "all three components mandatory" 2026-08-02 -->
+> **Reading of AC4 (normative, added 2026-08-02).** AC4 was implemented as *"all components must be present"*, which is what made a legal side-less edge unrepresentable. That is not what it says. AC4 is a rule about **write granularity**: the register is written and replaced as one value, so no author's `node` can ever combine with another author's `side` (Teil 4's chimera, W2). "Wholly present or wholly absent" refers to the **register**, whose presence is decided by `node`; it does not make every component obligatory. AC4 and AC5 are consistent and both binding: the module must offer **no** API that mutates one component of an existing register in place, and must accept a `node` with no `side` as a complete construction.
 
 #### C11 — Write-once `type` guard
 - Change type: create (pure guard, consumed by the ingest boundary)
@@ -452,6 +470,14 @@ Conventions used in this section:
 - Definition of Done: "an edge has two endpoints" is a type constraint at the boundary, not a downstream filter.
 - Assigned to work package: **WP14**
 
+<!-- Updated: E1 + E1-b rulings — the validator refused two shapes that are legal JSON Canvas, and refusal was destructive 2026-08-02 -->
+> **Amendment (2026-08-02) — two shapes the validator must stop refusing. No AC is replaced; AC1 and AC2 are read as follows.**
+>
+> 1. **AC1's edge rule is exactly `id ∧ from.node ∧ to.node`.** WP14 delegates to WP10's `hasBothEndpoints`, so WP10's over-constraint (a register required a `side`) leaked into WP14 as `MISSING_FROM` on a fully-connected edge. The rule itself was never wrong and does not change; it becomes correct automatically once C10 AC5 lands. **WP14 must additionally pin it directly** — a validator test over an edge whose `from` register carries a `node` and no `side` must return valid, so the two modules cannot drift apart again.
+> 2. **AC2's "present but empty is invalid" is per-field, and `text` is exempt.** `"text": ""` is a legal JSON Canvas text node (an untyped-into or cleared card). The type-specific requirement for `text` is **presence and correct type**, and any string — including `""` — satisfies it; the tolerant object form for the future `Y.Text` shape stays. `file` and `url` keep non-empty, because an empty path or URL addresses nothing. AC2's real subject — that a missing key and a present-but-ill-typed key produce **distinguishable** reasons — is untouched and still binding.
+>
+> Both are the same class as E1: a rule that refuses a legal document, composed with a write-back that then deletes it. Under I11 the composition is no longer destructive, but the rules are corrected here regardless — I11 is the safety net, not the excuse.
+
 #### C15 — Shadow and intent diff at atomic-register granularity
 - Change type: modify (the C1/C2 module)
 - Responsibility: lift the shadow and the intent diff from V1 keys to V2 registers, so staleness detection compares whole registers.
@@ -493,9 +519,24 @@ Conventions used in this section:
   2. Records suppressed by the tombstone predicate (deleted or quarantined) are not emitted, and an edge whose endpoint record is suppressed is not emitted either.
   3. Two replicas with the same doc state produce byte-identical files, including after a reorder.
   4. Round-trip stability: parse(serialize(state)) yields the same records and the same relative order.
-- Definition of Done: the file is a deterministic projection of the doc on every client.
+  5. <!-- Updated: E1 ruling + the flat/register precedence bug found by Worker 3's coder 2026-08-02 --> **Optional keys are omitted, and the flat-vs-register collision has an explicit rule.**
+     - An endpoint register with no `side` emits its `fromNode`/`toNode` and **omits** the `fromSide`/`toSide` key entirely — never `null`, never `""`. Same for `fromEnd`/`toEnd`. A `.canvas` file containing side-less edges must survive parse → doc → serialize **byte-identically**, so such a file does not churn on its first write.
+     - No serialisation path may emit `null` or `""` for an optional endpoint or geometry key, **including via the verbatim flat-key pass**. A junk value already sitting in the doc under a flat key is dropped, not carried to disk.
+     - The flat-vs-register precedence is an explicit, phase-scoped rule (§4.3), never an artefact of `Y.Map` insertion order.
+- Definition of Done: the file is a deterministic projection of the doc on every client, **decided by stated rules rather than by container ordering**.
 - Assigned to work package: **WP17**
-- Fuzzer link: WP23 byte-equality assertion (this is its primary target).
+- Fuzzer link: WP23 byte-equality assertion (this is its primary target) **+ the AC5 intent-trace oracle, which is what actually covers the collision class**.
+
+<!-- Updated: real corruption bug found and fixed in passing by Worker 3's WP18 coder; recorded here so it is owned rather than incidental 2026-08-02 -->
+> **The flat-vs-register precedence rule (2026-08-02) — normative, and it needs a named regression test.**
+>
+> A P1 doc legitimately holds **both** spellings of the same fact: `migrateV1ToV2` is deliberately additive (C8 AC2, WP18 TC9 — the flat keys are explicitly *not* removed), while the capture path and every peer on this build still author the **flat** keys. `decodeV2RecordToFlat` resolved that collision by **`Y.Map` insertion order**, which is not a rule: whichever spelling happened to be written first silently decided the file, so a moved card could snap back to its pre-move coordinate on disk.
+>
+> **This is the most dangerous defect class this project has found, because both replicas agree on the wrong value — byte-equality across replicas provably cannot detect it.** It is the same class WP17 met from the other direction, and it is why C23 AC5 exists.
+>
+> **The rule: in P1 the flat key wins.** It is the vocabulary every live writer authors in; a register is only ever a translation of it. A record carrying only the register (anything the V2 cold-open seed wrote) is unaffected — there is no flat key to override it. **When the write boundaries move to the registers (WP22 / WP39) the flat keys stop being written and the precedence becomes moot rather than inverted** — the transition must be made deliberately in that WP and must not be assumed to have happened.
+>
+> **WP17 owns a named regression test for this**, asserting that a record holding a stale register *and* a fresh flat key serialises the flat value, and that the outcome does not change when the two keys are inserted into the `Y.Map` in the opposite order — insertion-order independence is the actual property, and asserting only the value would let the bug back in. If `decodeV2RecordToFlat` is relocated out of the serializer's module, the AC and the test move with it and WP16's charter carries them instead; the owner is the module, not the file.
 
 #### C18 — Ingest validation and create-once transactions at every write boundary
 - Change type: modify (seed path `canvas-sync.ts:388–401`, `seedDocFromCanvasData` `canvas-persistence.ts:363–387`, the capture writer `applyLocalDiffToYMaps` `:620–704`, and the import path from WP30)
@@ -540,6 +581,11 @@ Conventions used in this section:
   4. An endpoint-less edge can no longer reach disk, and each quarantine/release emits a distinct signature.
 - Definition of Done: self-healing replaces signature-only detection; the A.2/16 class is repaired, not merely reported.
 - Assigned to work package: **WP20**
+
+<!-- Updated: E1/E2 rulings — two clarifications so WP20 does not re-introduce the over-constraint or over-reach into I11's territory 2026-08-02 -->
+> **Two clarifications (2026-08-02), no AC changed.**
+> 1. **"Endpoint-less" in AC4 means `from.node` or `to.node` absent.** A side-less endpoint is a *complete* endpoint (C10 AC5) and its edge is valid; quarantining it would re-create the E1 data loss inside the auditor. AC4's target is the genuinely dangling edge.
+> 2. **Quarantine is not a file-safety mechanism and must not be used as one.** A quarantined record is never serialised, so quarantining a record that exists only in the user's file *removes it from that file*. WP20's scope is records **already in the doc**, where shared state and (from P2) the sidecar keep them recoverable and a repair delta can lift the quarantine. Protecting the file at the seed boundary is I11 / WP63 and is a different mechanism at a different boundary.
 - Fuzzer link: WP23 schema-invariant assertion + a fault-injection op that writes an invalid record directly into a replica.
 
 #### C21 — REMOVAL: the lock write-denial data seam
@@ -556,6 +602,36 @@ Conventions used in this section:
 - Definition of Done: R7 is moot — there is no write permission left for an epoch to protect.
 - Assigned to work package: **WP21**
 - Fuzzer link: WP23 must show that removing the write gate does not change convergence — concurrent writes to the same register converge by honest LWW on every replica, with no baseline-hold artefact and no held-back local state.
+
+<!-- Updated: the C21 fuzzer-link obligation is DISCHARGED — recorded here because WP21's entire premise rests on it and a handover is not a durable home for it 2026-08-02 -->
+
+> **Fuzzer-link obligation: DISCHARGED by B3c (2026-08-02). Owner: WP23, TC9.**
+> WP21's premise — *locks become pure UX because the data model now carries correctness* — is an
+> argument, and "no test pins the removed denial" is **not** evidence for it. The evidence exists and
+> is named: `plugin/src/__tests__/v2/wp23/test_tp09_write_gate_removal_does_not_change_convergence_visible.test.ts`
+> (seeded PRNG, base seed `0x230009`, **32 concurrent interleavings**) asserts all four required
+> properties on every replica:
+> ```text
+> ├── NO DENIAL       ← after each of two concurrent authors saves, that author's OWN doc
+> │                     holds the value it just wrote (under the removed gate the loser's
+> │                     write never reached its own doc at all)
+> ├── NO BASELINE-HOLD ← replaying the identical content immediately after produces ZERO Yjs
+> │                     updates; the echo baseline advanced with the write (under the removed
+> │                     gate it was WITHHELD, replaying the whole file as intent — Symptom-2)
+> ├── CONVERGENCE     ← every replica ends on the same value, and
+> └── LWW-CONSISTENCY ← that value is one somebody actually wrote
+> ```
+> **What it deliberately does not assert is which author won** — Yjs tie-breaks a concurrent same-key
+> write on `clientID = random.uint32()`, so pinning the winner would be flaky about half the time, and
+> a fuzzer that is flaky half the time is worse than no fuzzer. The **atomic-register** half is
+> stronger than per-field LWW-consistency and is checked separately: `pos` is one register holding
+> `[x, y]`, so the winner must be one author's **whole pair** — a merged `(A.x, B.y)` is a coordinate
+> **nobody submitted**, and checking `x` and `y` separately cannot see it, because each half is
+> individually a value somebody wrote.
+>
+> **This obligation is therefore closed, not open.** If TC9 is ever deleted, weakened, or made
+> non-deterministic, WP21's justification reverts to an unevidenced argument and the removal must be
+> re-litigated — treat that as an abort criterion, not a test-maintenance decision.
 
 #### C22 — REMOVAL: `writeRecordMinimal` key deletion
 - Change type: modify (`plugin/src/canvas/canvas-binding.ts:126–143`; the mirrored shape in `plugin/src/testing/e2e-control.ts:338–355`)
@@ -583,8 +659,139 @@ Conventions used in this section:
   2. After quiescence it asserts on **every** replica: identical doc state (SEC), the schema invariants (no endpoint-less edge, no record without `pos`), identical canonical serialisation (byte equality), and shadow consistency (no replica ever pushed a stale field — the W1 discriminant).
   3. Runs are reproducible from their seed, and any discovered counter-example is frozen as a named regression test that fails before the fix and passes after it.
   4. The op registry is open for extension so later phases can add ops without modifying the fuzzer core, and every WP in this spec that changes merge or serialisation behaviour is reachable through at least one registered op.
-- Definition of Done: convergence of the V2 model is checked over interleavings, not examples.
+  5. <!-- Updated: byte-equality provably cannot catch the flat/register collision class — the oracle needs an independent basis 2026-08-02 --> **An intent-trace oracle, independent of the implementation's own merge.** For every field the op sequence touched, the converged value on every replica must equal the value written by the **last op on that field under the run's total order**, as computed by the harness from its **own op log** — never read back from the implementation's merge result. **Agreement between replicas is necessary but not sufficient: a run in which all replicas agree on a value that no op ever wrote is a FAILURE, not a pass.** The op registry must include at least one op class that produces a record carrying **both** the flat and the register spelling of the same fact, and one that varies the insertion order of those two keys.
+- Definition of Done: convergence of the V2 model is checked over interleavings, not examples, **and correctness is checked against intent rather than against consensus**.
 - Assigned to work package: **WP23**
+
+<!-- Updated: AC5 rationale — the WP18 batch found a real corruption bug that every existing assertion family was structurally blind to 2026-08-02 -->
+> **Why AC5 exists.** AC2's four families — SEC, schema invariants, byte equality, shadow consistency — share a blind spot: all four are satisfied when every replica converges on the *same wrong value*. The `decodeV2RecordToFlat` insertion-order bug (C17) is exactly that shape: a moved card snapped back to its pre-move coordinate on **every** replica, so SEC held, the schema held, the bytes were identical everywhere, and the shadow agreed. Four green assertion families over a corrupted document. Byte equality is a *convergence* oracle and can never be a *correctness* oracle — "convergence is not correctness" (CONCEPT_V2 Teil 2, W3) applied to the fuzzer's own instruments. AC5 supplies the missing independent basis.
+
+<!-- Updated: the B3c fault-injection matrix promoted from a handover into the spec — it is the empirical justification for AC5 existing at all, and it must outlive the handover that produced it 2026-08-02 -->
+
+##### C23 fault-injection matrix — the measured justification for AC5 (B3c, 2026-08-02)
+
+**AC5's rationale above was an argument. This is the measurement, and it is the strongest single
+piece of evidence this project has produced.** It is recorded here, not only in
+`Worker3Handover_B3c_P1Remainder.md`, because a handover is an episodic artefact and this result
+is a standing architectural fact: it is *why* AC5 exists, and it is the answer to any future
+proposal to drop the intent-trace oracle as redundant with SEC or byte equality.
+
+Method: **200 scenarios × 10 windows** per row; each fault injected into production, then production
+restored and `cmp`-verified byte-identical after every injection. Cell values are oracle hits.
+
+| Injected fault | intent-trace | SEC | schema | bytes | shadow | I7 |
+|---|---|---|---|---|---|---|
+| none (control) | 0 | 0 | 0 | 0 | 0 | 0 |
+| **1. insertion-order flat-vs-register (the WP18/C17 class)** | **2913** | **0** | **0** | **0** | **0** | 0 |
+| 2. delete suppression broken | 854 | 0 | **863** | 0 | 0 | 0 |
+| 3. partial capture removes an unmentioned field | 31221 | 0 | 0 | 0 | 0 | **2587** |
+| 4. a replica pushes a stale field | 339 | 0 | 0 | 0 | **372** | 0 |
+
+**Row 1 is the whole argument, measured.** Over a *provably corrupt* document — the known C17
+insertion-order corruption, deliberately re-injected — **SEC, schema, byte equality and shadow
+consistency are all four green**, and the intent-trace oracle alone fires, 2913 times. Four
+independent assertion families agreeing on a document that is wrong is not a hypothetical failure
+mode of convergence oracles; it is the observed behaviour of *these* oracles on *this* codebase.
+
+**Read the SEC and byte-equality columns down.** They are zero in **every** row, including the three
+rows where a real defect was injected and other families did fire. That is not weak sampling — it is
+structural: every replica commits the same projection defect, so a *convergence* oracle cannot
+distinguish "all replicas agree because the system is correct" from "all replicas agree because they
+are identically wrong". **Convergence is not correctness (CONCEPT_V2 Teil 2, W3), demonstrated rather
+than argued.**
+
+Consequences that are now binding rather than advisory:
+
+- **AC5 is not redundant and may not be retired.** Any future proposal to drop the intent-trace
+  oracle on the grounds that SEC or byte equality "already covers it" is refuted by row 1 and must
+  be rejected without further analysis.
+- **No convergence oracle may be the *only* oracle on a correctness property, anywhere in this
+  spec** — not in the fuzzer, not in a chaos suite, not in a WP's own test set. A property that
+  matters needs a basis independent of the implementation's own merge.
+- **The matrix is a regression gate on the fuzzer itself.** It is what proves the fuzzer *bites*;
+  a fuzzer whose budget is reduced without re-running it is a fuzzer of unknown power (see the
+  `FUZZ_TEST_TIMEOUT_MS` note in §7 — do not shrink the scenario budget without re-measuring).
+- **Row 3's I7 column is a second, independent confirmation** that the partial-capture defect this
+  whole initiative exists to close is now caught by two families rather than argued about.
+
+#### C63 — Non-destructive seed boundary (I11)
+
+<!-- Updated: new component from the E2 ruling — refusal at the seed composed with flush() into silent, permanent deletion from the user's own .canvas file 2026-08-02 -->
+
+- Change type: modify (`CanvasPersistence` write path; the refusal branches of the two seed boundaries in `canvas-sync.ts` / `canvas-persistence.ts`)
+- Responsibility: make ingest refusal non-destructive at the one boundary where the input is the user's only copy — decouple "not admitted to the doc" from "removed from the file".
+- Interfaces:
+  - Input: the refusal signatures already produced by C18 AC1 at the two seed boundaries, keyed by canvas path
+  - Output: a withheld file write plus a signature, instead of a write that drops the refused records
+- Acceptance Criteria:
+  1. When any record read from a `.canvas` file is refused at a seed boundary (host seed or cold-open seed), `CanvasPersistence` **withholds the file write for that path** and the file on disk stays **byte-identical**. A `SEED REFUSED:` signature names the path, each refused id and its reason.
+  2. The withhold is **per path and non-fatal** (I5 DEGRADE): other canvases persist normally, and the affected canvas continues to sync, render and receive remote deltas — only its write-back is suspended. It is never a silent no-op and never an exception that breaks the session.
+  3. The withhold lifts automatically when the refused set for that path becomes empty — because a later delta or a user repair made every previously-refused record valid — and the first write after lifting is the ordinary canonical projection. Lifting emits a distinct signature.
+  4. **Discrimination:** with the withhold seam disarmed, a seed refusal followed by a flush removes the record from the file; with it armed, the file is byte-identical. This is the test that would have caught the E1 loss, and it must fail when the mechanism is disabled.
+- Definition of Done: no refusal, present or future, correct or mistaken, can delete data from a file the user did not create with this plugin.
+- Assigned to work package: **WP63**
+- Fuzzer link: WP23 — a fault-injection op that seeds a replica from a file containing a record invalid under the current rules must leave that file unchanged.
+
+> **Why this is a component and not a bugfix.** Every step in the loss path was individually correct and individually chartered: C18 AC1 refuses invalid local records; C14 judges validity; C17 projects the doc to the file; `CanvasPersistence` is the single writer (I3). The defect is in the **composition**, and no AC anywhere owned it — which is precisely why it survived review and landed on a path that touches real user files. I11 names the missing constraint so the composition can be tested rather than reasoned about.
+>
+> **Scope boundary against WP20.** WP63 protects the **file** at the **seed**; WP20 protects **records already in the doc** via quarantine. They are not alternatives and neither subsumes the other — see the C20 clarification.
+
+#### C64 — Tombstone-blind test-instrument sweep
+
+<!-- Updated: new component from the B3c/WP19 escalation ruling — AC1 made "the record survived" unfalsifiable wherever a test proves it by raw key presence, and the class is wider than WP19's licence 2026-08-02 -->
+
+- Change type: modify (test instruments only — **no production source is touched by this WP**)
+- Responsibility: restore falsifiability to the survival oracles that WP19 silently vacated outside WP19's own licensed scope.
+- Interfaces:
+  - Input: the residual list in §7's WP19 entry ("Not covered by this licence, and deferred to WP64")
+  - Output: tombstone-aware readings in the named test helpers and call sites; no assertion weakened, no test added or removed
+- Acceptance Criteria:
+  1. Every `docRecords()`-style helper that iterates the raw `nodes`/`edges` map without consulting `deleted` either becomes tombstone-aware or gains a tombstone-aware sibling used by every **survival** assertion (`w4-canvas-integrity.test.ts:132`, `v2/wp5v2/test_tp01:99`, `v2/wp5v2/test_tp05:87`, `v2/wp5v2/test_tp06:94`). Helpers used only for **field-value** reads may stay as they are, and the report states which is which.
+  2. Every remaining **2-arg** `serializeCanvas` / `buildCanvasData` call site in the test tree is either converted to the 3-arg `(nodes, edges, deleted)` form or carries a one-line comment stating why suppression is deliberately not wanted there. A 2-arg call used as a "the record is gone / still there" oracle is a defect.
+  3. Each test in §7's WP19 residual list gains a suppression pin alongside its existing field-level oracle, so that it fails both when the container is destroyed **and** when the record survives only as a suppressed tombstone. **Strictness rises on every site; no assertion is relaxed, retitled, skipped or deleted, and the test count does not change.**
+  4. **Discrimination:** with delete suppression inverted (the C23 fault-injection matrix row 2 perturbation), every test touched by this WP goes **RED**. A test that stays green under that perturbation has not been made falsifiable and does not satisfy AC3.
+- Definition of Done: no test in the tree proves a record survived by an oracle that a tombstone can satisfy.
+- Assigned to work package: **WP64**
+- Fuzzer link: C23 fault-injection row 2 (delete suppression broken) is the falsification instrument for AC4.
+
+> **Why this is a component and not cleanup.** It is the second half of a change that already happened. WP19 moved deletion from an absence to a value; §7's WP19 licence repairs the oracles that went **red**, which are self-announcing. This WP repairs the ones that went **green**, which are not. An unfalsifiable data-safety test is worse than a missing one, because it is counted as coverage — the same reasoning that produced the blind-set execution gate in §7 and AC5 in C23.
+
+<!-- Updated: C66 added by the B16 escalation ruling — the third independent sighting of a test asserting over an empty record set because its own fixture was refused at ingest 2026-08-02 -->
+
+#### C66 — Hollow-fixture detection sweep
+
+- Change type: modify (test fixtures only — **no production source, no assertion, no test instrument is touched by this WP**)
+- Responsibility: find, by measurement, every test in the tree that asserts over a record set its own fixture never put into the doc, and make the scenery real without changing what the test is about.
+- **Why now.** This is the **third** independent sighting of one class. B14 measured it at row 4 (`w4-canvas-integrity:352` was never red — its record was refused at the host seed with `MISSING_TYPE_SPECIFIC`). B16 measured it again at `w4-canvas-integrity` **A1** — `PROBE_A1 nodes=[] edges=["e1"] deleted=[]`, a test named *"a stale disk read cannot delete fromNode/toNode"* running against an **empty node map** — and found the same incomplete literal **13×** in that file. Two sightings are a coincidence; three are a mechanism. **Tightening ingest validation (C18 AC1) silently hollowed out an unknown number of fixtures that pre-date it**, and each one is a test that passes while asserting nothing. The number is unknown *because nobody has measured it*, which is precisely what this component exists to fix.
+- Interfaces:
+  - Input: the whole `plugin/src/__tests__/` tree; the C18 AC1 refusal path (`canvas-ingest-schema.ts`) and its refusal signatures; B16's `PROBE_A1` technique (read the doc's record set at the moment of assertion)
+  - Output: a measured population of hollow and partially-hollow fixtures, each completed or dispositioned; an enumerated ledger; no assertion changed and no production source touched
+- Acceptance Criteria:
+  1. **The population is established by measurement over the whole suite, not by the suspected list.** For every test that asserts over a record set derived from a canvas doc, the sweep measures the record set **actually under assertion** (node ids, edge ids) at the moment of assertion and compares it to the set the fixture literal declares. A fixture is **hollow** when the measured set is empty and **partially hollow** when it is materially smaller than its literal declares. `w4-canvas-integrity` **A2, A3, A5, A6** are known starting points and are **neither the boundary nor the expected total** — the measured population is reported as measured, with the same estimate-vs-measurement discipline that turned B16's "~10 call sites" into 57. **Literal-shape matching is a screen, not the oracle**, and the report states how many screen hits the measurement rejected: `text: ""` is *valid* (the refusal test is `storedSpecific === undefined` and nothing else), and a `remoteRecord(...)` fixture takes the accept-then-quarantine path rather than the refusal path, so both would be false positives of a grep.
+  2. **Every hollow fixture is either completed under §7's fifth licence or dispositioned with a measured reason** why an empty record set is that test's intended state. Each completion is enumerated by **file · line · test title · which declared record ids were absent from the doc · which keys were added · why the completion is faithful to the test's original subject**. **Completing a fixture must not change what the test asserts:** no assertion, matcher, title or strictness is touched, no `skip`/`only`, the test count does not change, and no id, coordinate, edge topology or any value an assertion reads is altered.
+  3. **Falsification per completed site**, by the method B14 and B16 established: a **targeted injection of the exact class the test claims to catch** — never a global perturbation — with confirmation that the test goes **red on its own named assertion** rather than on a neighbour's, and a note on whether the pre-existing oracles stayed green under the same injection. **Where a prior batch's amendment in the same file masks the falsification** (B15's finding), the injection is narrowed until the failure is attributable to the site under test, and the narrowing is recorded. Every perturbed file is restored and hash-verified.
+  4. **A verdict change on completion is an escalation, not a fix.** A fixture that has asserted nothing for some time may be concealing a genuine regression that surfaces the moment real records reach the doc. If completing a fixture makes its test **fail**, that failure is a candidate real defect: it is left red, reported with the measured before/after, and handed back for its own charter. Repairing it by weakening the assertion, by reverting the completion, or by treating it as fixture noise is an **abort criterion**.
+- Definition of Done: no test in the tree passes by asserting over a record set that its own fixture never put into the doc — and for every one that was, the record says whether completing it revealed a defect.
+- Assigned to work package: **WP66**
+- Fuzzer link: none. The instrument here is the ingest refusal signature, not the op fuzzer.
+
+> **Why this is a component and not a follow-up chore.** C64 removed oracles a tombstone could satisfy. This removes oracles *nothing at all* reaches — one level further down, and strictly worse: a vacated oracle still runs against real state, while a hollow fixture means the entire scenario never happened. Both are counted as coverage. The recurrence is the finding: a validation boundary that is tightened correctly invalidates fixtures written against the looser rule, and those fixtures fail **silently and greenly** rather than loudly, so no gate in §7 catches them. C66 exists because the class has now been found three times by accident and never once by design.
+
+<!-- Updated: C67 added by the B16 ruling — WP64 repaired two helpers whose repair is not falsifiable today, and an unverifiable repair carried as verified is the same error class the project keeps finding 2026-08-02 -->
+
+#### C67 — Falsifiability pins for the unfalsifiable WP64 helper repairs
+
+- Change type: modify (two test files under `plugin/src/__tests__/v2/wp5v2/` — **additive pins only**)
+- Responsibility: give the two WP64 helper repairs that are behaviour-preserving no-ops today a measurement, so that "repaired" is a claim the record can support.
+- **Why now.** B16 repaired the `docRecords()` helpers at `v2/wp5v2/test_tp01:99` and `test_tp06:94` to be suppression-aware, then declined to count them as AC4 reds and said why: **those fixtures contain no tombstones, so the repair is not currently falsifiable.** That was the correct call — and it leaves a repair in the tree whose only evidence is that the *same form* was proven at `test_tp05` (repaired **RED**, raw helper **GREEN**, identical injection). Two sites therefore carry a verified-looking change with no measurement behind them. The project's standing rule is that an unverified claim is not made true by being plausible.
+- Interfaces:
+  - Input: the two suppression-aware helpers as WP64 left them; WP12's `isTombstoneSuppressed` / `readTombstoneEntry`; B16's A/B method from `test_tp05`
+  - Output: one direct pin per helper plus the A/B measurement that shows it discriminates
+- Acceptance Criteria:
+  1. Each of the two helpers gains a **direct pin on the helper itself** — a test asserting that it omits a suppressed id and retains an unsuppressed one — rather than a tombstone added to the existing fixtures. **The existing fixtures and every existing assertion in both files stay byte-identical.** Adding a tombstone to fixtures whose subjects are the single-shadow reload and the discrimination seam would change what those tests are about, which AC2 of C66 and §7 both forbid; the helper is the thing under test here, so the helper is what gets pinned.
+  2. Each new pin is measured **A/B on an identical injection**: red against the pre-WP64 raw helper form, green against the repaired form — the measurement B16 recorded at `test_tp05` and could not take at these two sites. The test count rises by exactly the number of pins added, each is enumerated by file and name, and no existing test changes state in either direction.
+- Definition of Done: no WP64 helper repair is carried in the record as verified without a measurement behind it.
+- Assigned to work package: **WP67**
 
 ---
 
@@ -956,6 +1163,7 @@ Conventions used in this section:
   2. Readiness requires, within a bounded timeout, that both endpoints answer, report **different** vault identities, and report the **same** room; any of the three failing aborts the run under a distinct named reason and no edit is issued.
   3. Readiness is a positive assertion rather than an absence of error: a timeout, a partially initialised instance, or an endpoint reporting a vault that is not one of the two configured ones each prevent the run from proceeding.
   4. The same check is re-runnable mid-run and is reused by teardown to confirm the endpoints are gone.
+  5. <!-- Updated: AC5 appended — widening `session.info` is the literal content of AC1, so the two exact-shape assertions that pinned the pre-WP46 4-key payload are stale and are licensed for amendment 2026-08-01 --> The two assertions that pin the pre-WP46 four-key `session.info` payload with an exact-shape `toEqual` are amended to the nine-key payload, named individually in the implementation report against the §7 amendment-ledger entry. Each amended assertion stays a whole-object `toEqual` over all nine keys — no `toMatchObject`, no subset match, no destructuring away of the added fields, no `skip`/`only`. Nothing is deleted: the test count does not change, and the four legacy fields keep their names, defaults and semantics verbatim (C46 AC1, pinned by TC2).
 - Definition of Done: it is structurally impossible for a run to drive one vault twice, or to drive a vault nobody intended.
 - Assigned to work package: **WP46**
 
@@ -1074,6 +1282,197 @@ Conventions used in this section:
 
 ---
 
+### PHASE VI — Verification integrity (the blind-set gate itself)
+
+<!-- Updated: new phase — the shared blind runner was found able to report a never-executed set as green, which puts every prior blind claim in question 2026-08-01 -->
+
+<!-- Updated: concealment mechanism corrected — vitest 4.0.18 exits 1 on zero discovery, so the old runner failed loudly; the defect is reproducibility, not a silent green 2026-08-01 -->
+
+> **Why this phase exists.** Blind sets are this project's primary defence against a coder sub-agent shaping tests to fit its implementation. Worker 3 established on 2026-08-01 that `workflowArtifacts/canvas-v2/_run_blind.py` stages blind files by copying their filenames verbatim; WP46's TypeScript blind files are named `test_*_blind1.ts`, which does **not** match vitest's default `**/*.{test,spec}.?(c|m)[jt]s?(x)` discovery glob, so those sets could not execute at all.
+>
+> **Correction (2026-08-01, WP55/WP57 re-verification).** The original text of this phase said vitest "prints *No test files found* and **exits 0**", and that the runner reported that as a pass. **That does not reproduce and is withdrawn.** Vitest 4.0.18 exits **1** on zero discovery and neither vitest config sets `passWithNoTests`, so the old runner propagated a **loud red**, not a silent green. The three staging defects below are real *as causes* — the affected sets genuinely could not execute — but the concealment mechanism was mis-stated. What actually happened is that batches produced their green counts through an **unrecorded** rename-and-retarget mechanism (by hand or throwaway script) that no committed tool could reproduce. **The debt is one of reproducibility, not of execution.** The executed-count gate in §7 and C55 AC1 remain in force unchanged; they are now **defence-in-depth** against a class of silent pass that this codebase happened not to have, rather than the fix for an open hole.
+>
+> **The standing lesson, restated in its corrected form:** a claim that no committed instrument can reproduce is unverifiable at the moment it is made, however true it later proves to be. All 52 ledger rows executed; none is VACUOUS.
+>
+> **This is not a one-line fix, for two reasons.** First, the runner has more than one way to no-op: beyond the filename glob, its staging depth is hardcoded while sets differ in what their own relative imports require, and its target package is hardcoded to `plugin/` while WP41's blind set imports `../../mux-protocol` and belongs to `server/`. Second, the defect is retroactive: **no blind-set pass claimed by any batch that used this runner could be reproduced by committed tooling**, including batches already closed. Repairing the runner without re-establishing which historical claims were real would leave the project's verification story resting on evidence nobody has checked.
+>
+> <!-- Updated: measured staging facts replace the estimated ones — depth is per-set and the Python sets must not be staged at all 2026-08-01 --> **Measured staging facts (authoritative — supersede the estimates above).** Anyone re-staging blind sets must use these, not the earlier guesses:
+>
+> - **WP1–WP16 and WP5 are depth 3** and were not disturbed. WP5 is the proof that depth cannot be guessed: it mixes `../../../canvas/…` with `../../harness/…`, and only depth 3 satisfies both.
+> - **WP47 and WP49 TypeScript halves need depth 2.** The old runner never used depth 2; these two were broken by the depth defect alone.
+> - **WP44 is depth 3 and was *not* depth-affected.** The WP55 charter listed it as affected — that is wrong. The charter also **omitted WP49 entirely**.
+> - **Python sets must run in place and must never be staged.** 60 Python blind files pin `parents[5]/"tools"` to locate the rig package; moving them changes the parent count and silently breaks the import. Staging a Python set is a defect, not a fix.
+> - **Undiscoverable-file count: 38, not 46.** WP41 16 + WP42 14 + WP46-TS 8 = 38. The per-set counts were right; only the sum was wrong.
+>
+> **What the evidence already shows.** The bug is not hypothetical: when Worker 3 ran WP46 blind_set1 through a throwaway runner that staged correctly, a real, deterministic failure appeared that every prior "green" had hidden — `test_probe_side_effect_free_blind1.ts > does not disturb an edit that follows it`, where `expect(bump).toHaveBeenCalledTimes(1)` receives **2** after a single `canvas.simulateEdit`. Reproduced across three runs. That is a genuine C46 acceptance-criterion violation (C58), not a harness artefact.
+>
+> **Standing rule established by this phase.** A recorded executed-test count is the evidence a blind set passed. An exit code is not. See §7.
+
+#### C55 — Blind-set execution integrity
+
+- Change type: modify (`workflowArtifacts/canvas-v2/_run_blind.py`)
+- Responsibility: make it structurally impossible for the shared blind runner to report a set as passing that it did not execute.
+- Interfaces:
+  - Input: a WP number and a set selector, plus the set's files exactly as authored in `tests/blind_set{1,2}/WP<N>/`
+  - Output: a per-set verdict carrying an executed-test count, or a named hard failure
+- Acceptance Criteria:
+  1. A run that collects **zero** test cases is a hard failure under a distinct named reason and can never be reported as a pass. Every reported PASS carries a recorded executed-test count greater than zero, and a zero or absent count is treated as a failure of the run rather than as an absence of problems. A process exit code of 0 is not by itself accepted as evidence that a set passed.
+  2. Staging normalises each blind file's **name** to the target framework's discovery pattern, and the normalisation is name-only: content, assertions, imports, skips and test counts are byte-identical to the authored artefact. No assertion is edited, relaxed, skipped or removed to make a set run. A file the runner cannot make discoverable is named individually and fails the run rather than being silently excluded from it.
+  3. Staging depth and target package are derived **per set** from that set's own relative import specifiers rather than hardcoded: a set importing `../../x` and a set importing `../../../x` both resolve, and a set whose imports resolve into `server/` is staged and run against the server package rather than the plugin. An import that fails to resolve is a hard, named failure — never a collection error reported as a pass and never a silent zero-collection.
+  4. The Python blind path is covered by the same runner under the same zero-collection rule, so "no tests ran" cannot pass on either side. The existing guarantee that the staging directory is always removed — on success, on failure, and on interrupt — is preserved unchanged, because a leftover staging directory leaks blind tests to the next coder sub-agent and breaches context isolation.
+  5. The runner emits, per set, a machine-readable record of `(WP, set, framework, files staged, tests collected, tests passed, tests failed, exit code, verdict)` suitable for direct transcription into the C56/C57 ledger without re-running or re-interpretation.
+- Definition of Done: a never-executed blind set and a fully passing blind set are no longer indistinguishable from the runner's output.
+- Assigned to work package: **WP55**
+
+#### C56 — Blind re-verification: previously discoverable sets
+
+- Change type: create (`workflowArtifacts/canvas-v2/BlindVerificationLedger.md`)
+- Responsibility: establish, for the blind sets whose files were already framework-discoverable, whether the green claims made about them are real.
+- Interfaces:
+  - Input: the repaired C55 runner; the blind sets under `tests/blind_set{1,2}/`; the claims recorded in `Worker3Handover_B1_P0.md`, `Worker3Handover_B8_P6.md`, `Worker3Handover_B9a_T3infra.md` and the `ImplementationReport_WP*.md` files
+  - Output: one ledger artefact with one row per `(WP, set)` re-run
+- Acceptance Criteria:
+  1. Every blind set whose files already carried a framework-discoverable name — the TypeScript sets for WP1–WP16 and WP49, and no others — is re-run under C55, and each produces one ledger row carrying: the previously-claimed result with the artefact and line that claimed it, the number of tests actually collected, the numbers passed and failed, and a verdict.
+  2. The verdict vocabulary is exactly **CONFIRMED** (the set executed a non-zero count and the result matches the prior claim), **VACUOUS** (the prior claim rests on a run that executed zero tests), **DIVERGENT** (the set executed but the result contradicts the prior claim) or **UNRUNNABLE** (the set cannot be executed even under the repaired runner, with the obstruction named). No other verdict is admissible, and no row may be left blank.
+  3. Every WP whose blind claim is found VACUOUS or DIVERGENT is named explicitly in the ledger and in the implementation report, together with the handover artefact whose claim it invalidates. The ledger states plainly, in its own text, that a VACUOUS or DIVERGENT verdict invalidates the corresponding claim in an already-closed handover.
+  4. The ledger states its own coverage boundary: which `(WP, set)` pairs this work package re-ran, which are deferred to C57, and which have no blind set at all — so a reader can distinguish a set that passed from a set nobody looked at. Absence of a row is never readable as a pass.
+  5. No blind test file is edited, renamed in place, deleted or weakened by this work package. Re-verification observes; it does not repair. A blind test found to be itself defective is recorded as a finding and left unmodified.
+- Definition of Done: for every previously-discoverable blind set, the project can say whether its green was real.
+- Assigned to work package: **WP56**
+
+#### C57 — Blind re-verification: non-discoverable and cross-package sets
+
+- Change type: modify (`workflowArtifacts/canvas-v2/BlindVerificationLedger.md` — append)
+- Responsibility: establish the truth for the blind sets that the broken runner provably could not have executed, which is where vacuous claims are expected to concentrate.
+- Interfaces:
+  - Input: the repaired C55 runner and the C56 ledger
+  - Output: the same ledger, extended to complete coverage of every blind set in the project
+- Acceptance Criteria:
+  1. Every blind set not covered by C56 is re-run under C55 and recorded to the C56 row schema and verdict vocabulary. The scope is: the TypeScript sets whose filenames match no discovery pattern (**WP41**, **WP42**, and the TypeScript half of **WP46**), the TypeScript files inside the otherwise-Python sets (**WP44**, **WP47**), and the Python sets (**WP43**–**WP48**).
+  2. For **WP41** and **WP42** the ledger resolves an explicit contradiction rather than merely restating it: `Worker3Handover_B8_P6.md` claims 44 and 73 executed tests for sets whose files, as stored, no framework glob can discover. The ledger records whether those counts are reproducible under C55 and, if they are not, states that the claimed counts cannot be attributed to the stored artefacts.
+  3. For the Python sets the ledger records the executed counts and confirms or corrects `Worker3Handover_B9a_T3infra.md` §4.1's claim of 647 blind tests with 2 failures, including whether the two known failures are the same two.
+  4. On completion the ledger covers **every** blind set present in `tests/blind_set{1,2}/` with no gaps, and it says so with a count that a reader can check against the directory listing.
+  5. No blind test file is edited, renamed in place, deleted or weakened by this work package, and the known-defective `tests/blind_set2/WP47/test_tp04_teardown_exit_paths_blind2.py` remains unmodified and is recorded as a finding rather than repaired.
+- Definition of Done: the ledger is complete, and every blind claim in the project is either confirmed or named as unverified.
+- Assigned to work package: **WP57**
+- <!-- Updated: AC2's premise falsified — the WP41/WP42 counts reproduce exactly; recorded as CONFIRMED 2026-08-01 --> **Outcome of AC2 (recorded, ACs unchanged).** The contradiction AC2 was written to resolve is **resolved in favour of B8/P6**. All four claimed quantities reproduce exactly under the repaired runner: WP41 24+20 = **44** across **16** files, WP42 28+45 = **73** across **14** files. Worker 2's earlier ruling that "both statements cannot both be true" was a sound inference on the evidence then available and is now **falsified**; `Worker3Handover_B8_P6.md:54` and `:87` are **CONFIRMED**, not vacuous. The residual finding is a **process** one, not a correctness one: B8/P6 staged via a rename-and-retarget mechanism it never recorded, so a true claim was nevertheless unverifiable when made. This is the reproducibility debt, and it is what the §7 executed-count gate now prevents recurring.
+
+#### C58 — Readiness probe side-effect freedom
+
+- Change type: modify (`plugin/src/testing/e2e-control.ts` and/or `tools/obsidian_e2e/readiness.py`, whichever owns the observed side effect)
+- Responsibility: make the readiness handshake genuinely free of side effects on the edit path, which C46 AC2 and AC4 already require and which the blind set shows is not the case.
+- Interfaces:
+  - Input: a readiness probe issued against a live control endpoint, followed by an ordinary canvas edit
+  - Output: the same readiness verdict, with the subsequent edit accounted exactly once
+- Acceptance Criteria:
+  1. Issuing the readiness probe does not cause, duplicate, suppress, delay or reorder any subsequent capture: after a probe followed by a single canvas edit, the capture counter advances by exactly one. The currently observed behaviour is an advance of two, deterministically across repeated runs.
+  2. The C46 property "any of the three failing aborts the run under a distinct named reason and **no edit is issued**" holds observably and not merely structurally: the probe's effect on the edit path is asserted by test, not inferred from the absence of an outbound edit request.
+  3. The C46 property "the same check is re-runnable mid-run and is reused by teardown to confirm the endpoints are gone" holds without accumulating side effects: N consecutive probes followed by one edit still advance the capture counter by exactly one, for N greater than one.
+  4. The fix is verified under the repaired C55 runner with a recorded non-zero executed count for both WP46 blind sets, and the failing blind test `test_probe_side_effect_free_blind1.ts > does not disturb an edit that follows it` is fixed by changing the implementation, not the test. No blind or visible assertion is edited, and the WP46 test count does not change.
+  5. C46's existing acceptance criteria and its §7 amendment-ledger entry are not reopened, reworded or re-litigated; WP46 remains `DONE` and this work package carries the defect forward under its own charter.
+- Definition of Done: the readiness probe can be issued as often as the rig needs without perturbing what the rig is trying to measure.
+- Assigned to work package: **WP58**
+- <!-- Updated: WP58 outcome — the symptom was real but the attributed cause was not the probe 2026-08-01 --> **Outcome (recorded, ACs unchanged).** The double bump was real and deterministic, but it was **not caused by the probe**. `sessionInfo()` is inert and C46 AC2's structural argument is correct. The duplicate came from a trailing `markActivity()` in `simulateEdit`: WP49 moved the activity seam onto the doc (`observeDoc` registered before the transaction), so `doc.transact` already marks activity — and the pre-WP49 explicit call counted it a second time. It fired twice on **every** `simulateEdit`, probe or no probe. Fixed by deleting the redundant call; **WP49 AC1 is preserved exactly** (the seam still never inspects origin) and no assertion was touched. Do not carry forward the belief that the readiness probe mutates the edit path — it does not.
+
+<!-- Updated: PHASE VI extended — the four DIVERGENT rows adjudicated and WP17's uncovered set chartered 2026-08-01 -->
+
+> **Adjudication of the four DIVERGENT ledger rows (Worker 2, 2026-08-01).** All four rule as **stale expectations or defective tests, not product defects** — but the ruling was made per-row against quoted code, not by defaulting to the cheaper answer, and three qualifications ride with it:
+>
+> 1. **WP3 set2 is provisional on B2.** The evidence was gathered against a tree B2 is still editing (`canvas-sync.ts`, +643/−65 uncommitted). C59 requires re-measurement after B2 closes and escalation if the failure changes shape.
+> 2. **The WP49 timing cluster is a stale test over a *real* behavioural change.** A zero-budget `waitQuiescent(0)` probe now costs one 20 ms poll instead of returning synchronously. The test is wrong; the behaviour change is real, is chartered by WP49 AC1, and is recorded rather than waved past.
+> 3. **Two failures are neither stale nor defective-implementation — they are tests that could never have passed.** They are only visible now because these sets had never executed. §7 gains a third amendment class for them.
+
+#### C59 — WP3 round-trip blind amendment
+
+<!-- Updated: licence extended to the two `edges.bare` pins in both sets; AC3's claim that `edges.bare` "passes" was false — it was unreachable, and its stated reason described the pre-AC5 defect as a guarantee 2026-08-02 -->
+
+- Change type: modify (`workflowArtifacts/canvas-v2/tests/blind_set2/WP3/test_value_preservation_blind2.test.ts`, `workflowArtifacts/canvas-v2/tests/blind_set1/WP3/test_file_shape_tabs_blind1.test.ts`)
+- Responsibility: make WP3's value-preservation blind set pin WP16's V2 reader shape through the decode bridge, without weakening what it asserts.
+- Interfaces: input is the WP16 reader (`parseCanvas` → `toV2Node`/`toV2Edge`) and its exact inverse `decodeCanvasDataToFlat`; output is two amended assertions plus a ledger row
+- Acceptance Criteria:
+  1. The two named assertions are amended to assert the round trip **through the decode bridge** (`decodeCanvasDataToFlat`, and `decodeEndpointToFile` where an endpoint is involved), so the property under test is unchanged: a node's and an edge's full key set survives `serialise → parseCanvas → decode` with nothing added and nothing lost. The subject — value preservation — is preserved exactly; only the shape the assertion reads is corrected.
+  2. Strictness does not fall. Each amended assertion remains a whole-collection exact `toEqual` over the complete sorted key list — no `toMatchObject`, no `objectContaining`, no subset, no key-count check, no `skip`/`only`, no destructuring away of the register keys. The amended form is **stricter**: it additionally pins the invertibility of the V2 register bridge, which nothing pinned previously.
+  3. The test count in the file does not change, and the remaining tests still pass unmodified. <!-- Updated: the original AC3 asserted `edges.bare` "passes because `encodeEndpointFromFile` refuses to build a half endpoint". Both halves were false — it was UNREACHABLE (masked by the `:76` failure in the same test body), and the refusal it credited as a data-preservation guarantee is the pre-AC5 over-constraint WP10 AC5 exists to remove. Superseded by AC5/AC6 2026-08-02 -->
+  4. Both amendments are entered in the §7 amendment ledger with file, line and reason, and `WP3 set2` is re-run under C55 with a recorded non-zero collected count.
+  5. **The `edges.bare` pin in each set is amended the same way** (set2 `:103`, set1 `:79`), reading the round trip through `decodeCanvasDataToFlat` / `decodeEndpointToFile`. The subject of each — *a bare, side-less edge round-trips with its endpoints intact and gains no key* — is unchanged and is now actually **reachable**.
+  6. **Strictness rises on the property AC5 is actually about:** each amended site pins with an exact whole-object `toEqual` that a side-less endpoint decodes to its `*Node` key and **no** `*Side`/`*End` key — never `null`, never `""`. Test counts unchanged in both files, and both WP3 ledger rows are re-measured.
+- Definition of Done: both WP3 sets are green because the round trip genuinely preserves every value, not because an assertion was loosened.
+- Assigned to work package: **WP59**
+- **Sequencing constraint:** must not start until batch **B2** is closed; the ruling is provisional on B2's final state and must be re-measured first.
+- **Ruling on the escalation (Worker 2, 2026-08-02) — stale expectation, NOT a defect in WP10 AC5, and this was measured rather than argued.** The stakes were explicit: AC5 is the fix for the silent `.canvas` data-loss class, so a defect in its presence semantics would be the worst regression this project has found. Four independent checks, all confirming:
+  1. `decodeEndpointToFile` (`canvas-registers.ts:615-626`) **always** emits `fromNode`/`toNode` and emits `fromSide`/`fromEnd` only when the register carries them — exactly the JSON Canvas contract, where `*Node` is mandatory and `*Side` optional.
+  2. `decodeCanvasDataToFlat`'s two passes (`canvas-sync.ts:413-439`) reconstruct a bare edge as exactly `{fromNode, toNode, id}` — three keys, none invented, none lost.
+  3. **The old green was produced by the bug.** `toV2Edge` (`:263-299`) folds the flat keys **only when the register was built**, and keeps them verbatim otherwise. Pre-AC5, a side-less endpoint failed to build, so the flat keys survived and `parsed.edges[…].fromNode` was readable. AC5 makes the register build, so the fold now happens — correctly. The assertion passed *because* a fully-connected edge was being read as not-an-endpoint.
+  4. **Measured at the level of file bytes:** `plugin/src/__tests__/v2/wp17/test_tp13_sideless_edge_file_byte_identical_round_trip_visible.test.ts` is green 5/5 (run 2026-08-02) and pins that a `.canvas` file with side-less edges survives `parse → doc → serialize` byte-identically through both doc vocabularies, emits no `null`/`""` for an omitted optional key, and yields `{id, fromNode, toNode}` from `buildCanvasData`.
+  Ruling the other way would have required reverting AC5, which would restore the behaviour where a side-less edge reads as dangling, is refused at ingest, and is written out of the user's file.
+
+#### C60 — WP44 import-surface pin amendment
+
+- Change type: modify (`workflowArtifacts/canvas-v2/tests/blind_set2/WP44/test_tp12_no_server_no_port_blind2.test.ts`)
+- Responsibility: align the node-builtin import pin with the sanctioned import surface of `e2e-control.ts`, so it still catches a genuinely new dependency and stops failing on one the spec mandates.
+- Interfaces: input is the text of `plugin/src/testing/e2e-control.ts`; output is one amended assertion plus a ledger row
+- Acceptance Criteria:
+  1. The assertion is amended to pin the node-builtin import set to exactly `{node:crypto, node:http}`, and the test title and file preamble are corrected to match, so the file no longer asserts one thing in prose and another in code.
+  2. Strictness does not fall: the assertion remains a whole-set exact `toEqual`. No subset match, no `arrayContaining`, no "at least" check, no filtering `node:crypto` out before comparing, no `skip`/`only`. A future import of `node:net` or `node:child_process` must still fail it.
+  3. The test count does not change and the four currently-passing tests still pass unmodified, including the behavioural no-server check and the bare-specifier pin — which are what WP44 AC4 actually protects.
+  4. The amendment is entered in the §7 amendment ledger, and `WP44 set2` (TS) is re-run under C55 with a recorded non-zero collected count.
+- Definition of Done: the pin discriminates a real new dependency from a Node built-in the shared contract requires.
+- Assigned to work package: **WP60**
+- **Rationale note:** `node:crypto` has one use site — the `canvas.file` sha256 that `T3_SharedContract.md` §6.1 mandates — and adds no port, socket or listener. WP44 AC4's subject is `resolvePort` and server/port behaviour, and its dependency language is about **runtime packages**. The visible counterpart's allow-list already skips every `node:` specifier. The one way this could be a real violation is bundle growth, which C46 AC1 forecloses and `W4-1` measures; if `W4-1` ever returns a non-zero match count, this amendment is revisited.
+
+#### C61 — WP49 quiescence blind amendments
+
+- Change type: modify (five files under `workflowArtifacts/canvas-v2/tests/blind_set{1,2}/WP49/`; one statement in `T3_SharedContract.md` §6)
+- Responsibility: resolve the five failing tests across WP49's two TypeScript blind sets, and state the `timeoutMs = 0` semantics that two artefacts currently read incompatibly.
+- Interfaces: input is `waitQuiescent` (`e2e-control.ts:997-1018`), the router (`:394-398`) and `sessionInfo()` (`:832-850`); output is five amended tests, one contract statement and two ledger rows
+- Acceptance Criteria:
+  1. **Class A** (`test_tp4_…_blind1`, `test_tp1_…_blind2`) — each test's fake-timer advance is increased to cross at least one full poll interval so the awaited promise can settle. Every `toEqual` verdict assertion is kept **verbatim**, because those verdicts are what the tests exist to pin and the implementation already produces them. The named subject — that `timeoutMs: 0` does not collapse to the 2000 default — is preserved and still fails if it ever does.
+  2. **Class B** (`test_tp3_…_blind2`) — the four-key exact-shape `toEqual` on `session.info` is amended to the full nine-key payload in the form WP46 AC5 mandates: whole-object `toEqual` over all nine keys with this fixture's honest-degradation values. No `toMatchObject`, no subset, no `objectContaining`, no key-count check, no destructuring away of the five added fields.
+  3. **Class C** (`test_tp2_…_blind2`, `test_tp10_…_blind2`) — each is repaired under §7's third amendment class, named by file, line and the reason it could not pass. `test_tp10`'s assertion becomes a direct exact assertion on the value, **stricter** than the substring check it replaces; `test_tp2`'s fixture is retimed so the edit lands strictly inside the pending wait, with its `{quiescent: false}` assertion kept verbatim. Neither repair changes what the test is about.
+  4. The `timeoutMs = 0` semantics are stated once in `T3_SharedContract.md` §6 as the single authority: `0` means "expire at the earliest opportunity — answer after the first poll, never from pre-call history", it is forwarded rather than defaulted, and the answer costs one poll interval.
+  5. Strictness does not fall anywhere and the test count does not change across both sets; all 30 currently-passing tests still pass unmodified; each of the five changes carries its own §7 ledger entry.
+  6. Both WP49 TypeScript sets are re-run under C55 with recorded non-zero collected counts, and the findings table's "2-key" description of the `session.info` pin is corrected to "4-key".
+- Definition of Done: WP49's blind sets are green because the quiescence oracle behaves as chartered, not because the tests stopped asking.
+- Assigned to work package: **WP61**
+- **Hard constraints:** WP49 AC1 is untouchable — the activity seam must never inspect origin. `waitQuiescent` must not be made to evaluate before its first sleep; that restores exactly the pre-call-history defect WP49 exists to remove. The tests move to the implementation's clock, never the reverse.
+
+#### C62 — WP17 blind-set coverage
+
+- Change type: modify (`workflowArtifacts/canvas-v2/BlindVerificationLedger.md` — append)
+- Responsibility: close the one coverage gap the C56/C57 sweep declared, so that no `(WP, set)` pair that exists on disk is without a verdict.
+- Interfaces:
+  - Input: the repaired C55 runner; `tests/blind_set{1,2}/WP17/` (12 TypeScript files each); WP17's prior claim if one exists
+  - Output: the same ledger, extended by two rows, with its coverage-boundary section corrected
+- Acceptance Criteria:
+  1. `tests/blind_set1/WP17/` and `tests/blind_set2/WP17/` are each run under the repaired C55 runner, and each produces one ledger row in the C56 schema carrying: the previously-claimed result with the artefact and line that claimed it (or an explicit "no prior claim" marker), the number of tests actually collected, the numbers passed and failed, and a verdict from the C56 vocabulary. A row with a zero or absent collected count is a failure of the run, not a pass.
+  2. The ledger's coverage-boundary section is corrected so that the folder count it states matches the directory listing a reader takes at that moment, and the "One set is deliberately NOT covered: WP17" carve-out is replaced by the rows themselves. On completion the ledger covers **every** blind set present in `tests/blind_set{1,2}/` with no gaps, and says so with a count the reader can check.
+  3. No blind test file is edited, renamed in place, deleted or weakened. A blind test found to be itself defective is recorded as a finding and left unmodified, naming the file and the failing assertion.
+  4. If either set is DIVERGENT, the finding is recorded in the ledger's findings table with the failing test named, and is handed back for its own charter rather than repaired here. The verdict is reported as measured even when it invalidates a claim in a closed B2 handover.
+- Definition of Done: every `(WP, set)` pair that exists on disk carries a verdict, and the ledger's own coverage claim is checkable against the filesystem.
+- Assigned to work package: **WP62**
+- **Sequencing constraint:** must not start until batch **B2** is closed — WP17 lives in `plugin/src/canvas/**`, where B2 is live. Measuring a set whose implementation is mid-edit produces noise, not evidence.
+
+<!-- Updated: C65 added by the B13 escalation ruling — a CONFIRMED ledger row silently expired, and the record it rests on cannot say when or against what it was measured 2026-08-02 -->
+
+#### C65 — Ledger row provenance and the named-intermittent register
+
+- Change type: modify (`workflowArtifacts/canvas-v2/_run_blind.py`, `workflowArtifacts/canvas-v2/_gen_ledger.py`, `workflowArtifacts/canvas-v2/BlindVerificationLedger.md`)
+- Responsibility: make every blind measurement carry the tree state it was taken against, so a ledger row can be recognised as expired instead of being read as a standing fact — and give the one observed intermittent a name, an owner and a falsification threshold.
+- **Why now.** WP3 set1 was CONFIRMED 56/56/0 by WP56 and re-measured 56/55/1 by B13 with the set untouched: WP10 AC5 landed in between and retired the shape the row pinned. WP56's measurement was correct when taken. The row could not say so, because `_blind_records/*.json` records `(wp, set, framework, files_staged, tests_collected, tests_passed, tests_failed, exit_code, verdict, reason, package, depth, detail)` and **nothing about when or against what**. File mtime is the only signal and every re-run overwrites it. This is a gap in the artefact that certifies the project's verification, not a bookkeeping nicety.
+- Interfaces:
+  - Input: the C55 runner and the `_gen_ledger.py` transcription script; `git rev-parse HEAD` and `git status --porcelain` for the tree state
+  - Output: an extended blind-record schema, a ledger with a provenance column, and the intermittent register in §7 reflected in the ledger
+- Acceptance Criteria:
+  1. **Every blind record is self-dating.** `_run_blind.py` writes at minimum `measured_at` (ISO-8601 UTC) and `tree_rev` (the `git rev-parse HEAD` short sha, plus an explicit dirty marker when `git status --porcelain` is non-empty) into each `_blind_records/*.json`. Existing fields keep their names and meanings — this is additive, and no consumer of the current schema may break.
+  2. **Every ledger row shows its provenance,** transcribed by `_gen_ledger.py` from those fields exactly as the counts already are — never retyped by hand. A row whose record predates the schema carries an explicit `provenance: unknown (pre-C65)` marker rather than a blank or a guessed value; a blank would be indistinguishable from a fresh measurement, which is the failure mode this WP exists to remove.
+  3. **The ledger states its own semantics.** `BlindVerificationLedger.md` says in its verdict section that a CONFIRMED row is evidence for the tree it was measured against and is never readable as a current pass, with WP3 set1 named as the worked example — including the part that makes it instructive: the row was green *because of* the defect WP10 AC5 later fixed.
+  4. **The named-intermittent register is live.** §7's register (currently one row: `wp5/latency.test.ts`'s 50–150 ms RTT band, owner WP65) is reflected in the ledger so a batch meeting an intermittent finds it already named. The acceptance threshold is recorded with it and is falsifiable: more than one failure in ten consecutive full-suite runs, or any failure co-occurring with another `wp5` assertion, voids the acceptance and escalates it as a real defect.
+- Definition of Done: a reader of any ledger row can tell what tree it was measured against without archaeology, and the one known intermittent has an owner and a threshold rather than a footnote.
+- Assigned to work package: **WP65**
+- **Explicitly out of scope:** re-measuring the existing 58 rows. Backfilling provenance for rows measured before this schema existed is not possible and must not be faked; those rows carry the `unknown (pre-C65)` marker and are re-measured only when a batch has its own reason to. No blind test file and no production file is touched.
+
+---
+
 ## 6. API and Interfaces
 
 - **Tool surfaces / commands:** one new user command, "Aus Datei importieren" (Import from file, WP30), plus the existing canvas commands unchanged.
@@ -1102,6 +1501,7 @@ Conventions used in this section:
 ## 7. Quality Gates
 
 <!-- Updated: WP4 added to the licensed-deletion list with its three named tests, so P0 can close green without an unexplained drop 2026-07-31 -->
+<!-- Updated: amendment ledger added as a second licensed class (WP46) — an exact-shape assertion restated because a chartered AC changed the shape it pins, with strictness and test-count held constant 2026-08-01 -->
 
 - **Lint / typecheck / test commands** (from `plugin/`, per RepoMap `## Build & Test Commands`):
   1. `npm run build` — `tsc -noEmit -skipLibCheck` + esbuild production bundle. Must PASS.
@@ -1122,14 +1522,424 @@ Conventions used in this section:
   | WP | Tests deleted | File | Reason | Replacement coverage |
   |---|---|---|---|---|
   | WP4 | `A4`, `A9`, `A10` | `plugin/src/__tests__/w4-canvas-integrity.test.ts` | They assert that a save omitting a field deletes that field from the CRDT. I7 forbids exactly that on the capture path from P0 (C4 AC1 + C2). A9/A10 are additionally **unfalsifiable** after WP4, not merely failing: they disarm `PROTECTED_KEYS`, and that guard is no longer read anywhere on `handleLocalModify`, so mutating it cannot change the outcome they assert. | C4 AC6 relocates the endpoint-discrimination pair to a boundary where the guard is still live. A4 has **no** replacement — that is the accepted regression recorded as §3.1 S14, owned by WP39 AC5. |
+  | WP18 | ``T1 DISCRIMINATION `fromNode`: intact guard keeps the endpoint through the host seed, disarmed guard loses it``, ``T2 DISCRIMINATION `toNode`: intact guard keeps the endpoint through the host seed, disarmed guard loses it`` (the file's only two tests; whole file removed) | `plugin/src/__tests__/v2/wp4/test_tp08_protected_keys_seed_discrimination_visible.test.ts` | Pure discrimination pairs that require the **disarmed** run to LOSE the endpoint. C18 AC3 abolishes absent-key deletion at the seed, so both runs agree and the pair proves nothing — unsatisfiable exactly as WP4's `A9`/`A10` became, and for the same reason. Verified before deletion: no blind counterpart exists (WP4's blind sets stop at `tp07`) and there is no artefact source-of-truth copy. | `PROTECTED_KEYS` membership stays pinned by WP18 TC12, `w4-canvas-integrity` A8 and WP3 `blind_set1/test_geometry_keys_drift`. **Replacement coverage for the boundary itself is now positive, not absent:** C10 AC5's side-less round-trip pin, C14's direct side-less-edge validator pin, C17 AC5's byte-identical side-less file round-trip, and **C63 AC4's discrimination test** — which pins the seed boundary's *non-destructiveness*, a strictly more valuable property at that boundary than the retired guard ever pinned. |
   | WP21 | (enumerated at implementation time) | — | C21 AC4 | — |
   | WP22 | (enumerated at implementation time) | — | C22 | — |
   | WP33 | (enumerated at implementation time) | — | C33 | — |
 
+  <!-- Updated: WP18 ratified onto the licensed-deletion list; its own charter ordered the retirement by name but the list was never updated 2026-08-02 -->
+  **Ratification (2026-08-02).** The licensed-deletion list is now **WP4, WP18, WP21, WP22, WP33**. WP18's deletion is **ratified as performed** — the WP18 charter §4 amendment note ordered exactly this retirement by name, the implementation report enumerated both tests verbatim, and §7's operative licensing condition (enumeration by name) was satisfied; only the *list* lagged. The file stays deleted. **WP18's licence covers exactly those two tests in that one file and nothing else** — it is not a general licence to delete, and any further WP18 deletion is an abort criterion as before.
+
+  **Checked before ratifying, because the irony is real:** those tests pinned `PROTECTED_KEYS` discrimination *on the seed path*, which is the very boundary the E1/E2 rulings are about. They do **not** pin any E1 or E2 property — they pin that a delete guard is live, and after AC3 there is no delete at the seed for a guard to shield. The E1/E2 properties had **no** coverage anywhere before this ruling; the replacement column above creates it. Retiring the pair therefore removes nothing that would catch an E1/E2 regression, and the four new pins are what will.
+
   **Expected arithmetic for the P0 close:** the plugin baseline of 674 becomes **671** after WP4's three deletions; the P0 batch's own additions and the concurrent WP41/WP42 additions sit on top, and the gate remains **0 failed**. A P0 handover reporting three failures in `w4-canvas-integrity.test.ts` is now a stale run, not a passing state.
+
+- **Amendment ledger — new class, 2026-08-01 (WP46).** <!-- Updated: WP46 widened session.info from 4 to 9 keys per its own AC1, making two exact-shape toEqual assertions unsatisfiable; licensed as amendments, not deletions 2026-08-01 --> The ledger above governs tests that *disappear*. A second, narrower class is now recognised: a test that survives but whose **exact-shape assertion is restated** because a WP's chartered AC changed the shape it pins. The licensing rule is the same — the WP names each amended assertion by file, line and reason in its implementation report — with two additional conditions that do **not** apply to deletions:
+
+  1. **Strictness may not fall.** The amended assertion stays an exact whole-object `toEqual` over the full new shape. Relaxing to `toMatchObject`, a subset match, a key-count check, `expect.objectContaining`, `skip`/`only`, or destructuring the added fields away is a **weakening** and is an abort criterion, not an amendment. An amendment that no longer fails when the payload drifts is worse than the failure it replaced.
+  2. **The test count does not change.** An amendment that moves the count is a deletion or an addition wearing the wrong label.
+
+  <!-- Updated: licensed-amendment list extended to the four DIVERGENT-row WPs 2026-08-01 --> <!-- Updated: WP18 added by the E3 ruling — one instrument over-specifies its subject 2026-08-02 --> <!-- Updated: WP10 and WP14 added by the E1/E1-b rulings — both WPs are REOPENED and their new ACs retire the shapes several assertions pinned 2026-08-02 --> <!-- Updated: WP19 added by the B3c escalation ruling — AC1 turns deletion from an ABSENCE into a VALUE, retiring the V1 key-removal oracle 2026-08-02 --> <!-- Updated: WP64 added by its own charter — the residual tombstone-blind instrument class WP19's licence deliberately excluded 2026-08-02 --> The licensed-amendment list is **WP10, WP14, WP18, WP19, WP46, WP59, WP60, WP61, WP64** (and **WP62** only if its run surfaces the same class). An unenumerated assertion rewrite is an abort criterion exactly as an unenumerated deletion is.
+
+  **WP10 / WP14 entry (2026-08-02, E1 + E1-b rulings).** Worker 2 **reopened** both WPs: WP10 gains AC5 (a side-less endpoint is a first-class, representable endpoint; `node` alone decides register presence) and WP14's AC1/AC2 are re-read (`side` is not a conjunct of edge validity; `"text": ""` is a legal empty card). The amended assertions below pinned the **retired** reading — they are stale, not violated, and each of their own subjects (atomicity, the missing-vs-ill-typed distinction) is untouched and still enforced. This is the same shape as the WP46 rows: a chartered AC deliberately replaced the shape the assertion pinned. **Both amendment conditions hold on every row: strictness does not fall, and the test count does not change** — the new coverage that the rulings require (WP10 AC5, WP14's direct side-less pin, WP17 AC5, WP63 AC4) lands as **additional** tests, enumerated separately in the batch handover, never by repurposing an existing one.
+
+  <!-- Updated: third amendment class added — the re-verification surfaced tests that could never have passed against any implementation 2026-08-01 -->
+
+  **Third class, 2026-08-01 — *unsatisfiable as authored*.** The two classes above govern a test that *disappears* and a test whose *exact-shape assertion is restated*. The C56/C57 re-verification surfaced a third, which neither covers: **a test that could never have passed against any implementation**, because the assertion itself is malformed rather than because the expectation is out of date. These were invisible until the repaired runner executed sets that had never run. Two are known:
+
+  | Test | Why it cannot pass | Class | Status |
+  |---|---|---|---|
+  | `tests/blind_set2/WP49/test_tp10_absent_file_not_created_blind2.test.ts:64` | `expect(result.content).not.toContain("stale")` on a `null` receiver. Vitest's `toContain` skips its string/array handling for `null` and delegates to chai's `include`, whose `default` branch **throws** `AssertionError: the given combination of arguments (null and string) is invalid` — regardless of `.not`. The preceding line already asserts the value is exactly right. | TypeScript | **REPAIRED by WP61** — mechanism demonstrated against the installed libraries (see the §7 row); now `toBeNull()` |
+  | `tests/blind_set2/WP49/test_tp2_user_origin_blocks_quiescence_blind2.test.ts:84` | <!-- Updated: second TypeScript instance of the third class, found by WP61 2026-08-01 --> The fixture contradicts its own subject. After 400 ms of idle the wait is started, then the timers are advanced by exactly `pollMs` (20 ms) *before* the user edit is delivered — so the first poll observes 420 ms of idle and resolves `{quiescent: true}` on the same tick, before the `put` on the next line runs. With the chartered `pollMs = 20` / `quietWindowMs = 50` no implementation can answer `false`, and the pre-WP49 evaluate-before-sleeping ordering resolves `true` even earlier. | TypeScript | **REPAIRED by WP61** — arithmetic demonstrated; fixture retimed so the edit lands at t0+10, strictly inside the pending wait |
+  | `tests/blind_set2/WP47/test_tp04_teardown_exit_paths_blind2.py` (2 points) | Double `pytest.raises` — structurally unsatisfiable. Recorded by WP57 as a finding and deliberately left unrepaired, because that batch was forbidden to touch assertions. | Python | OPEN — needs its own charter; WP61 §2 explicitly leaves it out of scope |
+
+  The licensing rule is the same as for the other two classes — the WP names each repaired test by file, line and reason in its implementation report — plus **both** conditions of the amendment class (strictness may not fall; the test count does not change) and one more that is specific to this class:
+
+  3. **The unsatisfiability must be demonstrated, not asserted.** The implementation report must show the mechanism — the library code path that throws, or the arithmetic proving the fixture contradicts itself. *"This test could never pass"* is precisely what a coder sub-agent would claim about a test that has found a real bug, so the claim is only licensed when it is shown. Without the demonstration, the failure is treated as a **real defect** and escalated.
+
+  A repair under this class must make the assertion *assert something true and strict* — never delete it, never replace it with a tautology. A repaired test that cannot fail is worse than the error it replaced.
+
+  | WP | Assertion amended | File · line | Why it is stale rather than violated | Strictness after |
+  |---|---|---|---|---|
+  | WP46 | `buildPluginHost > sessionInfo maps settings + connection state` | `plugin/src/__tests__/e2e-control.test.ts:197` — **pre-existing baseline test**, part of the 674 baseline, from the prior e2e-infra initiative | C46 AC1 states `session.info` "**additionally** reports" vault, build and canvas-surface identity — widening the payload from 4 to 9 keys is the literal content of the AC, not a side effect of it. The assertion pins a payload the spec has deliberately replaced. Its own subject (settings + connection-state mapping) is untouched: the four legacy fields keep their names, defaults and semantics verbatim, which C46 TC2 pins independently. | Whole-object `toEqual` over all nine keys, including the honest-degradation values for this fixture (`vaultId: ""`, `vaultName: ""`, `vaultPath: null`, `canvasSurface: true`). **Stricter than before** — it now also pins the AC3 degradation contract, which nothing pinned previously. |
+  | WP46 | `WP44 AC4 — resolvePort precedence … > binds the numeric LIVESHARE_E2E port (order 1)` | `plugin/src/__tests__/t3/wp44/test_tp11_resolveport_precedence_visible.test.ts:140` (untracked staged copy) **and its source of truth** `workflowArtifacts/canvas-v2/tests/visible/WP44/test_tp11_resolveport_precedence_visible.test.ts` | Intra-batch ordering artefact of B9a: a WP44 visible test staged before WP46 extended the payload. Its subject is *port precedence*; the payload appears only as proof that a real control server owns the port, so the added keys are incidental to what it verifies. | Whole-object `toEqual` on the `{ok, result}` envelope with all nine `result` keys (`canvasSurface: false` for this fixture — it has no `canvasSync`). **Both copies must be amended identically**; amending only the staged copy silently reverts on the next restage from the artefact folder. |
+
+  <!-- Updated: B13 — WP59 (2 rows) amendments entered 2026-08-02 -->
+  | WP59 | `AC2 — a full round trip loses no field and no character > returns every node byte-for-byte through serialise → parseCanvas` | `workflowArtifacts/canvas-v2/tests/blind_set2/WP3/test_value_preservation_blind2.test.ts:53-54` (binding + key-set assertion; the value loop at `:55-57` follows the same binding), import at `:4` | **Re-measured first, on a quiet tree, exactly as C59 §5 required** — the ruling was provisional on B2 closing. The failure reproduced in precisely the recorded shape: `expected [ 'id', 'pos', 'size', 'text', 'type' ] to deeply equal [ Array(7) ]`, i.e. 5 keys vs 7. Stale, not violated: the `.canvas` **bytes are unchanged** (`serializeCanonicalCanvas` still emits flat keys; `canonicalizeRecord` adds and removes nothing), while the **reader** moved by charter — WP16 AC1 collapses `x,y` → `pos` and `width,height` → `size` via `toV2Node` (`canvas-sync.ts:226-252`). Nothing is lost: `decodeCanvasDataToFlat` (`:466-476`) is the exact inverse and is applied at every internal `parseCanvas` call site. The identical breakage in the **visible** twin was escalated by WP16 and already amended the same way (`plugin/src/__tests__/v2/wp3/test_file_shape_tabs_visible.test.ts`). | Whole-collection exact `toEqual` over the complete sorted key list, **unchanged in form** — only the subject is read through `decodeCanvasDataToFlat`. **No** `toMatchObject`, subset, `objectContaining`, key-count check, `skip`/`only` or destructuring. **Stricter than before:** the per-key value loop at `:55-57` was previously *unreachable* (the test died at `:54`) and now executes, pinning every value through the register bridge, and the assertion additionally pins the bridge's invertibility, which nothing pinned previously. Test count unchanged (4 before, 4 after). Falsified: making `decodePos` drop `y` turns this assertion red (6 vs 7 keys) and no other test in the file (P1); `canvas-registers.ts` restored byte-clean, sha256 verified identical. |
+  | WP59 | `AC2 — a full round trip loses no field and no character > preserves an edge's optional fields and adds none` | `workflowArtifacts/canvas-v2/tests/blind_set2/WP3/test_value_preservation_blind2.test.ts:76-78` (nine-key assertion) and `:80` (`label`), import at `:4` | Same cause, edge side: reproduced verbatim as `expected [ Array(5) ] to deeply equal [ Array(9) ]`. `toV2Edge` (`canvas-sync.ts:263-299`) folds `fromNode/fromSide/fromEnd` → `from` and `toNode/toSide/toEnd` → `to`, and `decodeEndpointToFile` (`canvas-registers.ts:615-626`) is its exact inverse. | The nine-key list is **kept verbatim** as a whole-collection exact `toEqual`; only the subject is read through the sanctioned inverse. **Stricter than before:** an added `toEqual` decodes the `to` register itself and pins `{toNode, toSide, toEnd}`, so a register that satisfied the key-set check while carrying a wrong or absent side can no longer pass — mirroring the sanctioned form in the visible twin. Test count unchanged. Falsified: making `decodeEndpointToFile` drop `end` turns this assertion red (7 vs 9 keys) and **only** it — 44 of 45 still pass (P2); restored byte-clean, sha256 verified. |
+  <!-- Updated: B13 escalation ruling — WP59's licence extended to the two `edges.bare` pins, one per set 2026-08-02 -->
+  | WP59 (bare edge) | `AC2 — a full round trip loses no field and no character > preserves an edge's optional fields and adds none` → the `edges.bare` key-set pin | `workflowArtifacts/canvas-v2/tests/blind_set2/WP3/test_value_preservation_blind2.test.ts:103` (called `:79` in B13's handover, which used the pre-amendment numbering; the WP59 comment blocks shifted it) | **Same class as the two rows above, and the last site in the file still reading `parsed` instead of `flat`** — its own sibling assertion at `:91` was already amended to read `flat`. WP10 AC5 makes a side-less `{fromNode}` a **whole** endpoint register (`node` alone decides presence), so `toV2Edge` now folds a bare edge to `{from, id, to}`. **This assertion was never passing and was never violated: it was UNREACHABLE**, masked by the `:76` failure earlier in the same test body, and executed for the first time when WP59 greened `:76`. C59 §2 had fenced it off with *"they pass and must keep passing"* — see the fenced-off-claim rule below. | The `toEqual(["fromNode","id","toNode"])` whole-collection form is kept **verbatim**; only the subject moves from `parsed` to the already-bound `flat`. No new import, no new binding. **Stricter than before:** an added exact `toEqual` pins `decodeEndpointToFile("from", …)` to exactly `{fromNode: "a"}`, so an implementation re-emitting `fromSide: null` or `fromSide: ""` — the two shapes that would silently rewrite every side-less file on its first write — now fails here. Test count unchanged. **Falsified (B15):** the charter's named perturbation — `decodeEndpointToFile` emitting `fields[keys.side] = ""` unconditionally — turns this test red, but **at the `:98` assertion, which masks this site**, so it does not prove *this* pin bites. A second, narrower perturbation (`""` only when `side` is absent, leaving `full`'s real side intact) isolates it: red at exactly this assertion, `expected [ 'fromNode', 'fromSide', 'id', …(2) ] to deeply equal [ 'fromNode', 'id', 'toNode' ]`, 44 of 45 still passing. **The masking is the same trap B13 named** — one perturbation was not enough to falsify a site that sits behind another amended assertion in the same test body. Restored byte-clean, sha256 `553c8464…d8b748`. |
+  | WP59 (bare edge) | `the .canvas file shape and tab indentation are unchanged (AC4) > stays readable by the unchanged parseCanvas, including edge-only content` | `workflowArtifacts/canvas-v2/tests/blind_set1/WP3/test_file_shape_tabs_blind1.test.ts:79` | **Identical root cause, in a set B13 never touched — and the row that proves a CONFIRMED verdict can expire.** It was ledgered CONFIRMED 56/56/0 by WP56 and re-measures 56/55/1 with `parsed.edges["e-only"].fromNode` undefined. **WP56's measurement was correct when taken**; WP10 AC5 landed afterwards. The green was itself a symptom of the defect: `toV2Edge` keeps the flat keys only when the register **fails** to build, so pre-AC5 this assertion passed precisely because a fully-connected side-less edge was being read as not-an-endpoint. The test's stated subject — the file stays readable, edge-only content included — is untouched; the file bytes are identical either way. | Read through `decodeCanvasDataToFlat(parsed)`. **Stricter than before:** the single-field `toBe("ghost-a")` is joined by an exact whole-object `toEqual` over the bare edge's full flat key set and by the `decodeEndpointToFile` no-`*Side`-key pin, so the side-less round trip is pinned as a whole rather than one field at a time. Test count unchanged (5 before, 5 after). **Falsified (B15):** the charter's named perturbation turns this test red **at this site directly and alone** — `expected { fromNode: 'ghost-a', fromSide: '' } to deeply equal { fromNode: 'ghost-a' }`, 55 of 56 still passing. Unlike set2's row this site sits first in its test body, so one perturbation suffices. Restored byte-clean, sha256 `553c8464…d8b748`. |
+  <!-- Updated: B11 — WP60 (1 row) and WP61 (5 rows) amendments entered 2026-08-01 -->
+  | WP60 | `WP44 AC4 (blind 2) — the import list does not grow > imports exactly one node builtin: node:http` | `workflowArtifacts/canvas-v2/tests/blind_set2/WP44/test_tp12_no_server_no_port_blind2.test.ts:74-77` (assertion), `:1-8` (preamble prose restating the same claim) | The pin was a **self-imposed tightening beyond AC4**, not AC4 itself. AC4's subject is `resolvePort` — *"keeps its existing precedence and gains no new dependency"* — and WP44's dependency language (`:51`, `:107`, `:112`) is uniformly about **runtime packages** (publish date ≥ 7 days, `npm view`); a node built-in cannot be a dependency in that sense. The visible counterpart states the intended rule explicitly and contradicts the blind pin: `tests/visible/WP44/test_tp12_no_server_no_port_visible.test.ts:13-14` allows *"a `node:` builtin **or** a package already in `plugin/package.json`"*, implemented at `:111-131` as an allow-list that **skips every `node:` specifier**. `node:crypto` has exactly one use site — `e2e-control.ts:978`, the `canvas.file` sha256 that `T3_SharedContract` §6.1 mandates — and adds no port, socket or listener. | Exact whole-set `toEqual` over `new Set(["node:crypto", "node:http"])`. **No** subset match, `arrayContaining`, "at least" check, pre-filtering of `node:crypto`, `skip` or `only`. Falsified: adding `node:util` to `e2e-control.ts` turns this test and only this test red (P1). |
+  | WP61 (class A) | `WP49 AC1 blind1 — timeoutMs boundary values > timeoutMs 0 answers true when already idle and false immediately after activity` | `workflowArtifacts/canvas-v2/tests/blind_set1/WP49/test_tp4_timeout_semantics_preserved_blind1.test.ts:71` (test), advances at `:77` and `:82`; preamble `:1-5` | Stale against WP49 AC1's **deliberate** sleep-first ordering, which AC1 names the old ordering as the defect it removes. `timeoutMs = 0` means *expire at the earliest opportunity*, which still costs one 20 ms poll because `waitQuiescent` sleeps before it evaluates (`e2e-control.ts:1012-1017`). The test advanced only 10 ms — less than one poll — so neither promise ever settled and it died on vitest's 5 s timeout. **The verdicts it asserts are the verdicts the implementation produces**; only the zero-latency assumption was wrong, and no spec statement supported it. Closed by AC4's new `T3_SharedContract` §6 statement. | Both `toEqual` verdict assertions kept **verbatim** (`{quiescent: true}` idle, `{quiescent: false}` after activity); only the timer advance moved 10 → 20 ms. Test count unchanged. Falsified: collapsing `timeoutMs 0` to the 2000 default (`timeoutMs \|\| 2000`) turns this test red (P2). |
+  | WP61 (class A) | `WP49 AC1 blind2 — a peer tombstone keeps the instance non-quiescent > a remote node removal blocks a zero-budget quiescence probe` | `workflowArtifacts/canvas-v2/tests/blind_set2/WP49/test_tp1_peer_origin_blocks_quiescence_blind2.test.ts:49` (test), advances at `:62` and `:69` | Same cause as the row above: 5 ms advances against a 20 ms poll, so neither promise settled. The peer-tombstone property the test exists to pin is unaffected and still enforced. | Both `toEqual` verdicts kept **verbatim**; only the advances moved 5 → 20 ms. Falsified: the same `timeoutMs \|\| 2000` perturbation turns this test red (P2). |
+  | WP61 (class B) | `WP49 AC1 blind2 — the activity seam is not the counter seam > session.info is untouched by the new seam` | `workflowArtifacts/canvas-v2/tests/blind_set2/WP49/test_tp3_control_edit_still_bumps_blind2.test.ts:83` (test), assertion at `:87-92` | **Third instance of the pattern already licensed twice for WP46.** The assertion pinned the pre-WP46 four keys; `sessionInfo()` returns nine (`e2e-control.ts:832-850`), pinned field-by-field in `T3_SharedContract:199` and §6.2. `TaskCharter_WP46:95` settles it: *"stale, not violated — they pin a payload the spec deliberately replaced, while their own subjects are untouched."* This file's own subject is intact: its other two tests (that the widened seam does not move `bindingCounters`) both passed throughout. | Whole-object exact `toEqual` over all **nine** keys with this fixture's honest-degradation values (`vaultId: ""`, `vaultName: ""`, `vaultPath: null`, `pluginBuild: `0.0.0+${E2E_BUILD_MARKER}``, `canvasSurface: true`). **No** `toMatchObject`, subset, `objectContaining`, key-count check or destructuring. **Stricter than before** — it now also pins the AC3 degradation contract, which nothing in this set pinned previously. Falsified: pinning `canvasSurface: false` in production turns this test and only this test red (P3). |
+
+  <!-- Updated: B3b — WP10 (3 rows) and WP14 (3 rows) amendments entered under the E1/E1-b rulings 2026-08-02 -->
+  | WP10 | `TC4 — an endpoint register is wholly present or wholly absent` → the empty-**side** refusal conjunct | `plugin/src/__tests__/v2/wp10/test_tp04_wholly_present_or_absent_visible.test.ts:38,69` | The assertion required `encodeEndpoint` to **throw on an empty `side`** and read a side-less value as **absent**. AC5 makes exactly that shape legal: `side`/`end` are optional components and `node` alone decides presence. AC4's own subject — write granularity, "no chimera", no per-component setter — is **untouched and still asserted** in the same file (`:98`). Reading a side-less register as absent *was the defect*, so the retired assertion pinned the bug. | Exact assertions retained and **widened**: `encodeEndpoint` still `toThrow()` on missing/empty/`null`/wrong-typed **`node`**; `isEndpointRegister` pinned `toBe(true)` for `{node}` with absent side/end and `toBe(false)` for wrong-typed components and node-less values. No `toMatchObject`, no subset, no `skip`/`only`. Test count unchanged. |
+  | WP10 | `a raw side-less value reads back PRESENT; a raw node-less value reads back ABSENT` (blind1) | `workflowArtifacts/canvas-v2/tests/blind_set1/WP10/test_tp04_wholly_present_or_absent_blind1.test.ts:35,67` | Blind counterpart of the row above; pinned `{node:"orphan"}` (no side) as **absent**. Retired by AC5. | Re-pinned to the **two-absences distinction** — absent (no `node`, edge dangling) vs. present-with-no-side (attached, legal) — with whole-object `toEqual` on both sides plus `hasBothEndpoints` `toBe(false)`/`toBe(true)`. **Stricter than before**: it now pins the exact confusion that caused the defect. Executed count 8/8. |
+  | WP10 | `an ABSENT optional component keeps the register present; a WRONG-TYPED one voids it` (blind2) | `workflowArtifacts/canvas-v2/tests/blind_set2/WP10/test_tp04_wholly_present_or_absent_blind2.test.ts:38,44,92` | Pinned `isEndpointRegister({node,side,end:null})` as `false` and `encodeEndpoint("n1", null)` as throwing. The amendment states `""`/`null`/`undefined` all count as **absent** for `side`/`end` while the register stays **present**. | Exact `toBe(true)`/`toBe(false)` tables over absent vs. wrong-typed components; `encodeEndpoint` still `toThrow()` for `null`/`undefined`/`""`/wrong-typed **`node`**. No matcher softened. Executed count 6/6. |
+  | WP14 | `` `to` key present but missing `side` → invalid, reason INVALID_TO `` | `plugin/src/__tests__/v2/wp14/test_tp08_edge_endpoint_missing_vs_illtyped_visible.test.ts:54` | Edge validity is exactly `id ∧ from.node ∧ to.node`; **`side` was never a conjunct** (CONCEPT_V2 Teil 11). The fixture was re-pointed to a genuinely invalid shape (`{node: "", side: "left"}` — an **empty node**) and the now-inaccurate **title** was corrected to say so. AC2's real subject — missing vs. ill-typed produce **distinguishable** reasons — is untouched and still asserted at `:64`. | Same exact `toBe(false)` + `reason` `toBe("INVALID_TO")` assertions, against a shape that is still genuinely ill-typed. Title corrected only; no matcher, strictness or count change. |
+  | WP14 | `"to" = <shape> → validity matches hasBothEndpoints` (shape table) | `plugin/src/__tests__/v2/wp14/test_tp09_edge_validity_matches_hasBothEndpoints_visible.test.ts:60` | The table listed "missing `side`" as an invalid shape. Retired by AC5 / the AC1 re-read. TC9's subject is **behavioural agreement with `hasBothEndpoints`**, which is unchanged. | Verdicts stay **derived** from `hasBothEndpoints` (never hardcoded), and the table was **extended 8 → 11 shapes** (side-less-with-end, node-less-side-only, wrong-typed side). **Strictly stronger than before.** |
+  | WP14 | `` `text` present but empty string → invalid, reason INVALID_TYPE_SPECIFIC `` (blind1) | `workflowArtifacts/canvas-v2/tests/blind_set1/WP14/test_tp05_node_type_specific_missing_vs_illtyped_blind1.test.ts:81,112` | **E1-b:** `"text": ""` is a legal JSON Canvas text node (an empty or cleared card). The pin made a legal record refusable, and under the pre-I11 coupling that refusal deleted it. `file`/`url` **keep** their non-empty requirement, so the missing-vs-ill-typed subject survives intact. | Re-pointed to shapes that are still genuinely ill-typed (`text: null`, `text: []`) plus a retained `link`→`url` empty-string invalid case, and **gained** an explicit `AMENDED: text: "" is a LEGAL empty card` positive pin. Exact `toBe` on both validity and reason. Executed count 34/34. |
+  | WP61 (class C) | `WP49 AC1 blind2 — the quiet window is re-armed by whichever origin moved last > a user edit landing during a pending wait pushes the answer to false` | `workflowArtifacts/canvas-v2/tests/blind_set2/WP49/test_tp2_user_origin_blocks_quiescence_blind2.test.ts:84` (test), fixture at `:89-92` | **Unsatisfiable as authored — mechanism demonstrated, not asserted.** Arithmetic: the wait starts at t0 after 400 ms of idle, so `lastActivity ≤ t0−400` and `deadline = t0+120`. The loop's first `setTimeout(r, 20)` fires at exactly t0+20 — the same instant `advanceTimersByTimeAsync(20)` lands on — and `advanceTimersByTimeAsync` drains microtasks, so the poll body runs and evaluates `idleFor = 420 ≥ quietWindowMs (50)`, returning `{quiescent: true}` **before** the `put` on the following line executes. Observed verbatim in the pre-repair run: `AssertionError: expected { quiescent: true } to deeply equal { quiescent: false }` at `:94`. With the chartered `pollMs = 20` / `quietWindowMs = 50` no implementation can answer `false` here, and the pre-WP49 evaluate-before-sleeping ordering (which AC1 forbids) resolves `true` at t0, earlier still. Only an unchartered `pollMs > 20` could leave it pending. The **property** the test names is legitimate; the fixture simply never delivered the edit inside the wait. | `{quiescent: false}` `toEqual` kept **verbatim**. Fixture retimed only: budget 120 → 25 ms and the pre-edit advance 20 → 10 ms, so the edit lands at t0+10, strictly inside the pending wait and before the first poll; poll t0+20 sees `idleFor = 10 < 50` and `20 < 25` so it keeps waiting, poll t0+40 sees `idleFor = 30 < 50` and `40 ≥ 25` so it answers `false` — the deadline decides, not a settle. **The repair is not a tautology:** falsified by making the activity seam origin-aware (the WP49 AC1 violation), which turns this test red (P5). It also still goes red if the wait ever evaluates before its first sleep. |
+  | WP61 (class C) | `WP49 AC3 blind2 — near-miss neighbours are not substituted > the requested path is missing even though similar files exist` | `workflowArtifacts/canvas-v2/tests/blind_set2/WP49/test_tp10_absent_file_not_created_blind2.test.ts:64` | **Unsatisfiable as authored — mechanism demonstrated against the installed libraries.** Line 63 already pins `result` to exactly `{exists:false, sha256:"", size:0, content:null}` — what production returns (`e2e-control.ts:971-973`) and what `T3_SharedContract` §6.1 mandates. Line 64 then ran `expect(result.content).not.toContain("stale")` on that `null`. Path: `@vitest/expect/dist/index.js:1245` skips the string/string fast path because the receiver is not a string; `:1249` (`actual != null`) skips the jest-compat `Array.from` conversion, so the object flag stays `null`; `:1252` delegates to chai's `include`; `chai/index.js:2067-2074` matches no case for a `null` object, enters `default`, finds `val !== Object(val)` for the primitive `"stale"` and **`throw`s** `AssertionError`. Because it *throws* rather than routing through `this.assert()`, chai's `negate` flag cannot invert it — `.not` is irrelevant. Observed verbatim pre-repair: `AssertionError: the given combination of arguments (null and string) is invalid for this assertion` at `@vitest/expect/dist/index.js:1252:15`. **The contradiction is internal to the test:** any implementation making line 64 pass (by returning a string) breaks line 63, and any implementation honouring the contract throws on line 64. | `expect(result.content).toBeNull()` — a direct exact assertion, **strictly stronger** than the substring check it replaces: it admits exactly one value where `.not.toContain("stale")` admitted every string lacking that substring. Corroboration that this is the house-correct strict form: the untouched sibling `test_tp9_file_read_is_readonly_blind2.test.ts` already pins the same contract value with `expect(missing.content).toBeNull()`. Falsified: softening the absent-file branch to `content: ""` turns this test red (P4). |
+
+  **Cross-ownership note.** The second assertion lives in a **WP44-owned** artefact. WP46 is explicitly cross-licensed to change *that one assertion's expected payload and nothing else* in that file — no restructuring, no change to the port-precedence logic, no other test in the file. WP44's charter and ACs are not reopened.
+
+  <!-- Updated: B11 measured arithmetic for WP60 + WP61 2026-08-01 -->
+  **Measured arithmetic for WP60 and WP61 (B11).** Test counts are **unchanged in every set**, which is the whole claim of an amendment: `WP44 set2` collected **25** before and after (24 pass / 1 fail → 25 / 0); `WP49 set1` collected **32** before and after (31 / 1 → 32 / 0); `WP49 set2` collected **34** before and after (30 / 4 → 34 / 0). Six assertions or fixtures restated, nothing added and nothing removed, and every one of the 86 previously-passing tests across the three sets still passes. Each amended site was **falsified individually** by perturbing the surface it pins and confirming it goes red, then restoring `plugin/src/testing/e2e-control.ts` byte-clean (sha256 verified identical before and after every perturbation) — harness `_falsify_b11.py`, five perturbations, all five hit their target. Two perturbations additionally turned an *untouched* sibling test red; both are independent pre-existing pins on the same genuinely-violated contract (`test_tp9`'s own `toBeNull()` on the absent-file shape, and `test_tp2`'s other test which also depends on user-origin activity marking), i.e. the pins working, not amendment damage.
+
+  **Expected arithmetic for WP46:** the test count is **unchanged** — 674 baseline, two assertions restated, nothing added and nothing removed. Both sites go from failing to passing and no other test changes state in either direction. A handover still reporting these two as failures after the amendment lands is a stale run, not a passing state.
+
+  <!-- Updated: E3 ruling — the migration call site is correct; the instrument that conflicts with it over-specifies its subject 2026-08-02 -->
+  | WP | Assertion amended | File · line | Why it is stale rather than violated | Strictness after |
+  |---|---|---|---|---|
+  | WP18 (E3) | `non-empty doc + stale file → doc wins, file overwritten, NO file→CRDT read` — the `expect(tx.count()).toBe(0)` conjunct only | `plugin/src/__tests__/canvas-persistence.test.ts` | **An instrument over-specifying its subject** — the same shape B2 resolved for the WP3/WP16 conflict. The test's subject, stated in its own title, is *"NO file→CRDT read"*: it pins I3/I9, that a non-empty doc never takes the file as input. `tx.count() === 0` was a valid proxy only while a file→CRDT seed was the **sole** thing that could open a transaction on that branch. C8 AC2 requires an unstamped V1 doc arriving from the relay to be migrated, and C18 §7 TC7 pins that it happens on exactly this branch; a migration is a **doc-internal translation that reads nothing from the file**. The proxy now forbids a transaction the spec mandates, while still not pinning the property it exists to protect. | Replaced by **three** assertions, all of which must hold: `expect(tx.countWithOrigin(CANVAS_SEED_ORIGIN)).toBe(0)` — the subject, now pinned **directly** instead of by proxy; `expect(tx.countWithOrigin(CANVAS_MIGRATION_ORIGIN)).toBe(1)` — exactly one migration, not "at least one"; and `expect(tx.count()).toBe(1)` — and **nothing else** opened a transaction. Strictly stronger: it forbids everything the original forbade except the one transaction the spec now requires, and additionally pins transaction **provenance**, which nothing pinned before. Requires `migrateV1ToV2` to run its transaction under a distinct exported origin (`CANVAS_SEED_ORIGIN` already exists); a migration transacting with a bare/undefined origin fails the new assertions. Every other assertion in the test — doc wins, file overwritten with the doc's content — is untouched. |
+
+  <!-- Updated: WP19 entry — B3c escalation ruling; AC1 retires the V1 key-removal oracle in 8 pre-existing tests, and silently vacates five green ones 2026-08-02 -->
+
+  **WP19 entry (2026-08-02, B3c escalation ruling). LICENCE GRANTED, with three corrections and one extension.**
+
+  **The ruling.** WP19 AC1 — *"no record's field container is destroyed by any delete path"* — turns
+  deletion from an **absence** into a **value**. Every pre-existing oracle that spelled "the delete
+  happened" as `nodesMap.has(id) === false` / `edgesMap.get(id) === undefined` therefore asserts the
+  **pre-tombstone** semantics. This is the same shape as the WP46 and WP60/61 rulings: a chartered AC
+  deliberately replaced the shape the assertion pinned. **All 8 rows are stale, none is a real
+  defect** — verified row by row against the test bodies, not accepted from the ledger. In every one,
+  the delete the test provokes still happens, the hand-over gating that decides *whether* it happens
+  is untouched (`plan.deletes` comes from `planIntentDiff`, which WP19 did not touch), and the
+  discriminating halves still pass.
+
+  **Why the verification was done adversarially.** "The spec moved under this test" is the most
+  convenient possible cover for a genuine regression, and WP19 is a **delete path**, where a
+  regression means user data disappearing. The direction check is therefore stated explicitly: a
+  stale row asserts *absence after a delete the test itself provokes*; a **real defect** would be a
+  row asserting something still true under tombstones — e.g. that a record the user did **not**
+  delete is still there. All 8 are the first kind. **The second kind exists too, and it is not in the
+  8 — it is green (see the extension below).**
+
+  **Correction 1 — it is 13 assertion lines in 8 tests, not 8 lines.** The prepared ledger says "only
+  one oracle line per test is stale". That is wrong for four of the rows: rows 1, 3 and 4 each carry a
+  **second** absence assertion (a `size` count or the cascaded edge), and row 8 carries **three**.
+  Amending one line per test would leave those tests red and the next handover would report a
+  surviving failure that looks like an unexplained defect. Every line is enumerated below.
+
+  **Correction 2 — the two CASCADE lines must not be amended to a tombstone check.** WP19 **deleted**
+  `pruneEdgesForDeletedNodes` and expresses the node→edge cascade through `buildCanvasData`'s
+  `visibleNodeIds` set. A cascaded edge therefore carries **no tombstone of its own** —
+  `isTombstoneSuppressed(readTombstoneEntry(deleted, "e1"))` is `false` for it. The ledger's preamble
+  offers the tombstone check and the projection check as an "or"; for row 2 and the `e1` half of row 4
+  the choice is **mandatory, not optional**: they become **absence from
+  `buildCanvasData(nodes, edges, deleted)`**, plus a positive pin that the edge's container and every
+  field value survive. An implementer following the preamble literally would write an assertion that
+  is false and would then "discover" a defect that is not there.
+
+  **Correction 3 — row 8 is a helper repair, not a line swap, and it is where a regression could
+  hide.** `chaos_degraded_adapter.test.ts` reads `newRecordLocal/Peer2/Peer3` through
+  `hasNode(doc, id)` (`:127-129`, consumed at `:388-390`) — raw key presence. Post-WP19 that helper
+  returns `true` unconditionally, which (a) fails D2's two absence assertions and (b) **collapses D2's
+  enabled-vs-disabled discrimination at `:602`**, because `on` and `off` now both read `true`. The
+  repair is at the helper: redefine those three readings from *key present* to *visible in the
+  projection* (present in `buildCanvasData(nodes, edges, deleted)`, equivalently not
+  tombstone-suppressed). That single change fixes `:594-597` and `:598`, **restores** the discrimination
+  at `:602`, and de-vacuates rows 9–11 below in the same stroke.
+
+  | # | File · `it` line | Test title | Stale assertion line(s) | Why stale rather than violated | Strictness after |
+  |---|---|---|---|---|---|
+  | 1 | `plugin/src/__tests__/canvas-sync.test.ts:358` | `genuine local delete removes the node from the Y map` | `:387` `nodesMap.size).toBe(1)` · `:388` `get("n2")).toBeUndefined()` | Both are key-presence spellings of "the delete propagated". The delete still propagates — as a tombstone. The test's subject (Bug C: *a genuine local delete must still propagate*) is untouched. | `n2` tombstone-suppressed **and** absent from `buildCanvasData`, **plus** `nodesMap.size).toBe(2)` and the `n2` container still present with its field values. **Strictly stronger** — pins suppression, projection *and* AC1's non-destruction, where the old lines pinned key absence only. |
+  | 2 | `plugin/src/__tests__/canvas-sync.test.ts:500` | `prunes edges in the shared doc when their endpoint node is locally deleted (GAP-5)` | `:529` `edgesMap.get("e1")).toBeUndefined()` | **Cascade row — see Correction 2.** AC3 preserves the cascade but requires it expressed "through tombstones or the suppression rule rather than key removal". The edge disappearing from the view is the subject and still holds. | `e1` **absent from `buildCanvasData(...).edges`**, and its container + every field value still present in the doc. **No tombstone assertion on `e1`** — it has none. Strictly stronger: pins the user-visible property *and* non-destruction. |
+  | 3 | `plugin/src/__tests__/canvas-sync.test.ts:869` | `a genuine local DELETE of a whole record is still honoured (protection is per-key only)` | `:893` `nodesOf().get("n2")).toBeUndefined()` · `:894` `nodesOf().size).toBe(1)` | Subject is that `PROTECTED_KEYS` is a **per-key** guard and does not block a **whole-record** delete. The whole-record delete is still honoured; only its spelling changed. | `n2` tombstone-suppressed and absent from the projection; `size).toBe(2)`; container preserved. **Strictly stronger** — preservation is exactly what AC1 adds and nothing pinned it here before. |
+  | 4 | `plugin/src/__tests__/w4-canvas-integrity.test.ts:331` | `A7 a genuine WHOLE-record delete is unaffected by PROTECTED_KEYS` | `:352` `docRecords(...,"nodes").n1).toBeUndefined()` · `:354` `docRecords(...,"edges").e1).toBeUndefined()` | As row 3 for `n1`. **`:354` is a CASCADE line — see Correction 2**: `e1` is suppressed by projection, not tombstoned. | `n1` tombstone-suppressed; `e1` absent from `buildCanvasData(...).edges`; **both containers and all field values preserved**. Strictly stronger on both halves. |
+  | 5 | `plugin/src/__tests__/v2/wp4/test_tp01_intent_basis_visible.test.ts:219` | `T4 with the view open and a hand-over receipt, the delete still happens` | `:231-234` `nodes.has("n2")).toBe(false)` | The hand-over gating is the subject; WP19 did not touch it. The shadow half at `:235` (`getRecordState(...) === "absent"`) is **untouched and still passes**, which is the proof that the gating is unchanged. | `n2` tombstone-suppressed and absent from the projection; `:235` kept **verbatim**. Test count unchanged. |
+  | 6 | `plugin/src/__tests__/v2/wp5v2/test_tp05_handover_and_close_visible.test.ts:159` | `T2 after a confirmed apply the same omission is a deletion` | `:168` `nodes.has("n2")).toBe(false)` | Subject is that a confirmed apply **licenses** the omission to count as a deletion. It still does. Shadow half at `:169` untouched and still passing. | `n2` tombstone-suppressed and absent from the projection; `:169` kept **verbatim**. |
+  | 7 | `plugin/src/__tests__/v2/wp5v2/test_tp05_handover_and_close_visible.test.ts:172` | `T3 an interacting record is never handed over, so it cannot be deleted` | `:192` `nodes.has("n1")).toBe(false)` | The handed-over record's proven deletion. Its discriminating partner at `:193-195` still passes — **but is now vacuous; see row 12.** | `n1` tombstone-suppressed and absent from the projection. `:193-195` **must be strengthened in the same edit** (row 12), not left as-is. |
+  | 8 | `plugin/src/__tests__/v2/wp6/chaos_degraded_adapter.test.ts:580` | ``D2 seam `advanceFromReceipt(..., { perFieldReceipt: false })`: the unlanded apply leaks and deletes`` | `:594-597` `off.newRecordLocal).toBe(false)` · `:598` `off.newRecordPeer2).toBe(false)` · **`:602`** `on.newRecordLocal).not.toBe(off.newRecordLocal)` | **See Correction 3 — helper repair at `:127-129`/`:388-390`, not a line swap.** With the seam disarmed the V1 defect still deletes the unseen record; it now writes a tombstone instead of removing the key, so the *reading* is stale, not the property. | `newRecord*` redefined as **visible in the projection**. All three assertions kept **verbatim** — `toBe(false)`, `toBe(false)`, `not.toBe(...)` — against the corrected reading. **Strictly stronger**: it restores a discrimination that key presence had destroyed, and it pins what the user experiences rather than a storage detail. |
+
+  **Falsification is mandatory on row 8 and is the gate on this whole licence.** Row 8's amendment is
+  licensed **only if the measurement confirms the discrimination survives**: the `off`
+  (`perFieldReceipt: false`) run must show `n4` **suppressed** and the `on` run must show it
+  **visible**. **If the `off` run shows `n4` still visible, the delete did not happen, D2 has caught a
+  real regression in the hand-over gating, and this row is revoked** — leave it red and ESCALATE. The
+  same rule applies in miniature to rows 1–7: each amended site must be shown to go red when the
+  delete path it pins is perturbed. An amendment that cannot fail is worse than the failure it
+  replaced (§7 amendment condition 1).
+
+  **Extension — rows 9–14: the inverse defect WP19 caused, which is invisible because it is GREEN.**
+
+  The 8 red rows are only half of what AC1 did. Turning deletion from an absence into a value also
+  makes every oracle that proved a record was **NOT** deleted by asserting **key presence** true
+  *unconditionally* — because **no delete path removes a key any more**. These tests still pass, so
+  Worker 3 could not have found them by running the suite, and they are not in the ledger. They pin
+  **I7** — *"a partial observation is ignorance, not deletion"* — the one invariant whose regression
+  means **user data disappearing**, which is exactly the risk this escalation was raised about.
+  Leaving them is the strictness loss §7 forbids; it simply arrives as a green test instead of a red
+  one. **They are licensed for strengthening under the same WP19 entry** — an increase in strictness
+  with no change in test count, which is inside the amendment class's own two conditions.
+
+  | # | File · `it` line | Test title | Now-vacuous assertion | Other oracle still discriminating? | Required strengthening |
+  |---|---|---|---|---|---|
+  | 9 | `plugin/src/__tests__/v2/wp5v2/test_tp05_handover_and_close_visible.test.ts:142` | `T1 nothing is handed over before a confirmed apply` | `:153-156` `nodes.has("n2")).toBe(true)` — *"an omission without a hand-over receipt deleted a record (I7)"* | **NO — this is the test's only oracle.** Highest priority of the five. | Add `not tombstone-suppressed` **and** present in `buildCanvasData(...)`. Keep `:153-156` verbatim as well. |
+  | 10 | `plugin/src/__tests__/v2/wp4/test_tp01_intent_basis_visible.test.ts:201` | `T3 with the view closed, a record missing from the save is not deleted` | `:212-215` `nodes.has("n2")).toBe(true)` | Yes — shadow `getRecordState(...) === "present"` at `:216`. | Same: add the not-suppressed + present-in-projection pins. `:216` kept verbatim. This is the T3/T4 discrimination pair with row 5; **both halves must be tombstone-aware or the pair proves nothing.** |
+  | 11 | `plugin/src/__tests__/v2/wp5v2/test_tp05_handover_and_close_visible.test.ts:172` | `T3 an interacting record is never handed over, so it cannot be deleted` | `:193-195` `nodes.has("n2")).toBe(true)` — *"the card the user was holding was deleted by a save it never saw"* | Partially — its partner `:192` is row 7 and is being amended in the same edit. | Same pins. **Rows 7 and 11 are one edit**: after it, `n1` must be suppressed and `n2` must **not** be, which is the discrimination the test exists for. |
+  | 12 | `plugin/src/__tests__/v2/wp6/chaos_degraded_adapter.test.ts:432` | `T2 a record the open view never received is not deleted by the save that omits it` | `:435-439` `newRecordLocal/Peer2/Peer3).toBe(true)` | No — all three readings come from the same vacuous `hasNode`. | **Fixed for free by Correction 3's helper repair.** Assertions kept verbatim; the reading becomes projection visibility and the test discriminates again. |
+  | 13 | `plugin/src/__tests__/v2/wp6/chaos_degraded_adapter.test.ts:442` | `T3 the same degradation with the reload surface gone leaks nothing either` | `:453` `newRecordLocal).toBe(true)` | Its other assertions pin different properties (`basisAtSave`, `local`, `peer2/3`) and still discriminate; this line does not. | As row 12 — fixed by the same helper repair. |
+  | 14 | `plugin/src/__tests__/v2/wp18/test_tp03_capture_boundary_rejects_invalid_new_record_visible.test.ts:79` | `a type-less new node in a save is never created; the complete new node in the same save is` | `:110` `nodes.has("n1")).toBe(true)` — *"the refusal took an unrelated record with it"* | **NO — key presence is the only oracle on `n1`.** No field read, no projection, no tombstone read. | Add `not tombstone-suppressed` **and** present in `buildCanvasData(...)`. **This is the C18-AC1-refusal-does-not-take-bystanders pin — the E2/I11 loss class** — so a refusal that "spares" a record by tombstoning it currently passes. Highest-value strengthening after row 9. |
+
+  **Rows 9–14 are not optional and not a follow-up WP.** They are the direct consequence of AC1 and
+  must land in the same WP19 amendment, for one reason: a suite in which "the record survived" cannot
+  fail is a suite that will not notice the next delete-path regression. **After the amendment, the
+  measurement that proves this half landed is that rows 9–14 go RED when delete suppression is
+  inverted** — i.e. the fault-injection row 2 perturbation of the C23 matrix. If they stay green under
+  that perturbation, the strengthening did not take and the licence is not satisfied.
+
+  **Expected arithmetic for WP19.** The test count is **unchanged** — 13 assertion lines restated
+  across 8 tests, 6 further tests strengthened, one shared helper redefined, **nothing added and
+  nothing removed**. The suite goes from **1338/1346** to **1346/1346**. No test may change state in
+  the other direction; if any currently-passing test outside rows 9–14 goes red, that is a real defect
+  and an ESCALATE, not something to absorb into this licence.
+
+  **Scope boundary — what AC1's word "any" does and does not reach.** AC1 says *"no record's field
+  container is destroyed by **any** delete path"*, but WP19's charter scope is the **capture** delete
+  path, the reconcile output, serialisation suppression and the edge cascade. Two other paths still
+  remove keys and are **correctly** untouched by WP19: the `CanvasBinding` record-level delete
+  (`v2/wp22/test_tp03_record_delete_is_the_only_removal_visible.test.ts:129-149`,
+  `test_tp04_rig_mirror_is_upsert_only_visible.test.ts:128-135`) — frozen behind `useCanvasBinding =
+  false` until WP39/WP40 — and the `e2e-control` rig mirror (`e2e-control.test.ts:249-250`), which is
+  test infrastructure, not a production delete path. Those tests are green and must **stay** green;
+  they are **not** covered by this licence. **This is recorded so that a later reader does not
+  conclude AC1 was under-implemented, and so the binding path's eventual tombstone conversion has a
+  named owner: WP39/WP40, at the point `useCanvasBinding` flips.**
+
+  **Not covered by this licence, and deferred to WP64 with an owner.** The B3c sweep that produced
+  rows 9–14 also found a **wider class**: ~8 further tests whose key-presence oracle is now vacuous but
+  which retain a *partial* field-level oracle (WP18 seed/cold-open/migration tests, WP20 quarantine,
+  WP23 partial-capture, WP63 withhold, `w4-canvas-integrity` A1/E1/L1), plus the **tombstone-blind
+  instruments** they read through: `docRecords()` helpers that iterate the raw Yjs map and never
+  consult `deleted` (`w4-canvas-integrity.test.ts:132`, `v2/wp5v2/test_tp01:99`, `test_tp05:87`,
+  `test_tp06:94`) and ~10 remaining **2-arg** `serializeCanvas` / `buildCanvasData` call sites in tests,
+  which suppress nothing by construction. **These are deliberately excluded from WP19** — folding them
+  in would turn a bounded licence into a general permit to edit pre-existing tests, which is exactly
+  what §7 exists to prevent. They are chartered as **C64 / WP64** instead. Note the asymmetry that
+  makes this safe to defer but not to drop: each retains an oracle that still catches **container
+  destruction**, so the P0-critical loss class is still pinned; what they can no longer catch is a
+  record that survives as a **suppressed tombstone**.
+
+  <!-- Updated: the deferral's stated REASON was false for one of the nine sites; B16 verified it per site rather than assuming it 2026-08-02 -->
+  > **Correction to the sentence above (2026-08-02, measured by B16).** The conclusion holds for all
+  > nine sites; the **stated reason** does not hold for one. This paragraph and the WP64 charter both
+  > justify the deferral by saying each site *"retains a **field-level** check"*. At
+  > `v2/wp63/test_tp02:99` that is **false**: the record `n-peer` has **no field-level assertion
+  > anywhere in the test** — `expect(nodes.has("n-peer")).toBe(true)` was its entire oracle, and the
+  > neighbouring `nodes.get("n-ok")?.get("x")` pins a *different* record. The deferral was still
+  > **safe**, but for a weaker reason than the one given: `has()` catches outright container
+  > destruction, which is the P0-critical class. What it does not catch — and what the false reason
+  > wrongly implied was covered — is an **emptied container**, the record present with every field
+  > stripped. That would have passed the site silently. All three gaps are now closed at that site
+  > (suppression pin, projection pin, and a `text` value pin).
+  >
+  > **Why the correction is recorded rather than quietly fixed.** A deferral is a claim about what is
+  > still protected while the work waits. Stating a *stronger* protection than exists makes the
+  > deferral unreviewable: the next reader checks the reason, not the site. This is the same failure
+  > the fenced-off-claim rule below governs — the fence was right, its citation was not — and per that
+  > rule's condition 2 the reason is re-read against the tree rather than recalled.
+
+  <!-- Updated: WP64 entry — the deferral above is DISCHARGED; measured counts replace the estimates 2026-08-02 -->
+  **WP64 entry (B16) — the deferral above is DISCHARGED.** Full enumeration by file · line ·
+  why-vacuous · post-amendment strictness is in **`ImplementationReport_WP64.md`** §§4–6; it is not
+  duplicated here because it runs to 57 call sites. Summary of what was **measured**, against the
+  estimates in the paragraph above:
+
+  | Class | Estimate above | Measured | Disposition |
+  |---|---|---|---|
+  | Partial-oracle tests | ~8 | **9 sites** | All 9 pinned: suppression + projection beside the existing oracle, originals kept verbatim |
+  | Tombstone-blind `docRecords()` helpers | 4 | **4** | `w4` keeps its helper for field-value reads and gains two tombstone-aware **siblings**; the three `wp5v2` helpers become suppression-aware |
+  | 2-arg serializer call sites | ~10 | **57** | **15 converted** to 3-arg, **36 dispositioned by comment** (`wp17`, deliberate), **6 deferred untouched** (`v2/wp3`, B15 concurrency) |
+
+  Three corrections to the paragraph above, each measured rather than inferred:
+
+  1. **The 2-arg count is 57, not ~10** — a 5.7× underestimate. The list in the WP64 charter's §3 was
+     a sample, not the population.
+  2. **One named site is not a call site.** `v2/wp19/test_tp05…:21` is **prose in a header comment**;
+     that file's only projection call is already 3-arg. Nothing was changed there.
+  3. **"Each retains an oracle that still catches container destruction" is right, but its stated
+     reason is wrong for one row.** At `v2/wp63/test_tp02:99` the record `n-peer` has **no
+     field-level check at all** — `has()` alone is its oracle. Deferral was still safe (`has()` does
+     catch destruction), but an *emptied container* would have passed. Now pinned explicitly.
+
+  **Falsification (AC4).** Every strengthened site was perturbed with a **targeted injection of its
+  own loss class** — never a global suppression inversion, which B14 showed can falsely certify a row
+  by turning it red on a neighbour. All 10 went **RED on their own new pin**, first time, no row
+  needing isolation; a bare tombstone write touches no container and no field, so it structurally
+  cannot trip a neighbouring field-level oracle. In every row the **pre-existing oracle stayed
+  GREEN** under the same injection, and for the `wp5v2` helper this was measured as an explicit A/B:
+  repaired helper **RED**, original raw helper **GREEN** on an identical injection. Every file was
+  restored and **md5-verified** byte-identical.
+
+  **Fixture completion, enumerated** (fourth class, extended to WP64 above): `w4-canvas-integrity`
+  **A1** only. Measured `nodes=[] edges=["e1"]` — its `type:"text"` nodes carry no `text`, so C18 AC1
+  refused both and the test ran against an **empty node map**, which is also why its edge was pruned
+  as dangling. `text` added to its three node literals; no assertion touched. **Reported, not
+  edited:** the same incomplete literal appears **13×** in that file, so **A2/A3/A5/A6** are very
+  likely in the same state and are outside WP64's residual list.
+
+  **Gates:** 231 files · **1346 tests · 1346 passed · 0 failed** — count **unchanged**; `tsc` exit 0
+  and `npm run build` exit 0, all measured **before** the concurrent WP24 batch landed. No production
+  source changed (`plugin/src/canvas/` verified byte-identical by `diff -r`).
+
+  <!-- Updated: fourth licensed class added by the E2 ruling — completing an invalid input fixture is neither a deletion nor an assertion rewrite 2026-08-02 -->
+
+  <!-- Updated: extended to WP64 by the B16 run — B14's row-4 note routed this exact fixture class to "WP18/WP64", and WP64 measured a second instance of it at w4 A1 2026-08-02 -->
+  **Fourth class, 2026-08-02 — *fixture completion* (licensed for WP18 **and WP64**).** The three classes above govern a test that *disappears*, a test whose *assertion is restated*, and a test that *could never have passed*. The E2 ruling surfaces a fourth that none of them covers: **a test whose assertions are all correct and all still meaningful, but whose input fixture is an invalid JSON Canvas record.** A body of baseline tests seeds shorthand like `{id:"n1", x:0, y:0}` — no `type`, no `width`/`height`, no type-specific payload — which is not a legal canvas node in any version of the format. C18 AC1 refuses it, correctly, and the test fails on scenery rather than on subject.
+
+  Editing a fixture is **not** editing an assertion, and this class is deliberately narrower than it sounds:
+
+  1. **Completion only, never reshaping.** Only the fields the JSON Canvas format requires may be added (`type`, `width`, `height`, the type-specific payload), with neutral values. Every id, coordinate, edge topology and **every value any assertion reads** stays byte-identical. Changing a value an assertion observes is a rewrite wearing a fixture's clothes and is an abort criterion.
+  2. **No assertion is touched.** Not the expectation, not the matcher, not the strictness. No `skip`, no `only`.
+  3. **The test count does not change**, and no test that was passing changes state in either direction.
+  4. **Enumeration by name**, as for every other class: file, test title, and the exact keys added to each fixture.
+  5. **Order of operations is mandatory.** The E1 and E3 corrections land and the suite is **re-measured first**; the licence then applies only to what is still red. A fixture completed for a test that E1 would have fixed anyway is an unlicensed edit — the point is to make the number of touched fixtures as small as the defect actually requires, not as large as the first measurement suggested.
+  6. **Falsification.** Each completed fixture's test must be shown to still go red when the behaviour it actually pins is perturbed. Because these tests span several distinct subjects (merge, echo window, lock denial, delete paths, dangling-edge pruning), falsification is required for **at least one representative per subject family**, named in the report.
+  7. **A changed outcome is an escalation, not a fix.** If completing a fixture makes a test pass for any reason other than the record now being admitted — or changes what any assertion observes — that is a real defect: leave it red and ESCALATE.
+
+  This licence is granted to **WP18 only** and expires with it. It is not precedent for editing fixtures to clear a red suite; it exists because these particular fixtures encode a document the spec has deliberately made illegal, and keeping them would mean keeping open the exact door C18 AC1 was chartered to close.
+
+  <!-- Updated: fifth class added by the B16 ruling — a SEPARATE licence, because WP66 completes fixtures under GREEN tests and the fourth class's abort criterion is WP66's expected outcome 2026-08-02 -->
+
+  **Fifth class, 2026-08-02 — *hollow-fixture completion* (licensed for WP66 only).** The fourth class above is **extended no further.** It was granted to WP18, stretched once to WP64, and a second stretch would be the wrong instrument — not because the licence is nearly used up, but because **WP66 inverts its expectations**:
+
+  | | Fourth class (WP18, WP64) | **Fifth class (WP66)** |
+  |---|---|---|
+  | The test's state before the edit | **RED** — it fails on scenery | **GREEN** — it passes while asserting nothing |
+  | What the edit is expected to do | make it pass on its subject | make it *actually run* its subject |
+  | A test that **fails** after completion | **abort criterion** (fourth class, condition 7) | **the expected and valuable outcome** — escalate it, do not undo it |
+  | How the population is found | the red list, already visible | **by measurement**, because a hollow fixture announces nothing |
+
+  Condition 7 of the fourth class — *"a changed outcome is an escalation, not a fix"* — reads as an abort when a red test goes green for the wrong reason. Under WP66 the outcome that changes is a **green test going red**, which is the finding the WP exists to produce. Folding WP66 into the fourth class would force a choice between neutering that abort criterion and blocking the work. A separate licence with the expectation written the right way round is the honest form. Condition 5 of the fourth class (the E1/E3 re-measure ordering) is also WP18-specific and has no analogue here.
+
+  The fifth class inherits conditions 1–4 of the fourth **unchanged and unweakened**, and replaces 5–7:
+
+  1. **Completion only, never reshaping** — only the fields the JSON Canvas format requires, with neutral values. Every id, coordinate, edge topology and **every value any assertion reads** stays byte-identical.
+  2. **No assertion is touched** — not the expectation, not the matcher, not the strictness, not the title. No `skip`, no `only`.
+  3. **The test count does not change.**
+  4. **Enumeration by name** — file, line, test title, the record ids measured absent, and the exact keys added.
+  5. **The population is measured, not listed.** The licence covers whatever the C66 AC1 measurement returns across the whole suite. It does **not** authorise editing a fixture on the strength of its literal *looking* incomplete: a fixture is in scope only once the record set under assertion has been measured empty or short. `text: ""` is valid, and a `remoteRecord(...)` fixture is not on the refusal path at all — completing either would be an unlicensed edit made on a grep's authority.
+  6. **Falsification per completed site**, targeted rather than global, red on the site's **own** named assertion, with the pre-existing-oracle result reported and any B15-style masking narrowed until the failure is attributable.
+  7. **A green test that goes red is escalated, not reverted.** It is left red, reported with the measured before/after, and handed back for its own charter. Undoing the completion to restore green, or weakening the assertion, is an **abort criterion** — that green was never worth anything, and trading a discovered defect for the appearance of a passing suite is the exact transaction §7 exists to forbid.
+
+  This licence is granted to **WP66 only** and expires with it. It is not a general permit to edit fixtures, and it authorises no change to any test instrument, helper or assertion — WP64 owned the instruments, WP66 owns only the scenery.
+- **Blind-set execution gate (new, 2026-08-01).** <!-- Updated: the shared blind runner was found able to report a never-executed set as green; an executed-test count is now the evidence a blind set passed 2026-08-01 --> **No batch may report a blind set as passing without a recorded executed-test count greater than zero alongside it.** An exit code is not evidence. A blind run that collects zero tests is a **failed** run, never a passing one, and a handover that reports a blind set as green without its executed count is an incomplete handover rather than a passing one.
+
+  <!-- Updated: rationale corrected — the old runner failed loudly (vitest exits 1 on zero discovery); the gate is defence-in-depth, not the fix for an observed silent pass 2026-08-01 --> The rule's original rationale said `_run_blind.py` produced a silent green because "vitest exits **0** after printing *No test files found*". **That is withdrawn — vitest 4.0.18 exits 1 on zero discovery and no config sets `passWithNoTests`.** The runner failed loudly on the three affected sets; the green counts in the handovers came from an unrecorded manual rename-and-retarget step instead. **The gate stands unchanged and is not weakened by this correction** — it is defence-in-depth against a silent-pass class this codebase happened not to have, and it is what makes the reproducibility debt visible: a green without a recorded collected count is an unreproducible claim even when it is a true one. Running WP46 blind_set1 correctly for the first time did surface a real, deterministic defect (C58) that no prior committed run had exercised.
+
+  Required from every batch from now on, per blind set: `(WP, set, framework, tests collected, tests passed, tests failed)`. `tests collected` is the load-bearing field. C55 makes the runner emit it; this gate makes reporting it mandatory.
+
+  **Retro-applied.** The gate is applied backwards to every blind claim made before it existed, via the C56/C57 re-verification ledger (`BlindVerificationLedger.md`). Until a `(WP, set)` pair carries a CONFIRMED verdict with a non-zero collected count in that ledger, **its blind claim is unverified regardless of what any handover says**. This explicitly includes batches already closed. A closed handover is not evidence of blind-set execution; the ledger is.
+
+- **The fenced-off-claim rule (new, 2026-08-02).** <!-- Updated: C59 §2 fenced off an assertion on the grounds that it "passes and must keep passing"; it had never executed, and the reason given for its green described the pre-AC5 defect as a guarantee 2026-08-02 -->
+
+  **A masked assertion is not a passing assertion.** An earlier failure in the same test body throws first and hides every assertion after it, so *"N tests fail"* systematically **undercounts** stale sites: each red test may be concealing an unknown number of further reds behind it. WP59 fenced off `edges.bare` with the words *"They pass and must keep passing."* It had never executed in any measurement anyone had taken, and greening the assertion three lines above it made it run for the first time — red.
+
+  Two conditions now apply to any charter that declares a test or assertion out of scope **because it currently passes**:
+
+  1. **Reachability must be established, not assumed.** The charter states how it knows the assertion executes — a passing sibling *after* it in the same test body, a per-assertion run, or an explicit note that the whole test file is currently green. An assertion that sits after a known-failing line in the same `it(...)` body may **not** be described as passing; it is *unobserved*, and the honest fence says so.
+  2. **The stated reason must be re-read against the current tree, not recalled.** WP59's fence did not merely assert a false state, it gave a false *reason*: it credited `encodeEndpointFromFile` refusing to build a side-less endpoint as *"a data-preservation guarantee this WP must not disturb"*. That refusal was the **defect** WP10 AC5 had already removed — the over-constraint that read a fully-connected edge as dangling and wrote it out of the user's file. The charter protected the assertion **because of** the bug and cited the bug as the reason. When a charter names a production function as the justification for a fence, it re-reads that function's current source; a remembered contract from an earlier tree is not a citation, and a WP that has been **reopened** (as WP10 was) invalidates every recollection of its semantics.
+
+  A fence that fails either condition is not a scope boundary — it is an untested assumption with a charter's authority behind it, which is strictly worse than no fence at all.
+
+- **Ledger rows are measurements, not timeless facts (new, 2026-08-02).** <!-- Updated: WP3 set1 was CONFIRMED 56/56/0 by WP56 and re-measured 56/55/1 with no change to the set; the row expired when WP10 AC5 landed underneath it 2026-08-02 -->
+
+  `BlindVerificationLedger.md` is the artefact that certifies this project's verification means something, and it was being read as a set of standing facts. It is not. **A CONFIRMED row is a measurement of one `(WP, set)` pair against one tree state at one moment**, and a later AC can retire the shape that row pinned without touching the set at all.
+
+  **WP3 set1 is the proof, and the failure mode is worse than staleness.** WP56 measured it 56/56/0 and transcribed the count by script from `_blind_records/*.json`; B13 re-measured the untouched set at 56/55/1. **WP56 was not wrong.** The mechanism is decisive: `toV2Edge` keeps an edge's flat keys **only when the endpoint register fails to build**, so before WP10 AC5 the assertion passed *because* a side-less endpoint was refused — i.e. the row was green **on account of the very defect AC5 was written to fix**. The row did not drift; the ground moved, and the direction of the move was an improvement. A verification artefact that cannot express *"this was true of a tree that no longer exists"* will eventually be read as evidence that a fixed bug is still fixed, when what it actually records is the bug.
+
+  **Remedy — required, and chartered as WP65.** The gap is concrete: `_blind_records/*.json` currently carries `(wp, set, framework, files_staged, tests_collected, tests_passed, tests_failed, exit_code, verdict, reason, package, depth, detail)` and **not one field that says when it was measured or against what**. File mtime is the only signal and it is overwritten on every re-run. Until WP65 lands, the following holds by rule:
+
+  - A CONFIRMED row is evidence **only** for the tree it was measured against. It is never readable as a current pass.
+  - Any batch that lands an AC **retiring a shape that existing blind sets pin** must name the `(WP, set)` pairs that plausibly pin it and re-measure them, or record explicitly that it did not. WP10 AC5's batch did neither, which is why this surfaced two batches later by accident.
+  - Absence of a row is still never readable as a pass (unchanged), and now: **an old row is not readable as a pass either.**
+
+- **Named-intermittent register (new, 2026-08-02).** <!-- Updated: B13 reported an unowned intermittent; an unattributed flake is how a real race gets dismissed twice 2026-08-02 -->
+
+  An intermittent failure with no owner gets re-discovered, re-explained and re-dismissed by every batch that meets it — and the second dismissal is where a genuine race dies. Every observed intermittent is therefore **named, owned and given a falsification threshold** here, or it is treated as a real red.
+
+  | Test | Observation | Owner | Ruling |
+  |---|---|---|---|
+  | `plugin/src/__tests__/wp5/latency.test.ts` › *harness injects a measurable RTT inside the 50–150 ms band (US6 AC1)* | Failed in **one of two** consecutive full-suite runs during B13 with no intervening change (9 fails once, 8 the other). The suite already budgets ≈41 s wall time and this file deliberately sleeps 33.5 s. | **WP65** | **ACCEPTED as a wall-clock timing flake, with a threshold that makes the acceptance falsifiable.** A hard 50–150 ms band asserted on a loaded Windows host is a scheduling measurement, not a protocol measurement. **It is not licensed to be ignored:** WP65 registers it, and if it fails **more than once in ten consecutive full-suite runs**, or **ever fails in the same run as any other `wp5` assertion**, the acceptance is void and it is escalated as a real defect in the latency harness. Until then a batch meeting it re-runs that file alone and reports both results, rather than counting it as a new red or silently dropping it from the count. |
+
+- **Unfalsifiable-repair register (new, 2026-08-02).** <!-- Updated: B16 repaired two helpers and honestly declined to count them as verified; an unverifiable repair with no owner becomes a verified one by attrition 2026-08-02 -->
+
+  A repair that **cannot currently be falsified** is not a failure to report — it is a claim awaiting evidence, and it is registered here with an owner rather than carried in a handover's prose. The failure mode is attrition: the third reader of a repaired-and-green site stops asking whether anything ever measured it.
+
+  | Site | Repair | Why not falsifiable today | Owner | Ruling |
+  |---|---|---|---|---|
+  | `plugin/src/__tests__/v2/wp5v2/test_tp01_single_shadow_visible.test.ts:99` and `test_tp06_discrimination_seam_visible.test.ts:94` — the suppression-aware `docRecords()` helpers | WP64 / B16 | **Neither fixture contains a tombstone**, so the suppression-aware form is a behaviour-preserving no-op and no injection can distinguish it from the raw helper. B16 measured this and **declined to count them as AC4 reds** — the correct call. | **WP67** | **REPAIR RETAINED, VERIFICATION OWED.** The repairs stay: the *form* was proven at `test_tp05` by an explicit A/B (repaired **RED**, raw **GREEN**, identical injection), and reverting a correct fidelity fix because it is currently inert would be worse. What is owed is a measurement at these two sites. **It must not be obtained by adding a tombstone to either fixture** — those tests' subjects are the single-shadow reload and the discrimination seam, and a tombstone changes what they are about. C67 pins the **helper** instead. Until WP67 lands, these two sites are **not** readable as verified, and no batch may cite them as evidence that the helper class is sound. |
+
+  **DISCHARGED — WP67 / batch B17, 2026-08-02.** <!-- Updated: the owed measurement was taken; the row above is kept verbatim because a ledger row is a measurement, not a timeless fact 2026-08-02 -->
+  The row above is **retained as written** — it records what was true at B16 — and is now discharged by
+  measurement. Both sites are readable as **verified**, and the prohibition on citing them as evidence is lifted.
+
+  - **The pin.** One added test per file, same name in both:
+    `WP67 — this file's suppression-aware docRecords() is falsifiable > P1 docRecords omits a tombstoned
+    record the raw form hands over, and keeps the live one`. It builds its **own** `Y.Doc` carrying one
+    suppressed node (`n1`) and one suppressed edge (`e1`) beside a live sibling of each — **no tombstone was
+    added to either existing fixture**, and lines 1–309 of `test_tp01` and 1–289 of `test_tp06` hash
+    **byte-identical** to their pre-WP67 state (`382df67581d0337c79f47b4fb3fc04c8`,
+    `6c4c870b570aaa8d6cc7d838126e55fb`). Every change is strictly appended below the original last line.
+  - **A/B, injection A — in-file control, permanent.** Each pin carries `rawDocRecordsControl()`, the
+    pre-WP64 raw key-presence form verbatim, and asserts it **does** report `n1`/`e1` on the same doc. The
+    repaired helper's omission is therefore measured against a raw reading that keeps the record, not against
+    a record that was never there — the pin cannot pass vacuously.
+  - **A/B, injection B — perturbation, measured once per site, one file at a time.** With the helper reverted
+    to the pre-WP64 form (`for (const [, record] of …)`, suppression check removed), the pin goes **RED on its
+    own assertion**: `test_tp01:403` — *"a deleted node was handed to the reconcile classifier as live:
+    expected [ 'n1', 'n2' ] to not include 'n1'"*; `test_tp06:386` — *"a deleted node was written into the
+    receipt's desired state as live: …"*. Restored → **GREEN**. Both restorations verified by hash.
+  - **The isolation result is itself the evidence B16 was right.** Under that same revert, `test_tp01`'s
+    T1–T5 and `test_tp06`'s T1–T4 stayed **GREEN** — no neighbour was perturbed, no B14-style global
+    certification, no B15-style masking, and the untouched originals confirm directly that these two sites
+    were behaviour-preserving no-ops before the pin existed.
+  - **Count.** The two files went **9 → 11** tests (+2, exactly the pins added); no existing test changed
+    state in either direction. Tree at close: **244 files · 1424 tests · 1424 passed · 0 failed**,
+    `npm run build` exit **0**, `tsc --noEmit` exit **0**.
+
+- **Concurrent-batch attribution (new, 2026-08-02).** <!-- Updated: B16's gates went red mid-run from a foreign batch landing in the tree; without attribution a later reader reads another WP's in-flight state as this WP's damage 2026-08-02 -->
+
+  **A gate measured while another batch is live in the tree records whose state it measured.** When a batch's own gates are clean and the tree's gates are not, the handover names the foreign files, the foreign batch, and the fact that **zero** of the failures fall in its own touched set — otherwise the next reader attributes the red to the closing WP, which is the one artefact that will still be there when the foreign batch has landed and the memory has not.
+
+  **Standing attribution, B16 / WP64 (2026-08-02).** The red gates observed at the close of B16 are **batch B4's in-flight WP24 work, not WP64 regressions**, and were measured **after** WP64's own clean measurement:
+
+  - WP64's gates, measured at 11:14 **before** WP24 landed: **231 files · 1346 tests · 1346 passed · 0 failed**, `tsc --noEmit` exit 0, `npm run build` exit 0, `plugin/src/canvas/` byte-identical by `diff -r`.
+  - The tree's gates after WP24 landed at 11:14–11:16: **6 file-level collection errors**, all `Cannot find module '../../../files/canvas-sidecar'` (a production module WP24 has not written yet), collecting **zero** tests — which is why the test line still reads `1346 passed (1346)` and the count is unchanged. Plus **11 `tsc`/`build` errors, every one inside `plugin/src/__tests__/v2/wp24/`**, and **zero** in any WP64-touched file.
+  - Therefore: **WP64 is not the owner of any currently-red gate.** WP24's spec-first files are red **by construction** until its production module lands, which is the intended state of a spec-first batch mid-flight, not a defect.
+
+  **Standing attribution, B17 / WP67 (2026-08-02).** <!-- Updated: B4 landed its production module DURING B17's run, so the tree's state changed between two measurements of the same scope 2026-08-02 -->
+  B16's red gates above have **cleared**, and the clearing is B4's, not WP67's — the entry is kept so a later
+  reader does not read B16's standing red as still current:
+
+  - WP67's own scope, measured directly: `test_tp01` **5 → 6** and `test_tp06` **4 → 5** tests, all green,
+    with the A/B falsification recorded in the register above.
+  - **First** whole-tree measurement (11:39): `244 files · 1424 tests · 1417 passed · 7 failed` in 3 files.
+    One was positively identified by name — `v2/wp24/test_tp06_load_is_idempotent_visible.test.ts` — and the
+    other two were **not** captured, because the log filter used truncated the failure list. That is stated
+    rather than inferred: **three failed files were seen and only one was named.**
+  - **Second** whole-tree measurement, minutes later (11:41): `244 files · 1424 tests · 1424 passed · 0 failed`,
+    `npm run build` exit **0**, `tsc --noEmit` exit **0** — B16's 6 collection errors and 11 `tsc` errors are
+    all gone. Between the two runs `plugin/src/files/canvas-sidecar.ts` — the module whose absence caused
+    B16's collection errors — was written by **B4** (mtime inside the run window, a file WP67 never touched).
+  - Therefore: the first run measured **B4's production source mid-write**, not a WP67 regression. WP67's
+    touched set is two test files; **zero** of the failures fell inside it, and the identical count (1424) in
+    both runs shows nothing was added or lost between them. The unnamed two are attributed to `v2/wp24/` **by
+    the re-run, not by assumption** — the second measurement is clean, so no failure outside `v2/wp24/`
+    survived it.
+
 - **Abort criteria:**
   - `npm run build` fails, or `npm test` reports any failure.
+  - <!-- Updated: blind-set execution gate 2026-08-01 --> A blind set is reported as passing with a collected-test count of zero, absent, or unrecorded; or a blind set is made to run by editing, relaxing, skipping or deleting any assertion rather than by name-only normalisation. Renaming a blind file so the runner can discover it is licensed; changing what it asserts is not, and is an abort criterion exactly as an unenumerated deletion is.
   - Test count drops without a matching entry in the deletion ledger.
+  - <!-- Updated: fenced-off-claim rule 2026-08-02 --> A charter declares a test or assertion out of scope **on the grounds that it passes**, without establishing that the assertion is actually reached, or justifies the fence by citing a production contract that was not re-read against the current tree. Treat as a spec defect and ESCALATE — do not widen the amendment silently to cover what the fence got wrong.
+  - <!-- Updated: WP46 amendment ledger 2026-08-01 --> An existing assertion is rewritten without a matching entry in the amendment ledger, **or** an amended assertion loses strictness (`toEqual` → `toMatchObject` / subset / `objectContaining` / key-count check / `skip` / `only`, or the added fields destructured away). Weakening a test to make a suite green is an abort, never a fix — leave it failing and escalate instead.
   - `GEOMETRY_KEYS` changes membership or loses its export (§3.1 S2) — ESCALATE instead.
   - `canvas-presence.ts` is modified (WP21 AC2 requires it byte-unchanged) — ESCALATE.
   - Logic (not wiring) is added to `main.ts` (§3.1 S11) — ESCALATE.
@@ -1137,7 +1947,7 @@ Conventions used in this section:
   - A new **runtime** dependency is proposed (D11), or any dependency whose published version is **less than 7 days old** is introduced (workspace npm policy). Use `npm ci` in build/deploy contexts, never `npm install`.
   - `server/` source is touched by any WP other than WP41.
   - The plugin version is bumped (it stays as found; the pre-existing 0.6.0/0.6.1 discrepancy is recorded, not resolved, here).
-- **Definition of Done (project-level):** <!-- Updated: 54 WPs; the two live gates now name their evidence artefacts 2026-08-01 --> all 54 WPs DONE; build + tests green with the deletion ledger accounted for; the convergence fuzzer green over its configured budget with every registered op class exercised; both chaos suites green including their discrimination variants; a green two-vault run against **real Obsidian** recorded by the T3 entrypoint (WP7, incl. its vault-fingerprint check); and a complete `CaptureTriggerLedger.md` with no `UNCONFIRMED` entry (WP54) licensing the promotion in WP40.
+- **Definition of Done (project-level):** <!-- Updated: 62 WPs; DIVERGENT rows must also be resolved, not merely recorded 2026-08-01 --> <!-- Updated: 63 WPs with WP63 (I11) 2026-08-02 --> <!-- Updated: 64 WPs with WP64 (tombstone-blind test-instrument sweep) 2026-08-02 --> <!-- Updated: 66 WPs with WP66 (hollow-fixture sweep) and WP67 (falsifiability pins for the WP64 helper repairs) 2026-08-02 --> all **66** WPs DONE, **including a WP66 ledger in which every hollow fixture found by measurement is either completed-and-falsified or dispositioned, and every verdict change it produced is escalated rather than absorbed**; `BlindVerificationLedger.md` complete with no `(WP, set)` pair left unverified, no VACUOUS verdict outstanding, and **no DIVERGENT row left unresolved** — each is either amended under the §7 ledger (WP59–WP61) or escalated as a real defect, and WP17 carries its rows (WP62); build + tests green with the deletion ledger accounted for; the convergence fuzzer green over its configured budget with every registered op class exercised; both chaos suites green including their discrimination variants; a green two-vault run against **real Obsidian** recorded by the T3 entrypoint (WP7, incl. its vault-fingerprint check); and a complete `CaptureTriggerLedger.md` with no `UNCONFIRMED` entry (WP54) licensing the promotion in WP40.
 - **Data-safety gate (new, 2026-08-01):** every real-Obsidian run is subject to the before/after vault fingerprint of C47 AC3. A run that leaves either of the owner's two working vaults changed outside its own scratch artefacts is a **failed** run regardless of its functional result, and is an abort criterion for the WP that performed it.
 - **Test framework and test runner:** Vitest 4.0.18, pure-function + injected-seam style, discrimination tests as the established pattern.
 - **worker4_mode:** `full`
@@ -1193,7 +2003,12 @@ Ordered list — this is a valid topological order and is the sequence the Dispa
 | WP20 | P1 | Quarantine auditor | audit log-only → idempotent repair | WP12, WP14, WP19 | planned |
 | WP21 | P1 | REMOVAL: lock write-denial seam | `canWriteEntity`, baseline-hold, `LOCK DENIED:` | WP9, WP10, WP19 | planned |
 | WP22 | P1 | REMOVAL: `writeRecordMinimal` deletion | binding writes become upsert-only | WP14, WP18 | planned |
-| WP23 | P1 | Convergence fuzzer | 3–5 replicas, pluggable ops, four assertion families | WP17, WP19, WP20 | planned |
+| WP23 | P1 | Convergence fuzzer | 3–5 replicas, pluggable ops, four assertion families **+ the AC5 intent-trace oracle** | WP17, WP19, WP20 | planned |
+| **WP63** | **P1** | **Non-destructive seed boundary (I11)** | refusal at a seed boundary withholds the file write instead of dropping the record | **WP18** | **planned** |
+| **WP64** | **P1** | **Tombstone-blind test-instrument sweep** | restore falsifiability to the survival oracles WP19 vacated outside its own licence; test instruments only, no production source | **WP19, WP23** | **planned** |
+<!-- Updated: WP66/WP67 added by the B16 escalation ruling — a fixture class found three times by accident and never once by design, plus two repairs carried without a measurement 2026-08-02 -->
+| **WP66** | **P1** | **Hollow-fixture detection sweep** | measure, suite-wide, every test asserting over a record set its own fixture never put into the doc; complete or disposition each; escalate every verdict change | **WP18, WP64** | **planned** |
+| **WP67** | **P1** | **Falsifiability pins for the WP64 helper repairs** | direct A/B pins on the two `wp5v2` suppression-aware helpers whose fixtures contain no tombstone; additive only, existing fixtures byte-identical | **WP64** | **planned** |
 | WP24 | P2 | Sidecar store core | append/checkpoint/truncate/load, corrupt tolerance | WP8 | planned |
 | WP25 | P2 | Sidecar lifecycle + compaction | load-before-sync, update capture, GC | WP24 | planned |
 | WP26 | P2 | Sidecar exclusion | excluded from manifest, sync, text-sync detection | WP24 | planned |
@@ -1225,6 +2040,21 @@ Ordered list — this is a valid topological order and is the sequence the Dispa
 | WP52 | P5 | Adapter interaction tap | ordered, path-scoped signal events over the control protocol | WP39, WP46 | planned |
 | WP53 | P5 | Gesture driver for the trigger set | real input-layer gestures for every claimed trigger | WP47, WP52 | planned |
 | WP54 | P5 | `CAPTURE_TRIGGERS` verification + ledger | per-trigger verdict ledger; corrected mapping if measured | WP7, WP39, WP52, WP53 | planned |
+| WP55 | VI | Blind-set execution integrity | runner cannot report a non-executed set as green; executed-count assertion | — | planned |
+| WP56 | VI | Blind re-verification: discoverable sets | re-run WP1–WP16, WP49 under the repaired runner; create the ledger | WP55 | planned |
+| WP57 | VI | Blind re-verification: non-discoverable sets | re-run WP41, WP42, WP46-TS, WP44-TS, WP47-TS and the Python sets; complete the ledger | WP55, WP56 | planned |
+| WP58 | VI | Readiness probe side-effect freedom | fix the real C46 violation the vacuous runs concealed | WP55 | planned |
+| WP59 | VI | WP3 round-trip blind amendment | pin WP16's V2 reader shape through the decode bridge | WP16, WP55, WP56 · **B2 closed** | planned |
+| WP60 | VI | WP44 import-surface pin amendment | pin the sanctioned `{node:crypto, node:http}` builtin set | WP49, WP55, WP57 | planned |
+| WP61 | VI | WP49 quiescence blind amendments | timing cluster, `session.info` shape, two unsatisfiable fixtures, `timeoutMs 0` contract | WP46, WP49, WP55, WP56, WP58 | planned |
+| WP62 | VI | WP17 blind-set coverage | the one `(WP, set)` gap the sweep declared | WP55, WP56, WP57 · **B2 closed** | planned |
+<!-- Updated: WP65 added by the B13 escalation ruling — a CONFIRMED row expired unnoticed 2026-08-02 -->
+| WP65 | VI | Ledger row provenance + named-intermittent register | `measured_at` / `tree_rev` on every blind record; ledger states rows are not timeless; the `wp5` RTT flake gets an owner and a threshold | WP55, WP56, WP57 | planned |
+
+<!-- Updated: WP55–WP58 added — verification-integrity phase; the blind runner could report a never-executed set as green 2026-08-01 -->
+**On the blocking relationship.** WP55 blocks WP56, WP57 and WP58 absolutely: none of them produces trustworthy evidence under the broken runner, and running them first would manufacture exactly the kind of unverified green this phase exists to eliminate. WP56 precedes WP57 only because it establishes the ledger artefact and its row schema; the two do not otherwise interact. **WP58 must not be started before WP55**, because its acceptance criterion 4 requires a recorded non-zero executed count that the current runner cannot produce.
+
+**On what this phase may invalidate.** WP56 and WP57 are chartered with an outcome that is not known in advance and may be unwelcome: a VACUOUS or DIVERGENT verdict retroactively invalidates a blind claim in an already-closed handover. That is the point of the work, not a failure of it. The batches whose claims are affected are named in the charters.
 
 <!-- Updated: WP7 and WP40 dependencies extended onto the T3 layer 2026-08-01 -->
 **Amended dependencies (2026-08-01).** Two existing rows above are superseded by this line and nothing else about them changes:
@@ -1237,6 +2067,23 @@ Ordered list — this is a valid topological order and is the sequence the Dispa
 **On the count.** The decomposition target given for this run was 20–35 work packages; the honest result is 42. The drivers are structural, not stylistic: P6 is in scope (2 WPs), the Teil 14 test strategy is three separate deliverables split across the phases that make them meaningful (4 WPs), three removals are chartered separately by requirement (WP21, WP22, WP33), and the pure-core/wiring split mandated by D12 roughly doubles P1. Compressing to 35 would require re-merging pure cores with their wiring, which is exactly the property that makes these units headless-testable. The count is reported rather than hidden.
 
 <!-- Updated: T3 amendment 2026-08-01 -->
+<!-- Updated: count raised to 58 by the verification-integrity phase 2026-08-01 -->
+<!-- Updated: WP63 added by the E2 ruling 2026-08-02 -->
+**On the count, amended (2026-08-02).** The count is now **63**. The one added WP (**WP63**, §5 C63) is not new product scope — it closes a data-loss path that every existing AC permitted because each step in it was individually chartered and individually correct. It is chartered separately rather than folded into WP18 because it is a different boundary (the file write, not the doc write), a different invariant (I11), and because folding a safety net into the WP whose behaviour it catches would leave the net untested by construction.
+
+<!-- Updated: count raised to 66 by the B16 escalation ruling 2026-08-02 -->
+**On the count, amended again (2026-08-02).** The count is now **66**. Neither added WP is new product scope, and neither touches a production file.
+
+**WP66** exists because one defect class has now been found **three times by accident**: B14 at `w4-canvas-integrity:352` (refused at the host seed with `MISSING_TYPE_SPECIFIC`, never red), B16 at **A1** (measured `nodes=[] edges=["e1"]` — a delete-path test running against an empty node map), and B16's report of the same incomplete literal **13×** in that one file. The mechanism is general, not local: **C18 AC1 tightened ingest validation correctly, and every fixture written against the looser rule became invalid input.** Such a fixture does not fail — its records are refused, the test asserts over nothing, and it goes **green**. No gate in §7 catches that, because every gate in §7 watches for tests that *fail*. The population is unknown and will stay unknown until it is measured, which is why WP66's first AC is a measurement rather than a fix list.
+
+**WP66 is chartered by measurement, not by the suspected list, deliberately.** B16's own estimate error is the precedent: its charter said ~10 serializer call sites and the tree held **57**. Naming `A2/A3/A5/A6` as the scope would repeat that mistake in the other direction — a spot check of the file already shows incomplete literals **outside** that list (at `A7`, and in the `G` describe) and at least one *inside* it that is already valid (`A6`'s seed carries `text: ""`, which the validator accepts, since its only refusal test is `storedSpecific === undefined`). The four are starting points and are recorded as such.
+
+**WP67** is small and separate on purpose. It could have been an extra AC on WP66, but its subject is a *helper*, not a fixture, and WP66's defining rule is that the test count does not change while WP67's whole deliverable is added pins. Mixing them would blur the one boundary that keeps a sweep charter from over-running.
+
+**WP63 is deliberately NOT a dependency of WP19–WP23.** It depends on WP18 and must be DONE before P1 closes, but nothing in the tombstone wiring, the quarantine auditor, the two removals or the fuzzer needs it in place first. This ordering is intentional: the P1 queue must not be serialised behind it.
+
+**On the count, amended again (2026-08-01).** The count is now **58**. The four added WPs (§5 PHASE VI) are not new product scope — they repair the mechanism that was supposed to be verifying the other 54, and re-establish which of its historical verdicts were real. They are chartered separately rather than folded into a maintenance pass because one of them (WP57) can invalidate closed handovers, which is a finding the project must be able to cite by artefact.
+
 **On the count, amended (2026-08-01).** The count is now **54**. The twelve added WPs are the T3 host layer (§5 PHASE T3). They were not an oversight in the original decomposition: the original spec assumed `tools/launch_liveshare_e2e.py` was the rig CONCEPT_V2 Teil 14 refers to, and it is not — it is a headless mock-host rig that scopes real-Obsidian orchestration out by design. WP7 was therefore chartered against a rig that did not exist, and Worker 3 correctly refused to run the substitute. The twelve WPs are the honest cost of the gate the concept always specified; they are fine-grained because a real-Obsidian run is slow and stateful, so a failure must localise to one layer (discovery, provisioning, launch, identity, safety, teardown, oracle, driver) rather than to "the rig".
 
 ---
@@ -1256,6 +2103,8 @@ Ordered list — this is a valid topological order and is the sequence the Dispa
 | `CANVAS TEXT FALLBACK:` | **retired** | removed with WP33 |
 | `SHADOW STALE:` | new | WP4 — a discarded staleness observation |
 | `QUARANTINE:` | new | WP20 — quarantine set / released |
+| `INGEST REJECTED:` | new | WP18 — a local record refused at a write boundary, with boundary and reason |
+| `SEED REFUSED:` / `SEED RESTORED:` | new | WP63 — file write withheld after a seed refusal / withhold lifted |
 | `SIDECAR:` | new | WP24/WP25 — load, compaction, degradation |
 | `EPOCH CONFLICT:` | new | WP28 — with both epoch values |
 | `MODE:` | new | WP31/WP32 — mode announcement and degradation |
@@ -1264,6 +2113,7 @@ Ordered list — this is a valid topological order and is the sequence the Dispa
 - **Recovery / backups:** the sidecar is the client-side recovery path; the conflict copy (`<name>.conflict-<date>.canvas`) is the user-visible archive; the relay blob store (P6) is the room-side recovery path. None of the three is a prerequisite of another.
 - **Security and access rules:** the relay stays content-blind — P6 stores opaque frames and must not parse or decrypt them. No secret ever passes through an agent tool or a command string. `SERVER_PASSWORD`, `docker/.env` and the deploy stack are out of scope and must not be read. The protected NA infrastructure (`neural-angels-access`, `n8n`) is never touched.
 - **Dependency policy:** zero new runtime dependencies (D11). Any dependency change requires a publish date ≥7 days old, verified with `npm view <pkg>@<version> time.created`. `npm ci` in all build/deploy contexts; `npm install` only for a deliberate local add.
+- <!-- Updated: process finding from B3 — a red tree could not be handed back green because uncommitted earlier batches shared the same files 2026-08-02 --> **Snapshot discipline before the first coder attempt (mandatory).** A batch that modifies a file already carrying **uncommitted** work from an earlier batch must snapshot that file before the first coder attempt (a copy under `workflowArtifacts/canvas-v2/_snapshots/<batch>/`, not a `git stash`). B3 could not restore a green baseline because `canvas-sync.ts` and `canvas-persistence.ts` carried B2's WP16/WP17 work and B3's WP18 work in one unversioned diff, with no pre-WP18 point between them — a `git checkout` would have destroyed B2. Reverting was correctly judged more dangerous than reporting honestly, but the choice should never have been forced. **The ability to hand back a green tree is a deliverable, not a courtesy**, and it costs one file copy.
 - **Build output:** `plugin/main.js` and `server/dist/` are committed build artifacts — never hand-edited, always regenerated with `npm run build`. `plugin/manifest.json` is a broken symlink; the real manifest is the repo-root one. Do not read or edit the symlink.
 
 ---

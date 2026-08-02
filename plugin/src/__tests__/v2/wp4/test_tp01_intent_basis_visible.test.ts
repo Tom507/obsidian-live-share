@@ -31,7 +31,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
 import { type SurfaceState, getField, getRecordState } from "../../../canvas/canvas-shadow";
-import { CanvasSync, serializeCanvas } from "../../../files/canvas-sync";
+// WP19 AC1: deletion is a VALUE. Key presence proves neither survival nor
+// deletion any more, so both halves of the T3/T4 pair read suppression and the
+// projection instead — otherwise the pair discriminates nothing.
+import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
+import { CanvasSync, buildCanvasData, serializeCanvas } from "../../../files/canvas-sync";
 
 const PATH = "board.canvas";
 
@@ -148,9 +152,14 @@ describe("WP4 AC1 — the intent plan, not lastWrittenContent, is the write basi
     applyRemoteDelta(p.doc, (nodes) => {
       nodes.get("n1")?.set("x", 500);
     });
+    // WP64 — 3-arg: these are the bytes THE SINGLE WRITER would have persisted,
+    // and production serialises with the tombstone map. This file's later tests
+    // do write tombstones, so the 2-arg form would make the persisted basis
+    // disagree with the real one exactly when a delete is in play.
     const persisted = serializeCanvas(
       p.doc.getMap<Y.Map<unknown>>("nodes"),
       p.doc.getMap<Y.Map<unknown>>("edges"),
+      p.doc.getMap<unknown>("deleted"),
     );
     p.vault.files.set(PATH, persisted);
     p.cs.noteExternalDiskWrite(PATH, persisted);
@@ -182,9 +191,14 @@ describe("WP4 AC1 — the intent plan, not lastWrittenContent, is the write basi
     applyRemoteDelta(p.doc, (nodes) => {
       nodes.get("n1")?.set("x", 500);
     });
+    // WP64 — 3-arg: these are the bytes THE SINGLE WRITER would have persisted,
+    // and production serialises with the tombstone map. This file's later tests
+    // do write tombstones, so the 2-arg form would make the persisted basis
+    // disagree with the real one exactly when a delete is in play.
     const persisted = serializeCanvas(
       p.doc.getMap<Y.Map<unknown>>("nodes"),
       p.doc.getMap<Y.Map<unknown>>("edges"),
+      p.doc.getMap<unknown>("deleted"),
     );
     p.vault.files.set(PATH, persisted);
     p.cs.noteExternalDiskWrite(PATH, persisted);
@@ -213,6 +227,21 @@ describe("WP4 AC1 — the intent plan, not lastWrittenContent, is the write basi
       p.doc.getMap<Y.Map<unknown>>("nodes").has("n2"),
       "a partial observation deleted a record (I7 violated)",
     ).toBe(true);
+    // WP19 AC1 — the line above can no longer FAIL on its own: no delete path
+    // removes a key any more. Survival is pinned where it is now decided.
+    const t3Deleted = p.doc.getMap<unknown>("deleted");
+    expect(
+      isTombstoneSuppressed(readTombstoneEntry(t3Deleted, "n2")),
+      "a partial observation TOMBSTONED a record (I7 violated)",
+    ).toBe(false);
+    expect(
+      buildCanvasData(
+        p.doc.getMap<Y.Map<unknown>>("nodes"),
+        p.doc.getMap<Y.Map<unknown>>("edges"),
+        t3Deleted,
+      ).nodes.map((n) => n.id),
+      "the record vanished from what the user actually sees",
+    ).toContain("n2");
     expect(getRecordState(p.cs.getSurfaceShadow(), PATH, "node", "n2")).toBe("present");
   });
 
@@ -228,10 +257,23 @@ describe("WP4 AC1 — the intent plan, not lastWrittenContent, is the write basi
     p.vault.files.set(PATH, canvasJson([N1]));
     await p.cs.handleLocalModify(PATH);
 
+    // WP19 AC1 — the proven delete still happens, spelled as a tombstone.
+    const t4Deleted = p.doc.getMap<unknown>("deleted");
     expect(
-      p.doc.getMap<Y.Map<unknown>>("nodes").has("n2"),
+      isTombstoneSuppressed(readTombstoneEntry(t4Deleted, "n2")),
       "a proven user delete was swallowed — the rule is gated, not removed",
-    ).toBe(false);
+    ).toBe(true);
+    expect(
+      buildCanvasData(
+        p.doc.getMap<Y.Map<unknown>>("nodes"),
+        p.doc.getMap<Y.Map<unknown>>("edges"),
+        t4Deleted,
+      ).nodes.map((n) => n.id),
+    ).toEqual(["n1"]);
+    // ...and destroys nothing: the container and its field values survive.
+    const t4N2 = p.doc.getMap<Y.Map<unknown>>("nodes").get("n2") as Y.Map<unknown>;
+    expect(t4N2.get("text")).toBe("peer");
+    expect(t4N2.get("x")).toBe(400);
     expect(getRecordState(p.cs.getSurfaceShadow(), PATH, "node", "n2")).toBe("absent");
   });
 

@@ -2,8 +2,10 @@ import { TFile } from "obsidian";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
-import { type AwarenessLike, CanvasPresence } from "../canvas/canvas-presence";
 import { RECONCILE_GEOMETRY_KEYS } from "../canvas/reconcile-plan";
+// WP19 AC1: deletion is a VALUE, not an absence — the oracles below read
+// suppression + projection visibility, never raw key presence.
+import { isTombstoneSuppressed, readTombstoneEntry } from "../canvas/canvas-tombstone";
 
 function createMockVault() {
   const files = new Map<string, string>();
@@ -206,7 +208,7 @@ describe("CanvasSync", () => {
     vault._files.set(
       "test.canvas",
       JSON.stringify({
-        nodes: [{ id: "new-node", x: 100, y: 200 }],
+        nodes: [{ id: "new-node", x: 100, y: 200, width: 100, height: 50, type: "text", text: "" }],
         edges: [],
       }),
     );
@@ -241,8 +243,8 @@ describe("CanvasSync", () => {
   it("concurrent node moves merge correctly via shared Y.Doc", async () => {
     const canvasContent = JSON.stringify({
       nodes: [
-        { id: "n1", x: 0, y: 0 },
-        { id: "n2", x: 100, y: 100 },
+        { id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" },
+        { id: "n2", x: 100, y: 100, width: 100, height: 50, type: "text", text: "" },
       ],
       edges: [],
     });
@@ -285,8 +287,8 @@ describe("CanvasSync", () => {
       "test.canvas",
       JSON.stringify({
         nodes: [
-          { id: "n1", x: 0, y: 0 },
-          { id: "n2", x: 100, y: 100 },
+          { id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" },
+          { id: "n2", x: 100, y: 100, width: 100, height: 50, type: "text", text: "" },
         ],
         edges: [],
       }),
@@ -306,8 +308,8 @@ describe("CanvasSync", () => {
       "test.canvas",
       JSON.stringify({
         nodes: [
-          { id: "n1", x: 50, y: 0 },
-          { id: "n2", x: 100, y: 100 },
+          { id: "n1", x: 50, y: 0, width: 100, height: 50, type: "text", text: "" },
+          { id: "n2", x: 100, y: 100, width: 100, height: 50, type: "text", text: "" },
         ],
         edges: [],
       }),
@@ -325,7 +327,7 @@ describe("CanvasSync", () => {
   it("local add-node does not clobber an un-flushed remote key edit", async () => {
     vault._files.set(
       "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" }], edges: [] }),
     );
     await canvasSync.subscribe("test.canvas", "host");
 
@@ -342,8 +344,8 @@ describe("CanvasSync", () => {
       "test.canvas",
       JSON.stringify({
         nodes: [
-          { id: "n1", x: 0, y: 0 },
-          { id: "n2", x: 200, y: 200 },
+          { id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" },
+          { id: "n2", x: 200, y: 200, width: 100, height: 50, type: "text", text: "" },
         ],
         edges: [],
       }),
@@ -361,8 +363,8 @@ describe("CanvasSync", () => {
       "test.canvas",
       JSON.stringify({
         nodes: [
-          { id: "n1", x: 0, y: 0 },
-          { id: "n2", x: 100, y: 100 },
+          { id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" },
+          { id: "n2", x: 100, y: 100, width: 100, height: 50, type: "text", text: "" },
         ],
         edges: [],
       }),
@@ -381,12 +383,22 @@ describe("CanvasSync", () => {
     // Local user deletes n2.
     vault._files.set(
       "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" }], edges: [] }),
     );
     await canvasSync.handleLocalModify("test.canvas");
 
-    expect(nodesMap.size).toBe(1);
-    expect(nodesMap.get("n2")).toBeUndefined();
+    // WP19 AC1 — the delete still propagates, but as a VALUE: `n2` is
+    // tombstone-suppressed and gone from the projection, while its field
+    // container survives intact (which is what makes the undo lossless).
+    const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
+    const deletedMap = docHandle.doc.getMap<unknown>("deleted");
+    expect(isTombstoneSuppressed(readTombstoneEntry(deletedMap, "n2"))).toBe(true);
+    expect(buildCanvasData(nodesMap, edgesMap, deletedMap).nodes.map((n) => n.id)).toEqual(["n1"]);
+    expect(nodesMap.size).toBe(2);
+    const deletedN2 = nodesMap.get("n2") as Y.Map<unknown>;
+    expect(deletedN2.get("x")).toBe(100);
+    expect(deletedN2.get("y")).toBe(100);
+    expect(deletedN2.get("type")).toBe("text");
   });
 
   // Bug G: when the injected canWrite guard returns false, local edits must not
@@ -394,7 +406,7 @@ describe("CanvasSync", () => {
   it("read-only guard prevents pushing local edits", async () => {
     vault._files.set(
       "ro.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" }], edges: [] }),
     );
     await canvasSync.subscribe("ro.canvas", "host");
     canvasSync.setCanWrite(() => false);
@@ -402,7 +414,7 @@ describe("CanvasSync", () => {
     // Local user tries to move n1.
     vault._files.set(
       "ro.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 500, y: 0 }], edges: [] }),
+      JSON.stringify({ nodes: [{ id: "n1", x: 500, y: 0, width: 100, height: 50, type: "text", text: "" }], edges: [] }),
     );
     await canvasSync.handleLocalModify("ro.canvas");
 
@@ -477,65 +489,6 @@ describe("CanvasSync", () => {
     expect(nodesMap.get("n1")).toBeUndefined();
   });
 
-  // --- WP3: canWriteNode gate drops non-holder writes (US3 AC5) ---
-  it("canWriteNode=false drops a local node edit in the diff path", async () => {
-    vault._files.set(
-      "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
-    );
-    await canvasSync.subscribe("test.canvas", "host");
-    canvasSync.setCanWriteNode((_p, nodeId) => nodeId !== "n1");
-
-    vault._files.set(
-      "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 999, y: 0 }], edges: [] }),
-    );
-    await canvasSync.handleLocalModify("test.canvas");
-
-    const nodesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("nodes");
-    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(0); // write dropped
-  });
-
-  it("canWriteNode=false drops a brand-new local node", async () => {
-    vault._files.set("test.canvas", JSON.stringify({ nodes: [], edges: [] }));
-    await canvasSync.subscribe("test.canvas", "host");
-    canvasSync.setCanWriteNode(() => false);
-
-    vault._files.set(
-      "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n2", x: 1, y: 1 }], edges: [] }),
-    );
-    await canvasSync.handleLocalModify("test.canvas");
-
-    const nodesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("nodes");
-    expect(nodesMap.get("n2")).toBeUndefined();
-  });
-
-  // --- WP3: canDeleteNode gate blocks deleting a peer-held node (US3 AC7) ---
-  it("canDeleteNode=false blocks a local delete of a peer-held node", async () => {
-    vault._files.set(
-      "test.canvas",
-      JSON.stringify({
-        nodes: [
-          { id: "n1", x: 0, y: 0 },
-          { id: "n2", x: 1, y: 1 },
-        ],
-        edges: [],
-      }),
-    );
-    await canvasSync.subscribe("test.canvas", "host");
-    canvasSync.setCanDeleteNode((_p, nodeId) => nodeId !== "n2");
-
-    vault._files.set(
-      "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
-    );
-    await canvasSync.handleLocalModify("test.canvas");
-
-    const nodesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("nodes");
-    expect(nodesMap.get("n2")).toBeDefined(); // delete dropped, node still present
-  });
-
   // --- WP3: diff-inferred fallback fires on first key change (US3 AC2) ---
   it("onLocalNodeChange fires on the first local key change (diff-inferred fallback, private API absent)", async () => {
     vault._files.set(
@@ -554,33 +507,6 @@ describe("CanvasSync", () => {
     await canvasSync.handleLocalModify("test.canvas");
 
     expect(claimed).toContain("n1"); // lock acquired on first key change, no private API
-  });
-
-  // --- WP4 (US5 AC2): drop-unflushed-on-remote-lock ---
-  it("drops an un-flushed local edit when a remote peer holds the node (US5 AC2)", async () => {
-    vault._files.set(
-      "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
-    );
-    await canvasSync.subscribe("test.canvas", "host");
-    // A remote holder set n1.x = 999; our advisory gate reports the node locked.
-    canvasSync.setCanWriteNode((_p, nodeId) => nodeId !== "n1");
-
-    const docHandle = syncManager.getDoc("__canvas__:test.canvas");
-    const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
-    applyRemoteCanvasDelta(docHandle.doc, (nodes) => {
-      (nodes.get("n1") as Y.Map<unknown>).set("x", 999);
-    });
-
-    // Local un-flushed edit to the same node.
-    vault._files.set(
-      "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 50, y: 0 }], edges: [] }),
-    );
-    await canvasSync.handleLocalModify("test.canvas");
-
-    // Local edit dropped; the remote holder's value stands.
-    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(999);
   });
 
   // --- WP4 (US5 AC3): edge cascade/prune ---
@@ -612,8 +538,21 @@ describe("CanvasSync", () => {
     );
     await canvasSync.handleLocalModify("test.canvas");
 
-    const edgesMap = syncManager.getDoc("__canvas__:test.canvas").doc.getMap<Y.Map<unknown>>("edges");
-    expect(edgesMap.get("e1")).toBeUndefined(); // cascade-pruned
+    const cascadeDoc = syncManager.getDoc("__canvas__:test.canvas").doc;
+    const edgesMap = cascadeDoc.getMap<Y.Map<unknown>>("edges");
+    const cascadeNodes = cascadeDoc.getMap<Y.Map<unknown>>("nodes");
+    const cascadeDeleted = cascadeDoc.getMap<unknown>("deleted");
+
+    // WP19 AC3 — the cascade is expressed through `buildCanvasData`'s
+    // visibleNodeIds set, NOT by removing the edge key and NOT by tombstoning
+    // the edge: a cascaded edge carries no tombstone of its own.
+    expect(buildCanvasData(cascadeNodes, edgesMap, cascadeDeleted).edges).toEqual([]);
+    expect(isTombstoneSuppressed(readTombstoneEntry(cascadeDeleted, "e1"))).toBe(false);
+    // AC1 — the cascade destroys nothing: container and endpoints survive.
+    const cascadedE1 = edgesMap.get("e1") as Y.Map<unknown>;
+    expect(cascadedE1).toBeDefined();
+    expect(cascadedE1.get("fromNode")).toBe("n1");
+    expect(cascadedE1.get("toNode")).toBe("n2");
   });
 
   // WP7 — CORRECTED: same property, asserted on the single writer's bytes. The
@@ -622,7 +561,7 @@ describe("CanvasSync", () => {
   it("never serializes a dangling edge to disk (US5 AC3)", async () => {
     vault._files.set(
       "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] }),
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" }], edges: [] }),
     );
     await canvasSync.subscribe("test.canvas", "host");
 
@@ -687,7 +626,7 @@ describe("CanvasSync", () => {
     vault._files.set(
       "test.canvas",
       JSON.stringify({
-        nodes: [{ id: "n1", x: 5, y: 6, width: 100, height: 80 }],
+        nodes: [{ id: "n1", x: 5, y: 6, width: 100, height: 80, type: "text", text: "" }],
         edges: [
           { id: "e1", fromNode: "n1", toNode: "n1" }, // valid
           { id: "e2", fromNode: "n1", toNode: "ghost" }, // dangling -> pruned
@@ -770,24 +709,6 @@ describe("CanvasSync", () => {
       edges: [{ id: "e1", fromNode: "n1", toNode: "n2", toSide, ...extra }],
     });
 
-  // --- US2 AC1: the edge write consults the lock seam via BOTH endpoints -----
-  it("edge write is denied while a peer holds one of its endpoint nodes (US2 AC1)", async () => {
-    vault._files.set("test.canvas", twoNodesOneEdge("left"));
-    await canvasSync.subscribe("test.canvas", "host");
-    const warns = captureWarnings();
-    // A peer holds n2 → e1 is not writable by this client (AC1: from AND to).
-    canvasSync.setCanWriteNode((_p, nodeId) => nodeId !== "n2");
-
-    vault._files.set("test.canvas", twoNodesOneEdge("right"));
-    await canvasSync.handleLocalModify("test.canvas");
-
-    const edgesMap = syncManager
-      .getDoc("__canvas__:test.canvas")
-      .doc.getMap<Y.Map<unknown>>("edges");
-    expect((edgesMap.get("e1") as Y.Map<unknown>).get("toSide")).toBe("left"); // write dropped
-    expect(warns.filter((m) => m.startsWith("LOCK DENIED:") && m.includes("e1"))).toHaveLength(1);
-  });
-
   it("edge write is allowed while both endpoint nodes are free (US2 AC1, default-allow)", async () => {
     vault._files.set("test.canvas", twoNodesOneEdge("left"));
     await canvasSync.subscribe("test.canvas", "host");
@@ -845,40 +766,6 @@ describe("CanvasSync", () => {
     expect(edgesMap.size).toBe(0);
   });
 
-  // --- US2 AC4/AC5: a denied pass holds the baseline and stays observable -----
-  it("a denied write does NOT advance lastWrittenContent and stays observable (US2 AC4/AC5)", async () => {
-    const before = JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0 }], edges: [] });
-    const after = JSON.stringify({ nodes: [{ id: "n1", x: 999, y: 0 }], edges: [] });
-    vault._files.set("test.canvas", before);
-    await canvasSync.subscribe("test.canvas", "host");
-    const warns = captureWarnings();
-    canvasSync.setCanWriteNode(() => false); // a peer holds n1
-
-    vault._files.set("test.canvas", after);
-    await canvasSync.handleLocalModify("test.canvas");
-
-    const nodesMap = syncManager
-      .getDoc("__canvas__:test.canvas")
-      .doc.getMap<Y.Map<unknown>>("nodes");
-    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(0); // write dropped
-    expect(baselineOf("test.canvas")).toBe(before); // AC4: baseline HELD
-    expect(warns.filter((m) => m.startsWith("LOCK DENIED:"))).toHaveLength(1);
-
-    // AC5 idempotence: a second pass on unchanged disk re-detects the same denial
-    // — no CRDT mutation, no baseline advance, exactly one more log line.
-    await canvasSync.handleLocalModify("test.canvas");
-    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(0);
-    expect(baselineOf("test.canvas")).toBe(before);
-    expect(warns.filter((m) => m.startsWith("LOCK DENIED:"))).toHaveLength(2);
-
-    // The divergence stayed observable: once the peer releases the node, the
-    // held-back edit is still in the diff and finally reaches the shared doc.
-    canvasSync.setCanWriteNode(() => true);
-    await canvasSync.handleLocalModify("test.canvas");
-    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(999);
-    expect(baselineOf("test.canvas")).toBe(after); // clean pass advances again
-  });
-
   // =========================================================================
   // WP5 — structural key protection (US3 AC9-AC11) + the audit's third
   // signature (US3 AC12/AC13, US6 `NO TYPE signature:`).
@@ -894,6 +781,8 @@ describe("CanvasSync", () => {
     syncManager.getDoc(`__canvas__:${path}`).doc.getMap<Y.Map<unknown>>("nodes");
   const edgesOf = (path = "test.canvas") =>
     syncManager.getDoc(`__canvas__:${path}`).doc.getMap<Y.Map<unknown>>("edges");
+  const deletedOf = (path = "test.canvas") =>
+    syncManager.getDoc(`__canvas__:${path}`).doc.getMap<unknown>("deleted");
 
   // --- US3 AC9/AC10: the two key sets ----------------------------------------
   it("GEOMETRY_KEYS keeps exactly {x,y,width,height}; PROTECTED_KEYS is the wider superset (US3 AC9/AC10)", () => {
@@ -946,8 +835,8 @@ describe("CanvasSync", () => {
     // full-merge branch (applyToYMap), which deletes every key the local record
     // lacks — for an edge that includes the endpoints themselves.
     const twoNodes = [
-      { id: "n1", x: 0, y: 0 },
-      { id: "n2", x: 100, y: 100 },
+      { id: "n1", x: 0, y: 0, width: 100, height: 50, type: "text", text: "" },
+      { id: "n2", x: 100, y: 100, width: 100, height: 50, type: "text", text: "" },
     ];
     vault._files.set("test.canvas", JSON.stringify({ nodes: twoNodes, edges: [] }));
     await canvasSync.subscribe("test.canvas", "host");
@@ -973,8 +862,13 @@ describe("CanvasSync", () => {
     // The dangling-edge serialization guard cannot catch an endpoint-LESS edge
     // (it requires a string), so without the guard above this edge reaches disk
     // and every peer drops it on import.
+    // WP64 — 3-arg: the projection this oracle reads must be the one production
+    // writes, so a tombstoned edge is suppressed here exactly as it would be on
+    // disk rather than silently read back as a live record.
     expect(
-      (buildCanvasData(nodesOf(), edgesOf()).edges[0] as Record<string, unknown>).fromNode,
+      (
+        buildCanvasData(nodesOf(), edgesOf(), deletedOf()).edges[0] as Record<string, unknown>
+      ).fromNode,
     ).toBe("n1");
   });
 
@@ -1010,8 +904,8 @@ describe("CanvasSync", () => {
       "test.canvas",
       JSON.stringify({
         nodes: [
-          { id: "n1", x: 0, y: 0, type: "text" },
-          { id: "n2", x: 9, y: 9, type: "text" },
+          { id: "n1", x: 0, y: 0, type: "text", width: 100, height: 50, text: "" },
+          { id: "n2", x: 9, y: 9, type: "text", width: 100, height: 50, text: "" },
         ],
         edges: [],
       }),
@@ -1025,12 +919,19 @@ describe("CanvasSync", () => {
 
     vault._files.set(
       "test.canvas",
-      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0, type: "text" }], edges: [] }),
+      JSON.stringify({ nodes: [{ id: "n1", x: 0, y: 0, type: "text", width: 100, height: 50, text: "" }], edges: [] }),
     );
     await canvasSync.handleLocalModify("test.canvas");
 
-    expect(nodesOf().get("n2")).toBeUndefined(); // whole-record delete unaffected
-    expect(nodesOf().size).toBe(1);
+    // WP19 AC1 — the whole-record delete is still honoured, spelled as a
+    // tombstone: PROTECTED_KEYS is a per-key guard and does not block it.
+    expect(isTombstoneSuppressed(readTombstoneEntry(deletedOf(), "n2"))).toBe(true);
+    expect(buildCanvasData(nodesOf(), edgesOf(), deletedOf()).nodes.map((n) => n.id)).toEqual(["n1"]);
+    expect(nodesOf().size).toBe(2);
+    const wholeRecordN2 = nodesOf().get("n2") as Y.Map<unknown>;
+    expect(wholeRecordN2.get("x")).toBe(9);
+    expect(wholeRecordN2.get("y")).toBe(9);
+    expect(wholeRecordN2.get("type")).toBe("text");
   });
 
   // --- US3 AC12/AC13 + US6: the `NO TYPE signature:` audit line ---------------
@@ -1039,9 +940,9 @@ describe("CanvasSync", () => {
       "test.canvas",
       JSON.stringify({
         nodes: [
-          { id: "n1", x: 0, y: 0, type: "text", text: "hi" },
-          { id: "n2", x: 9, y: 9, type: "file", file: "a.md" },
-          { id: "n3", x: 5, y: 5, type: "text", text: "fine" },
+          { id: "n1", x: 0, y: 0, type: "text", text: "hi", width: 100, height: 50 },
+          { id: "n2", x: 9, y: 9, type: "file", file: "a.md", width: 100, height: 50 },
+          { id: "n3", x: 5, y: 5, type: "text", text: "fine", width: 100, height: 50 },
         ],
         edges: [],
       }),
@@ -1072,8 +973,8 @@ describe("CanvasSync", () => {
       "test.canvas",
       JSON.stringify({
         nodes: [
-          { id: "n1", x: 0, y: 0, type: "text", text: "hi" },
-          { id: "n2", x: 9, y: 9, type: "file", file: "a.md" },
+          { id: "n1", x: 0, y: 0, type: "text", text: "hi", width: 100, height: 50 },
+          { id: "n2", x: 9, y: 9, type: "file", file: "a.md", width: 100, height: 50 },
         ],
         edges: [{ id: "e1", fromNode: "n1", toNode: "n2" }],
       }),
@@ -1087,131 +988,5 @@ describe("CanvasSync", () => {
     await vi.advanceTimersByTimeAsync(600);
 
     expect(warns.filter((m) => m.startsWith("NO TYPE signature:"))).toHaveLength(0);
-  });
-});
-
-// ===========================================================================
-// WP4 — GAP-1 loser-revert seam (US2 AC6-AC9).
-//
-// Composes the REAL pieces the production wiring bolts together in
-// `main.ts::mountCanvasPresence`: two `CanvasPresence` instances over one shared
-// awareness map, the lock gates injected into a real `CanvasSync`
-// (`setCanWriteNode`/`setCanDeleteNode`), and an `onRevert` that mirrors
-// `main.ts::revertCanvasNode` (snapshot + authoritative full reconcile).
-// `main.ts` itself has no test file, so the glue shape — not the glue instance —
-// is what this test pins.
-// ===========================================================================
-
-// Shared in-memory awareness "network" (mirrors canvas-presence.test.ts) so two
-// presences contend over the same states map deterministically, no transport.
-function makeAwarenessNetwork() {
-  const states = new Map<number, Record<string, unknown>>();
-  const listeners: Array<() => void> = [];
-  const notify = () => {
-    for (const l of [...listeners]) l();
-  };
-  return {
-    states,
-    client(clientID: number): AwarenessLike {
-      return {
-        clientID,
-        getLocalState: () => states.get(clientID) ?? null,
-        setLocalState: (s: Record<string, unknown> | null) => {
-          if (s === null) states.delete(clientID);
-          else states.set(clientID, s);
-          notify();
-        },
-        getStates: () => states,
-        on: (_e, cb) => {
-          listeners.push(cb);
-        },
-        off: (_e, cb) => {
-          const i = listeners.indexOf(cb);
-          if (i >= 0) listeners.splice(i, 1);
-        },
-      };
-    },
-  };
-}
-
-describe("CanvasSync + CanvasPresence loser-revert (US2 AC9)", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  it("the tiebreak loser is denied, holds its baseline, reverts once, and lands on the winner's coords", async () => {
-    const PATH = "board.canvas";
-    const original = JSON.stringify({
-      nodes: [{ id: "n1", x: 0, y: 0, width: 100, height: 60 }],
-      edges: [],
-    });
-    const vault = createMockVault();
-    const syncManager = createMockSyncManager();
-    const fileOps = createMockFileOps();
-    vault._files.set(PATH, original);
-    const canvasSync = new CanvasSync(vault as any, syncManager as any, fileOps as any);
-    await canvasSync.subscribe(PATH, "host");
-
-    const warns: string[] = [];
-    canvasSync.setLogger({ debug: () => {}, warn: (_c, m) => warns.push(m) });
-
-    const net = makeAwarenessNetwork();
-    // Peer B = clientID 1 (lowest id ⇒ tiebreak WINNER).
-    const B = new CanvasPresence({
-      path: PATH,
-      awareness: net.client(1),
-      identity: { clientId: 1, name: "B", color: "#b" },
-    });
-    // Peer A = clientID 2 = this client (higher id ⇒ LOSER). `onRevert` mirrors
-    // main.ts: read the shared snapshot, then force it onto the live view.
-    const reverted: string[] = [];
-    const viewReloads: Array<Record<string, unknown>[]> = [];
-    const A = new CanvasPresence({
-      path: PATH,
-      awareness: net.client(2),
-      identity: { clientId: 2, name: "A", color: "#a" },
-      onRevert: (nodeId: string) => {
-        reverted.push(nodeId);
-        const snapshot = canvasSync.getCanvasSnapshot(PATH);
-        if (!snapshot) return; // AC7: null snapshot is a no-op, never a view wipe
-        viewReloads.push(snapshot.nodes as Record<string, unknown>[]);
-      },
-    });
-    B.start();
-    A.start();
-    // Exactly the production wiring (main.ts:766-773).
-    canvasSync.setCanWriteNode((_p, nodeId) => A.canWriteNode(nodeId));
-    canvasSync.setCanDeleteNode((_p, nodeId) => A.canDeleteNode(nodeId));
-
-    // B grabs n1 and moves it to x=300; the move reaches us as a remote delta.
-    B.acquireLock("n1");
-    applyRemoteCanvasDelta(syncManager.getDoc(`__canvas__:${PATH}`).doc, (nodes) => {
-      (nodes.get("n1") as Y.Map<unknown>).set("x", 300);
-    });
-
-    // A optimistically drags the same card to x=50 → claims, loses the tiebreak.
-    A.acquireLock("n1");
-    vault._files.set(
-      PATH,
-      JSON.stringify({ nodes: [{ id: "n1", x: 50, y: 0, width: 100, height: 60 }], edges: [] }),
-    );
-    await canvasSync.handleLocalModify(PATH);
-
-    const nodesMap = syncManager.getDoc(`__canvas__:${PATH}`).doc.getMap<Y.Map<unknown>>("nodes");
-    // A's optimistic move was denied; the winner's value stands.
-    expect((nodesMap.get("n1") as Y.Map<unknown>).get("x")).toBe(300);
-    // A's baseline was NOT advanced, so the rejected edit is still diff-visible.
-    expect(
-      (canvasSync as unknown as { lastWrittenContent: Map<string, string> }).lastWrittenContent.get(
-        PATH,
-      ),
-    ).toBe(original);
-    expect(warns.filter((m) => m.startsWith("LOCK DENIED:"))).toHaveLength(1);
-    // onRevert fired exactly once, and A's view ended at B's coordinates.
-    expect(reverted).toEqual(["n1"]);
-    expect(viewReloads).toHaveLength(1);
-    expect(viewReloads[0][0].x).toBe(300);
-    expect(A.isLockedByMe("n1")).toBe(false);
-    expect(B.isLockedByMe("n1")).toBe(true);
   });
 });

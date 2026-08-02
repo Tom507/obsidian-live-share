@@ -1,6 +1,6 @@
 # Task Charter — WP13: Fractional `ord` allocator
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP13
 **Phase:** P1
 **task_mode:** `standard`
@@ -119,6 +119,79 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 *Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
 
+Module under test (create-path, does not exist yet): `plugin/src/canvas/canvas-ord.ts`.
+
+**Binding API surface for the Coder Sub-Agent** (Shared Ownership Contract §1 — WP8, WP16, WP17 import these, never re-implement):
+
+```ts
+export type OrdRng = () => number; // returns a value in [0, 1); default Math.random at the call site only
+
+export function allocateOrd(
+  before: string | undefined,
+  after: string | undefined,
+  clientID: string,
+  rng?: OrdRng,
+): string;
+
+export function compareOrd(a: string, b: string): number; // standard comparator: <0, 0, >0
+
+export interface OrdIdEntry {
+  readonly ord: string;
+  readonly id: string;
+}
+
+export function compareOrdId(a: OrdIdEntry, b: OrdIdEntry): number;
+// = compareOrd(a.ord, b.ord) !== 0 ? compareOrd(a.ord, b.ord) : (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+```
+
+The `rng` parameter is the mandatory randomness seam: jitter must never read `Math.random` (or any
+ambient source) directly, only through this injected parameter, so allocation is reproducible under
+a seeded generator in tests. No other export is licensed — AC4 is pinned by a dynamic scan of the
+module's own export list, so any additional exported function (a rewrite/update operation) fails the
+suite.
+
+### TC1 — allocated value sorts strictly between two neighbours (middle case)
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp13/test_tp01_strictly_between_neighbours_visible.test.ts`
+- What it checks: `allocateOrd(before, after, clientID)` produces a value `compareOrd` places strictly between `before` and `after`, across several independent pairs, using the module's own comparator as the sole oracle (never `<` on raw strings).
+- Test data channel: neighbours derived from the allocator itself (`allocateOrd(undefined, undefined, …)` seed pair), not hand-picked literals.
+
+### TC2 — head allocation sorts strictly before the existing first element
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp13/test_tp02_head_allocation_visible.test.ts`
+- What it checks: `allocate(undefined, first)` sorts strictly before `first`; also exercises the true base case `allocate(undefined, undefined)` as setup, and chains two head insertions to confirm ordering compounds correctly.
+- Test data channel: a single existing element, then a chain of head insertions in front of it.
+
+### TC3 — tail allocation sorts strictly after the existing last element
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp13/test_tp03_tail_allocation_visible.test.ts`
+- What it checks: `allocate(last, undefined)` sorts strictly after `last`; chains three tail appends and verifies the whole chain is strictly increasing end to end.
+- Test data channel: a single existing element, then a chain of tail appends after it.
+
+### TC4 — distinct clientIDs racing the same neighbour pair produce distinct ords
+- Verifies AC: AC2
+- Test file: `plugin/src/__tests__/v2/wp13/test_tp04_distinct_clients_distinct_ords_visible.test.ts`
+- What it checks: two/three distinct `clientID`s, fed directly (no simulated Yjs concurrency) with the same `before`/`after` and identically-seeded `rng` per call, produce pairwise-distinct ord strings, each still strictly between the neighbours.
+- Test data channel: fixed neighbour pair plus a small set of literal clientID strings.
+
+### TC5 — `(ord, id)` total order agrees across replicas regardless of arrival order
+- Verifies AC: AC2
+- Test file: `plugin/src/__tests__/v2/wp13/test_tp05_replica_total_order_agreement_visible.test.ts`
+- What it checks: the same batch of `{ord, id}` entries, sorted by `compareOrdId` from three different starting permutations, converges on one identical id sequence; also pins the equal-ord tie-break (falls back to lexicographic `id`) as part of the comparator's total-order contract.
+- Test data channel: entries built from allocator output plus one literal colliding-ord pair for the tie-break case.
+
+### TC6 — repeated dense allocation between ever-closer neighbours terminates and stays correct
+- Verifies AC: AC3
+- Test file: `plugin/src/__tests__/v2/wp13/test_tp06_dense_allocation_terminates_visible.test.ts`
+- What it checks: 120 successive midpoint allocations narrowing toward the same neighbour never collide, the full resulting chain still sorts correctly under `compareOrd`, and allocated string length eventually exceeds the original endpoints' length (precision comes from string growth, never a float midpoint).
+- Test data channel: a driven loop, no wall-clock sleeps, no timing constants; a seeded deterministic `rng` (mulberry32) throughout.
+
+### TC7 — the module exports no mutating operation on an existing ord
+- Verifies AC: AC4
+- Test file: `plugin/src/__tests__/v2/wp13/test_tp07_no_mutating_export_visible.test.ts`
+- What it checks: a dynamic scan of the module's own exports rejects any name matching a mutating-operation pattern, pins the function-export allowlist to exactly `allocateOrd`/`compareOrd`/`compareOrdId`, and confirms a previously returned ord string is never retroactively changed by later allocations.
+- Test data channel: `Object.keys` / `typeof` introspection of the imported module namespace, so a later WP adding a mutator breaks this test.
+
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
@@ -129,17 +202,30 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** no `ord` concept existed in the doc; record order was whatever
+  `Y.Map` iteration produced (`canvas-sync.ts:98–130`, `buildCanvasData`), i.e. unspecified and
+  free to differ between replicas holding identical state.
+- **Approach:** one pure module, `plugin/src/canvas/canvas-ord.ts`, zero imports. An `ord` is a
+  base-62 digit string over `0-9A-Za-z` — an alphabet whose character order equals its digit-value
+  order, so lexicographic UTF-16 comparison *is* the value comparison. `allocateOrd` walks the two
+  neighbour strings digit by digit and returns the shortest jittered digit string strictly between
+  them, then appends a fixed-width 12-digit `clientID` fingerprint as the AC2 tiebreak (appending
+  cannot disturb strict betweenness, only decide between siblings). `compareOrd` is plain
+  code-unit comparison; `compareOrdId` falls back to the record `id`. No mutator is exported.
+- **Fallback path if all attempts fail:** not needed — attempt 1 landed all 7 visible test files
+  green on first run.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** `plugin/src/canvas/canvas-ord.ts` with exactly the contracted surface
+  (`OrdRng`, `allocateOrd`, `compareOrd`, `OrdIdEntry`, `compareOrdId`). AC1–AC4 all covered;
+  7/7 visible test files, 20/20 tests pass; `tsc -noEmit -skipLibCheck` introduces no new error.
+- **What remains open:** nothing in scope. Wiring into the parser / serialiser / migration is
+  WP16 / WP17 / WP8 and was deliberately not done. The batch-level `npm test` and `npm run build`
+  gates are Worker 3's to run once at the end of the batch (per this attempt's instructions).
+- **Final status:** DONE.
 
 ---
 

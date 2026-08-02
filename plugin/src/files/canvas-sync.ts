@@ -2,10 +2,57 @@ import { Notice, type Vault } from "obsidian";
 import * as Y from "yjs";
 
 import {
-  canonicalizeCanvasData,
+  type CanvasRecord,
+  type CanvasRecordKind,
+  canonicalizeRecord,
   roundCanvasGeometry,
-  serializeCanonicalCanvas,
 } from "../canvas/canvas-canonical";
+import {
+  type OrdIdEntry,
+  type OrdRng,
+  allocateOrd,
+  compareOrdId,
+} from "../canvas/canvas-ord";
+import {
+  type IngestOrigin,
+  type IngestReasonCode,
+  validateEdgeIngest,
+  validateNodeIngest,
+} from "../canvas/canvas-ingest-schema";
+import {
+  type EndpointRegister,
+  type EndpointSlot,
+  type V2EdgeRecord,
+  type V2Node,
+  type V2RecordMap,
+  ENDPOINT_FILE_KEYS,
+  ENDPOINT_SLOTS,
+  FROM_KEY,
+  POS_KEY,
+  SIZE_KEY,
+  TO_KEY,
+  V2_FIELD,
+  decodeEndpointToFile,
+  decodePos,
+  decodeSize,
+  encodeEndpointFromFile,
+  encodePos,
+  encodeSize,
+  endpointEquals,
+  isEndpointRegister,
+  isPosRegister,
+  isSizeRegister,
+  posEquals,
+  readEndpoint,
+  readPosRegister,
+  readSizeRegister,
+  sizeEquals,
+  writeEndpointRegister,
+  writePosRegister,
+  writeSizeRegister,
+} from "../canvas/canvas-registers";
+import { isSchemaMajorMismatch } from "../canvas/canvas-schema";
+import { guardTypeWrite } from "../canvas/canvas-type-guard";
 import {
   type DeleteIntent,
   type FieldUpsertIntent,
@@ -20,11 +67,17 @@ import {
   advanceField,
   advanceRecord,
   createSurfaceShadow,
-  getRecordFields,
   getRecordState,
   markRecordAbsent,
   planIntentDiff,
 } from "../canvas/canvas-shadow";
+import {
+  type TombstoneMap,
+  applyTombstoneOp,
+  isTombstoneQuarantined,
+  isTombstoneSuppressed,
+  readTombstoneEntry,
+} from "../canvas/canvas-tombstone";
 import type { DocHandle, SyncManager } from "../sync/sync";
 import {
   VAULT_EVENT_SETTLE_MS,
@@ -90,87 +143,718 @@ export interface CanvasSyncLogger {
   warn(category: string, message: string): void;
 }
 
+// ---------------------------------------------------------------------------
+// WP16 / P1 — `parseCanvas` V2 and the conservative `ord` capture policy.
+// ---------------------------------------------------------------------------
+//
+// The `.canvas` FILE keeps its shape forever: flat `x`/`y`/`width`/`height` on a
+// node, flat `fromNode`/`fromSide`/`fromEnd` + `to*` on an edge, and record
+// order carried by the two JSON arrays. The DOC does not: geometry is one atomic
+// `pos` register and one atomic `size` register (WP9), an endpoint is one atomic
+// `from` / `to` register (WP10), and order is DATA — every record carries an
+// `ord` (WP13) rather than inheriting the container's iteration order.
+//
+// `parseCanvas` is the file→doc read boundary, so this is where the translation
+// belongs. It now returns
+//
+//   ├── `nodes` → `Record<string, V2Node>`        (registers, WP9/WP10)
+//   ├── `edges` → `Record<string, V2EdgeRecord>`  (registers, WP9/WP10)
+//   └── `order` → the ids in exact FILE-ARRAY order, per id space
+//
+// The `order` observation exists because a `Record` cannot carry it: key
+// iteration order is an accident of insertion, not a value, and the moment
+// anything rebuilds the map the file's order is gone. AC1 makes it explicit —
+// and `deriveOrdAssignments` below is the only thing allowed to turn that
+// observation into `ord` writes.
+
+/**
+ * The ids of one parsed save, per id space, in exact `.canvas` array order.
+ *
+ * Only ids that actually made it into the record maps appear here: an entry the
+ * reader dropped (no `id`) leaves neither a phantom id nor a gap (AC4).
+ */
+export interface RecordOrderObservation {
+  readonly nodes: readonly string[];
+  readonly edges: readonly string[];
+}
+
 export interface CanvasData {
+  nodes: Record<string, V2Node>;
+  edges: Record<string, V2EdgeRecord>;
+  /** WP16 AC1: the file's array order, preserved rather than discarded. */
+  order: RecordOrderObservation;
+}
+
+/**
+ * The pre-V2, FILE-keyed record shape — flat `x`/`y`/`width`/`height` and flat
+ * `fromNode`/`fromSide`/`to*`, exactly as `parseCanvas` used to return it.
+ *
+ * TEMPORARY P1 SEAM. It exists only so the write paths that still speak the flat
+ * vocabulary (`applyCanvasToYMaps` on the host seed, `toParsedSave` on the local
+ * capture, `CanvasPersistence.coldOpen`'s one-time file seed) keep seeing what
+ * they see today while `parseCanvas` itself moves to the V2 registers. See
+ * {@link decodeCanvasDataToFlat}.
+ */
+export interface FlatCanvasData {
   nodes: Record<string, Record<string, unknown>>;
   edges: Record<string, Record<string, unknown>>;
+}
+
+/**
+ * Every `.canvas` file key an endpoint register consumes, derived from WP10's
+ * own `ENDPOINT_FILE_KEYS` so the six literals are never re-spelt here (Shared
+ * Ownership Contract §1).
+ */
+const ENDPOINT_FILE_KEY_SET: ReadonlySet<string> = new Set(
+  ENDPOINT_SLOTS.flatMap((slot) => Object.values(ENDPOINT_FILE_KEYS[slot]) as string[]),
+);
+
+/**
+ * File → doc for ONE node record.
+ *
+ * The flat geometry keys are replaced by the atomic registers IN PLACE — `pos`
+ * takes `x`'s slot and `size` takes `width`'s — so the record's remaining key
+ * order is untouched and {@link decodeCanvasDataToFlat} reproduces the original
+ * file record verbatim.
+ *
+ * A register is built only from a WHOLE pair. A node carrying `x` without a
+ * numeric `y` (a partial/transient disk read — the very case `GEOMETRY_KEYS`
+ * exists to survive) keeps its flat keys rather than losing them to a
+ * half-built register: absent geometry stays absent, present geometry stays
+ * present, and nothing is silently dropped.
+ */
+function toV2Node(source: Record<string, unknown>): V2Node {
+  const x = source.x;
+  const y = source.y;
+  const width = source.width;
+  const height = source.height;
+  const pos = typeof x === "number" && typeof y === "number" ? encodePos(x, y) : undefined;
+  const size =
+    typeof width === "number" && typeof height === "number" ? encodeSize(width, height) : undefined;
+
+  const record: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (pos !== undefined && (key === "x" || key === "y")) {
+      if (key === "x") record[POS_KEY] = pos;
+      continue;
+    }
+    if (size !== undefined && (key === "width" || key === "height")) {
+      if (key === "width") record[SIZE_KEY] = size;
+      continue;
+    }
+    record[key] = value;
+  }
+  // Defensive: a file whose geometry keys appear in an unusual order (`y` before
+  // `x`) must still get its registers, just not in the pretty slot.
+  if (pos !== undefined && !(POS_KEY in record)) record[POS_KEY] = pos;
+  if (size !== undefined && !(SIZE_KEY in record)) record[SIZE_KEY] = size;
+  return record as unknown as V2Node;
+}
+
+/**
+ * File → doc for ONE edge record. Same in-place substitution as
+ * {@link toV2Node}: the whole `from` register replaces `fromNode`'s slot and
+ * consumes `fromSide` / `fromEnd`, likewise for `to`.
+ *
+ * `encodeEndpointFromFile` (WP10) is the only decoder — a file that does not
+ * carry a WHOLE endpoint yields `undefined`, and those flat keys are then kept
+ * verbatim rather than dropped into a half-built register.
+ */
+function toV2Edge(source: Record<string, unknown>): V2EdgeRecord {
+  const registers = new Map<EndpointSlot, EndpointRegister>();
+  for (const slot of ENDPOINT_SLOTS) {
+    const endpoint = encodeEndpointFromFile(slot, source);
+    if (endpoint !== undefined) registers.set(slot, endpoint);
+  }
+
+  const record: Record<string, unknown> = {};
+  const emitted = new Set<EndpointSlot>();
+  for (const [key, value] of Object.entries(source)) {
+    let consumedBy: EndpointSlot | undefined;
+    if (ENDPOINT_FILE_KEY_SET.has(key)) {
+      for (const [slot, keys] of Object.entries(ENDPOINT_FILE_KEYS) as [
+        EndpointSlot,
+        { node: string; side: string; end: string },
+      ][]) {
+        if (!registers.has(slot)) continue;
+        if (key === keys.node || key === keys.side || key === keys.end) {
+          consumedBy = slot;
+          break;
+        }
+      }
+    }
+    if (consumedBy !== undefined) {
+      if (!emitted.has(consumedBy)) {
+        record[consumedBy] = registers.get(consumedBy);
+        emitted.add(consumedBy);
+      }
+      continue;
+    }
+    record[key] = value;
+  }
+  for (const [slot, endpoint] of registers) {
+    if (!emitted.has(slot)) record[slot] = endpoint;
+  }
+  return record as unknown as V2EdgeRecord;
 }
 
 export function parseCanvas(content: string): CanvasData {
   try {
     const parsed = JSON.parse(content);
-    const nodes: Record<string, Record<string, unknown>> = {};
-    const edges: Record<string, Record<string, unknown>> = {};
+    const nodes: Record<string, V2Node> = {};
+    const edges: Record<string, V2EdgeRecord> = {};
+    const nodeOrder: string[] = [];
+    const edgeOrder: string[] = [];
     if (Array.isArray(parsed.nodes)) {
       for (const node of parsed.nodes) {
-        if (node.id) nodes[node.id] = node;
+        // AC4: an entry without an `id` is dropped — from the record map AND
+        // from the order observation. Unchanged truthiness check on purpose.
+        if (node.id) {
+          if (!Object.prototype.hasOwnProperty.call(nodes, node.id)) nodeOrder.push(node.id);
+          nodes[node.id] = toV2Node(node);
+        }
       }
     }
     if (Array.isArray(parsed.edges)) {
       for (const edge of parsed.edges) {
-        if (edge.id) edges[edge.id] = edge;
+        if (edge.id) {
+          if (!Object.prototype.hasOwnProperty.call(edges, edge.id)) edgeOrder.push(edge.id);
+          edges[edge.id] = toV2Edge(edge);
+        }
       }
     }
-    return { nodes, edges };
+    return { nodes, edges, order: { nodes: nodeOrder, edges: edgeOrder } };
   } catch {
-    return { nodes: {}, edges: {} };
+    // AC4: a JSON error yields EMPTY records rather than throwing. Preserved
+    // byte for byte, now extended to the new `order` field.
+    return { nodes: {}, edges: {}, order: { nodes: [], edges: [] } };
   }
+}
+
+/**
+ * WP17 AC5 (part 2) — the file keys whose value the `.canvas` schema TYPES, and
+ * for which `null` / `""` is therefore junk rather than a value.
+ *
+ * ├── the four geometry keys → required NUMBERS. They stay required and they
+ * │                            stay numbers; this set does not make them
+ * │                            optional, it only says a `null` / `""` sitting
+ * │                            under one of them is not a coordinate.
+ * └── the six endpoint keys  → `*Node` is a required non-empty string and
+ *                              `*Side` / `*End` are optional strings. `null` and
+ *                              `""` are the SAME absence WP10's
+ *                              `isAbsentComponent` already refuses to store.
+ *
+ * Derived from `GEOMETRY_KEYS` and WP10's `ENDPOINT_FILE_KEYS` so the ten
+ * literals are never re-spelt (Shared Ownership Contract §1).
+ */
+const TYPED_FILE_KEYS: ReadonlySet<string> = new Set([
+  ...GEOMETRY_KEYS,
+  ...ENDPOINT_FILE_KEY_SET,
+]);
+
+/**
+ * WP17 AC5 (part 2): is this flat doc value JUNK that must not reach disk?
+ *
+ * The canonical step drops only `undefined` — every other value, `null` and
+ * `""` included, passes through by identity. So a record holding a flat
+ * `fromSide: null` (a hand-edited file seeded through the flat vocabulary, or a
+ * V1 record whose flat keys the additive migration kept) would reach disk as
+ * `"fromSide": null` AND override a valid register's expansion. Closing the
+ * omission in the register codec alone does not close that path; this does.
+ *
+ * Dropping is deliberately narrower than "drop every null": only a key the
+ * `.canvas` schema types is judged, so an unknown/future key keeps passing
+ * through untouched (canonicalisation is a REORDERING — deleting a key nobody
+ * here understands would delete user data on every peer).
+ */
+function isJunkFileValue(key: string, value: unknown): boolean {
+  if (value !== null && value !== "") return false;
+  return TYPED_FILE_KEYS.has(key);
+}
+
+/**
+ * Doc → file for ONE record: every register is expanded back into the flat
+ * `.canvas` keys it was built from, in the slot the register occupies, and every
+ * other field is passed through untouched.
+ */
+function decodeV2RecordToFlat(
+  record: V2Node | V2EdgeRecord | Readonly<Record<string, unknown>>,
+): Record<string, unknown> {
+  const flat: Record<string, unknown> = {};
+  const source = record as unknown as Record<string, unknown>;
+
+  // PASS 1 — every register, expanded through its OWNING codec.
+  //
+  // OWNERSHIP (WP17 AC5 part 3): the two-pass precedence below was found and
+  // fixed in passing while WP18 was implemented; it is now OWNED by WP17 and
+  // pinned by
+  // `__tests__/v2/wp17/test_tp15_flat_over_register_precedence_is_insertion_order_independent_visible.test.ts`.
+  // That test asserts INSERTION-ORDER INDEPENDENCE, not merely the resulting
+  // value — a value-only assertion passes even with the bug, and cross-replica
+  // byte equality (AC3) provably cannot see this class at all, because both
+  // replicas converge on the SAME wrong value.
+  //
+  // WP18: the two passes exist because a P1 doc can legitimately hold BOTH
+  // spellings of the same fact. `migrateV1ToV2` is deliberately additive — it
+  // ADDS `pos` / `size` / `from` / `to` and keeps the flat V1 keys it
+  // translated — while the capture path and every peer still on this build
+  // write the FLAT keys. A single-pass expansion resolved that collision by
+  // `Y.Map` INSERTION ORDER, which is not a rule at all: whichever spelling
+  // happened to be written first silently decided the file, so a peer moving a
+  // migrated card could see it snap back to the register's stale coordinate.
+  //
+  // The rule is now explicit and replica-independent: the flat key WINS,
+  // because in P1 it is the vocabulary every live writer authors in, and a
+  // register is only ever a translation of it. A record that carries only the
+  // register (anything the V2 cold-open seed wrote) is unaffected — there is no
+  // flat key to override it. When the write boundaries move to the registers
+  // (WP22/WP39) the flat keys stop being written at all and the precedence
+  // becomes moot rather than wrong.
+  for (const [key, value] of Object.entries(source)) {
+    if (key === POS_KEY && isPosRegister(value)) {
+      Object.assign(flat, decodePos(value));
+      continue;
+    }
+    if (key === SIZE_KEY && isSizeRegister(value)) {
+      Object.assign(flat, decodeSize(value));
+      continue;
+    }
+    if ((key === FROM_KEY || key === TO_KEY) && isEndpointRegister(value)) {
+      Object.assign(flat, decodeEndpointToFile(key, value));
+    }
+  }
+
+  // PASS 2 — every non-register key, verbatim, overriding a register expansion.
+  //
+  // WP17 AC5 (part 2): "verbatim" stops at JUNK. A `null` / `""` under a key the
+  // file schema types is not a value the flat vocabulary may win with — it is
+  // dropped here, so it neither reaches disk nor overrides the register that
+  // still holds the real answer.
+  for (const [key, value] of Object.entries(source)) {
+    if (key === POS_KEY && isPosRegister(value)) continue;
+    if (key === SIZE_KEY && isSizeRegister(value)) continue;
+    if ((key === FROM_KEY || key === TO_KEY) && isEndpointRegister(value)) continue;
+    if (isJunkFileValue(key, value)) continue;
+    flat[key] = value;
+  }
+  return flat;
+}
+
+/**
+ * THE TEMPORARY P1 DECODE BRIDGE (WP16 → retired when the write boundaries move
+ * to registers, WP22/WP39 — deliberately NOT by WP18; see below).
+ *
+ * `parseCanvas` now emits V2 registers, but the WRITE paths downstream of it
+ * still speak the flat file vocabulary and push what they are handed straight
+ * into a `Y.Map`:
+ *
+ *   ├── `applyCanvasToYMaps` / `applyToYMap` — the host seed and
+ *   │   `CanvasPersistence.coldOpen`'s one-time file seed
+ *   └── `toParsedSave` / `toParsedRecords` — the local-modify capture, whose
+ *       Surface-Shadow is keyed by flat FIELD names
+ *
+ * WP18 wired the ingest GATE into those boundaries and deliberately left their
+ * VOCABULARY alone: §2/§4 of the WP18 charter never mention this bridge, and the
+ * doc is brought to V2 by `migrateV1ToV2` running AFTER the seed rather than by
+ * the seed pre-empting it. So this bridge still sits IMMEDIATELY after every
+ * internal `parseCanvas` call — the registers are the parse OUTPUT while the
+ * consumers keep seeing exactly the shape they see today. It is a pure inverse
+ * of the codec — `decodePos`/`decodeSize`/`decodeEndpointToFile` (WP9/WP10),
+ * never a hand-rolled re-expansion — and it deletes itself the day the write
+ * boundaries themselves move to registers (WP22/WP39).
+ */
+export function decodeCanvasDataToFlat(data: CanvasData): FlatCanvasData {
+  const nodes: Record<string, Record<string, unknown>> = {};
+  const edges: Record<string, Record<string, unknown>> = {};
+  for (const [id, node] of Object.entries(data.nodes)) {
+    nodes[id] = decodeV2RecordToFlat(node);
+  }
+  for (const [id, edge] of Object.entries(data.edges)) {
+    edges[id] = decodeV2RecordToFlat(edge);
+  }
+  return { nodes, edges };
+}
+
+/**
+ * Longest strictly-increasing subsequence, returned as INDICES into `values`.
+ *
+ * This is what makes AC3's "minimal" a computation rather than a hope: the
+ * records whose positions form a longest increasing subsequence are already in
+ * the right relative order and may keep their `ord`; everything else must move.
+ * `n - |LIS|` is provably the smallest number of records that can be reassigned
+ * to realise the observed permutation, so no cheaper answer exists.
+ */
+function longestIncreasingSubsequence(values: readonly number[]): number[] {
+  const tails: number[] = [];
+  const predecessor: number[] = new Array<number>(values.length).fill(-1);
+  for (let index = 0; index < values.length; index++) {
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (values[tails[mid]] < values[index]) low = mid + 1;
+      else high = mid;
+    }
+    if (low > 0) predecessor[index] = tails[low - 1];
+    tails[low] = index;
+  }
+  const result: number[] = [];
+  let cursor = tails.length > 0 ? tails[tails.length - 1] : -1;
+  while (cursor >= 0) {
+    result.push(cursor);
+    cursor = predecessor[cursor];
+  }
+  return result.reverse();
+}
+
+/**
+ * WP16 AC2/AC3 — THE CONSERVATIVE `ord` CAPTURE POLICY.
+ *
+ * Given what the doc currently holds (`previous`: every surviving record's
+ * `(ord, id)`) and what the file now says the order is (`nextOrder`, the
+ * observation `parseCanvas` produced), decide which records need a NEW `ord`.
+ *
+ * The returned map contains ONLY ids whose `ord` is new or reassigned. An id
+ * absent from the map keeps its existing `ord` untouched — that is the whole
+ * point: a re-parse of an unchanged document returns an EMPTY map, because
+ * churn on an unchanged document is the failure AC2 exists to prevent.
+ *
+ * How "has the order demonstrably changed" is answered:
+ *
+ *   ├── the CURRENT order is recomputed from `previous` with WP13's
+ *   │   `compareOrdId` — never `previous`'s array position, never `<` on raw
+ *   │   strings, never `localeCompare`. `ord` ordering is WP13's and only
+ *   │   WP13's (Shared Ownership Contract §1); if this file compared `ord`s by
+ *   │   a different rule than WP17's serialiser, both suites would pass while
+ *   │   replicas silently disagreed on file byte order.
+ *   ├── ids in `nextOrder` with no previous `ord` are NEW — they are allocated,
+ *   │   and they alone. Appending never touches an existing record (AC2).
+ *   ├── ids in `previous` missing from `nextOrder` are gone; a deleted record
+ *   │   needs no `ord`, and its absence is not evidence of a reorder.
+ *   └── among the ids present in BOTH, the longest subsequence already in the
+ *       right relative order keeps its `ord` and every other id is reassigned —
+ *       the provably minimal reassignment for the observed change (AC3).
+ *
+ * Each reassigned/new `ord` is allocated strictly between its resolved
+ * predecessor and the next id that KEPT its `ord`, so the resulting `(ord, id)`
+ * total order reproduces `nextOrder` exactly. `rng` is WP13's injected
+ * randomness seam, threaded through unchanged so a whole allocation sequence is
+ * reproducible under a seeded generator.
+ *
+ * `ord` is doc-only. Nothing here ever writes it back to the `.canvas` file.
+ */
+export function deriveOrdAssignments(
+  previous: readonly OrdIdEntry[],
+  nextOrder: readonly string[],
+  clientID: string,
+  rng?: OrdRng,
+): Map<string, string> {
+  const assignments = new Map<string, string>();
+
+  const previousOrds = new Map<string, string>();
+  for (const entry of previous) {
+    previousOrds.set(entry.id, entry.ord);
+  }
+
+  // The observed order, de-duplicated. `parseCanvas` already yields unique ids;
+  // this only makes the function total for a hand-built argument.
+  const observed: string[] = [];
+  const seen = new Set<string>();
+  for (const id of nextOrder) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    observed.push(id);
+  }
+
+  // The records that exist in BOTH views — the only ones whose relative order
+  // can have "demonstrably changed".
+  const survivors: OrdIdEntry[] = [];
+  for (const id of observed) {
+    const ord = previousOrds.get(id);
+    if (ord !== undefined) survivors.push({ id, ord });
+  }
+
+  // The CURRENT order, per WP13's canonical `(ord, id)` comparator.
+  const canonicalIndex = new Map<string, number>();
+  [...survivors].sort(compareOrdId).forEach((entry, index) => {
+    canonicalIndex.set(entry.id, index);
+  });
+
+  // Survivors in OBSERVED order, expressed as their CURRENT positions. A
+  // strictly increasing sequence means the relative order is unchanged.
+  const positions = survivors.map((entry) => canonicalIndex.get(entry.id) as number);
+  const keep = new Set<string>(
+    longestIncreasingSubsequence(positions).map((index) => survivors[index].id),
+  );
+
+  // Resolve the final `ord` of every observed id, left to right. A kept id
+  // resolves to its existing value; anything else is allocated strictly between
+  // its already-resolved predecessor and the next id that keeps its `ord`
+  // (undefined on either side = the head / the tail of the sequence).
+  const resolved = new Map<string, string>();
+  for (const id of keep) {
+    resolved.set(id, previousOrds.get(id) as string);
+  }
+  for (let index = 0; index < observed.length; index++) {
+    const id = observed[index];
+    if (resolved.has(id)) continue;
+    const before = index > 0 ? resolved.get(observed[index - 1]) : undefined;
+    let after: string | undefined;
+    for (let ahead = index + 1; ahead < observed.length; ahead++) {
+      const kept = resolved.get(observed[ahead]);
+      if (kept !== undefined) {
+        after = kept;
+        break;
+      }
+    }
+    const ord = allocateOrd(before, after, clientID, rng);
+    resolved.set(id, ord);
+    assignments.set(id, ord);
+  }
+
+  return assignments;
+}
+
+// ---------------------------------------------------------------------------
+// WP17 / P1 — THE CANONICAL SERIALIZER V2 (the doc→file projection).
+// ---------------------------------------------------------------------------
+//
+// `buildCanvasData` is the one place the DOC becomes the FILE, so it is where
+// the three V2 differences between the two worlds are undone, in this order:
+//
+//   ├── SUPPRESSION → a record the tombstone predicate suppresses is not
+//   │                 emitted, and neither is an edge whose endpoint record is
+//   │                 suppressed (AC2, the cascade).
+//   ├── EXPANSION   → `pos`/`size` (WP9) and `from`/`to` (WP10) are decoded back
+//   │                 into the flat file keys through the OWNING codecs, and
+//   │                 `ord` (WP13) is dropped — it is doc-only and leaking it
+//   │                 would put a key Obsidian does not expect into every real
+//   │                 user's `.canvas` (AC1).
+//   └── ORDER       → both arrays are sorted by `(ord, id)` using WP13's
+//                     `compareOrdId` (AC1/AC3).
+//
+// WHY THE ARRAY NO LONGER GOES THROUGH `canonicalizeCanvasData`
+// -------------------------------------------------------------------------
+// WP3's `canonicalizeCanvasData` does two things: it canonicalises each record's
+// KEY order, and it sorts the ARRAY by id — because in P0 `ord` did not exist
+// and the id was the only order both peers provably shared. That array-level
+// sort is now WRONG: routing an ord-sorted array through it silently re-sorts
+// by id and discards the order entirely, with every suite still green. So WP17
+// keeps the per-record half (`canonicalizeRecord`, applied below, with the
+// record's kind) and owns the array order itself. `serializeCanonicalCanvas` is
+// avoided for exactly the same reason — it calls `canonicalizeCanvasData`.
+//
+// The degenerate case is deliberate and load-bearing: a record with no `ord`
+// (nothing has migrated it yet) contributes the empty string as its sort key, so
+// a canvas where NO record carries an `ord` sorts purely by id — byte-identical
+// to P0's output, which is what keeps the frozen WP3 suite green.
+
+/** A record on its way to the file, with the `(ord, id)` key it sorts under. */
+interface OrderedFileRecord {
+  readonly entry: OrdIdEntry;
+  /** Y.Map iteration index — a local-only tiebreak for two identical keys. */
+  readonly index: number;
+  readonly record: CanvasRecord;
+}
+
+/**
+ * Is this id suppressed? THE question, asked through WP12's single predicate.
+ *
+ * Never an inline `entry?.on === true` and never a local `isDeleted` helper:
+ * C12 AC2 requires reconcile (WP15), serialisation (this) and capture (WP19) to
+ * share ONE predicate, "not three copies". No tombstone container at all (the
+ * two-argument call sites) means nothing is suppressed — the pre-WP17
+ * behaviour, unchanged.
+ */
+function isRecordSuppressed(deletedMap: TombstoneMap | undefined, id: string): boolean {
+  if (deletedMap === undefined) return false;
+  return isTombstoneSuppressed(readTombstoneEntry(deletedMap, id));
+}
+
+/**
+ * One CRDT record → one canonical FILE record, plus its `ord`.
+ *
+ * `ord` is read and then DROPPED (AC1 part 3): it is the only doc field with no
+ * file counterpart at all. Every register is expanded through
+ * {@link decodeV2RecordToFlat}, i.e. through WP9's `decodePos`/`decodeSize` and
+ * WP10's `decodeEndpointToFile` — never a re-derived mapping — and everything
+ * else is passed through untouched, so an unknown/future key still survives to
+ * disk rather than being deleted on every peer.
+ */
+function toCanonicalFileRecord(
+  source: Y.Map<unknown>,
+  kind: CanvasRecordKind,
+): { record: CanvasRecord; ord: string } {
+  const raw: Record<string, unknown> = {};
+  let ord = "";
+  for (const [key, value] of source) {
+    if (key === V2_FIELD.ord) {
+      // A non-string `ord` is not an order this client can compare, so it reads
+      // as "unordered" rather than being coerced into a plausible-looking key.
+      if (typeof value === "string") ord = value;
+      continue;
+    }
+    raw[key] = value;
+  }
+  return { record: canonicalizeRecord(decodeV2RecordToFlat(raw), kind), ord };
+}
+
+/**
+ * Sort by `(ord, id)` — WP13's comparator and nothing else (Shared Ownership
+ * Contract §1). Never `<` on raw `ord` strings, never `localeCompare`: WP16
+ * resolves order through the same `compareOrdId`, and if the two disagreed both
+ * suites would pass while replicas silently produced different bytes.
+ *
+ * The Y.Map iteration index breaks a tie only when `(ord, id)` cannot — i.e.
+ * for two records sharing an id, which `canonicalizeCanvasData` also resolved
+ * by input order. It keeps the sort stable regardless of the engine's
+ * implementation; it is never reached for well-formed state.
+ */
+function sortByOrdId(records: OrderedFileRecord[]): CanvasRecord[] {
+  records.sort((a, b) => compareOrdId(a.entry, b.entry) || a.index - b.index);
+  return records.map((held) => held.record);
 }
 
 // Build the Obsidian .canvas data object ({nodes:[], edges:[]}) from the CRDT.
 // Shared by disk serialization AND live-view reconciliation so both see the exact
-// same (dangling-edge-pruned) snapshot.
+// same (suppressed- and dangling-edge-pruned) snapshot.
 //
-// WP3: the pruned snapshot is returned in CANONICAL form — every record's keys in
-// the file schema's order and both arrays sorted by id (UTF-16 code units) — so the
-// same doc state produces the same bytes on every client. Y.Map iteration order is
-// a function of the local integration history, not of the state, and V2's echo
-// breaker is byte equality. Record order is therefore id-sorted rather than
-// Y.Map-iteration-ordered; the dangling-edge prune below is unchanged and still
-// runs BEFORE canonicalisation.
+// `deletedMap` is OPTIONAL: the existing two-argument call sites keep their
+// current no-suppression behaviour unchanged.
 export function buildCanvasData(
   nodesMap: Y.Map<Y.Map<unknown>>,
   edgesMap: Y.Map<Y.Map<unknown>>,
+  deletedMap?: TombstoneMap,
 ): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } {
-  const nodes: Record<string, unknown>[] = [];
-  const edges: Record<string, unknown>[] = [];
-  const nodeIds = new Set<string>(nodesMap.keys());
+  const nodes: OrderedFileRecord[] = [];
+  const edges: OrderedFileRecord[] = [];
 
-  for (const [, nodeYMap] of nodesMap) {
-    const obj: Record<string, unknown> = {};
-    for (const [key, value] of nodeYMap) {
-      obj[key] = value;
-    }
-    nodes.push(obj);
+  // The nodes an edge may still attach to. A suppressed node is NOT removed
+  // from `nodesMap` (that is the whole point of V2 tombstones — deletion is a
+  // value, not an absence), so its key is still there and the old
+  // `nodeIds.has(...)` guard alone would happily keep an edge pointing at an
+  // invisible card. Folding suppression into the very set that guard reads
+  // makes the AC2 cascade and the GAP-5 dangling prune ONE rule with one
+  // answer, rather than two guards that can disagree.
+  const visibleNodeIds = new Set<string>();
+  for (const id of nodesMap.keys()) {
+    if (!isRecordSuppressed(deletedMap, id)) visibleNodeIds.add(id);
   }
 
-  for (const [, edgeYMap] of edgesMap) {
-    const obj: Record<string, unknown> = {};
-    for (const [key, value] of edgeYMap) {
-      obj[key] = value;
-    }
-    // GAP-5 (US5 AC3): never serialize a dangling edge. If either endpoint node
-    // was deleted (locally or remotely) the edge is pruned from the on-disk
-    // .canvas so no edge references a non-existent node.
-    const from = obj.fromNode;
-    const to = obj.toNode;
-    if (typeof from === "string" && !nodeIds.has(from)) continue;
-    if (typeof to === "string" && !nodeIds.has(to)) continue;
-    edges.push(obj);
+  let index = 0;
+  for (const [id, nodeYMap] of nodesMap) {
+    if (!visibleNodeIds.has(id)) continue;
+    const { record, ord } = toCanonicalFileRecord(nodeYMap, "node");
+    nodes.push({ entry: { ord, id: String(record.id ?? "") }, index: index++, record });
   }
 
-  return canonicalizeCanvasData({ nodes, edges });
+  index = 0;
+  for (const [id, edgeYMap] of edgesMap) {
+    // AC2: an edge is a record too, so its own tombstone suppresses it.
+    if (isRecordSuppressed(deletedMap, id)) continue;
+    const { record, ord } = toCanonicalFileRecord(edgeYMap, "edge");
+    // GAP-5 (US5 AC3) + AC2 cascade: never serialize an edge whose endpoint is
+    // gone or suppressed. The endpoint ids are read AFTER expansion, so an edge
+    // carrying the atomic `from`/`to` registers is guarded exactly like one
+    // still carrying the flat keys. An edge with no endpoint STRING at all is
+    // left alone here, unchanged from P0 — that case is the delete guards'.
+    const from = record.fromNode;
+    const to = record.toNode;
+    if (typeof from === "string" && !visibleNodeIds.has(from)) continue;
+    if (typeof to === "string" && !visibleNodeIds.has(to)) continue;
+    edges.push({ entry: { ord, id: String(record.id ?? "") }, index: index++, record });
+  }
+
+  return { nodes: sortByOrdId(nodes), edges: sortByOrdId(edges) };
 }
 
-// WP3: identical to `serializeCanonicalCanvas(buildCanvasData(...))` by
-// construction. Canonicalisation is idempotent, so routing the already-canonical
-// snapshot through it again is a no-op that keeps the two entry points provably
-// in agreement. The emitted text is unchanged in SHAPE: one top-level object,
+// The canonical `.canvas` document text. `buildCanvasData` has already produced
+// the final record ORDER and the final per-record KEY order, so this is a plain
+// stringify of that snapshot — deliberately NOT `serializeCanonicalCanvas`,
+// whose id-only array sort would discard the `(ord, id)` order (see the WP17
+// header above). The emitted text is unchanged in SHAPE: one top-level object,
 // `nodes` before `edges`, tab-indented, no trailing newline.
 export function serializeCanvas(
   nodesMap: Y.Map<Y.Map<unknown>>,
   edgesMap: Y.Map<Y.Map<unknown>>,
+  deletedMap?: TombstoneMap,
 ): string {
-  return serializeCanonicalCanvas(buildCanvasData(nodesMap, edgesMap));
+  return JSON.stringify(buildCanvasData(nodesMap, edgesMap, deletedMap), null, "\t");
+}
+
+// ---------------------------------------------------------------------------
+// WP19 / P1 — TOMBSTONE SEMANTICS WIRING (deletion is a VALUE, not an absence).
+// ---------------------------------------------------------------------------
+//
+// WP12 built the tombstone map and its one merge rule; WP17 taught the
+// serializer to honour it. What was still missing is the half that produces
+// them: every DELETE in this file removed the record's key
+// (`maps[kind].delete(id)`, `edgesMap.delete(edgeId)`), which destroys the
+// record's `Y.Map` and with it every field value it held.
+//
+// Three consequences of a key removal, none of which a tombstone has:
+//
+//   ├── UNDO IS LOSSY — the field container is gone, so the best an undo can do
+//   │      is re-create a husk from whatever the last local file happened to
+//   │      say. A peer's concurrent edit to that record is simply gone (AC4).
+//   ├── THE DELETE CANNOT MERGE — absence carries no author and no time, so a
+//   │      delete concurrent with an edit converges by arrival order rather than
+//   │      by a rule (AC1/AC2), and
+//   └── THE CASCADE HAD TO DESTROY TOO — the node→edge cascade removed edge keys
+//          for the same reason, so undoing a node delete could never bring its
+//          arrows back (AC3).
+//
+// So every delete path here now writes `deleted[id] := {t, by, on:true}` through
+// WP12's `applyTombstoneOp` and touches `nodes` / `edges` NOT AT ALL. What the
+// user sees is unchanged, because `buildCanvasData` — the single doc→file/view
+// projection — already suppresses a tombstoned record AND every edge whose
+// endpoint node is suppressed. The cascade is therefore no longer an action at
+// all: it is a consequence of the one suppression rule, which is why
+// `pruneEdgesForDeletedNodes` is gone rather than rewritten (see the note at its
+// old call site).
+
+/** The doc container tombstones live in (BUILD_SPEC §4.3). Never written to the file. */
+export const DELETED_MAP_NAME = "deleted";
+
+/**
+ * The capture path's read-only view over the doc's `deleted` container.
+ *
+ * The whole point of AC2 ("a local upsert does not resurrect a tombstoned id")
+ * is that `planIntentDiff`'s rule 1 gets a view that reads the REAL container
+ * rather than the P0 placeholder `{ isDeleted: () => false }`. The question is
+ * asked through WP12's single predicate — never an inline `entry?.on` — because
+ * C12 AC2 requires reconcile, serialisation and capture to share ONE rule.
+ *
+ * The `deleted` container is keyed by RECORD ID, exactly as `isRecordSuppressed`
+ * (the serializer's reader) keys it, so the `kind` is not part of the key: two
+ * readers disagreeing about the key shape would make a record suppressed on disk
+ * and alive in the capture path.
+ */
+export function createDocTombstoneView(deletedMap: TombstoneMap): TombstoneView {
+  return {
+    isDeleted: (_kind: ShadowRecordKind, id: string) =>
+      isTombstoneSuppressed(readTombstoneEntry(deletedMap, id)),
+  };
+}
+
+/**
+ * The next LAMPORT stamp for a tombstone op on this container.
+ *
+ * Logical, never a clock (WP12's purity contract exists precisely so no consumer
+ * sneaks one in): one past the highest `t` this replica can currently see, so an
+ * op issued after observing a peer's delete/undo strictly dominates it and the
+ * `(t, by)` merge has a causal chain to follow instead of a coin flip. A
+ * malformed stored entry contributes nothing — `readTombstoneEntry` reads it as
+ * "no tombstone", and inventing a stamp from junk would let a hand-edited vault
+ * push this replica's clock arbitrarily far forward.
+ */
+export function nextTombstoneTime(deletedMap: Y.Map<unknown>): number {
+  let highest = 0;
+  for (const id of deletedMap.keys()) {
+    const entry = readTombstoneEntry(deletedMap, id);
+    if (entry !== undefined && entry.t > highest) highest = entry.t;
+  }
+  return highest + 1;
 }
 
 // WP4 (D9): the semantic record compare that used to break the echo at
@@ -198,8 +882,14 @@ function toParsedRecords(records: Record<string, Record<string, unknown>>): Pars
   return out;
 }
 
-/** The rounded `ParsedSave` the shadow-relative intent diff consumes. */
-function toParsedSave(path: string, data: CanvasData): ParsedSave {
+/**
+ * The rounded `ParsedSave` the shadow-relative intent diff consumes.
+ *
+ * WP16: takes the FLAT shape (via the temporary decode bridge), not the V2
+ * registers — the Surface-Shadow is keyed by flat field names and WP18 owns
+ * moving it. See {@link decodeCanvasDataToFlat}.
+ */
+function toParsedSave(path: string, data: FlatCanvasData): ParsedSave {
   return {
     path,
     nodes: toParsedRecords(data.nodes),
@@ -207,17 +897,17 @@ function toParsedSave(path: string, data: CanvasData): ParsedSave {
   };
 }
 
-/** The save's records by id, per kind — the lock seam's "intended" record. */
+/** The save's records by id, per kind — the save's "intended" record. */
 type SaveIndex = { [K in ShadowRecordKind]: Map<string, ParsedSaveRecord> };
 
 /** What an intent plan ACTUALLY did, which is what may advance the shadow. */
 interface AppliedIntent {
-  /** Field upserts that reached the CRDT (a denied record contributes none). */
+  /** Field upserts that reached the CRDT (a rejected record contributes none). */
   upserts: FieldUpsertIntent[];
   /** Record deletes that reached the CRDT. */
   deletes: DeleteIntent[];
-  /** Ids the lock seam denied in this pass (US2 AC4) — the baseline hold. */
-  denied: string[];
+  /** WP18 AC1: rejection signatures produced at the capture boundary. */
+  rejected: string[];
   /** Node ids deleted here, for the GAP-5 edge cascade + telemetry. */
   deletedNodeIds: string[];
   /** Node ids created here (telemetry only). */
@@ -226,36 +916,669 @@ interface AppliedIntent {
   changed: string[];
 }
 
-export function applyToYMap(ymap: Y.Map<unknown>, obj: Record<string, unknown>): void {
-  const existingKeys = new Set<string>();
-  for (const key of ymap.keys()) {
-    existingKeys.add(key);
+// ---------------------------------------------------------------------------
+// WP18 / P1 — INGEST VALIDATION + CREATE-ONCE AT EVERY LOCAL WRITE BOUNDARY
+// ---------------------------------------------------------------------------
+//
+// Three local boundaries propose records into the doc — the host seed
+// (`CanvasSync.subscribe(path, "host")`), the cold-open seed
+// (`CanvasPersistence.coldOpen()` → `seedRecordsIntoYMaps`) and the capture
+// writer (`handleLocalModify` → `applyIntentPlan`, the `CAPTURE_NET` input).
+// All three now ask the SAME question, in the SAME place, through WP14's
+// validator, and all three obey its answer rather than re-deriving one.
+//
+//   ├── AC1 — a proposal that fails the schema never reaches the doc, and the
+//   │         refusal is signed with the boundary and the reason.
+//   ├── AC2 — a record is CREATED as one complete `Y.Map`, populated while it
+//   │         is still detached and attached only afterwards, so a half-built
+//   │         record is never observable and `set(id, new Y.Map())` is never
+//   │         issued for an id the container already holds.
+//   ├── AC3 — every write is an UPSERT. Nothing here deletes a doc key because
+//   │         the incoming record failed to mention it (I7). The seed's
+//   │         absent-key delete loop is retired; `PROTECTED_KEYS` survives as
+//   │         defence in depth (Shared Ownership Contract §4) with unchanged
+//   │         membership, and is simply no longer load-bearing.
+//   └── AC4 — REMOTE deltas are never rejected. This module carries no remote
+//             ingest path at all, and the local ones branch on
+//             `verdict.reject`, never on the origin they passed in: WP14
+//             computes the consequence ONCE (`origin === "local"`), and
+//             re-deriving it at a call site is precisely the divergence bug
+//             WP14 AC3 exists to catch (Shared Ownership Contract §2.3).
+//
+// Nothing here re-implements a rule it can import: validity is WP14's,
+// write-once `type` is WP11's `guardTypeWrite`, the registers and their
+// whole-value equality are WP9/WP10's. Register values are compared
+// STRUCTURALLY — `encodePos` / `encodeSize` / `encodeEndpoint` freeze a NEW
+// value on every call, so a reference compare would read a same-pixel
+// restatement as fresh intent and push it to every peer (Shared Ownership
+// Contract §3, the defect WP15 already had to fix once).
+
+/** The local write boundaries this module gates, as they appear in a signature. */
+export const INGEST_BOUNDARY = {
+  /** `CanvasSync.subscribe(path, "host")` → `applyCanvasToYMaps`. */
+  hostSeed: "host-seed",
+  /** `CanvasPersistence.coldOpen()` → `seedRecordsIntoYMaps`. */
+  coldOpenSeed: "cold-open-seed",
+  /** `handleLocalModify` → `applyIntentPlan` (`CAPTURE_NET`). */
+  capture: "capture-net",
+} as const;
+
+export type IngestBoundary = (typeof INGEST_BOUNDARY)[keyof typeof INGEST_BOUNDARY];
+
+/** The two record id spaces, as the validator distinguishes them. */
+export type IngestRecordKind = "node" | "edge";
+
+/**
+ * The rejection signature format WP18 owns (Shared Ownership Contract §1), in
+ * `canvas-sync.ts`'s established `<NAME> signature: …` shape.
+ *
+ * It names the BOUNDARY and the REASON, which is exactly what AC1 asks a human
+ * to be able to read. WP20's quarantine/release signatures stay distinct
+ * strings; only the shape is shared.
+ */
+export function ingestRejectionSignature(
+  boundary: IngestBoundary,
+  kind: IngestRecordKind,
+  id: string,
+  reason: IngestReasonCode,
+): string {
+  return `INGEST REJECTED signature: boundary=${boundary} refused ${kind} ${id} (${reason})`;
+}
+
+/** What the ingest gate decided about one proposed record. */
+export interface IngestAdmission {
+  readonly admitted: boolean;
+  /** Present only on a refusal — there is nothing to report otherwise. */
+  readonly signature?: string;
+  /**
+   * WP63 (I11): the machine-readable half of the same refusal. The signature is
+   * for a human; the WITHHOLD needs the reason as data, and re-parsing it out of
+   * the sentence would be a second definition of the same fact.
+   */
+  readonly reason?: IngestReasonCode;
+}
+
+const ADMITTED: IngestAdmission = Object.freeze({ admitted: true });
+
+/**
+ * THE gate. Every local write boundary calls this and nothing else.
+ *
+ * Note what it does NOT do: it never asks "was this local?". It asks WP14 and
+ * then reads `verdict.reject`. An invalid record whose verdict says `reject:
+ * false` is ADMITTED — that is the remote case, and refusing it would make this
+ * replica hold a state its peers do not (AC4). Quarantining such a record once
+ * it is in the doc is WP20's, not this gate's.
+ */
+export function admitRecordIngest(
+  record: V2RecordMap,
+  kind: IngestRecordKind,
+  id: string,
+  origin: IngestOrigin,
+  boundary: IngestBoundary,
+): IngestAdmission {
+  const verdict =
+    kind === "node" ? validateNodeIngest(record, origin) : validateEdgeIngest(record, origin);
+  if (verdict.valid) return ADMITTED;
+  // Obey the verdict; never re-derive the consequence from `origin`.
+  if (!verdict.reject) return ADMITTED;
+  return Object.freeze({
+    admitted: false,
+    signature: ingestRejectionSignature(boundary, kind, id, verdict.reason),
+    reason: verdict.reason,
+  });
+}
+
+/** A plain object seen through WP9's structural record interface. */
+function asRecordView(source: Record<string, unknown>): V2RecordMap {
+  return {
+    get: (key: string) => source[key],
+    set: (key: string, value: unknown) => {
+      source[key] = value;
+    },
+  };
+}
+
+/**
+ * The record AS IT WILL EXIST once this local write has been applied, expressed
+ * in the V2 doc vocabulary the validator speaks.
+ *
+ * Two things make this the right thing to validate rather than the raw
+ * proposal:
+ *
+ *   ├── I7 (AC3). No local path deletes a key the proposal omitted, so the
+ *   │   post-write record is exactly `doc ∪ proposal`. Validating the proposal
+ *   │   alone would refuse a perfectly legal PARTIAL observation of a record
+ *   │   the doc already holds in full.
+ *   └── the file vocabulary is not the doc vocabulary. `toV2Node` / `toV2Edge`
+ *       are the same translators `parseCanvas` uses, so a flat `x`/`y` pair and
+ *       an atomic `pos` register are judged as the same fact — the validator
+ *       decides on CONTENT, never on spelling. A record already in the V2
+ *       vocabulary passes through them unchanged.
+ */
+function projectPostWriteRecord(
+  existing: Y.Map<unknown> | undefined,
+  proposal: Readonly<Record<string, unknown>>,
+  kind: IngestRecordKind,
+): V2RecordMap {
+  const merged: Record<string, unknown> = {};
+  if (existing) {
+    for (const [key, value] of existing) merged[key] = value;
   }
-  for (const [key, value] of Object.entries(obj)) {
-    const existing = ymap.get(key);
-    if (existing !== value) {
-      ymap.set(key, value);
+  for (const [key, value] of Object.entries(proposal)) merged[key] = value;
+  const translated = (kind === "node" ? toV2Node(merged) : toV2Edge(merged)) as unknown as Record<
+    string,
+    unknown
+  >;
+  return asRecordView(translated);
+}
+
+// ---------------------------------------------------------------------------
+// WP63 / I11 — REFUSAL NEVER DESTROYS
+// ---------------------------------------------------------------------------
+//
+// WP18 AC1 keeps an invalid LOCAL record out of the doc. That is correct and it
+// stays. What was never owned by an AC is the COMPOSITION with the writer:
+//
+//   ├── the refused record never enters `nodesMap`/`edgesMap`,
+//   ├── `serializeCanvas` is a PURE PROJECTION of those containers — a record is
+//   │   absent because its id is not a key, there is no "drop invalid" pass, and
+//   └── `CanvasPersistence` is the single writer (I3) and writes that projection
+//       over the user's file.
+//
+// Composed: a refusal silently and permanently DELETES the user's record from a
+// file this plugin did not create. I11 names the missing constraint — a refusal
+// may withhold a write, it may never destroy one.
+//
+// This module owns the VOCABULARY of that withhold (the refusal as data, the
+// per-path ledger, and the "is it valid now?" question the lift asks); the
+// writer owns the decision, because the writer is the only place that knows both
+// the refusal set and the impending write. Nothing here re-injects a refused
+// record into the projection: that would break C17 AC3 (cross-replica byte
+// equality) and stop the file being a deterministic projection of the doc, since
+// only one replica ever saw those records.
+
+/**
+ * One record a LOCAL seed boundary refused, as data rather than as a sentence.
+ *
+ * `boundary` is carried so the lift re-asks the gate with the same boundary the
+ * refusal came from, and so a signature can name where the loss would have
+ * happened.
+ */
+export interface SeedRefusal {
+  readonly boundary: IngestBoundary;
+  readonly kind: IngestRecordKind;
+  readonly id: string;
+  readonly reason: IngestReasonCode;
+}
+
+/** `${kind}:${id}` — the two id spaces are separate (a node and an edge may share an id). */
+function refusalKey(refusal: SeedRefusal): string {
+  return `${refusal.kind}:${refusal.id}`;
+}
+
+/**
+ * The refused set for ONE canvas path.
+ *
+ * Per path on purpose (AC2 / I5 DEGRADE): a withhold is a degraded persistence
+ * state for one canvas, never a session-wide condition. It is also per SESSION —
+ * the predicate is "did THIS session's seed refuse something for this path?", so
+ * it is reset whenever the path's doc is re-seeded (`reset()`) and starts empty
+ * whenever the owning persistence instance is rebuilt.
+ */
+export class SeedRefusalLedger {
+  private readonly refused = new Map<string, SeedRefusal>();
+
+  /** Record refusals from one seed pass. Idempotent per `${kind}:${id}`. */
+  note(refusals: readonly SeedRefusal[]): void {
+    for (const refusal of refusals) this.refused.set(refusalKey(refusal), refusal);
+  }
+
+  /** Forget everything — the path is being re-seeded, so the old verdicts are stale. */
+  reset(): void {
+    this.refused.clear();
+  }
+
+  get size(): number {
+    return this.refused.size;
+  }
+
+  /** True while this path's write-back must stay suspended. */
+  hasRefusals(): boolean {
+    return this.refused.size > 0;
+  }
+
+  list(): readonly SeedRefusal[] {
+    return [...this.refused.values()];
+  }
+
+  /** `node n-bad (MISSING_TYPE), edge e2 (MISSING_TO)` — AC1's "each refused id and its reason". */
+  describe(): string {
+    return this.list()
+      .map((r) => `${r.kind} ${r.id} (${r.reason})`)
+      .join(", ");
+  }
+
+  /**
+   * Drop every refusal the predicate reports resolved (AC3). The caller runs
+   * this on the SAME trigger as the write — never on a timer — so a withhold
+   * that could lift cannot outlive the next write attempt.
+   */
+  prune(isResolved: (refusal: SeedRefusal) => boolean): void {
+    for (const [key, refusal] of [...this.refused]) {
+      if (isResolved(refusal)) this.refused.delete(key);
     }
-    existingKeys.delete(key);
   }
-  for (const key of existingKeys) {
-    // Scatter fix + WP5 (US3 AC9): never strip a live record's STRUCTURAL keys
-    // because a partial/transient disk read omitted them. This full-merge branch
-    // is reached for an entry that is in the CRDT but not in our diff baseline
-    // (`applyLocalDiffToYMaps`, `!baseObj && existing`), i.e. exactly when our
-    // copy of it is the stale one — for an edge that used to make `fromNode` /
-    // `toNode` deletable, which drops the arrow on every peer.
-    if (PROTECTED_KEYS.has(key)) continue;
-    ymap.delete(key);
+}
+
+/**
+ * Is a previously-refused record valid in the doc NOW? (WP63 AC3, the lift.)
+ *
+ * The two ways a refusal stops mattering both end here: a remote delta created
+ * the record properly, or the user repaired their file and the capture net
+ * ingested it. Both are simply "the doc holds this id and the gate admits it",
+ * so one question covers them.
+ *
+ * It asks the SAME gate the refusal came from, on the record as the doc actually
+ * holds it (empty proposal → `doc ∪ {}`), so the lift can never disagree with
+ * the refusal about what "valid" means. A record still absent from the doc is
+ * never resolved: absence is exactly the state the refusal describes.
+ */
+export function isSeedRefusalResolved(doc: Y.Doc, refusal: SeedRefusal): boolean {
+  const container = doc.getMap<Y.Map<unknown>>(refusal.kind === "node" ? "nodes" : "edges");
+  const existing = container.get(refusal.id);
+  if (existing === undefined) return false;
+  return admitRecordIngest(
+    projectPostWriteRecord(existing, {}, refusal.kind),
+    refusal.kind,
+    refusal.id,
+    "local",
+    refusal.boundary,
+  ).admitted;
+}
+
+/**
+ * Is the doc already holding this exact value?
+ *
+ * STRUCTURAL for every register kind (Shared Ownership Contract §3). Yjs has no
+ * value-equality short circuit, so a `set` of an identical value still emits a
+ * real delta and echoes to every peer; and because `encodePos` freezes a NEW
+ * array per call, a reference compare answers "different" for every same-pixel
+ * restatement. Whole-value equality is asked of WP9/WP10's own predicates so
+ * this file cannot drift from them.
+ */
+function docValueEquals(current: unknown, next: unknown): boolean {
+  if (current === next) return true;
+  if (isPosRegister(current) && isPosRegister(next)) return posEquals(current, next);
+  if (isSizeRegister(current) && isSizeRegister(next)) return sizeEquals(current, next);
+  if (isEndpointRegister(current) && isEndpointRegister(next)) return endpointEquals(current, next);
+  return false;
+}
+
+/**
+ * Upsert every field of `fields` into `record` — and delete nothing, ever (I7,
+ * AC3).
+ *
+ * `type` is routed through WP11's write-once guard rather than being set like
+ * any other key: it is the record's identity, Obsidian's `importData` DROPS a
+ * node whose type it does not recognise (and every edge attached to it), and
+ * the guard's `noop` branch is what keeps a re-stated same-value `type` off the
+ * wire entirely. A refused `type` write is returned as a signature for the
+ * caller to narrate; it is never thrown, because this sits on the save path.
+ */
+function upsertRecordFields(
+  record: V2RecordMap,
+  fields: Readonly<Record<string, unknown>>,
+  id: string,
+): string | undefined {
+  let typeSignature: string | undefined;
+  for (const [key, value] of Object.entries(fields)) {
+    if (key === V2_FIELD.type) {
+      const verdict = guardTypeWrite(record, id, value as string);
+      if (verdict.kind === "rejected") typeSignature = verdict.signature;
+      continue;
+    }
+    if (docValueEquals(record.get(key), value)) continue;
+    record.set(key, value);
   }
+  return typeSignature;
+}
+
+/**
+ * Keep an ALREADY-PRESENT atomic register in step with the flat file keys the
+ * seed and capture boundaries still write.
+ *
+ * This exists because WP18 gives `migrateV1ToV2` a production call site. The
+ * migration is additive: it ADDS `pos` / `size` / `from` / `to` to a record and
+ * deliberately keeps the flat V1 keys. If a later flat write then moved `x`
+ * without moving `pos`, the record would hold two disagreeing statements of the
+ * same fact and the serializer's register expansion could hand the file the
+ * STALE one — a card that snaps back after every drag. So a boundary that
+ * writes the flat key updates the register alongside it.
+ *
+ * A register is never INTRODUCED here: a record that carries none stays purely
+ * in the flat vocabulary, so the un-migrated doc shape is unchanged. Whole
+ * values only, compared structurally — a half-present or non-numeric geometry
+ * leaves the register alone rather than tearing it.
+ */
+function syncRegistersFromFlat(record: Y.Map<unknown>): void {
+  const view = record as unknown as V2RecordMap;
+
+  const pos = readPosRegister(view);
+  if (pos !== undefined) {
+    const x = record.get("x");
+    const y = record.get("y");
+    if (typeof x === "number" && typeof y === "number") {
+      const next = encodePos(x, y);
+      if (!posEquals(pos, next)) writePosRegister(view, next);
+    }
+  }
+
+  const size = readSizeRegister(view);
+  if (size !== undefined) {
+    const width = record.get("width");
+    const height = record.get("height");
+    if (typeof width === "number" && typeof height === "number") {
+      const next = encodeSize(width, height);
+      if (!sizeEquals(size, next)) writeSizeRegister(view, next);
+    }
+  }
+
+  for (const slot of ENDPOINT_SLOTS) {
+    const current = readEndpoint(view, slot);
+    if (current === undefined) continue;
+    const fileKeys = ENDPOINT_FILE_KEYS[slot];
+    const next = encodeEndpointFromFile(slot, {
+      [fileKeys.node]: record.get(fileKeys.node),
+      [fileKeys.side]: record.get(fileKeys.side),
+      [fileKeys.end]: record.get(fileKeys.end),
+    });
+    if (next === undefined) continue;
+    if (!endpointEquals(current, next)) writeEndpointRegister(view, slot, next);
+  }
+}
+
+/**
+ * Read an edge's endpoint node id whichever vocabulary the record is in.
+ *
+ * WP10's register is asked first and the flat file key is the fallback, so the
+ * dangling-edge guards keep working on a doc that is half migrated — which, in
+ * P1, every doc is.
+ */
+function readEndpointNodeId(record: Y.Map<unknown>, slot: EndpointSlot): string | undefined {
+  const register = readEndpoint(record as unknown as V2RecordMap, slot);
+  if (register !== undefined) return register.node;
+  const flat = record.get(ENDPOINT_FILE_KEYS[slot].node);
+  return typeof flat === "string" ? flat : undefined;
+}
+
+/**
+ * Create-or-merge ONE record, the create-once way (AC2).
+ *
+ * A record that does not exist yet is built while it is still DETACHED and
+ * attached in a single `set` once it is complete, so the first time any
+ * observer or peer can see the id, it already carries the whole record. A
+ * record that does exist is merged into IN PLACE — `set(id, new Y.Map())` over
+ * a live id detaches the container and silently discards a peer's concurrent
+ * edit to a different field of it.
+ */
+function writeRecordCreateOnce(
+  container: Y.Map<Y.Map<unknown>>,
+  id: string,
+  fields: Readonly<Record<string, unknown>>,
+  signatures: string[],
+): void {
+  const existing = container.get(id);
+  if (existing) {
+    const typeSignature = upsertRecordFields(existing, fields, id);
+    if (typeSignature) signatures.push(typeSignature);
+    syncRegistersFromFlat(existing);
+    return;
+  }
+  const created = buildDetachedRecord(fields, id, signatures);
+  container.set(id, created);
+}
+
+/**
+ * Assemble a brand-new record and hand it back READY, in a single `set`.
+ *
+ * The draft is a plain object, not the `Y.Map` itself: a `Y.Map` that is not yet
+ * attached to a document answers every read with `undefined` (and Yjs warns
+ * about it), so the write-once `type` guard would be inspecting an empty
+ * container rather than the record being assembled. Building the draft first
+ * keeps the guard meaningful AND keeps the container's first appearance in the
+ * doc complete (AC2).
+ */
+function buildDetachedRecord(
+  fields: Readonly<Record<string, unknown>>,
+  id: string,
+  signatures: string[],
+): Y.Map<unknown> {
+  const draft: Record<string, unknown> = {};
+  const typeSignature = upsertRecordFields(asRecordView(draft), fields, id);
+  if (typeSignature) signatures.push(typeSignature);
+  const created = new Y.Map<unknown>();
+  for (const [key, value] of Object.entries(draft)) created.set(key, value);
+  return created;
+}
+
+/**
+ * The COLD-OPEN seed writer (`CanvasPersistence.coldOpen`), in ONE transaction.
+ *
+ * VOCABULARY: it writes the FLAT `.canvas` file shape, exactly as it always
+ * did — WP16's `decodeCanvasDataToFlat` bridge stays in front of it. Retiring
+ * that bridge is NOT a WP18 acceptance criterion (charter §2/§4 never mention
+ * it); it is a P1 scaffold whose removal belongs with the write boundaries'
+ * move to registers (WP22/WP39), and forcing it here breaks every pre-V2 reader
+ * of `x`/`y` for no AC gain.
+ *
+ * What makes that safe is the ORDERING at the call site: `coldOpen` seeds FIRST
+ * and runs `migrateV1ToV2` AFTERWARDS, so the flat records this function writes
+ * are translated by the migration in the same cold open rather than sitting
+ * behind its one-shot `meta` guard forever.
+ *
+ * What this function DOES own is the gate (AC1), create-once (AC2) and
+ * upsert-only (AC3) — the same three properties, through the same helpers, as
+ * the host seed. Returns the rejection signatures for the caller to narrate;
+ * it knows nothing about a logger.
+ *
+ * WP63: `refusalsOut`, when supplied, additionally collects each refusal AS DATA
+ * so the caller can withhold the write-back for this path (I11). It is optional
+ * because the signatures are the WP18 contract and no existing caller may be
+ * forced to care; a caller that omits it gets exactly the old behaviour.
+ */
+export function seedRecordsIntoYMaps(
+  doc: Y.Doc,
+  data: FlatCanvasData,
+  seedOrigin: symbol,
+  refusalsOut?: SeedRefusal[],
+): string[] {
+  const signatures: string[] = [];
+  doc.transact(() => {
+    seedSpace(doc.getMap<Y.Map<unknown>>("nodes"), data.nodes, "node", signatures, refusalsOut);
+    seedSpace(doc.getMap<Y.Map<unknown>>("edges"), data.edges, "edge", signatures, refusalsOut);
+  }, seedOrigin);
+  return signatures;
+}
+
+function seedSpace(
+  container: Y.Map<Y.Map<unknown>>,
+  records: Record<string, Record<string, unknown>>,
+  kind: IngestRecordKind,
+  signatures: string[],
+  refusalsOut?: SeedRefusal[],
+): void {
+  for (const [id, source] of Object.entries(records)) {
+    const admission = admitRecordIngest(
+      projectPostWriteRecord(container.get(id), source, kind),
+      kind,
+      id,
+      "local",
+      INGEST_BOUNDARY.coldOpenSeed,
+    );
+    if (!admission.admitted) {
+      signatures.push(admission.signature as string);
+      refusalsOut?.push({
+        boundary: INGEST_BOUNDARY.coldOpenSeed,
+        kind,
+        id,
+        reason: admission.reason as IngestReasonCode,
+      });
+      continue;
+    }
+    writeRecordCreateOnce(container, id, source, signatures);
+  }
+}
+
+/**
+ * Merge one parsed record into its `Y.Map` — UPSERT ONLY (AC3 / I7).
+ *
+ * The absent-key delete loop this function used to run is RETIRED. It read a
+ * key the incoming record failed to mention as an instruction to remove it,
+ * which is precisely what I7 forbids: a `.canvas` read is a partial
+ * OBSERVATION, and the `PROTECTED_KEYS` guard could only ever shrink the blast
+ * radius of that misreading, never fix it. With no deletion left there is
+ * nothing for the guard to guard, so the guard is gone from here — but the
+ * CONSTANT stays exported with unchanged membership (Shared Ownership Contract
+ * §4): it is defence in depth for WP20 and two live suites read it as a
+ * constant.
+ */
+export function applyToYMap(ymap: Y.Map<unknown>, obj: Record<string, unknown>): void {
+  upsertRecordFields(ymap, obj, String(obj[V2_FIELD.id] ?? ""));
+  syncRegistersFromFlat(ymap);
 }
 
 // WP4: the three-way key diff (`base -> next` against `lastWrittenContent`) is
 // GONE from the capture path. The unit of intent is the FIELD and the basis is
 // the Surface-Shadow (`planIntentDiff`), so there is no `base` object left to
-// diff against — and I7 forbids reading an omitted field as a removal at all,
-// which makes the old PROTECTED_KEYS delete guard redundant HERE. The guard
-// itself stays and still runs in `applyToYMap` on the seed path.
+// diff against — and I7 forbids reading an omitted field as a removal at all.
+// WP18 finished the job at the seed boundaries: no local write path deletes a
+// doc key any more.
+
+// ---------------------------------------------------------------------------
+// WP20 / P1 — THE QUARANTINE AUDITOR: detection becomes CONVERGENT SELF-REPAIR
+// ---------------------------------------------------------------------------
+//
+// `auditCanvasState` used to COUNT damage (`noGeo`, `noType`,
+// `fileNodesWithoutFile`, `danglingEdges`) and narrate it. Counting is all a
+// downstream filter can do, and it leaves the broken record in the doc, in the
+// view and — via `CanvasPersistence`'s `serialize(doc)` — in the user's file,
+// where Obsidian's `importData` meets an edge it cannot attach (A.2/16).
+//
+// WP18 keeps an invalid LOCAL proposal out of the doc; WP14 forbids refusing a
+// remote one (`reject: false`), because a replica that refused a delta its peers
+// accepted would DIVERGE. So a broken record can only ever arrive from a peer,
+// and the answer to it has to be repair rather than refusal. That repair is a
+// QUARANTINE: `deleted[id] := {t, by, on:true, q:true}` through WP12's one op.
+//
+//   ├── NOTHING IS DESTROYED. Only the `deleted` map is written; the record's
+//   │      `Y.Map` keeps its identity and every field, which is the only reason
+//   │      a later delta can still complete it (AC1 → AC2).
+//   ├── THE LIFT IS THE POINT. A quarantine that never lifts is a delete with
+//   │      extra steps. A record that passes the schema again and is CURRENTLY
+//   │      quarantined is released with an ordinary `on:false` op (AC2).
+//   ├── A USER DELETE IS NEVER LIFTED. `q` is what tells the two apart, and this
+//   │      is the consumer WP12 built it for: an auditor that read "suppressed +
+//   │      valid → release" would resurrect every card the user ever deleted, on
+//   │      every peer, on every tick.
+//   └── IDEMPOTENCE IS STRUCTURAL, not a de-dup cache. An action is planned ONLY
+//          for a state transition that has not happened yet, so a settled doc
+//          plans nothing and writes nothing. That matters far more than it looks:
+//          `applyTombstoneOp` always `set`s, a `set` of an equal value is still a
+//          CRDT delta on the wire, and the audit is driven by the doc observer —
+//          so a re-write of an identical tombstone would wake every peer's audit,
+//          which would re-write it back, forever (AC3).
+//
+// Validity is WP14's `validateNodeIngest` / `validateEdgeIngest` and nothing
+// else — the same predicate the write boundaries ask, read through the same
+// `projectPostWriteRecord` translation so a half-migrated record carrying flat
+// geometry is judged on CONTENT rather than on spelling. Re-deriving "is this
+// record whole?" here is how the auditor and the boundary would come to disagree,
+// and a disagreement between them is a record that is quarantined on one replica
+// and live on another.
+//
+// "ENDPOINT-LESS" MEANS `from.node` OR `to.node` ABSENT — NEVER "no side"
+// (charter clarification 1, 2026-08-02). `fromSide`/`toSide` are optional in
+// JSON Canvas, so a side-less endpoint is a COMPLETE endpoint and its edge is
+// VALID. That reading is not restated here; it is `validateEdgeIngest`'s, via
+// `hasBothEndpoints`, which is exactly why asking WP14 rather than re-deriving is
+// what keeps the E1 data loss out of the auditor.
+
+/** One state transition the auditor has decided to make for one record. */
+type QuarantineAction =
+  | {
+      readonly op: "quarantine";
+      readonly kind: IngestRecordKind;
+      readonly id: string;
+      readonly reason: IngestReasonCode;
+    }
+  | { readonly op: "release"; readonly kind: IngestRecordKind; readonly id: string };
+
+/**
+ * The signature raised when the auditor quarantines a record, in this file's
+ * established `<NAME> signature: …` shape (WP18 owns the shape; AC4 requires the
+ * STRINGS to be distinct).
+ *
+ * It names the record and the machine-readable reason, so an operator reading the
+ * console knows both what was hidden and what would un-hide it.
+ */
+export function quarantineSignature(
+  kind: IngestRecordKind,
+  id: string,
+  reason: IngestReasonCode,
+): string {
+  return `QUARANTINE RAISED signature: ${kind} ${id} hidden pending repair (${reason})`;
+}
+
+/**
+ * The signature emitted when the auditor releases its own quarantine (AC4).
+ *
+ * Deliberately a DIFFERENT sentence, not the same one with a different id: two
+ * transitions that differ only in which record they mention are one signature
+ * reported twice, and an operator cannot tell a raise from a lift.
+ */
+export function quarantineReleaseSignature(kind: IngestRecordKind, id: string): string {
+  return `QUARANTINE LIFTED signature: ${kind} ${id} revalidated, suppression cleared`;
+}
+
+/**
+ * Plan one id space — the whole of the auditor's decision logic, and pure.
+ *
+ * Four states, and only two of them are work:
+ *
+ *   ├── invalid + not suppressed          → QUARANTINE
+ *   ├── invalid + already suppressed      → nothing. Already quarantined is the
+ *   │      fixed point (AC3); already user-deleted is not ours to re-label, and
+ *   │      re-stamping it would take authorship of someone else's op.
+ *   ├── valid   + quarantined (`q:true`)  → RELEASE (AC2)
+ *   └── valid   + anything else           → nothing. A user delete stays deleted
+ *          and a healthy record never gets an entry at all — an auditor that
+ *          wrote `on:false` for every valid record would fill `deleted` with one
+ *          entry per record and hand every peer a delta per audit tick.
+ *
+ * `origin` is `"remote"` because that is what these records provably are: WP18
+ * refuses an invalid local proposal at the boundary, so anything invalid that is
+ * IN the doc arrived as a peer's delta. The verdict's `reject` flag is never read
+ * here — this is not an ingest boundary and nothing is being refused.
+ */
+function planQuarantineActions(
+  container: Y.Map<Y.Map<unknown>>,
+  kind: IngestRecordKind,
+  deletedMap: TombstoneMap,
+  out: QuarantineAction[],
+): void {
+  for (const [id, record] of container) {
+    const view = projectPostWriteRecord(record, {}, kind);
+    const verdict =
+      kind === "node" ? validateNodeIngest(view, "remote") : validateEdgeIngest(view, "remote");
+    const entry = readTombstoneEntry(deletedMap, id);
+    if (verdict.valid) {
+      if (isTombstoneQuarantined(entry)) out.push({ op: "release", kind, id });
+      continue;
+    }
+    if (isTombstoneSuppressed(entry)) continue;
+    out.push({ op: "quarantine", kind, id, reason: verdict.reason });
+  }
+}
 
 export class CanvasSync {
   private vault: Vault;
@@ -274,15 +1597,15 @@ export class CanvasSync {
   private externalWriteSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private recentLocalEdits = new Set<string>();
   private lastWrittenContent = new Map<string, string>();
+  // WP63 (I11): per-path refused set from the HOST seed, shared with that path's
+  // `CanvasPersistence` so a refusal withholds the write-back instead of
+  // deleting the record from the user's file.
+  private seedRefusalLedgers = new Map<string, SeedRefusalLedger>();
   // Bug G (client-side guard): predicate deciding whether local edits to a
   // canvas path may be pushed into the shared Y.Doc. Defaults to allow-all; the
   // owner of permission state (main.ts) injects the real predicate via
   // setCanWrite(). The argument is the CANONICAL path (toCanonicalPath).
   private canWrite: (path: string) => boolean;
-  // WP3: advisory per-node lock gates wired into the diff path. Default allow-all
-  // until main.ts injects the presence-backed predicates. `path` is canonical.
-  private canWriteNode: (path: string, nodeId: string) => boolean = () => true;
-  private canDeleteNode: (path: string, nodeId: string) => boolean = () => true;
   // WP3 diff-inferred fallback: notified the instant the local user first changes
   // a node's keys, so the presence layer can acquire the lock even when the
   // private Canvas API is absent. Null until wired.
@@ -316,9 +1639,14 @@ export class CanvasSync {
     viewOpen: false,
     handedToView: { node: new Set<string>(), edge: new Set<string>() },
   });
-  // WP4: the resurrect-block seam. P0 has no `deleted` container (WP12 creates
-  // it), so the default is "nothing is tombstoned".
-  private tombstoneView: TombstoneView = { isDeleted: () => false };
+  // WP4: the resurrect-block seam. WP19: `null` no longer means "nothing is
+  // tombstoned" — it means "ask the DOC", i.e. the per-path `deleted` container
+  // via {@link createDocTombstoneView}. The seam stays so a test (or a later WP)
+  // can substitute a view, but leaving it unwired can no longer silently disable
+  // the resurrect block: a doc with no tombstones answers `false` for every id
+  // anyway, so the default behaviour is unchanged while a REAL delete is now
+  // honoured without any wiring in `main.ts`.
+  private tombstoneView: TombstoneView | null = null;
   // WP4 (BUILD_SPEC §8): the discrimination seam. `false` stops classifying the
   // save against the shadow — every observed field becomes intent, exactly the
   // pre-V2 behaviour. Test-only; there is no production caller.
@@ -340,17 +1668,6 @@ export class CanvasSync {
   // `path` is the canonical canvas path (toCanonicalPath(normalizePath(rawPath))).
   setCanWrite(predicate: (path: string) => boolean): void {
     this.canWrite = predicate;
-  }
-
-  // WP3: inject the advisory per-node lock gates. `canWriteNode` false => the diff
-  // path drops the local write for that node; `canDeleteNode` false => the diff
-  // path drops the local delete of that node. `path` is the canonical canvas path.
-  setCanWriteNode(predicate: (path: string, nodeId: string) => boolean): void {
-    this.canWriteNode = predicate;
-  }
-
-  setCanDeleteNode(predicate: (path: string, nodeId: string) => boolean): void {
-    this.canDeleteNode = predicate;
   }
 
   // WP3: register the diff-inferred lock-acquisition hook.
@@ -422,7 +1739,12 @@ export class CanvasSync {
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
     const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
     if (nodesMap.size === 0) return null;
-    return buildCanvasData(nodesMap, edgesMap);
+    // WP19 AC2: the snapshot a freshly mounted view is reconciled against is
+    // SHARED TRUTH, and a tombstoned record is not part of it. Handing the
+    // two-argument (no-suppression) snapshot to a view would put the deleted
+    // card straight back on the user's screen, and the next save of that view
+    // would then aim a stale surface at the record the peer just deleted.
+    return buildCanvasData(nodesMap, edgesMap, docHandle.doc.getMap<unknown>(DELETED_MAP_NAME));
   }
 
   private currentSeq(path: string): number {
@@ -455,16 +1777,23 @@ export class CanvasSync {
 
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
     const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
+    // WP19 AC2: the tombstone container is a THIRD observed map. A remote delete
+    // writes ONLY here — it touches neither `nodes` nor `edges` — so a
+    // subscription that watched the two record maps alone would never fire for a
+    // peer's delete and the deletion would never reach the open canvas view.
+    const deletedMap = docHandle.doc.getMap<unknown>(DELETED_MAP_NAME);
 
     const diskPath = toLocalPath(path);
     if (role === "host") {
       const file = getFileByPath(this.vault, diskPath);
       if (file) {
         const content = await this.vault.read(file);
-        const data = parseCanvas(content);
+        // WP16: the temporary P1 decode bridge — the seed path still writes the
+        // FLAT file shape into the doc until WP18 wires the registers.
+        const data = decodeCanvasDataToFlat(parseCanvas(content));
         this.recentLocalEdits.add(path);
         docHandle.doc.transact(() => {
-          this.applyCanvasToYMaps(nodesMap, edgesMap, data);
+          this.applyCanvasToYMaps(path, nodesMap, edgesMap, data);
         });
         this.recentLocalEdits.delete(path);
         // Bug C: establish the ECHO baseline so a byte-identical first modify is
@@ -509,7 +1838,7 @@ export class CanvasSync {
       // the view stale/scattered until a full reload.
       if (this.onRemoteCanvasUpdate) {
         try {
-          this.onRemoteCanvasUpdate(path, buildCanvasData(nodesMap, edgesMap));
+          this.onRemoteCanvasUpdate(path, buildCanvasData(nodesMap, edgesMap, deletedMap));
         } catch {
           /* live reconciliation must never break the data path */
         }
@@ -520,13 +1849,19 @@ export class CanvasSync {
       // exists to remove. What remains is the corruption TELEMETRY, on the same
       // trailing debounce so it still narrates once per settled burst rather
       // than once per delta (US6 AC5).
-      this.scheduleCanvasAudit(path, nodesMap, edgesMap);
+      //
+      // WP20: that same pass is now the QUARANTINE AUDITOR, so it needs the
+      // tombstone container as well — which this observer already watches, so a
+      // peer's repair delta and a peer's quarantine both re-arm it.
+      this.scheduleCanvasAudit(path, nodesMap, edgesMap, deletedMap);
     };
     nodesMap.observeDeep(observer);
     edgesMap.observeDeep(observer);
+    deletedMap.observeDeep(observer);
     this.observers.set(path, () => {
       nodesMap.unobserveDeep(observer);
       edgesMap.unobserveDeep(observer);
+      deletedMap.unobserveDeep(observer);
     });
 
     // Initial-sync fix: the observer above only fires on SUBSEQUENT remote deltas,
@@ -537,7 +1872,7 @@ export class CanvasSync {
     // shared truth. Host's own view IS the source of truth, so only guests need it.
     if (role === "guest" && this.onRemoteCanvasUpdate && nodesMap.size > 0) {
       try {
-        this.onRemoteCanvasUpdate(path, buildCanvasData(nodesMap, edgesMap));
+        this.onRemoteCanvasUpdate(path, buildCanvasData(nodesMap, edgesMap, deletedMap));
       } catch {
         /* live reconciliation must never break subscribe */
       }
@@ -569,6 +1904,11 @@ export class CanvasSync {
       detachSeq();
       this.seqHandlers.delete(path);
     }
+    // WP63: drop the SHARED reference, never `reset()` it — a `CanvasPersistence`
+    // for this path may still be alive and withholding, and un-withholding it
+    // from here would let the very write this WP exists to stop reach the file.
+    // A later re-subscribe re-seeds and gets a fresh ledger.
+    this.seedRefusalLedgers.delete(path);
     this.syncManager.releaseDoc(`${CANVAS_DOC_PREFIX}${path}`);
   }
 
@@ -583,6 +1923,26 @@ export class CanvasSync {
     const docId = `${CANVAS_DOC_PREFIX}${path}`;
     const docHandle = this.syncManager.getDoc(docId);
     if (!docHandle) return;
+
+    // WP8 AC4 — the SCHEMA-MAJOR GATE. A doc stamped with a major this build
+    // cannot translate (CONCEPT_V2 Teil 12) gets no local capture at all: any
+    // write we made would be a GUESS about a shape we do not understand, and a
+    // guess in a CRDT is permanent. Same shape as the `canWrite` guard above —
+    // return before a single write reaches `nodesMap` / `edgesMap`.
+    //
+    // Deliberately LOCAL and deliberately narrow (P1 half of the mixed-version
+    // rule; the room-level Receive-and-Persist mode is WP32):
+    //   ├── `CanvasPersistence` is NOT touched — the CRDT→disk direction keeps
+    //   │   running, so the user still SEES what peers send.
+    //   └── only this path stops; every other subscribed path on this client
+    //       captures normally.
+    if (isSchemaMajorMismatch(docHandle.doc)) {
+      this.logger?.warn(
+        "canvas-sync",
+        `local modify ${path}: schema major mismatch - local capture disabled for this path (persistence continues)`,
+      );
+      return;
+    }
 
     const file = getFileByPath(this.vault, toLocalPath(path));
     if (!file) return;
@@ -603,14 +1963,23 @@ export class CanvasSync {
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
     const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
     const maps = { node: nodesMap, edge: edgesMap };
+    // WP19: the tombstone container for THIS path. It is both the resurrect
+    // block's input (`createDocTombstoneView`) and the delete path's only
+    // output — no delete below touches `nodesMap` / `edgesMap` at all.
+    const deletedMap = docHandle.doc.getMap<unknown>(DELETED_MAP_NAME);
 
     // WP4 AC1: the save is parsed, CAPTURE-ROUNDED (§4.4) and then classified
     // against the Surface-Shadow. The three-way read of `lastWrittenContent` is
     // gone — the CRDT is not an input to the verdict either, which is precisely
     // why a stale save can no longer be mistaken for intent.
-    const save = toParsedSave(path, parseCanvas(content));
+    // WP16: the temporary P1 decode bridge — the capture path still classifies
+    // FLAT fields against the Surface-Shadow until WP18 wires the registers.
+    const save = toParsedSave(path, decodeCanvasDataToFlat(parseCanvas(content)));
     const surface = this.surfaceStateProvider(path);
-    const plan = this.planCapture(save, surface);
+    // WP19 AC2: the resurrect block now reads the doc's real `deleted`
+    // container unless a caller injected a view at the seam.
+    const tombstones = this.tombstoneView ?? createDocTombstoneView(deletedMap);
+    const plan = this.planCapture(save, surface, tombstones);
     const saved: SaveIndex = {
       node: new Map(save.nodes.map((record) => [record.id, record])),
       edge: new Map(save.edges.map((record) => [record.id, record])),
@@ -625,11 +1994,25 @@ export class CanvasSync {
     });
 
     this.recentLocalEdits.add(path);
-    const applied = docHandle.doc.transact(() => this.applyIntentPlan(plan, saved, maps));
+    const applied = docHandle.doc.transact(() =>
+      // WP19: the author of every tombstone this pass writes is THIS client, and
+      // the `by` half of the merge tiebreak is that clientID as a string. It is
+      // read from the doc rather than invented so the value a peer sees in the
+      // entry is the same id it sees on the update itself.
+      this.applyIntentPlan(plan, maps, deletedMap, String(docHandle.doc.clientID)),
+    );
     this.recentLocalEdits.delete(path);
 
-    // WP4 step 6: the shadow advances for what ACTUALLY happened — a denied id
-    // advances nothing, so the divergence it represents stays detectable.
+    // WP18 AC1 — the rejection signatures the capture boundary produced. Logged
+    // OUTSIDE the transaction: a signature is for a human, never a mechanism,
+    // and it must not be able to perturb the write it describes.
+    for (const signature of applied.rejected) {
+      this.logger?.warn("canvas-sync", signature);
+    }
+
+    // WP4 step 6: the shadow advances for what ACTUALLY happened — a record the
+    // capture boundary refused advances nothing, so the divergence it represents
+    // stays detectable.
     for (const upsert of applied.upserts) {
       advanceField(this.shadow, path, upsert.kind, upsert.id, upsert.field, upsert.value);
     }
@@ -637,18 +2020,12 @@ export class CanvasSync {
       markRecordAbsent(this.shadow, path, del.kind, del.id);
     }
 
-    // WP4 (US2 AC4/AC5): advance the ECHO baseline ONLY for a clean pass. If any
-    // write was denied, the local file still holds an edit that never reached the
-    // shared doc; advancing would make the next save look like our own echo and
-    // silently swallow it. Holding it keeps the rejected edit detectable.
-    if (applied.denied.length > 0) {
-      this.logger?.warn(
-        "canvas-sync",
-        `LOCK DENIED: ${path} ids=[${applied.denied.join(", ")}] (baseline held)`,
-      );
-    } else {
-      this.lastWrittenContent.set(path, content);
-    }
+    // WP21: the ECHO baseline advances unconditionally. It used to be withheld
+    // whenever the lock seam refused a write, so that the edit the local file
+    // still held stayed detectable on the next save. There is no such refusal
+    // left — locks are pure UX and the data model resolves same-register
+    // conflicts — so the baseline is simply what this pass wrote.
+    this.lastWrittenContent.set(path, content);
 
     // WP4 AC4 — the `SHADOW STALE:` signature, ONE line per pass with at least
     // one divergent discard. A save re-states every unchanged field and C2
@@ -699,14 +2076,18 @@ export class CanvasSync {
    * delete rule, the resurrect block, the byte echo breaker and the capture-side
    * rounding are untouched by the seam — only the classification changes.
    */
-  private planCapture(save: ParsedSave, surface: SurfaceState): IntentPlan {
-    const plan = planIntentDiff(this.shadow, save, this.tombstoneView, surface);
+  private planCapture(
+    save: ParsedSave,
+    surface: SurfaceState,
+    tombstones: TombstoneView,
+  ): IntentPlan {
+    const plan = planIntentDiff(this.shadow, save, tombstones, surface);
     if (this.shadowRebaseEnabled) return plan;
     plan.upserts = [];
     plan.discarded = [];
     for (const kind of RECORD_KINDS) {
       for (const record of kind === "node" ? save.nodes : save.edges) {
-        if (this.tombstoneView.isDeleted(kind, record.id)) continue;
+        if (tombstones.isDeleted(kind, record.id)) continue;
         for (const field of Object.keys(record.fields)) {
           plan.upserts.push({
             path: save.path,
@@ -729,19 +2110,24 @@ export class CanvasSync {
    * │            absent from the doc, otherwise the field is set only when the
    * │            current value differs. A field the save omitted is NEVER
    * │            deleted (I7): a save is a partial observation, not a removal.
-   * ├── delete — `ymap.delete(id)`; the GAP-5 edge cascade runs afterwards.
-   * └── the lock seam is unchanged (`canWriteEntity` / `canDeleteNode`, the
-   *     `denied` list and its baseline hold). Removing it is WP21, not WP4.
+   * ├── delete — WP19: `deleted[id] := {t, by, on:true}` through WP12's
+   * │            `applyTombstoneOp`. The record's key and its `Y.Map` are NOT
+   * │            touched, so the delete is reversible and mergeable; the GAP-5
+   * │            edge cascade is now a consequence of the same suppression rule
+   * │            inside `buildCanvasData` rather than a second action here.
+   * └── WP21: there is no lock seam here any more. No branch consults a lock
+   *     before writing, and no branch refuses an id on a lock's behalf.
    */
   private applyIntentPlan(
     plan: IntentPlan,
-    saved: SaveIndex,
     maps: { node: Y.Map<Y.Map<unknown>>; edge: Y.Map<Y.Map<unknown>> },
+    deletedMap: Y.Map<unknown>,
+    author: string,
   ): AppliedIntent {
     const applied: AppliedIntent = {
       upserts: [],
       deletes: [],
-      denied: [],
+      rejected: [],
       deletedNodeIds: [],
       created: [],
       changed: [],
@@ -759,28 +2145,42 @@ export class CanvasSync {
 
     for (const fields of groups.values()) {
       const { path, kind, id } = fields[0];
-      const opts = { path, kind };
       // WP3 (US3 AC2) diff-inferred lock claim: the local user provably changed
-      // this node, so claim the lock before the gate reads it.
+      // this node, so claim the lock. WP21: the claim is UX only — nothing reads
+      // it back here, and the write below is never gated on it.
       if (kind === "node") this.onLocalNodeChange?.(path, id);
-      const previous = getRecordFields(this.shadow, path, kind, id) ?? undefined;
-      if (!this.canWriteEntity(opts, id, saved[kind].get(id)?.fields, previous)) {
-        applied.denied.push(id); // US3 AC5 / US2 AC1: drop the write
+      const existing = maps[kind].get(id);
+
+      // WP18 AC1 — the CAPTURE boundary consults the validator before writing.
+      // The subject is the record as it WILL be once this pass is applied
+      // (I7: nothing is removed, so that is `doc ∪ proposal`), judged on its
+      // content rather than on which vocabulary it is spelt in. A refusal is
+      // signed and drops this record's writes only.
+      const proposal: Record<string, unknown> = {};
+      for (const upsert of fields) proposal[upsert.field] = upsert.value;
+      const admission = admitRecordIngest(
+        projectPostWriteRecord(existing, proposal, kind),
+        kind,
+        id,
+        "local",
+        INGEST_BOUNDARY.capture,
+      );
+      if (!admission.admitted) {
+        applied.rejected.push(admission.signature as string);
         continue;
       }
-      const existing = maps[kind].get(id);
+
       if (!existing) {
         // GAP-2 / US2 AC3 delete-wins, no-resurrect: an id the shadow still holds
         // as `present` while the doc no longer has it was deleted by a peer.
         // NEVER re-create it — for nodes AND edges — even if the local user also
         // edited it. `absent`/`unknown` means this is a genuinely new record.
         if (getRecordState(this.shadow, path, kind, id) === "present") continue;
-        const created = new Y.Map<unknown>();
-        maps[kind].set(id, created);
-        for (const upsert of fields) {
-          created.set(upsert.field, upsert.value);
-          applied.upserts.push(upsert);
-        }
+        // WP18 AC2 — ONE transaction carrying a COMPLETE record: the container
+        // is populated while still DETACHED and attached only afterwards, so no
+        // observer and no peer ever sees a half-built record under this id.
+        maps[kind].set(id, buildDetachedRecord(proposal, id, applied.rejected));
+        for (const upsert of fields) applied.upserts.push(upsert);
         if (kind === "node") applied.created.push(id);
         continue;
       }
@@ -788,39 +2188,67 @@ export class CanvasSync {
       // `ymap.set(id, new Y.Map())`, which detaches the record and silently
       // discards a peer's concurrent edit to a DIFFERENT field of it.
       for (const upsert of fields) {
-        if (existing.get(upsert.field) !== upsert.value) existing.set(upsert.field, upsert.value);
+        if (upsert.field === V2_FIELD.type) {
+          // WP11's write-once guard owns `type`. Its `noop` branch is what keeps
+          // a re-stated same-value type off the wire; a refusal writes nothing
+          // and does not advance the shadow for that field.
+          const verdict = guardTypeWrite(existing as unknown as V2RecordMap, id, upsert.value as string);
+          if (verdict.kind === "rejected") {
+            applied.rejected.push(verdict.signature);
+            continue;
+          }
+          applied.upserts.push(upsert);
+          continue;
+        }
+        if (!docValueEquals(existing.get(upsert.field), upsert.value)) {
+          existing.set(upsert.field, upsert.value);
+        }
         applied.upserts.push(upsert);
       }
+      // Keep any register the record already carries in step with the flat keys
+      // this boundary writes (see `syncRegistersFromFlat`).
+      syncRegistersFromFlat(existing);
       if (kind === "node") applied.changed.push(id);
     }
 
+    // WP19 AC1 — ONE Lamport stamp for the whole pass, read BEFORE the first
+    // write. The pass is one logical event, its ops target distinct ids, and
+    // taking the stamp up front keeps it a pure function of the state this
+    // capture classified against rather than of the order the ids happen to
+    // come out of the plan in.
+    const stamp = plan.deletes.length > 0 ? nextTombstoneTime(deletedMap) : 0;
     for (const del of plan.deletes) {
-      if (del.kind === "node") {
-        // US3 AC7 / GAP-2: cannot delete a node another peer holds locked.
-        if (!this.canDeleteNode(del.path, del.id)) {
-          applied.denied.push(del.id);
-          continue;
-        }
-        applied.deletedNodeIds.push(del.id);
-      } else {
-        // US2 AC1: removing an edge is an edge write too — a peer holding either
-        // endpoint blocks it (the GAP-5 cascade prune stays separate and
-        // unguarded because it follows an already-permitted node delete).
-        const previous = getRecordFields(this.shadow, del.path, "edge", del.id) ?? undefined;
-        if (!this.canWriteEntity({ path: del.path, kind: "edge" }, del.id, previous)) {
-          applied.denied.push(del.id);
-          continue;
-        }
-      }
-      maps[del.kind].delete(del.id);
+      // WP21: neither branch consults a lock any more. A node delete used to be
+      // refused while a peer held the node, and an edge delete while a peer held
+      // either endpoint; both refusals are gone, so the only thing left to
+      // distinguish the branches is the node-id bookkeeping.
+      if (del.kind === "node") applied.deletedNodeIds.push(del.id);
+      // WP19 AC1 — THE delete. Both kinds (node and edge) end here, and
+      // neither touches `maps`: the record's `Y.Map` keeps its identity and
+      // every field it holds, which is the whole of what makes the delete
+      // reversible (AC4) and mergeable (AC2). `applyTombstoneOp` merges against
+      // whatever is already stored, so this op can LOSE to a fresher peer op —
+      // a delete has no privilege over an undo.
+      applyTombstoneOp(deletedMap, del.id, { t: stamp, by: author, on: true });
       applied.deletes.push(del);
     }
 
-    // GAP-5 (US5 AC3): cascade-prune edges whose endpoint node the local user
-    // just deleted, so the shared doc never carries a dangling edge.
-    if (applied.deletedNodeIds.length > 0) {
-      this.pruneEdgesForDeletedNodes(maps.edge, applied.deletedNodeIds);
-    }
+    // WP19 AC3 — THE CASCADE, WHICH IS NO LONGER AN ACTION.
+    //
+    // `pruneEdgesForDeletedNodes` used to run here and call
+    // `edgesMap.delete(edgeId)` for every edge touching a just-deleted node.
+    // That is exactly the key removal AC3 forbids: it destroyed the edge's field
+    // container, so undoing the node delete could never bring its arrows back
+    // with their labels, colours and routing.
+    //
+    // Nothing replaces it, because nothing has to. `buildCanvasData` — the ONE
+    // doc→file/view projection, shared by `serializeCanvas`, `getCanvasSnapshot`
+    // and the live-view hook — builds its `visibleNodeIds` set from the very
+    // same tombstone predicate and already refuses to emit an edge whose
+    // endpoint node is not in it. The cascade is therefore a consequence of the
+    // suppression rule rather than a second mechanism that could disagree with
+    // it, and it now applies to a REMOTE delete too, which the old prune (local
+    // capture only) never covered.
 
     return applied;
   }
@@ -837,7 +2265,9 @@ export class CanvasSync {
     content: string,
     markMissingAbsent: boolean,
   ): void {
-    const data = parseCanvas(content);
+    // WP16: the temporary P1 decode bridge — the shadow is keyed by flat field
+    // names until WP18 wires the registers.
+    const data = decodeCanvasDataToFlat(parseCanvas(content));
     for (const kind of RECORD_KINDS) {
       const records = kind === "node" ? data.nodes : data.edges;
       for (const [id, record] of Object.entries(records)) {
@@ -858,46 +2288,22 @@ export class CanvasSync {
     }
   }
 
-  // WP4 (US2 AC1) / WP3 (US3 AC5): the lock-seam gate for one diff entry.
-  // Nodes are gated on their own id. An edge is writable only while BOTH endpoint
-  // nodes are writable by this client (`canWriteNode(from) && canWriteNode(to)`),
-  // checked across every supplied record (intended AND previous) so re-routing an
-  // edge cannot slip past a lock held on the endpoint it is leaving. A non-string
-  // endpoint is ignored, matching pruneEdgesForDeletedNodes / buildCanvasData.
-  private canWriteEntity(
-    opts: { path: string; kind: "node" | "edge" },
-    id: string,
-    ...records: Array<Readonly<Record<string, unknown>> | undefined>
-  ): boolean {
-    if (opts.kind === "node") return this.canWriteNode(opts.path, id);
-    for (const record of records) {
-      if (!record) continue;
-      for (const key of ["fromNode", "toNode"] as const) {
-        const endpoint = record[key];
-        if (typeof endpoint === "string" && !this.canWriteNode(opts.path, endpoint)) return false;
-      }
-    }
-    return true;
-  }
+  // WP21: the lock-seam gate lived here. It is REMOVED, not rewritten. It asked
+  // whether a per-node lock permitted one diff entry — a node on its own id, an
+  // edge on BOTH of its endpoints — and its `false` dropped the local write and
+  // held the echo baseline. Locks are now pure UX: they still colour rings and
+  // still revert the loser's VIEW, but they carry no write authority, because
+  // the data model resolves same-register conflicts by itself. There is no
+  // replacement, because a capture path with no write-authorisation branch is
+  // the point.
 
-  // GAP-5 (US5 AC3): remove every edge whose endpoint is one of the just-deleted
-  // node ids from the shared edges map, so no dangling edge survives in the CRDT.
-  private pruneEdgesForDeletedNodes(
-    edgesMap: Y.Map<Y.Map<unknown>>,
-    deletedNodeIds: string[],
-  ): void {
-    const deleted = new Set(deletedNodeIds);
-    for (const [edgeId, edge] of edgesMap) {
-      const from = edge.get("fromNode");
-      const to = edge.get("toNode");
-      if (
-        (typeof from === "string" && deleted.has(from)) ||
-        (typeof to === "string" && deleted.has(to))
-      ) {
-        edgesMap.delete(edgeId);
-      }
-    }
-  }
+  // WP19 AC3: `pruneEdgesForDeletedNodes` lived here. It is REMOVED, not
+  // rewritten — see the note at its old call site in `applyIntentPlan`. The
+  // GAP-5 property it owned (no dangling edge ever reaches the view or the file)
+  // is now `buildCanvasData`'s `visibleNodeIds` guard, which answers the same
+  // question from the same tombstone predicate for a remote delete as well as a
+  // local one. The endpoint reader it used (`readEndpointNodeId`) stays: the
+  // corruption telemetry in `auditCanvasState` is its other caller.
 
   isRecentDiskWrite(rawPath: string): boolean {
     return this.recentDiskWrites.has(toCanonicalPath(normalizePath(rawPath)));
@@ -933,40 +2339,103 @@ export class CanvasSync {
     this.recentDiskWrites.clear();
     this.recentLocalEdits.clear();
     this.lastWrittenContent.clear();
+    // WP63: same rule as `unsubscribe` — release the references, never reset the
+    // ledgers themselves.
+    this.seedRefusalLedgers.clear();
   }
 
+  /**
+   * WP18 — the HOST SEED write boundary.
+   *
+   * Consumes the FLAT file shape (the host seed's doc vocabulary is unchanged;
+   * `coldOpen` is the boundary that moves to the registers) and applies it as
+   * VALIDATED, CREATE-ONCE, UPSERT-ONLY writes:
+   *
+   *   ├── AC1 — each record is checked through {@link admitRecordIngest} before
+   *   │         anything is written for it, and a refusal is signed.
+   *   ├── AC2 — a new record is built detached and attached complete; an
+   *   │         existing one is merged in place, never replaced.
+   *   └── AC3 — no key is deleted because the file omitted it (I7).
+   *
+   * The RECORD-level delete below is deliberately kept: the host's file is the
+   * host's picture of the whole board, and rejoin semantics ("the host's file
+   * wins over stale doc records") are C29/WP29's to change, not AC3's — AC3 is
+   * about KEYS. A record whose local proposal was REFUSED is exempted from it:
+   * dropping the doc's own copy because our file's version is malformed would
+   * be a local refusal reaching out and deleting shared state.
+   */
   private applyCanvasToYMaps(
+    path: string,
     nodesMap: Y.Map<Y.Map<unknown>>,
     edgesMap: Y.Map<Y.Map<unknown>>,
-    data: CanvasData,
+    data: FlatCanvasData,
   ): void {
-    const existingNodeIds = new Set(nodesMap.keys());
-    for (const [id, node] of Object.entries(data.nodes)) {
-      let yNode = nodesMap.get(id);
-      if (!yNode) {
-        yNode = new Y.Map<unknown>();
-        nodesMap.set(id, yNode);
-      }
-      applyToYMap(yNode, node);
-      existingNodeIds.delete(id);
-    }
-    for (const id of existingNodeIds) {
-      nodesMap.delete(id);
-    }
+    // WP63: this IS a re-seed of the path, so the previous session's verdicts
+    // are stale — the ledger starts from what THIS seed decides.
+    const ledger = this.seedRefusalLedger(path);
+    ledger.reset();
+    ledger.note([
+      ...this.seedFlatSpace(nodesMap, data.nodes, "node"),
+      ...this.seedFlatSpace(edgesMap, data.edges, "edge"),
+    ]);
+  }
 
-    const existingEdgeIds = new Set(edgesMap.keys());
-    for (const [id, edge] of Object.entries(data.edges)) {
-      let yEdge = edgesMap.get(id);
-      if (!yEdge) {
-        yEdge = new Y.Map<unknown>();
-        edgesMap.set(id, yEdge);
+  /**
+   * WP63 (I11): the per-path refused set the host seed fills and
+   * `CanvasPersistence` reads before it writes.
+   *
+   * It lives here rather than in the writer because the host seed runs during
+   * `subscribe`, i.e. BEFORE the writer for that path exists — the two objects
+   * therefore have to share the ledger, and the one that runs first has to own
+   * it. Created on demand so the wiring layer can hand it to the writer without
+   * caring whether a host seed ever ran.
+   */
+  seedRefusalLedger(rawPath: string): SeedRefusalLedger {
+    const path = toCanonicalPath(normalizePath(rawPath));
+    let ledger = this.seedRefusalLedgers.get(path);
+    if (!ledger) {
+      ledger = new SeedRefusalLedger();
+      this.seedRefusalLedgers.set(path, ledger);
+    }
+    return ledger;
+  }
+
+  private seedFlatSpace(
+    container: Y.Map<Y.Map<unknown>>,
+    records: Record<string, Record<string, unknown>>,
+    kind: IngestRecordKind,
+  ): SeedRefusal[] {
+    const absentFromFile = new Set(container.keys());
+    const signatures: string[] = [];
+    const refusals: SeedRefusal[] = [];
+    for (const [id, source] of Object.entries(records)) {
+      absentFromFile.delete(id);
+      const admission = admitRecordIngest(
+        projectPostWriteRecord(container.get(id), source, kind),
+        kind,
+        id,
+        "local",
+        INGEST_BOUNDARY.hostSeed,
+      );
+      if (!admission.admitted) {
+        signatures.push(admission.signature as string);
+        refusals.push({
+          boundary: INGEST_BOUNDARY.hostSeed,
+          kind,
+          id,
+          reason: admission.reason as IngestReasonCode,
+        });
+        continue;
       }
-      applyToYMap(yEdge, edge);
-      existingEdgeIds.delete(id);
+      writeRecordCreateOnce(container, id, source, signatures);
     }
-    for (const id of existingEdgeIds) {
-      edgesMap.delete(id);
+    for (const id of absentFromFile) {
+      container.delete(id);
     }
+    for (const signature of signatures) {
+      this.logger?.warn("canvas-sync", signature);
+    }
+    return refusals;
   }
 
   // WP7: formerly `scheduleDiskWrite`. The disk write it drove is retired (that
@@ -977,6 +2446,7 @@ export class CanvasSync {
     path: string,
     nodesMap: Y.Map<Y.Map<unknown>>,
     edgesMap: Y.Map<Y.Map<unknown>>,
+    deletedMap: Y.Map<unknown>,
   ): void {
     const now = Date.now();
     let firstScheduled = this.writeFirstScheduled.get(path);
@@ -995,7 +2465,7 @@ export class CanvasSync {
       setTimeout(() => {
         this.writeTimers.delete(path);
         this.writeFirstScheduled.delete(path);
-        this.auditCanvasState(path, nodesMap, edgesMap);
+        this.auditCanvasState(path, nodesMap, edgesMap, deletedMap);
       }, delay),
     );
   }
@@ -1040,6 +2510,63 @@ export class CanvasSync {
     );
   }
 
+  /**
+   * WP20 — ONE settled audit pass of self-repair (AC1–AC4).
+   *
+   * Plan first, write second, and write only transitions. The plan is computed
+   * against a single consistent read of the doc, so the two id spaces cannot see
+   * each other half-repaired, and an EMPTY plan returns before touching anything
+   * — which is what makes a second pass over an unchanged doc emit exactly zero
+   * deltas rather than a stream of semantically-identical rewrites (AC3).
+   *
+   * ONE Lamport stamp for the whole pass, read BEFORE the first write, exactly as
+   * `applyIntentPlan` takes it: the pass is one logical event and its ops target
+   * distinct ids, so the stamp must not depend on the order the ids happened to
+   * come out of the containers in. Because `nextTombstoneTime` is strictly above
+   * every stamp this replica can see, an op issued here always dominates the
+   * state it was planned against — it can still LOSE to a peer's genuinely
+   * fresher op, which is the point of routing through `applyTombstoneOp` rather
+   * than writing the entry directly.
+   *
+   * Concurrency (AC3, second half): three replicas seeing the same broken doc
+   * plan the same verdict and issue the same-`t` op with their own `by`. Yjs
+   * resolves the same-key writes to ONE of them — which one is a `random.uint32()`
+   * coin flip and is deliberately not relied on — and every replica ends up
+   * holding that same entry, whose VERDICT is identical in all three candidates.
+   * The next pass then reads it as the fixed point it is and plans nothing, so no
+   * replica reads another's quarantine as work to do.
+   */
+  private repairCanvasState(
+    nodesMap: Y.Map<Y.Map<unknown>>,
+    edgesMap: Y.Map<Y.Map<unknown>>,
+    deletedMap: Y.Map<unknown>,
+  ): void {
+    const actions: QuarantineAction[] = [];
+    planQuarantineActions(nodesMap, "node", deletedMap, actions);
+    planQuarantineActions(edgesMap, "edge", deletedMap, actions);
+    if (actions.length === 0) return;
+
+    const stamp = nextTombstoneTime(deletedMap);
+    const author = String(deletedMap.doc?.clientID ?? 0);
+    for (const action of actions) {
+      if (action.op === "quarantine") {
+        // AC1: the record's own container is not passed in, not reachable and
+        // never touched — the quarantine is entirely a write to `deleted`.
+        applyTombstoneOp(deletedMap, action.id, { t: stamp, by: author, on: true, q: true });
+        const line = quarantineSignature(action.kind, action.id, action.reason);
+        this.logger?.warn("canvas-sync", line);
+      } else {
+        // AC2: an ordinary `on:false` op — the same shape as an undo, so a stale
+        // release cannot lift a fresher quarantine and there is no second
+        // arbitration rule for it to exploit. `q` is simply not carried forward,
+        // which is what makes `isTombstoneQuarantined` read the result as
+        // released.
+        applyTombstoneOp(deletedMap, action.id, { t: stamp, by: author, on: false });
+        this.logger?.warn("canvas-sync", quarantineReleaseSignature(action.kind, action.id));
+      }
+    }
+  }
+
   // Scatter/detach/no-type telemetry: inspect the CRDT snapshot about to be
   // serialized and surface the three corruption signatures to the status console —
   // (1) a live node missing geometry (→ card scatter), (2) an edge whose endpoint
@@ -1053,14 +2580,26 @@ export class CanvasSync {
     path: string,
     nodesMap: Y.Map<Y.Map<unknown>>,
     edgesMap: Y.Map<Y.Map<unknown>>,
+    deletedMap: Y.Map<unknown>,
   ): void {
+    // WP20: the REPAIR runs first and runs unconditionally. It is deliberately
+    // NOT behind the logger guard below — self-healing is a property of the doc,
+    // and a client that happens to have no console attached must still converge
+    // to the same state as one that has (AC3).
+    this.repairCanvasState(nodesMap, edgesMap, deletedMap);
     if (!this.logger) return;
     const nodeIds = new Set<string>(nodesMap.keys());
     const noGeo: string[] = [];
     const noType: string[] = [];
     const fileNodesWithoutFile: string[] = [];
     for (const [id, node] of nodesMap) {
-      if (typeof node.get("x") !== "number" || typeof node.get("y") !== "number") noGeo.push(id);
+      // WP18: geometry may live in WP9's atomic register OR in the flat file
+      // keys — a half-migrated doc holds both shapes, and a telemetry line that
+      // only knew one of them would cry SCATTER over a perfectly placed card.
+      const hasRegisterGeometry = readPosRegister(node as unknown as V2RecordMap) !== undefined;
+      const hasFlatGeometry =
+        typeof node.get("x") === "number" && typeof node.get("y") === "number";
+      if (!hasRegisterGeometry && !hasFlatGeometry) noGeo.push(id);
       const type = node.get("type");
       if (typeof type !== "string" || type.length === 0) {
         noType.push(id);
@@ -1070,11 +2609,11 @@ export class CanvasSync {
     }
     const danglingEdges: string[] = [];
     for (const [id, edge] of edgesMap) {
-      const from = edge.get("fromNode");
-      const to = edge.get("toNode");
+      const from = readEndpointNodeId(edge, FROM_KEY);
+      const to = readEndpointNodeId(edge, TO_KEY);
       if (
-        (typeof from === "string" && !nodeIds.has(from)) ||
-        (typeof to === "string" && !nodeIds.has(to))
+        (from !== undefined && !nodeIds.has(from)) ||
+        (to !== undefined && !nodeIds.has(to))
       ) {
         danglingEdges.push(id);
       }

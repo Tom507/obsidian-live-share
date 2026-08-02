@@ -37,6 +37,7 @@ import {
   getField,
   shadowToCanvasRecords,
 } from "../../../canvas/canvas-shadow";
+import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
 import { planReconcile } from "../../../canvas/reconcile-plan";
 import { CanvasSync, serializeCanvas } from "../../../files/canvas-sync";
 
@@ -95,14 +96,22 @@ function applyRemoteDelta(doc: Y.Doc, build: (nodes: Y.Map<Y.Map<unknown>>) => v
   remote.destroy();
 }
 
-/** What `buildCanvasData()` hands `reconcileLiveCanvas` — read from the doc. */
+/**
+ * What `buildCanvasData()` hands `reconcileLiveCanvas` — read from the doc.
+ *
+ * WP64 — that claim is only true if suppression is honoured: post-WP19
+ * `buildCanvasData` omits tombstoned records, so this helper must too, or it
+ * would hand the view a deleted record as if it were live.
+ */
 function docRecords(doc: Y.Doc): {
   nodes: Record<string, unknown>[];
   edges: Record<string, unknown>[];
 } {
+  const deleted = doc.getMap<unknown>("deleted");
   const read = (name: string): Record<string, unknown>[] => {
     const out: Record<string, unknown>[] = [];
-    for (const [, record] of doc.getMap<Y.Map<unknown>>(name)) {
+    for (const [id, record] of doc.getMap<Y.Map<unknown>>(name)) {
+      if (isTombstoneSuppressed(readTombstoneEntry(deleted, id))) continue;
       out.push(Object.fromEntries(record.entries()));
     }
     return out;
@@ -199,6 +208,7 @@ describe("WP5 AC1 — one shadow serves reconcile classification and capture bas
     const persisted = serializeCanvas(
       p.doc.getMap<Y.Map<unknown>>("nodes"),
       p.doc.getMap<Y.Map<unknown>>("edges"),
+      p.doc.getMap<unknown>("deleted"),
     );
     p.vault.files.set(PATH, persisted);
     p.cs.noteExternalDiskWrite(PATH, persisted);
@@ -295,5 +305,113 @@ describe("WP5 AC1 — one shadow serves reconcile classification and capture bas
         liveEdgeIds,
       }),
     ).toBe("geometry");
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// WP67 — a falsifiability pin for the WP64 helper repair above.
+//
+// WP64 made this file's `docRecords()` suppression-aware. At `test_tp05` that
+// repair was measured A/B — repaired helper RED, raw helper GREEN, identical
+// injection. Here it could not be: THIS file's fixture holds no tombstone, so
+// the repaired and the raw form return the same records and no injection into
+// the scenario can tell them apart. The repair was therefore carried as a
+// claim, not a fact, in §7's unfalsifiable-repair register. This block closes
+// that gap.
+//
+// The tombstone deliberately does NOT go into the fixture above: that fixture's
+// subject is the single-shadow reload, and a deleted record would change what
+// T1–T5 are about. The helper is the thing whose behaviour is unverified, so
+// the helper is what gets pinned — directly, on its own doc, in isolation from
+// the scenario.
+
+/**
+ * The PRE-WP64 form of `docRecords()`, kept verbatim as the A/B CONTROL: a raw
+ * key-presence reading with no suppression check. Nothing else calls it.
+ *
+ * It is what makes the pin below a measurement rather than an assertion — it
+ * shows the injected record IS in the map, so the repaired helper's omission is
+ * genuine suppression and not a record that was never there.
+ */
+function rawDocRecordsControl(doc: Y.Doc): {
+  nodes: Record<string, unknown>[];
+  edges: Record<string, unknown>[];
+} {
+  const read = (name: string): Record<string, unknown>[] => {
+    const out: Record<string, unknown>[] = [];
+    for (const [, record] of doc.getMap<Y.Map<unknown>>(name)) {
+      out.push(Object.fromEntries(record.entries()));
+    }
+    return out;
+  };
+  return { nodes: read("nodes"), edges: read("edges") };
+}
+
+/**
+ * The injection: one suppressed node and one suppressed edge, each beside a
+ * live sibling.
+ *
+ * V2 deletion is DATA (WP12) — the record STAYS in its map and only
+ * `deleted[id].on` says it is gone, which is precisely why a raw key-presence
+ * reading reports a deleted record as live.
+ */
+function docWithSuppressedRecords(): Y.Doc {
+  const doc = new Y.Doc();
+  const nodes = doc.getMap<Y.Map<unknown>>("nodes");
+  const edges = doc.getMap<Y.Map<unknown>>("edges");
+
+  for (const record of [N1, N2]) {
+    const held = new Y.Map<unknown>();
+    for (const [key, value] of Object.entries(record)) held.set(key, value);
+    nodes.set(record.id, held);
+  }
+  for (const id of ["e1", "e2"]) {
+    const held = new Y.Map<unknown>();
+    held.set("id", id);
+    held.set("fromNode", "n1");
+    held.set("toNode", "n2");
+    edges.set(id, held);
+  }
+
+  const deleted = doc.getMap<unknown>("deleted");
+  deleted.set("n1", { t: 7, by: "peerA", on: true });
+  deleted.set("e1", { t: 7, by: "peerA", on: true });
+  return doc;
+}
+
+describe("WP67 — this file's suppression-aware docRecords() is falsifiable", () => {
+  it("P1 docRecords omits a tombstoned record the raw form hands over, and keeps the live one", () => {
+    const doc = docWithSuppressedRecords();
+
+    // A — the control. The raw pre-WP64 reading reports the deleted records as
+    // present. If either of these ever fails, the injection stopped injecting
+    // and the B half below would be passing vacuously.
+    const raw = rawDocRecordsControl(doc);
+    expect(
+      raw.nodes.map((r) => r.id),
+      "the suppressed node was not in the map to begin with",
+    ).toContain("n1");
+    expect(
+      raw.edges.map((r) => r.id),
+      "the suppressed edge was not in the map to begin with",
+    ).toContain("e1");
+
+    // B — the repaired helper, same doc, same injection.
+    const projected = docRecords(doc);
+    expect(
+      projected.nodes.map((r) => r.id),
+      "a deleted node was handed to the reconcile classifier as live",
+    ).not.toContain("n1");
+    expect(
+      projected.edges.map((r) => r.id),
+      "a deleted edge was handed to the reconcile classifier as live",
+    ).not.toContain("e1");
+
+    // …and suppression is not a blanket: the live records survive intact.
+    expect(projected.nodes.map((r) => r.id), "suppression swallowed a live node").toContain("n2");
+    expect(projected.edges.map((r) => r.id), "suppression swallowed a live edge").toContain("e2");
+    expect(projected.nodes.find((r) => r.id === "n2")?.text).toBe(N2.text);
+
+    doc.destroy();
   });
 });

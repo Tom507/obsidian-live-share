@@ -2,7 +2,14 @@
 // Angle: the visible test covers the default and a normal value. Here the edge is
 // `timeoutMs: 0`, which is a legal value (`t >= 0`) and must NOT collapse to the
 // 2000 default: with zero budget the answer is "true if already idle, false
-// otherwise", decided without waiting.
+// otherwise", decided at the earliest opportunity.
+//
+// WP61 amendment (class A): the advances below were 10 ms, less than one 20 ms
+// poll interval, so the promises never settled and the tests died on vitest's
+// 5 s timeout. `timeoutMs: 0` means "expire at the earliest opportunity", which
+// still costs exactly one poll — `waitQuiescent` sleeps before it evaluates, by
+// WP49 AC1, precisely so a wait can never answer out of pre-call history
+// (T3_SharedContract §6). Every verdict asserted here is unchanged.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
@@ -74,12 +81,14 @@ describe("WP49 AC1 blind1 — timeoutMs boundary values", () => {
       await vi.advanceTimersByTimeAsync(500);
 
       const whenIdle = host.waitQuiescent(0);
-      await vi.advanceTimersByTimeAsync(10);
+      // Exactly one full poll interval: the answer arrives at the first poll,
+      // never before it, and never at the 2000 ms default.
+      await vi.advanceTimersByTimeAsync(20);
       expect(await whenIdle).toEqual({ quiescent: true });
 
       userEdit(doc, "n1", { id: "n1", x: 3, y: 4 });
       const whenBusy = host.waitQuiescent(0);
-      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(20);
       expect(await whenBusy).toEqual({ quiescent: false });
     });
 

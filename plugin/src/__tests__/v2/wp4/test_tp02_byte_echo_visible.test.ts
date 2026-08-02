@@ -148,6 +148,7 @@ describe("WP4 AC2 — byte equality is the echo breaker", () => {
     const persisted = serializeCanvas(
       p.doc.getMap<Y.Map<unknown>>("nodes"),
       p.doc.getMap<Y.Map<unknown>>("edges"),
+      p.doc.getMap<unknown>("deleted"),
     );
     p.vault.files.set(PATH, persisted);
     p.cs.noteExternalDiskWrite(PATH, persisted);

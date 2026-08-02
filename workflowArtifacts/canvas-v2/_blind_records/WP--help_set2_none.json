@@ -1,0 +1,15 @@
+{
+  "wp": "--help",
+  "set": "set2",
+  "framework": "none",
+  "files_staged": 0,
+  "tests_collected": 0,
+  "tests_passed": 0,
+  "tests_failed": 0,
+  "exit_code": null,
+  "verdict": "NO_SUCH_SET",
+  "reason": "no such set on disk: H:\\Developement\\_NeuralAngels\\liveshareCollab\\obsidian-live-share\\workflowArtifacts\\canvas-v2\\tests\\blind_set2\\WP--help",
+  "package": "",
+  "depth": null,
+  "detail": ""
+}

@@ -59,14 +59,18 @@ describe("WP49 AC1 blind2 — a peer tombstone keeps the instance non-quiescent"
     await vi.advanceTimersByTimeAsync(500);
 
     const idle = host.waitQuiescent(0);
-    await vi.advanceTimersByTimeAsync(5);
+    // WP61 amendment (class A): one full 20 ms poll interval. A zero budget
+    // expires at the earliest opportunity, which is the first poll —
+    // `waitQuiescent` sleeps before it evaluates (WP49 AC1), so the previous
+    // 5 ms advance never let this promise settle. Verdict unchanged.
+    await vi.advanceTimersByTimeAsync(20);
     expect(await idle).toEqual({ quiescent: true });
 
     fromPeer(doc, (p) => p.getMap<Y.Map<unknown>>("nodes").delete("n1"));
     expect(doc.getMap<Y.Map<unknown>>("nodes").has("n1")).toBe(false);
 
     const busy = host.waitQuiescent(0);
-    await vi.advanceTimersByTimeAsync(5);
+    await vi.advanceTimersByTimeAsync(20);
     expect(await busy).toEqual({ quiescent: false });
   });
 

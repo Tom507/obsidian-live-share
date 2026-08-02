@@ -114,27 +114,30 @@ function ymapToRecord(ymap: Y.Map<unknown>): CanvasRecord {
 }
 
 /**
- * I3 minimal-diff write — matches `applyKeyDiff` semantics (canvas-sync.ts
- * L172-193): set each key in `next` iff its value differs from current Y state;
- * delete keys present in the ymap but absent from `next`. Returns whether
- * anything changed (empty diff ⇒ `false` ⇒ no Yjs update is produced).
+ * I3 minimal-diff write — **upsert-only** (WP22 / C22, invariant I7).
  *
- * No geometry-key exception: unlike the file bridge, the binding's `next` is a
- * complete model record, never a partial disk read, so there is no scatter
- * hazard to guard against (SPEC_01 §6.2 wording — no exception).
+ * Set each key in `next` iff its value differs from current Y state. Returns
+ * whether anything changed (empty diff ⇒ `false` ⇒ no Yjs update is produced).
+ *
+ * A key that is present in the ymap but absent from `next` is NOT touched. The
+ * original contract assumed `next` was always a complete model record, so an
+ * absent key could only mean "removed" — that assumption is false. A capture is
+ * a PARTIAL OBSERVATION: an interaction signal may report `{id}` alone, and the
+ * old absent-key sweep then deleted the record's other keys, which is exactly
+ * how a `{id}`-shaped edge signal disconnected a live edge on every replica
+ * (ARCHITECTURE.md Part IX, R1). Absence therefore carries no intent at all.
+ *
+ * Removal is a record-level operation and lives at the one explicit trigger in
+ * `captureLocal` (`change.record === null` ⇒ `map.delete(id)`, a real CRDT
+ * tombstone). Explicit removal of a single optional field is a separate
+ * capability that does not exist in this phase (accepted regression S14, owned
+ * by WP39 AC5) — it is deliberately not smuggled back in here.
  */
 function writeRecordMinimal(ymap: Y.Map<unknown>, next: CanvasRecord): boolean {
   let changed = false;
   for (const [key, value] of Object.entries(next)) {
     if (ymap.get(key) !== value) {
       ymap.set(key, value);
-      changed = true;
-    }
-  }
-  // Snapshot keys first — deleting while iterating a Y.Map is unsafe.
-  for (const key of [...ymap.keys()]) {
-    if (!(key in next)) {
-      ymap.delete(key);
       changed = true;
     }
   }

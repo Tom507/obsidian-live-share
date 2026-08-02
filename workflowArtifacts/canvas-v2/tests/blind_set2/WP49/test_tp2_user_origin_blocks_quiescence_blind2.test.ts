@@ -86,8 +86,20 @@ describe("WP49 AC1 blind2 — the quiet window is re-armed by whichever origin m
     await host.canvasOpen("mixed.canvas");
     await vi.advanceTimersByTimeAsync(400);
 
-    const pending = host.waitQuiescent(120);
-    await vi.advanceTimersByTimeAsync(20);
+    // WP61 repair (class C — unsatisfiable as authored). The edit used to land at
+    // t0+20, the exact tick of the first 20 ms poll; that poll saw 420 ms of idle
+    // and resolved `true` before the `put` on the next line had run, so with the
+    // chartered pollMs=20 / quietWindowMs=50 no implementation could answer
+    // `false`. The edit now lands at t0+10 — strictly inside the pending wait and
+    // before the first poll — and the budget is shorter than the 50 ms quiet
+    // window, so the deadline rather than a settle decides. Poll at t0+20:
+    // idleFor=10 < 50 and 20 < 25, so it keeps waiting; poll at t0+40: idleFor=30
+    // < 50 and 40 >= 25, so it answers false. Verdict kept verbatim, and the test
+    // still goes red if the seam ever ignores user-origin activity (idleFor would
+    // be 420 at the first poll) or if the wait ever evaluates before its first
+    // sleep (idleFor 400 at t0).
+    const pending = host.waitQuiescent(25);
+    await vi.advanceTimersByTimeAsync(10);
     put(doc, "n2", { id: "n2", x: 7, y: 7 }, "canvas-view-user");
     await vi.advanceTimersByTimeAsync(160);
 

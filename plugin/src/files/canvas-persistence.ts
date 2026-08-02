@@ -1,12 +1,18 @@
 import * as Y from "yjs";
 
+import { migrateV1ToV2 } from "../canvas/canvas-schema";
 import {
-  type CanvasData,
   DEBOUNCE_MS,
+  DELETED_MAP_NAME,
+  type FlatCanvasData,
   MAX_WAIT_MS,
-  applyToYMap,
+  type SeedRefusal,
+  SeedRefusalLedger,
   buildCanvasData,
+  decodeCanvasDataToFlat,
+  isSeedRefusalResolved,
   parseCanvas,
+  seedRecordsIntoYMaps,
   serializeCanvas,
 } from "./canvas-sync";
 
@@ -24,9 +30,10 @@ import {
 //
 // Reuse (SPEC_03 §3, RepoMap §3): `buildCanvasData` (dangling-edge-pruned
 // serializer), `serializeCanvas` (= JSON.stringify(buildCanvasData, null, "\t")),
-// the `DEBOUNCE_MS`/`MAX_WAIT_MS` trailing+cap debounce constants, `parseCanvas`
-// + `applyToYMap` (geometry-key guard) for the one-time cold-open file parse —
-// all imported from `canvas-sync.ts`, never reimplemented.
+// the `DEBOUNCE_MS`/`MAX_WAIT_MS` trailing+cap debounce constants, and
+// `parseCanvas` + `decodeCanvasDataToFlat` + `seedRecordsIntoYMaps` (WP18's
+// validated, create-once, upsert-only seed writer) for the one-time cold-open
+// file parse — all imported from `canvas-sync.ts`, never reimplemented.
 //
 // Headless discipline (mirrors canvas-binding.ts): no Obsidian runtime import.
 // File I/O, echo-suppression, and the clock/scheduler are injected so the whole
@@ -75,6 +82,12 @@ const REAL_SCHEDULER: PersistenceScheduler = {
  * binding/persistence observer is attached, so the origin is informational. */
 export const CANVAS_SEED_ORIGIN: unique symbol = Symbol("canvas-seed-origin");
 
+/** The migration's transaction-origin stamp, re-exported next to the seed's so
+ * an observer of cold open can import both from one place. It is DEFINED in
+ * `canvas/canvas-schema.ts`, beside the transaction it stamps — this module
+ * imports that one, so declaring it here would close an import cycle. */
+export { CANVAS_MIGRATION_ORIGIN } from "../canvas/canvas-schema";
+
 /** Outcome of the cold-open load decision (SPEC_03 §4). */
 export type ColdOpenResult =
   | "seeded-from-file" // doc was empty → file parsed and seeded into the doc
@@ -97,6 +110,29 @@ export interface CanvasPersistenceOpts {
    * write (`vault-events.ts:121`, unchanged).
    */
   onWritten?: (content: string) => void;
+  /**
+   * WP63 (I11): the per-path refused set this writer must consult before it
+   * overwrites the file.
+   *
+   * Injected rather than owned because the HOST seed refuses records during
+   * `CanvasSync.subscribe`, which runs BEFORE this instance exists — so the
+   * ledger has to be shared with `CanvasSync` (`canvasSync.seedRefusalLedger(path)`).
+   * Omit it and the writer owns a private one, which the cold-open seed fills:
+   * that is the whole mechanism for a guest, and it is why a caller cannot
+   * accidentally opt out of the protection by forgetting to wire anything.
+   */
+  seedRefusals?: SeedRefusalLedger;
+  /**
+   * BUILD_SPEC §8 DISCRIMINATION SEAM — test-only, no production caller.
+   *
+   * `false` restores the pre-WP63 composition exactly: a seed refusal drops the
+   * record from the doc and the very next flush writes that projection over the
+   * user's file, deleting it. AC4's pin runs the same scenario through both
+   * settings and compares the FILE BYTES, so a change that quietly neutralises
+   * the withhold breaks a test instead of going unnoticed. Defaults to armed —
+   * the seam cannot ship switched off.
+   */
+  withholdOnSeedRefusal?: boolean;
 }
 
 export class CanvasPersistence {
@@ -105,6 +141,11 @@ export class CanvasPersistence {
   private readonly diskPath: string;
   private readonly nodesMap: Y.Map<Y.Map<unknown>>;
   private readonly edgesMap: Y.Map<Y.Map<unknown>>;
+  // WP19 AC1/AC3: the tombstone container. The single writer must see it, or the
+  // file keeps a record the doc says is deleted — and, because the same
+  // suppression rule drives the node→edge cascade, keeps that record's edges
+  // too. It is read-only here: `CanvasPersistence` emits zero CRDT writes (I3).
+  private readonly deletedMap: Y.Map<unknown>;
   private readonly scheduler: PersistenceScheduler;
   private readonly settleMs: number;
   private readonly logger?: {
@@ -112,6 +153,13 @@ export class CanvasPersistence {
     warn?(category: string, message: string): void;
   };
   private readonly onWritten?: (content: string) => void;
+  // WP63 (I11): the refused set for THIS path, and the seam that arms the guard.
+  private readonly refusals: SeedRefusalLedger;
+  private readonly withholdOnSeedRefusal: boolean;
+  // The `SEED REFUSED:` line last emitted at warn level, so the arming (and any
+  // later change to the refused set) is narrated exactly once instead of on
+  // every debounced flush.
+  private lastWithholdSignature: string | undefined;
 
   private started = false;
   private destroyed = false;
@@ -146,10 +194,16 @@ export class CanvasPersistence {
     this.diskPath = diskPath;
     this.nodesMap = doc.getMap<Y.Map<unknown>>("nodes");
     this.edgesMap = doc.getMap<Y.Map<unknown>>("edges");
+    this.deletedMap = doc.getMap<unknown>(DELETED_MAP_NAME);
     this.scheduler = opts.scheduler ?? REAL_SCHEDULER;
     this.settleMs = opts.settleMs ?? DISK_WRITE_SETTLE_MS;
     this.logger = opts.logger;
     this.onWritten = opts.onWritten;
+    // A rebuilt persistence instance with no shared ledger starts with an EMPTY
+    // refused set by construction (charter §5: the predicate is about THIS
+    // session's refusals for this path).
+    this.refusals = opts.seedRefusals ?? new SeedRefusalLedger();
+    this.withholdOnSeedRefusal = opts.withholdOnSeedRefusal ?? true;
   }
 
   /**
@@ -164,6 +218,11 @@ export class CanvasPersistence {
     this.started = true;
     this.nodesMap.observeDeep(this.observer);
     this.edgesMap.observeDeep(this.observer);
+    // WP19 AC1: a delete now writes ONLY to the tombstone container, so a writer
+    // that observed the two record maps alone would never be woken by one and
+    // the deleted card would sit in the user's file until some unrelated edit
+    // happened to trigger a flush.
+    this.deletedMap.observeDeep(this.observer);
   }
 
   private readonly observer = (): void => {
@@ -226,13 +285,84 @@ export class CanvasPersistence {
    */
   private flushToDisk(): Promise<void> {
     if (this.destroyed) return Promise.resolve();
-    const content = serializeCanvas(this.nodesMap, this.edgesMap);
+    // WP63 / I11 — REFUSAL NEVER DESTROYS. The guard sits HERE, ahead of the
+    // serializer, because this is the only place that knows both the refused set
+    // and the impending write. Returning before `serializeCanvas` also means
+    // `lastQueuedContent` never advances past a snapshot that was never written,
+    // so the first flush after the lift is the ordinary canonical projection.
+    if (this.writeIsWithheld()) return Promise.resolve();
+    // WP19 AC1/AC3: the THREE-argument call. A two-argument call suppresses
+    // nothing, so the file would keep every tombstoned record — and every edge
+    // the node→edge cascade is supposed to take with it.
+    const content = serializeCanvas(this.nodesMap, this.edgesMap, this.deletedMap);
     // Skip a redundant write against what is already on disk OR already queued
     // to land there.
     if (this.lastQueuedContent === content) return Promise.resolve();
     this.lastQueuedContent = content;
     this.writeQueue = this.writeQueue.then(() => this.writeSnapshot(content));
     return this.writeQueue;
+  }
+
+  /**
+   * WP63 (I11) — is this path's write-back suspended right now?
+   *
+   * Public so the withhold is observable state rather than an invisible skip
+   * (AC2: "never a silent no-op"). Consulting it does NOT run the lift check; it
+   * reports the state as of the last write attempt, because the lift is bound to
+   * the write trigger and asking a question must not move the mechanism.
+   */
+  isWriteWithheld(): boolean {
+    return this.withholdOnSeedRefusal && this.refusals.hasRefusals();
+  }
+
+  /** The refused set for this path, for narration and for tests. */
+  seedRefusals(): readonly SeedRefusal[] {
+    return this.refusals.list();
+  }
+
+  /**
+   * The withhold decision, taken on every write attempt (AC1–AC3).
+   *
+   * The lift is checked HERE, on the same trigger as the write and never on a
+   * timer, because a withhold that outlives its cause is its own data-loss
+   * class: a canvas stuck withheld stops persisting the user's real edits. So
+   * every write attempt first re-asks whether the refused records have since
+   * become valid, and the moment the set empties the write proceeds normally.
+   *
+   * It is a degrade, not a failure (I5): no throw, no session teardown, nothing
+   * that reaches another path. The observer, the debounce, the CRDT and the
+   * remote deltas all keep running — only the disk write is suspended.
+   */
+  private writeIsWithheld(): boolean {
+    if (!this.withholdOnSeedRefusal) return false;
+    if (!this.refusals.hasRefusals()) return false;
+
+    // AC3: a later delta or a user repair may have made every refused record
+    // valid. Re-ask before deciding, never after.
+    this.refusals.prune((refusal) => isSeedRefusalResolved(this.doc, refusal));
+    if (!this.refusals.hasRefusals()) {
+      this.lastWithholdSignature = undefined;
+      this.logger?.warn?.(
+        "canvas-persistence",
+        `SEED RESTORED: ${this.diskPath} refused set is empty — ` +
+          "resuming the canonical projection write",
+      );
+      return false;
+    }
+
+    const signature =
+      `SEED REFUSED: ${this.diskPath} write WITHHELD — ` +
+      `${this.refusals.size} refused: ${this.refusals.describe()}`;
+    if (signature !== this.lastWithholdSignature) {
+      // The arming, and any later change to the refused set, is the event.
+      this.lastWithholdSignature = signature;
+      this.logger?.warn?.("canvas-persistence", signature);
+    } else {
+      // Every subsequent withheld flush is still narrated — quieter, but never
+      // silent.
+      this.logger?.debug("canvas-persistence", signature);
+    }
+    return true;
   }
 
   /** One queued disk write, wrapped in the echo-suppression window. */
@@ -299,29 +429,103 @@ export class CanvasPersistence {
    *
    *  - Doc NON-EMPTY → the doc wins: the file is NOT read (no file→CRDT input).
    *    The stale file is overwritten from the doc so disk reflects shared truth.
-   *  - Doc EMPTY + file present & non-empty → read the file ONCE, parse it with
-   *    the retained geometry-key guard (`applyToYMap`), and seed it into the doc
-   *    under `CANVAS_SEED_ORIGIN`. This is the only file→CRDT read, and it happens
+   *  - Doc EMPTY + file present & non-empty → read the file ONCE and seed it
+   *    into the doc under `CANVAS_SEED_ORIGIN` through WP18's validated
+   *    create-once writer. This is the only file→CRDT read, and it happens
    *    exactly once, before any concurrent editing.
    *  - Doc EMPTY + file missing/empty → nothing to do.
+   *
+   * WP18: the V1→V2 migration runs LAST, AFTER any seeding — see
+   * {@link migrateRecordBearingDoc}.
    *
    * The caller then binds (with `seedModelFromDoc: true`) and calls `start()`.
    */
   async coldOpen(seedOrigin: symbol = CANVAS_SEED_ORIGIN): Promise<ColdOpenResult> {
     if (this.destroyed) return "empty";
+
     const docNonEmpty = this.nodesMap.size > 0 || this.edgesMap.size > 0;
     if (docNonEmpty) {
-      // Doc wins. Never read the file. Overwrite the (possibly stale) file so disk
-      // matches shared truth. This write reads only the doc — no file→CRDT read.
+      // Doc wins. Never read the file. Migrate what the relay handed us, THEN
+      // overwrite the (possibly stale) file so disk matches shared truth — in
+      // that order, so the snapshot that reaches disk is the post-migration one
+      // and a second cold open has nothing left to write.
+      this.migrateRecordBearingDoc();
       await this.flush();
       return "doc-wins";
     }
     if (!(await this.io.exists(this.diskPath))) return "empty";
     const content = await this.io.read(this.diskPath);
-    const data = parseCanvas(content);
-    if (isCanvasDataEmpty(data)) return "empty";
-    seedDocFromCanvasData(this.doc, data, seedOrigin);
+    // WP16's decode bridge stays: the seed writes the FLAT file shape, exactly
+    // as it did before WP18. The migration below is what makes the doc V2, and
+    // it runs after this, so nothing lands behind its one-shot guard.
+    const data = decodeCanvasDataToFlat(parseCanvas(content));
+    if (isFlatCanvasDataEmpty(data)) return "empty";
+    this.seedDocFromCanvasData(data, seedOrigin);
+    this.migrateRecordBearingDoc();
     return "seeded-from-file";
+  }
+
+  /**
+   * ── WP18: THE V1→V2 MIGRATION CALL SITE (WP8's open HIGH risk) ────────────
+   *
+   * `migrateV1ToV2` was landed, unit-proven and idempotent — and had NO
+   * production caller, so "an existing V1 canvas doc opens as a valid V2 doc"
+   * was never achieved end to end. Cold open is the one moment a doc is in this
+   * client's hands with no editing in flight, so it is where the translation
+   * belongs.
+   *
+   * TWO PLACEMENT RULES, and both are load-bearing:
+   *
+   *   ├── AFTER the seed, never before. `migrateV1ToV2`'s guard is ONE-SHOT on
+   *   │   the presence of `meta`, so anything written after the stamp is
+   *   │   untranslatable forever. Seeding first and migrating second means the
+   *   │   seed keeps writing the flat file vocabulary every pre-V2 reader still
+   *   │   expects, and the migration then translates exactly what was just
+   *   │   written. On the doc-wins branch there is nothing to seed, so the two
+   *   │   orderings coincide — which is why ONE post-condition covers both
+   *   │   branches (charter §7 TC11).
+   *   └── ONLY on a doc that actually holds records. Stamping `meta` on an
+   *       empty doc would manufacture a schema claim about a board with no
+   *       content — and would make the "empty" cold open emit a CRDT delta,
+   *       which is the one thing this class must never do outside a seed.
+   *
+   * Two properties it must not lose, both enforced inside `migrateV1ToV2`:
+   *   ├── it is guarded BEFORE its transaction, so an already-V2 doc produces
+   *   │   zero delta and fires no `update` — otherwise every join of every
+   *   │   board would echo a same-value rewrite to every peer (WP8 AC3). A
+   *   │   second cold open therefore finds `meta` present and no-ops.
+   *   └── it is purely ADDITIVE. It never deletes the flat V1 keys it just
+   *       translated: `encodeStateAsUpdate` always ships the doc's WHOLE delete
+   *       set, so a single `delete()` would make every later update non-empty
+   *       forever and the zero-delta property could never be shown again.
+   */
+  private migrateRecordBearingDoc(): void {
+    if (this.nodesMap.size === 0 && this.edgesMap.size === 0) return;
+    migrateV1ToV2(this.doc);
+  }
+
+  /**
+   * WP18 AC1 — the COLD-OPEN SEED write boundary.
+   *
+   * The write itself (validation, create-once, upsert-only, one transaction)
+   * belongs to `seedRecordsIntoYMaps`, which lives next to the host seed's
+   * sibling logic so the two boundaries cannot drift apart. All this adds is the
+   * narration: a refusal is signed with the boundary and the reason, on the same
+   * `<NAME> signature: …` line shape the rest of the canvas path uses.
+   *
+   * WP63 (I11): it also RECORDS those refusals for the write path. The ledger is
+   * reset first — this is a re-seed of the path, so whatever a previous seed
+   * decided about it is stale, and carrying an old verdict forward would leave a
+   * canvas withheld for a record the file no longer even proposes.
+   */
+  private seedDocFromCanvasData(data: FlatCanvasData, seedOrigin: symbol): void {
+    const refusals: SeedRefusal[] = [];
+    this.refusals.reset();
+    this.lastWithholdSignature = undefined;
+    for (const signature of seedRecordsIntoYMaps(this.doc, data, seedOrigin, refusals)) {
+      this.logger?.warn?.("canvas-persistence", signature);
+    }
+    this.refusals.note(refusals);
   }
 
   /** SPEC_03 §6.4-equivalent teardown: stop observing, cancel timers, go inert. */
@@ -331,6 +535,7 @@ export class CanvasPersistence {
     if (this.started) {
       this.nodesMap.unobserveDeep(this.observer);
       this.edgesMap.unobserveDeep(this.observer);
+      this.deletedMap.unobserveDeep(this.observer);
     }
     if (this.writeTimer !== undefined) {
       this.scheduler.clearTimeout(this.writeTimer);
@@ -350,37 +555,8 @@ export class CanvasPersistence {
   }
 }
 
-function isCanvasDataEmpty(data: CanvasData): boolean {
+function isFlatCanvasDataEmpty(data: FlatCanvasData): boolean {
   return Object.keys(data.nodes).length === 0 && Object.keys(data.edges).length === 0;
-}
-
-/**
- * Seed parsed `.canvas` data into an (empty) doc under `seedOrigin`. Reuses
- * `applyToYMap` so the geometry-key guard (SPEC_03 §4 / v0.5.6) is retained for
- * this one-time file parse: a partial disk read can never strip x/y/w/h from a
- * seeded node. Wrapped in a single transaction.
- */
-function seedDocFromCanvasData(doc: Y.Doc, data: CanvasData, seedOrigin: symbol): void {
-  doc.transact(() => {
-    const nodesMap = doc.getMap<Y.Map<unknown>>("nodes");
-    const edgesMap = doc.getMap<Y.Map<unknown>>("edges");
-    for (const [id, node] of Object.entries(data.nodes)) {
-      let yNode = nodesMap.get(id);
-      if (!yNode) {
-        yNode = new Y.Map<unknown>();
-        nodesMap.set(id, yNode);
-      }
-      applyToYMap(yNode, node);
-    }
-    for (const [id, edge] of Object.entries(data.edges)) {
-      let yEdge = edgesMap.get(id);
-      if (!yEdge) {
-        yEdge = new Y.Map<unknown>();
-        edgesMap.set(id, yEdge);
-      }
-      applyToYMap(yEdge, edge);
-    }
-  }, seedOrigin);
 }
 
 // Re-export the pruned serializer so a wiring layer can snapshot without reaching

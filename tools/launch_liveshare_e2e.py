@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""WP6 — Two-instance liveshare-e2e launcher (US6).
+"""WP6 — Two-instance liveshare-e2e launcher (US6). **THE HEADLESS MOCK RIG.**
+
+D13 (WP45): this launcher is the fast *headless mock* rig and **cannot satisfy the
+CONCEPT_V2 Teil-14 gate**. It aliases the `obsidian` module to
+`plugin/src/__mocks__/obsidian.ts` (see OBSIDIAN_MOCK below and the `--alias:obsidian=`
+flag in build_bundle) and boots two lightweight plugin hosts — no real Obsidian process,
+no real vault, no real Canvas view is involved anywhere in a run. A green run here is
+still valuable and this path is deliberately kept, but it may never be recorded as
+satisfying WP7, WP40 or WP54. The rig that can is `tools/launch_obsidian_e2e.py`
+(rig_kind `real-obsidian`, control ports 39431/39432 — disjoint from this rig's
+39421/39422 precisely so the two can never be confused).
 
 Boots TWO lightweight plugin hosts (A + B) on distinct control ports against one
 local relay, prints both control ports + the shared room id, and stays alive
@@ -36,6 +46,28 @@ from pathlib import Path
 
 # tools/launch_liveshare_e2e.py  ->  repo root is the parent of tools/
 REPO_ROOT = Path(__file__).resolve().parent.parent
+TOOLS_DIR = Path(__file__).resolve().parent
+
+# T3_SharedContract §0.2 — the one sanctioned import form. `import tools.obsidian_e2e`
+# resolves to the *workspace* `tools` package in this environment, so the repo's own
+# tools/ goes on sys.path and the package is imported top-level. The rig kind is read
+# from the owning module (WP43); it is never re-declared here (contract §8).
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+from obsidian_e2e import constants as _t3_constants  # noqa: E402
+
+#: D13 — every artefact this rig produces carries this kind, so a headless run record can
+#: never be mistaken for a real-Obsidian one.
+RIG_KIND = _t3_constants.RIG_KIND_HEADLESS_MOCK
+
+#: Printed on every run and carried in --help. Two rigs, one gate: say which this is.
+HEADLESS_BANNER = (
+    "HEADLESS MOCK RIG (rig_kind=headless-mock). This launcher boots two lightweight "
+    "plugin hosts with the obsidian module aliased to plugin/src/__mocks__/obsidian.ts. "
+    "It runs no real Obsidian and no real vault, so it CANNOT SATISFY the Teil-14 "
+    "real-Obsidian gate (D13) and a green run here may not be recorded against WP7, WP40 "
+    "or WP54. Use tools/launch_obsidian_e2e.py for the real rig."
+)
 PLUGIN_DIR = REPO_ROOT / "plugin"
 SERVER_DIR = REPO_ROOT / "server"
 ENTRY_TS = PLUGIN_DIR / "src" / "__tests__" / "e2e" / "launch-entry.ts"
@@ -159,7 +191,14 @@ def run_bundle(env_overrides: dict[str, str]) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="liveshare-e2e two-instance launcher (WP6)")
+    ap = argparse.ArgumentParser(
+        # ASCII only: this banner is printed on consoles whose code page is not UTF-8.
+        description=f"liveshare-e2e two-instance launcher (WP6) - {HEADLESS_BANNER}",
+        epilog=(
+            "The real-Obsidian rig is tools/launch_obsidian_e2e.py "
+            f"(rig_kind={_t3_constants.RIG_KIND_REAL_OBSIDIAN})."
+        ),
+    )
     ap.add_argument("--port-a", type=int, help="control port for host A (default 39421)")
     ap.add_argument("--port-b", type=int, help="control port for host B (default 39422)")
     ap.add_argument(
@@ -170,6 +209,9 @@ def main() -> int:
     ap.add_argument("--room-name", type=str, help="relay room name (default auto)")
     ap.add_argument("--skip-build", action="store_true", help="reuse the existing bundle")
     args = ap.parse_args()
+
+    print(f"[launcher] rig_kind={RIG_KIND}")
+    print(f"[launcher] {HEADLESS_BANNER}")
 
     preflight()
     if not args.skip_build or not OUT_BUNDLE.is_file() or not RUN_SHIM.is_file():

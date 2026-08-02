@@ -27,6 +27,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
 import { planReconcile } from "../canvas/reconcile-plan";
+// WP19 AC1: a delete is a tombstone value, so "it was deleted" is read as
+// suppression + absence from the projection, never as a missing key.
+import { isTombstoneSuppressed, readTombstoneEntry } from "../canvas/canvas-tombstone";
 import {
   CanvasPersistence,
   type PersistenceIO,
@@ -139,6 +142,30 @@ function docRecords(doc: Y.Doc, which: "nodes" | "edges"): Record<string, Record
   return out;
 }
 
+// WP64 — `docRecords` above iterates the RAW map and never consults `deleted`.
+// Post-WP19 that makes it blind to suppression: a record can be PRESENT and
+// DELETED, so `docRecords(...).x` being defined no longer proves the record
+// survived. `docRecords` is deliberately left as it is — every remaining use of
+// it is a FIELD-VALUE read (`.text`, `.fromNode`, an exact-object compare) or an
+// absence check, and blindness to suppression is harmless in both. The two
+// helpers below are its tombstone-aware siblings, and every SURVIVAL assertion
+// uses them instead.
+
+/** Is `id` currently suppressed (deleted or quarantined) in `doc`? */
+function isRecordSuppressedInDoc(doc: Y.Doc, id: string): boolean {
+  return isTombstoneSuppressed(readTombstoneEntry(doc.getMap<unknown>("deleted"), id));
+}
+
+/** The ids the canvas PROJECTION actually shows — i.e. what the user still sees. */
+function visibleRecordIds(doc: Y.Doc, which: "nodes" | "edges"): string[] {
+  const data = buildCanvasData(
+    doc.getMap<Y.Map<unknown>>("nodes"),
+    doc.getMap<Y.Map<unknown>>("edges"),
+    doc.getMap<unknown>("deleted"),
+  );
+  return (which === "nodes" ? data.nodes : data.edges).map((record) => String(record.id));
+}
+
 /**
  * A subscribed, wired `CanvasSync` over a real doc, with the disk file and the
  * three-way-diff baseline both set to `initialJson`. This is the state the
@@ -170,10 +197,15 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
     // CRDT holds the full edge. The local file holds a TRUNCATED edge, and the
     // diff baseline does NOT contain the edge at all -> `!baseObj && existing`
     // -> the full-merge `applyToYMap` branch, which deletes unlisted keys.
+    // WP64 fixture completion — a `type:"text"` node with no `text` is refused
+    // at the C18 ingest boundary (MISSING_TYPE_SPECIFIC), so these nodes never
+    // reached the doc and this test ran against an EMPTY node map. Measured:
+    // `nodes=[] edges=["e1"]`. With no visible endpoint the edge is also absent
+    // from the projection, which makes every visibility oracle unassertable here.
     const full = canvasJson(
       [
-        { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
-        { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
+        { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "one" },
+        { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50, text: "two" },
       ],
       [{ id: "e1", fromNode: "n1", toNode: "n2", fromSide: "right", toSide: "left" }],
     );
@@ -182,8 +214,8 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
     // Baseline = a file WITHOUT the edge (so baseObj is undefined for e1).
     const noEdge = canvasJson(
       [
-        { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
-        { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
+        { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "one" },
+        { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50, text: "two" },
       ],
       [],
     );
@@ -198,8 +230,8 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
       PATH,
       canvasJson(
         [
-          { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
-          { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
+          { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "one" },
+          { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50, text: "two" },
         ],
         [{ id: "e1", color: "3" }],
       ),
@@ -208,6 +240,17 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
 
     const e1 = docRecords(t.doc, "edges").e1;
     expect(e1, "edge e1 vanished from the CRDT entirely").toBeDefined();
+    // WP64 — the diff baseline OMITS this edge, and per WP19 an omitting save is
+    // a DIRECT delete that writes a tombstone. Key presence and intact endpoints
+    // both survive that, so survival is read from the projection as well.
+    expect(
+      isRecordSuppressedInDoc(t.doc, "e1"),
+      "the stale disk read TOMBSTONED edge e1",
+    ).toBe(false);
+    expect(
+      visibleRecordIds(t.doc, "edges"),
+      "edge e1 is no longer on the canvas after the stale disk read",
+    ).toContain("e1");
     expect(e1.fromNode, "fromNode was deleted through applyToYMap").toBe("n1");
     expect(e1.toNode, "toNode was deleted through applyToYMap").toBe("n2");
     // ...and the non-protected key the "user" set still landed.
@@ -310,7 +353,7 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
   });
 
   it("A6 US3 AC11: a node's `type` survives BOTH delete paths", async () => {
-    const full = canvasJson([{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 }], []);
+    const full = canvasJson([{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "" }], []);
     const t = await makeSubscribedCanvas(full);
     // applyKeyDiff path (baseObj present).
     t.vault.files.set(PATH, canvasJson([{ id: "n1", x: 5, y: 0, width: 100, height: 50 }], []));
@@ -349,9 +392,36 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
       canvasJson([{ id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 }], []),
     );
     await t.cs.handleLocalModify(PATH);
-    expect(docRecords(t.doc, "nodes").n1, "deleting a whole node was blocked").toBeUndefined();
-    // GAP-5 cascade: the edge that referenced it is gone too.
-    expect(docRecords(t.doc, "edges").e1, "dangling edge survived the node delete").toBeUndefined();
+    const a7Deleted = t.doc.getMap<unknown>("deleted");
+    const a7Projected = buildCanvasData(
+      t.doc.getMap<Y.Map<unknown>>("nodes"),
+      t.doc.getMap<Y.Map<unknown>>("edges"),
+      a7Deleted,
+    );
+    // WP19 AC1: the whole-record delete still happens — spelled as a tombstone.
+    expect(
+      isTombstoneSuppressed(readTombstoneEntry(a7Deleted, "n1")),
+      "deleting a whole node was blocked",
+    ).toBe(true);
+    expect(a7Projected.nodes.map((n) => n.id)).not.toContain("n1");
+    // The edge is gone from the projection (AC3), and that is now the ONLY
+    // place it is gone from.
+    expect(a7Projected.edges, "dangling edge survived the node delete").toEqual([]);
+    // AC1: nothing was destroyed — the edge's container and EVERY field value
+    // survive verbatim, which is what makes the delete undoable.
+    expect(docRecords(t.doc, "edges").e1).toEqual({
+      id: "e1",
+      fromNode: "n1",
+      fromSide: "right",
+      toNode: "n2",
+      toSide: "left",
+    });
+    // NOTE (measured, not assumed): this fixture's nodes never reach the doc at
+    // all — C18 AC1 refuses both at the host-seed boundary with
+    // `MISSING_TYPE_SPECIFIC`, because a `type:"text"` node carries no `text`.
+    // So the node half of this probe cannot pin container survival, and the
+    // tombstone assertion above is its only non-vacuous node oracle. Completing
+    // the fixture is the WP18 fixture-completion class / WP64, not this licence.
     t.cs.destroy();
     t.fileOps.destroy();
   });
@@ -552,8 +622,8 @@ describe("W4 L2-C — one writer reaches disk under a live edit", () => {
     const vault = createVault({
       [PATH]: canvasJson(
         [
-          { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
-          { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
+          { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "" },
+          { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50, text: "" },
         ],
         [{ id: "e1", fromNode: "n1", toNode: "n2", fromSide: "right", toSide: "left" }],
       ),
@@ -598,7 +668,7 @@ describe("W4 L2-C — one writer reaches disk under a live edit", () => {
 
   it("C2 noteExternalDiskWrite opens CanvasSync's echo window and advances its baseline", async () => {
     const vault = createVault({
-      [PATH]: canvasJson([{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 }], []),
+      [PATH]: canvasJson([{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "" }], []),
     });
     const syncManager = createSyncManager();
     const fileOps = createRealFileOps();
@@ -611,9 +681,15 @@ describe("W4 L2-C — one writer reaches disk under a live edit", () => {
     applyRemoteDelta(doc, (nodes) => {
       (nodes.get("n1") as Y.Map<unknown>).set("x", 42);
     });
+    // WP64 — 3-arg: these are the bytes the single writer would have put on
+    // disk, and production serialises WITH the tombstone map. A 2-arg call would
+    // seed the echo baseline with a record production suppresses, so the
+    // "disk == shared state" no-op below would be comparing against bytes that
+    // never existed.
     const written = serializeCanvas(
       doc.getMap<Y.Map<unknown>>("nodes"),
       doc.getMap<Y.Map<unknown>>("edges"),
+      doc.getMap<unknown>("deleted"),
     );
     vault.files.set(PATH, written);
     cs.noteExternalDiskWrite(PATH, written);
@@ -947,6 +1023,16 @@ describe("W4 L2-E — coldOpen", () => {
       docRecords(doc, "nodes").local1,
       "the guest's local content was silently excluded from the room",
     ).toBeDefined();
+    // WP64 — "seeded into the room" must mean VISIBLE in the room. A seed that
+    // created the container and tombstoned it satisfies both lines around this.
+    expect(
+      isRecordSuppressedInDoc(doc, "local1"),
+      "the guest's local content was seeded into the room already TOMBSTONED",
+    ).toBe(false);
+    expect(
+      visibleRecordIds(doc, "nodes"),
+      "the guest's local content is not on the room's canvas",
+    ).toContain("local1");
     expect(docRecords(doc, "nodes").local1.text).toBe("mine");
     persistence.destroy();
     fileOps.destroy();
@@ -1225,43 +1311,6 @@ describe("W4 L4 — WP4 lock seam and baseline hold", () => {
     return t;
   }
 
-  it("G1 an edge whose ENDPOINT a peer holds is not written, and the baseline is HELD", async () => {
-    const t = await lockFixture();
-    t.cs.setCanWriteNode((_p, id) => id !== "n2"); // peer holds n2
-
-    t.vault.files.set(
-      PATH,
-      canvasJson(
-        [
-          { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
-          { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
-        ],
-        [{ id: "e1", fromNode: "n1", toNode: "n2", fromSide: "right", toSide: "left", color: "6" }],
-      ),
-    );
-    await t.cs.handleLocalModify(PATH);
-
-    expect(docRecords(t.doc, "edges").e1.color, "an edge write slipped past the lock seam")
-      .toBeUndefined();
-    expect(t.warns.some((m) => m.startsWith("LOCK DENIED:") && m.includes("e1"))).toBe(true);
-
-    // Idempotence: the same disk content is re-detected and still not pushed.
-    t.warns.length = 0;
-    await t.cs.handleLocalModify(PATH);
-    expect(docRecords(t.doc, "edges").e1.color).toBeUndefined();
-    expect(
-      t.warns.some((m) => m.startsWith("LOCK DENIED:")),
-      "the baseline advanced — the divergence became invisible",
-    ).toBe(true);
-
-    // Once the peer releases the lock the SAME pending edit finally lands.
-    t.cs.setCanWriteNode(() => true);
-    await t.cs.handleLocalModify(PATH);
-    expect(docRecords(t.doc, "edges").e1.color, "the held edit was lost, not retried").toBe("6");
-    t.cs.destroy();
-    t.fileOps.destroy();
-  });
-
   it("G2 D1 regression guard: a changed-and-present edge merges PER KEY, keeping a peer's concurrent key", async () => {
     const t = await lockFixture();
     // A peer concurrently sets `color` on e1 (present in the CRDT, absent from
@@ -1352,9 +1401,14 @@ describe("W4 L4 — WP4 lock seam and baseline hold", () => {
       nodes.set("n1", remoteRecord({ id: "n1", type: "text", x: 0, y: 0, width: 1, height: 1 }));
       edges.set("e1", remoteRecord({ id: "e1", fromNode: "n1", toNode: "ghost" }));
     });
+    // WP64 — 3-arg: the dangling-edge prune and the AC2 suppression cascade read
+    // ONE visible-node set, so this probe must exercise the same call shape
+    // production uses. (No tombstone exists in this fixture; the prune here is
+    // the ghost endpoint, not a suppression.)
     const data = buildCanvasData(
       doc.getMap<Y.Map<unknown>>("nodes"),
       doc.getMap<Y.Map<unknown>>("edges"),
+      doc.getMap<unknown>("deleted"),
     );
     expect(data.edges, "a dangling edge reached the serializer").toHaveLength(0);
   });
@@ -1512,6 +1566,16 @@ describe("W4 REVALIDATION K — manifest.syncFromManifest, the 4th entry point",
       docRecords(doc, "nodes").n1,
       "the guest's local canvas never reached the room",
     ).toBeDefined();
+    // WP64 — this test's subject is PERMANENT LOSS, so its survival oracle must
+    // see the one spelling of loss that leaves the container behind.
+    expect(
+      isRecordSuppressedInDoc(doc, "n1"),
+      "the self-heal seeded the guest's canvas back as a TOMBSTONED record — still permanent loss",
+    ).toBe(false);
+    expect(
+      visibleRecordIds(doc, "nodes"),
+      "the guest's canvas is not visible in the room after the self-heal",
+    ).toContain("n1");
     expect(docRecords(doc, "nodes").n1.text).toBe("mine");
 
     persistence.destroy();

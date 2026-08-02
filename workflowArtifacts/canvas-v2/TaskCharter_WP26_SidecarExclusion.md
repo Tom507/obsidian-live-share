@@ -1,6 +1,6 @@
 # Task Charter — WP26: Sidecar exclusion
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `TESTS_ADDED`
 **WP:** WP26
 **Phase:** P2
 **task_mode:** `standard`
@@ -118,13 +118,94 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+Suite root: `plugin/src/__tests__/v2/wp26/`. Nine test files, 46 assertions, all currently
+RED except the AC4 characterisations, the positive controls and the AC3 structural claims
+that already hold.
+
+### 7.0 — What WP26 consumes, and the two facts the charter body does not carry
+
+- **WP24 owns the predicate.** `SIDECAR_DIR` and `isSidecarPath(path)` live in
+  `plugin/src/files/canvas-sidecar.ts`. WP26 imports them. It must not re-spell
+  `.obsidian/liveshare/state`, must not write its own prefix/suffix test, and must not
+  add a second constant. The whole suite imports the same two symbols.
+- **`isTextFile` already hides most sidecar paths.** `"json"` is in `TEXT_EXTENSIONS`;
+  `"yhistory"` and `"ycheckpoint"` are not. Three of the five consumers therefore stop a
+  `.yhistory` entry one line before the exclusion is consulted. Every test below uses
+  `sidecarIndexPath()` (`.../index.json`) or a `.md` under the directory as its
+  discriminating input — a suite built on `.yhistory` alone would be green against an
+  untouched tree.
+- **There are FIVE consumers, not four.** The charter §2 list is missing two:
+  `ManifestManager.isSharedPath` → `ExclusionManager.isExcluded` (`manifest.ts:321`,
+  named by the Shared Ownership Contract §5), and `BackgroundSync.handleLocalTextModify`,
+  which is where AC2's third verb ("modifying") lands.
+- **`handleLocalTextModify` must NOT be guarded with `skipsAutoTextSync`.**
+  `vault-events.ts:250-256` deliberately routes a non-CanvasSync-owned `.canvas` into it —
+  that is the local-edit half of the announced R10 text fallback. Guarding it with the
+  canvas predicate turns the fallback read-only and violates AC4. Use the sidecar
+  predicate alone there. TC5 holds this line.
+
+### TC1 — `startAll` / manifest replay does not subscribe a sidecar path
+- Verifies AC: AC1, AC2
+- Test file: plugin/src/__tests__/v2/wp26/test_tp01_startall_manifest_replay_visible.test.ts
+- What it checks: replaying a manifest that mixes sidecar and ordinary entries asks `getDoc` for none of the sidecar paths, installs no observer and writes no disk bytes under the sidecar directory, while the markdown entry in the same manifest and the prefix-sharing sibling `.../stateful/notes.md` are both subscribed normally.
+- Test data channel: fixture (a hand-built manifest whose keys come from WP24's path helpers)
+
+### TC2 — `onFileAdded` (the CREATE door) refuses every sidecar path
+- Verifies AC: AC1, AC2
+- Test file: plugin/src/__tests__/v2/wp26/test_tp02_on_file_added_visible.test.ts
+- What it checks: creating `index.json`, a deep `.md` and a `.ycheckpoint` under the sidecar directory produces no doc, no observer, no `subscribing` entry and no disk write, including for the backslash spelling a Windows or remote caller produces, while a markdown create and both near-miss neighbours (one directory above, and `.../stateful/`) still install text sync.
+- Test data channel: fixture (WP24 path helpers plus paths composed from `SIDECAR_DIR`)
+
+### TC3 — `onFileRenamed` in both directions
+- Verifies AC: AC1, AC2, AC4
+- Test file: plugin/src/__tests__/v2/wp26/test_tp03_on_file_renamed_visible.test.ts
+- What it checks: renaming INTO a sidecar path creates no doc for the new path yet still performs the old path's full teardown (`releaseDoc`, observer removed) because the guard sits after it, a sidecar-to-sidecar rename touches neither side, and — the direction an over-broad guard breaks — renaming a sidecar file OUT to an ordinary vault path DOES install text sync.
+- Test data channel: fixture
+
+### TC4 — `syncFromManifest` refuses a peer-published sidecar entry in all three branches
+- Verifies AC: AC1, AC2
+- Test file: plugin/src/__tests__/v2/wp26/test_tp04_sync_from_manifest_visible.test.ts
+- What it checks: a text sidecar entry is neither doc'd nor `vault.create`d, a BINARY sidecar entry is not passed to `requestBinary` (the existing guard's `!entry.binary &&` prefix misses it, and `.yhistory`/`.ycheckpoint` are exactly what `publishManifest` marks binary), a directory entry under the sidecar directory creates no folder (that branch runs *before* the guard), the exclusion does not ride on the `skipText` option, and no sidecar path is ever muted or awaited — each against an ordinary entry in the same manifest that IS materialised, plus an exact `synced` count.
+- Test data channel: fixture (Y.Map manifest seeded per test)
+
+### TC5 — the MODIFY verb, and the R10 fallback that must survive it
+- Verifies AC: AC2, AC4
+- Test file: plugin/src/__tests__/v2/wp26/test_tp05_local_modify_visible.test.ts
+- What it checks: `handleLocalTextModify` on a sidecar path creates no doc, pushes nothing into Y.Text and never calls `manifestManager.updateFile`, while on the same instance an ordinary note and a `.canvas` (the R10 text fallback) both still complete the full local-edit path — which is what forces the guard here to be `isSidecarPath` rather than `skipsAutoTextSync`.
+- Test data channel: fixture (an in-memory disk map read through the vault stub)
+
+### TC6 — the second, independent gate: manifest membership
+- Verifies AC: AC1, AC2
+- Test file: plugin/src/__tests__/v2/wp26/test_tp06_manifest_membership_gate_visible.test.ts
+- What it checks: `isSharedPath` refuses every sidecar path with no `ExclusionManager` installed, with a NON-default `configDir` (the `${configDir}/**` pattern stops covering the fixed `SIDECAR_DIR` literal), and with `sharedFolder` pointing into `.obsidian` — the three configurations that break the coincidence which makes the default-config-dir case pass today — and `publishManifest`, `updateFile` and `addFolder` all agree, while ordinary content and the near-miss siblings stay shared.
+- Test data channel: fixture (vault stub returning a fixed file list; settings built per case)
+
+### TC7 — reachability of the one deliberate non-consumer
+- Verifies AC: AC1
+- Test file: plugin/src/__tests__/v2/wp26/test_tp07_subscribe_reachability_visible.test.ts
+- What it checks: `startAll`, `onFileAdded` and `onFileRenamed` never hand `subscribe()` a sidecar path (observed on a spy that DID see the ordinary paths in the same run), no sidecar doc exists after every guarded entry point has been driven, and — the out-of-scope boundary — `subscribe()` called directly is still the open R10 door for a `.canvas`, which WP33 owns and WP26 must not close.
+- Test data channel: fixture
+
+### TC8 — the predicate's own truth table (AC4's dedicated assertions)
+- Verifies AC: AC4, AC1
+- Test file: plugin/src/__tests__/v2/wp26/test_tp08_canvas_behaviour_unchanged_visible.test.ts
+- What it checks: two frozen lists — every input that returns `true` today because of `.canvas` still does (`.canvas` as a bare filename, `board.md.canvas`, dotfile and deep-path forms), and every near miss that returns `false` still does (`foo.canvas.md`, `notcanvas`, `board.canvas/`, `board.canvas/child.md`, `board.Canvas`) — plus the assertion that no `.canvas` row is also a sidecar path, so the AC4 list cannot be satisfied by the new clause; then the sidecar rows, the sidecar near misses (the directory itself, its trailing-slash form, `.../stateful/`, an embedded copy), and a whole-corpus equivalence to `endsWith(".canvas") || isSidecarPath(path)`.
+- Test data channel: fixture (frozen lists) + deterministic generator (the corpus is composed from `SIDECAR_DIR`)
+
+### TC9 — AC3's source-structure half
+- Verifies AC: AC3
+- Test file: plugin/src/__tests__/v2/wp26/test_tp09_one_predicate_one_definition_visible.test.ts
+- What it checks: the sidecar directory literal is spelt in exactly one production module and `isSidecarPath` is defined exactly once (both in `files/canvas-sidecar.ts`), no module rebuilds the test from the directory's parent, `skipsAutoTextSync` is still a single definition in `utils.ts`, and its contract comment documents the sidecar exclusion (naming `isSidecarPath` or `canvas-sidecar`) and enumerates `background-sync.ts`, `manifest.ts` and every other production module that ends up calling the predicate. Source text is the oracle only for the claims that really are about source; all behaviour is pinned by TC1–TC8.
+- Test data channel: fixture (the production tree itself, located by walking up to the repo root)
 
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+*Empty — none of C26's four acceptance criteria is INTEGRATION_SCOPE. All four are decided
+at unit seams inside `plugin/src/` (a pure predicate, three `BackgroundSync` entry points,
+`ManifestManager.syncFromManifest`/`isSharedPath`, and the module source), so nothing is
+deferred to Worker 4.*
 
 ---
 

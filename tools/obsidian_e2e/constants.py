@@ -13,8 +13,10 @@ beyond reading ``%APPDATA%`` from the environment, and it never writes anything.
 
 from __future__ import annotations
 
+import itertools
 import os
 import secrets
+import threading
 from datetime import datetime, timezone
 
 # ---------------------------------------------------------------------------
@@ -123,14 +125,44 @@ SCRATCH_EXT = ".canvas"
 FINGERPRINT_EXCLUDED = (SCRATCH_FOLDER, PLUGIN_DIR_REL, ".git", ".trash")
 
 
+#: Width of the run-id tail, in hexadecimal digits, and the number of distinct values it
+#: can carry. The shape ``<stamp>-<pid>-<6 hex>`` is pinned by the contract; what the six
+#: digits *carry* is this module's choice.
+RUN_ID_TAIL_HEX_DIGITS = 6
+RUN_ID_TAIL_SPAN = 1 << (4 * RUN_ID_TAIL_HEX_DIGITS)
+
+#: The tail is a **per-process counter**, not a per-call random draw, started at a random
+#: offset. Randomness alone makes uniqueness probabilistic: 6 hex digits are 16.7 million
+#: values, so by the birthday bound a few thousand ids in one process already collide with
+#: near-certainty — which is exactly what a burst of runs, or a test that generates one,
+#: does. A counter cannot repeat within a process at all until it has produced
+#: :data:`RUN_ID_TAIL_SPAN` ids, and the random start keeps two *different* processes that
+#: happen to share a pid (a recycled pid, a container) from marching in lockstep. The lock
+#: makes "cannot repeat" hold across threads, not merely across a single-threaded loop.
+_RUN_ID_LOCK = threading.Lock()
+_RUN_ID_TAIL = itertools.count(secrets.randbits(4 * RUN_ID_TAIL_HEX_DIGITS))
+
+
+def _next_run_id_tail() -> str:
+    """Return the next never-before-used tail for this process, as lowercase hex."""
+    with _RUN_ID_LOCK:
+        ordinal = next(_RUN_ID_TAIL)
+    return f"{ordinal % RUN_ID_TAIL_SPAN:0{RUN_ID_TAIL_HEX_DIGITS}x}"
+
+
 def new_run_id() -> str:
     """Return a fresh run identity: ``<utc timestamp>-<pid>-<6 hex>``.
 
-    Timestamp + pid + 6 random hex means two concurrent runs cannot collide (WP47 AC4).
+    Uniqueness is carried by three independent components and does **not** depend on the
+    clock: the pid separates concurrent processes, the tail separates every id produced
+    inside one process (see :data:`_RUN_ID_TAIL` — a counter, so two ids generated in the
+    same second, the same millisecond or the same loop iteration still differ), and the
+    timestamp is there for human correlation rather than for identity.
+
     One generator for the whole batch: scratch name, marker file and log correlation all
     use this and nothing else.
     """
-    return f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{os.getpid()}-{secrets.token_hex(3)}"
+    return f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{os.getpid()}-{_next_run_id_tail()}"
 
 
 def scratch_rel_path(run_id: str) -> str:

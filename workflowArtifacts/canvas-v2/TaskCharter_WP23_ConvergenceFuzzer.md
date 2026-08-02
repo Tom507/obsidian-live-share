@@ -1,6 +1,6 @@
 # Task Charter — WP23: Convergence fuzzer
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP23
 **Phase:** P1
 **task_mode:** `standard`
@@ -78,7 +78,25 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 3. Runs are reproducible from their seed, and any discovered counter-example is frozen as a named regression test that fails before the fix and passes after it.
 4. The op registry is open for extension so later phases can add ops without modifying the fuzzer core, and every WP in this spec that changes merge or serialisation behaviour is reachable through at least one registered op.
 
-**Definition of Done:** convergence of the V2 model is checked over interleavings, not examples.
+5. **An intent-trace oracle, independent of the implementation's own merge.** For every field the op sequence touched, the converged value on every replica must equal the value written by the **last op on that field under the run's total order**, as computed by the harness from its **own op log** — never read back from the implementation's merge result. **Agreement between replicas is necessary but not sufficient: a run in which all replicas agree on a value that no op ever wrote is a FAILURE, not a pass.** The op registry must include at least one op class that produces a record carrying **both** the flat and the register spelling of the same fact, and one that varies the insertion order of those two keys.
+
+**Definition of Done:** convergence of the V2 model is checked over interleavings, not examples, **and correctness is checked against intent rather than against consensus**.
+
+---
+
+<!-- Updated: AC5 added — the WP18 batch found a real corruption bug that all four existing assertion families were structurally blind to 2026-08-02 -->
+
+### Amendment (2026-08-02, Worker 2). AC5 is new; AC1–AC4 are unchanged. WP23 has not started, so this is a charter extension rather than a reopen.
+
+**Why AC5 exists.** AC2's four assertion families — SEC, schema invariants, byte equality, shadow consistency — share one blind spot: **all four are satisfied when every replica converges on the same *wrong* value.**
+
+This is not hypothetical. Worker 3's WP18 batch found and fixed a real corruption bug of exactly that shape: the doc→file decode resolved flat-vs-register collisions by `Y.Map` **insertion order**, so a moved card could snap back to its pre-move coordinate — on **every** replica. SEC held. The schema held. The bytes were byte-identical everywhere. The shadow agreed. Four green assertion families over a corrupted document, and the only reason it was caught at all is that four unrelated example tests happened to pin the value.
+
+**Byte equality is a *convergence* oracle and can never be a *correctness* oracle.** That is "convergence is not correctness" (CONCEPT_V2 Teil 2, W3) turned on the fuzzer's own instruments. AC5 supplies the missing independent basis: the harness's op log is the only source of truth about what the user *meant*, and it must never be derived from what the implementation *did*.
+
+**Two design constraints on AC5, so it cannot be satisfied vacuously:**
+- The expected value must be computed by the harness from its own recorded ops. Reading it back from any replica, or from a "reference" implementation that shares code with the system under test, makes the oracle circular and is a failed implementation of AC5.
+- The registry must reach the collision class deliberately — a record carrying both spellings of the same fact, with the insertion order varied — because that class is invisible to every other assertion family and is now known to be reachable in production.
 
 ---
 
@@ -118,7 +136,26 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+*Filled by the Coder Sub-Agent. 11 visible test files, 30 test cases, all PASS.*
+
+Reusable fuzzer core, kept separable from the suite so AC4 holds structurally:
+`plugin/src/__tests__/harness/fuzz/` - `prng.ts`, `intent-trace.ts`, `op-registry.ts`,
+`replica.ts`, `scheduler.ts`, `oracle.ts`, `fuzzer.ts`, `standard-ops.ts` (2888 lines total).
+The core (`fuzzer.ts`) imports `OpRegistry` as a TYPE only and names no op class anywhere.
+
+| TC | Verifies AC | Test file | What it checks | Test data channel |
+|---|---|---|---|---|
+| TC1 | AC1, AC2, AC5 | `plugin/src/__tests__/v2/wp23/test_tp01_all_families_over_random_interleavings_visible.test.ts` | The fuzzer itself over its budgeted scenario band: 3-5 replicas, random ops from the pluggable registry, random partitions, reordered and duplicated deltas, stale-view Obsidian saves. Asserts all five families on every replica, and that the run was not vacuous (op count, op-class breadth, replica band). | seeded PRNG (`FUZZ_BUDGET`, base seed `0x5eed23`); no fixtures |
+| TC2 | AC1 | `.../test_tp02_three_to_five_replicas_never_two_visible.test.ts` | 3-5 replicas, never 2: an explicit count below 3 is refused by the core; over 32 seeds the drawn count is always in band and all three values occur; every count in the band converges with every family green. | seeded PRNG, base seed `0x230001` |
+| TC3 | AC5 | `.../test_tp03_flat_register_collision_class_visible.test.ts` | The mandated collision class, deterministic: a record carrying BOTH the flat and the register spelling of one fact, register deliberately stale, built in both insertion orders. Asserts the four convergence families are green in both, and that the value is the one the last op AUTHORED. | hand-built records, no randomness |
+| TC4 | AC5 | `.../test_tp04_agreement_is_not_sufficient_visible.test.ts` | Agreement is necessary but not sufficient: replicas converge byte-identically on a value the op log never recorded. The exact family set is `{intent-trace}` - every convergence family is green and the run is a FAILURE anyway. Also the circularity self-test: the expectation is computed with no replica in existence. | hand-built `IntentTrace` + hand-built doc |
+| TC5 | AC3 | `.../test_tp05_reproducible_from_seed_visible.test.ts` | Reproducibility: the PRNG replays exactly; the same seed replays the identical op log, op classes and replica count; for a run with no contested write the converged `.canvas` replays byte for byte; 8 different seeds all steer elsewhere; a failure message carries its seed. | seeded PRNG, base seed `0x230005` |
+| TC6 | AC4 | `.../test_tp06_registry_open_for_extension_visible.test.ts` | Extension without touching the core: an op class defined inside the test file is registered, drawn, run and judged by the oracle. Duplicate names refused. Every WP in `REQUIRED_WP_COVERAGE` reachable. Every op declares `reaches`, and the two absent mechanisms (WP36 text, WP38 undo) are stated as gaps rather than faked. | in-test op definition + seeded PRNG |
+| TC7 | AC2 (SEC); WP19 link | `.../test_tp07_delete_and_undo_reach_sec_visible.test.ts` | Delete and undo both fire over 24 scenarios; every family holds; a suppressed record still HOLDS ITS FIELD CONTAINER on every replica (deletion is a value, not an absence); suppressed-on-disk implies a tombstone entry on every replica. | seeded PRNG, base seed `0x230007` |
+| TC8 | AC2 (schema); WP20 link | `.../test_tp08_quarantine_under_concurrency_visible.test.ts` | A fault-injection op writes an invalid record directly into one replica inside a partitioned window; every replica converges on the same quarantine entry, the record never reaches any file, and a repair lifts the quarantine on every replica. Never asserts which replica's op won. | seeded PRNG, base seed `0x230008` |
+| TC9 | AC2; WP21 link | `.../test_tp09_write_gate_removal_does_not_change_convergence_visible.test.ts` | Over 32 concurrent interleavings: no write denial (each author's own doc holds its own value), no baseline-hold artefact (replaying the just-saved bytes writes nothing), convergence, and LWW-consistency. The atomic `pos` register converges as ONE author's whole `[x, y]`. Never asserts the winner. | seeded PRNG, base seed `0x230009` |
+| TC10 | AC2 (I7); WP22 link | `.../test_tp10_partial_capture_never_removes_a_field_visible.test.ts` | A partial capture observing one field never removes any other, checked on the capturing replica at capture time AND on every integrating replica after quiescence, by whole key set. | seeded PRNG, base seed `0x230010` |
+| TC11 | AC2 (bytes, shadow); WP17 link | `.../test_tp11_byte_identity_and_stale_save_discrimination_visible.test.ts` | Every replica serialises the byte-identical file over 32 scenarios; a save made from a deliberately stale view model has its stale fields DISCARDED, with the `SHADOW STALE:` signature as evidence that the pass actually ran rather than being skipped by the byte echo breaker. | seeded PRNG, base seed `0x230011` |
 
 ---
 
@@ -130,17 +167,17 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** the two existing harnesses (`two-peer.ts`, `canvas-double.ts`) drive the DORMANT `CanvasBinding` with exactly two peers, and every V2 suite is example-based. Nothing exercised the live V2 path (`CanvasSync` capture + Surface-Shadow + tombstone wiring + quarantine auditor + canonical serializer) over interleavings, and no oracle existed that could disagree with a converged document.
+- **Approach:** a new fuzzer core under `plugin/src/__tests__/harness/fuzz/`, built on real `CanvasSync` replicas rather than on the binding. A run is a sequence of WINDOWS; partitions, delta reordering and delta duplication happen INSIDE a window, and every window ends with a full-mesh quiescence interleaved with the debounced audit flush. A per-window SLOT CLAIM ledger gives every oracle-asserted field a determinate last writer; deliberately concurrent writes are declared CONTESTED and judged by LWW-consistency only. The intent-trace oracle computes its expectations from the harness's own op log, in FILE vocabulary, and imports nothing from the modules under test.
+- **Fallback path if all attempts fail:** not needed - all five ACs met on attempt 1.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** AC1-AC5 all met. 11 visible test files (30 cases), a 16-class pluggable op registry reaching WP4/9/10/12/13/14/17/18/19/20/21/22, and a fault-injection matrix proving the fuzzer bites on four independently injected defects - including the WP18-class insertion-order bug, which the intent-trace oracle catches while all four convergence families stay green.
+- **What remains open:** nothing for WP23. Two registry entries stand in for mechanisms that do not exist yet and say so plainly in their `note` field: collaborative text editing (WP36) and UI undo (WP38). One design observation for Worker 2 is recorded in the implementation report under FINDINGS - it is a P1 consequence of the capture path still authoring the flat vocabulary, not a defect in any landed WP.
+- **Final status:** DONE.
 
 ---
 

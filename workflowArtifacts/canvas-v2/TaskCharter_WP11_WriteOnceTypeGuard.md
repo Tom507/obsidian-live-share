@@ -1,11 +1,11 @@
 # Task Charter — WP11: Write-once `type` guard
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP11
 **Phase:** P1
 **task_mode:** `standard`
 **Depends on:** WP8
-**W4 Test Targets:** `0`
+**W4 Test Targets:** `1`
 
 > **Metadata block** — Worker 3 Core reads only these fields to determine execution order and routing. Worker 4 checks `W4 Test Targets` before deciding whether to read section 7b. Full charter content is loaded by sub-agents in their own context windows.
 
@@ -113,31 +113,51 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ---
 
-## 7. Visible Test Cases / Producer Artifacts
+## 7. Visible Test Cases
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+### TC1 — first write of `type` is accepted
+- Verifies AC: AC1 (first half)
+- Test file: `plugin/src/__tests__/v2/wp11/test_tp01_first_write_accepted_visible.test.ts`
+- What it checks: calling the guard on a record with no `type` yet stores the proposed value and returns an `"accepted"` verdict. State (the record's stored `type`) is the primary oracle, checked alongside the verdict's `kind`.
+- Test data channel: real `Y.Doc` / `Y.Map` record host, node id `"n1"`, proposed value `"text"`.
+
+### TC2 — a later differing write is rejected with a signature
+- Verifies AC: AC1 (second half)
+- Test file: `plugin/src/__tests__/v2/wp11/test_tp02_differing_write_rejected_signature_visible.test.ts`
+- What it checks: after an accepted first write, a second write with a *different* value leaves the stored `type` unchanged (primary oracle), returns a `"rejected"` verdict (primary oracle), fires zero Yjs `update` events, and carries a `signature` string (secondary oracle) that names the record id and the offending proposed value — never asserted as an exact hardcoded string.
+- Test data channel: real `Y.Doc` / `Y.Map`, node id `"n9"`, first value `"text"`, rejected value `"link"`.
+
+### TC3 — a same-value rewrite is a no-op with no delta and no signature
+- Verifies AC: AC2
+- Test file: `plugin/src/__tests__/v2/wp11/test_tp03_same_value_rewrite_noop_no_delta_visible.test.ts`
+- What it checks: re-submitting the identical value after an accepted first write returns a `"noop"` verdict carrying no `signature` field, fires zero `update` events, and produces zero encoded CRDT delta against a state-vector snapshot taken right after the first write (deep-equal on the stored value alone would falsely pass here — Yjs still emits a real delta for a same-value LWW `set`, per the WP8 tp04 precedent).
+- Test data channel: real `Y.Doc` / `Y.Map`, node id `"n5"`, value `"text"` written then re-submitted unchanged.
 
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+### AC3 — `INTEGRATION_SCOPE`
+
+- **AC text:** "A record can never reach the doc without `type` through any local write path."
+- **Why this cannot be proven at unit level:** the guard's own decision function only judges one proposed field write against a record's current state; "any local write path" spans every call site that can create or mutate a record in the doc (the capture path in `canvas-sync.ts`, the eventual ingest boundary). Proving no such path can land a record without `type` requires the write boundaries to actually be wired through the guard — which is explicitly WP18's scope, not WP11's (TaskCharter §2: "Wiring the guard into the write boundaries — that is WP18"). Faking this proof at the unit level (e.g. by asserting only against the guard's own API) would not actually demonstrate the property AC3 claims.
+- **Where it belongs:** W4 / integration testing, once WP18 wires `canvas-type-guard.ts` into the write boundaries.
 
 ---
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** `type` was defended only by `PROTECTED_KEYS` (`canvas-sync.ts:53–62`), a *delete* guard at one call site — it stops the key from being removed but not from being overwritten, and it carries no notion of "already established". `canvas-sync.ts`'s `auditCanvasState` already *detects* the resulting `NO TYPE signature` corruption after the fact, but nothing prevents it.
+- **Approach:** a pure decision function `guardTypeWrite(record, recordId, proposedType)` in the new `plugin/src/canvas/canvas-type-guard.ts`, zero imports beyond `canvas-registers.ts` (`V2_FIELD`, `V2RecordMap`). Three verdicts — `accepted` (the only branch that calls `record.set`), `noop` (same value; no `set`, therefore no CRDT delta and no `signature` key at all), `rejected` (differing or invalid proposal; no `set`, carries the signature). An established `type` is defined as a non-empty string, matching the existing audit's own predicate, so a record already corrupted to `""`/non-string can still be repaired rather than being frozen broken. The verdict is the mechanism; the signature string reuses `canvas-sync.ts`'s `<NAME> signature: …` shape and is emitted by the *caller*, not by this module.
+- **Fallback path if all attempts fail:** n/a — all three visible tests passed on attempt 1.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** `plugin/src/canvas/canvas-type-guard.ts` with `guardTypeWrite`, `TypeWriteVerdict` and `readRecordType`. AC1 and AC2 fully covered; 3/3 visible tests green; `npx tsc -noEmit -skipLibCheck` clean.
+- **What remains open:** AC3 (classified `INTEGRATION_SCOPE` in §7b) — the guard is deliberately NOT wired into any write boundary; that is WP18. `PROTECTED_KEYS` left untouched as defence in depth.
+- **Final status:** `DONE`.
 
 ---
 

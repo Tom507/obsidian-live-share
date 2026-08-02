@@ -23,6 +23,16 @@ from obsidian_e2e import constants, vaults  # noqa: E402
 _PLUGIN_MAIN_REL = getattr(constants, "PLUGIN_MAIN_REL", constants.PLUGIN_DIR_REL + "/main.js")
 
 
+def _failure_names(instance) -> tuple:
+    """Named failure reasons of a descriptor, tolerant of a tuple or a single-value field."""
+    value = getattr(instance, "failures", None)
+    if value is None:
+        value = getattr(instance, "failure", None)
+    if value is None:
+        return ()
+    return (value,) if isinstance(value, str) else tuple(value)
+
+
 def _canonical(value) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(str(value))))
 
@@ -72,8 +82,8 @@ def test_both_roles_resolve_when_registry_uses_posix_separators(tmp_path: Path) 
     assert instance_a.registry_id == "9f00000000000011"
     assert instance_b.registry_id == "9f00000000000022"
     assert instance_a.registry_id != instance_b.registry_id
-    assert constants.VAULT_NOT_IN_REGISTRY not in tuple(instance_a.failures)
-    assert constants.VAULT_NOT_IN_REGISTRY not in tuple(instance_b.failures)
+    assert constants.VAULT_NOT_IN_REGISTRY not in _failure_names(instance_a)
+    assert constants.VAULT_NOT_IN_REGISTRY not in _failure_names(instance_b)
     assert _canonical(instance_a.resolved_path) == _canonical(vault_a)
     assert _canonical(instance_b.resolved_path) == _canonical(vault_b)
     assert instance_b.vault_name == "Team Vault - Kopie"

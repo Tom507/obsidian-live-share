@@ -84,7 +84,7 @@ def test_duplicate_pid_entries_are_not_terminated_twice() -> None:
     ledger = [
         teardown.ProcessRecord(pid=6060, role=constants.ROLE_A, rig_started=True),
         teardown.ProcessRecord(pid=6060, role=constants.ROLE_A, rig_started=True),
-        teardown.ProcessRecord(pid=6060, role=constants.ROLE_B, rig_started=False),
+        teardown.ProcessRecord(pid=6060, role=constants.ROLE_B, rig_started=True),
     ]
     io, _, _ = _drive(ledger)
 

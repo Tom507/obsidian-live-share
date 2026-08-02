@@ -1,6 +1,6 @@
 # Task Charter — WP44: Per-vault control-port provisioning
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP44
 **Phase:** P0 (PHASE T3 group)
 **task_mode:** `standard`

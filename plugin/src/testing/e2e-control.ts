@@ -21,6 +21,7 @@
 // an `E2EControlHost` and is unit-tested WITHOUT a live socket.
 // ===========================================================================
 
+import { createHash } from "node:crypto";
 import type * as http from "node:http";
 import { createServer } from "node:http";
 import * as Y from "yjs";
@@ -60,12 +61,221 @@ export interface BindingCounters {
  * The plugin-facing surface the control server drives. Kept intentionally
  * abstract so the router is testable with a fake host (no plugin, no socket).
  */
+/**
+ * WP46 — build marker appended to `pluginBuild` in `session.info`.
+ *
+ * It exists so a rig can tell an e2e-capable build from a production build by
+ * looking at the answer rather than at the port: a production `main.js` has this
+ * whole module tree-shaken out, so nothing can ever report the marker.
+ * Tests import this constant; they never hardcode the literal.
+ */
+export const E2E_BUILD_MARKER = "e2e";
+
+// ---------------------------------------------------------------------------
+// WP47 — scratch artefacts (T3_SharedContract §5). These three constants are the
+// TS side of the pin; `tools/obsidian_e2e/constants.py` holds the Python side and
+// the two must stay byte-identical. Tests import them; nothing hardcodes the
+// literals.
+// ---------------------------------------------------------------------------
+
+/** Vault-relative, rig-owned folder. The rig owns this FOLDER, never a name. */
+export const SCRATCH_FOLDER = "_e2e-rig";
+export const SCRATCH_PREFIX = "e2e-scratch-";
+export const SCRATCH_EXT = ".canvas";
+/** Empty canvas document written when `scratch.create` is given no `content`. */
+export const DEFAULT_SCRATCH_CONTENT = '{"nodes":[],"edges":[]}';
+
+/**
+ * Is `path` a rig-owned scratch artefact — exactly one level inside the rig folder?
+ *
+ * This is the confinement predicate for AC1 and it is deliberately narrow, because
+ * everything it accepts is something the control surface is willing to write to or
+ * delete. It requires `<SCRATCH_FOLDER>/<SCRATCH_PREFIX><id><SCRATCH_EXT>` with a
+ * non-empty id. Root-level and other-folder look-alikes, nested paths, `..`
+ * traversals, absolute paths, backslash separators, the plugin dir, a missing prefix
+ * and a wrong extension are all refused — so a pre-existing note can never be reached
+ * through this surface, whatever the driver asks for.
+ */
+export function isScratchPath(path: string): boolean {
+  if (typeof path !== "string" || path.length === 0) return false;
+  if (path.includes("\\") || path.includes("\0")) return false;
+
+  const parts = path.split("/");
+  if (parts.length !== 2) return false; // one level deep; kills "/x/y" and "a/b/c"
+
+  const [folder, name] = parts;
+  if (folder !== SCRATCH_FOLDER) return false;
+  if (name === "" || name === "." || name === "..") return false;
+  if (!name.startsWith(SCRATCH_PREFIX) || !name.endsWith(SCRATCH_EXT)) return false;
+
+  const runId = name.slice(SCRATCH_PREFIX.length, name.length - SCRATCH_EXT.length);
+  return runId.length > 0;
+}
+
+/**
+ * The subset of Obsidian's `DataAdapter` the scratch commands need. Declared
+ * structurally so the real `app.vault.adapter` satisfies it as-is and the unit tests
+ * can pass an in-memory fake with no filesystem at all.
+ */
+export interface ScratchAdapterLike {
+  exists(path: string): Promise<boolean>;
+  mkdir(path: string): Promise<void>;
+  write(path: string, data: string): Promise<void>;
+  remove(path: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// WP49 — file-level convergence oracle (T3_SharedContract §6.1 + §7, D17).
+//
+// On the lightweight host the doc IS the system, so a doc-level comparison is a
+// complete oracle. On a real instance the doc, the rendered view and the
+// `.canvas` file are three projections and only the last one is durable: two
+// vaults can hold an identical shared doc while their writers put different
+// bytes on disk. A run in that state has NOT converged, and it must say so
+// under a named reason rather than passing.
+//
+// Everything in this block is pure: no clock, no adapter, no doc.
+// ---------------------------------------------------------------------------
+
+/**
+ * The D17 defect class, mirrored verbatim over the contract §7 enum. The Python
+ * side holds the same literal in `tools/obsidian_e2e/constants.py`; the two must
+ * stay byte-identical. Tests import this constant instead of hardcoding it.
+ */
+export const DOC_CONVERGED_FILE_DIVERGED = "DOC_CONVERGED_FILE_DIVERGED";
+
+/**
+ * Result of the `canvas.file` read-back. `content` is `null` — never `""` — when
+ * the file is absent: that is the only thing distinguishing a missing file from
+ * an empty one, and an oracle that blurs the two is worse than none.
+ */
+export interface CanvasFileResult {
+  exists: boolean;
+  /** Lowercase hex sha256 over the raw bytes; `""` when the file is absent. */
+  sha256: string;
+  /** Byte length on disk; `0` when the file is absent. */
+  size: number;
+  content: string | null;
+}
+
+/** One instance's two projections of the same canvas: the doc and the file. */
+export interface CanvasObservation {
+  doc: {
+    nodes: Record<string, unknown>[];
+    edges: Record<string, unknown>[];
+  };
+  file: CanvasFileResult;
+}
+
+/** Verdict of `evaluateCanvasConvergence`. `reason` is `null` unless D17 applies. */
+export interface CanvasConvergenceVerdict {
+  converged: boolean;
+  docConverged: boolean;
+  fileConverged: boolean;
+  reason: string | null;
+}
+
+/**
+ * Order-independent signature of one flat canvas record: key order is a
+ * serialisation detail and must not change a verdict, so the keys are sorted.
+ */
+function recordSignature(record: Record<string, unknown>): string {
+  const keys = Object.keys(record).sort();
+  return JSON.stringify(keys.map((k) => [k, record[k] ?? null]));
+}
+
+/**
+ * Id-keyed, array-order-independent comparison — the same shape as `_compare` in
+ * the MCP driver. A record without a string `id` falls back to its position, so
+ * an unidentifiable record can never silently match a different one.
+ */
+function sameRecordSet(
+  a: Record<string, unknown>[],
+  b: Record<string, unknown>[],
+): boolean {
+  const index = (records: Record<string, unknown>[]): Map<string, string> => {
+    const out = new Map<string, string>();
+    records.forEach((record, i) => {
+      const id = typeof record.id === "string" ? record.id : `#${i}`;
+      out.set(id, recordSignature(record));
+    });
+    return out;
+  };
+  const left = index(a);
+  const right = index(b);
+  if (left.size !== right.size) return false;
+  for (const [id, signature] of left) {
+    if (right.get(id) !== signature) return false;
+  }
+  return true;
+}
+
+/**
+ * Byte-level agreement of what the two writers produced. Nothing is normalised
+ * here — normalisation is exactly what would hide the divergence this oracle
+ * exists to catch (charter §2 non-goal), so digest, size and content must all
+ * agree, and an existing file never matches an absent one.
+ */
+function sameFileObservation(a: CanvasFileResult, b: CanvasFileResult): boolean {
+  return (
+    a.exists === b.exists &&
+    a.sha256 === b.sha256 &&
+    a.size === b.size &&
+    a.content === b.content
+  );
+}
+
+/**
+ * The convergence verdict over both projections of both instances (AC2 / D17).
+ *
+ * - both agree  → `converged:true`, `reason:null`
+ * - docs agree, files do not → `converged:false`, `reason:DOC_CONVERGED_FILE_DIVERGED`
+ *   (the D17 class: precisely the run a doc-only oracle would have passed)
+ * - docs disagree → `converged:false`, `reason:null` — the doc oracle already
+ *   catches it, so the named reason stays reserved for the case it cannot see.
+ */
+export function evaluateCanvasConvergence(
+  a: CanvasObservation,
+  b: CanvasObservation,
+): CanvasConvergenceVerdict {
+  const docConverged =
+    sameRecordSet(a.doc.nodes, b.doc.nodes) && sameRecordSet(a.doc.edges, b.doc.edges);
+  const fileConverged = sameFileObservation(a.file, b.file);
+  return {
+    converged: docConverged && fileConverged,
+    docConverged,
+    fileConverged,
+    reason: docConverged && !fileConverged ? DOC_CONVERGED_FILE_DIVERGED : null,
+  };
+}
+
+/**
+ * The read-only subset of Obsidian's `DataAdapter` the `canvas.file` read-back
+ * needs. Declared structurally, and deliberately WITHOUT a single mutating
+ * member: the oracle cannot write through this type even by accident, which is
+ * the type-level half of AC3. `readBinary` is preferred because it is exact;
+ * `read` is accepted for adapters that only offer text.
+ */
+export interface CanvasFileAdapterLike {
+  exists(path: string): Promise<boolean>;
+  readBinary?(path: string): Promise<ArrayBuffer>;
+  read?(path: string): Promise<string>;
+}
+
 export interface E2EControlHost {
   sessionInfo(): {
     clientId: string;
     role: string | null;
     roomId: string;
     connected: boolean;
+    // WP46 (T3_SharedContract §6.2) — instance identity. Optional on the *interface*
+    // so that pre-WP46 fake hosts in existing tests stay valid; `buildPluginHost`
+    // below always populates all five. The four fields above are untouched.
+    vaultId?: string;
+    vaultName?: string;
+    vaultPath?: string | null;
+    pluginBuild?: string;
+    canvasSurface?: boolean;
   };
   canvasOpen(path: string): Promise<{ opened: boolean; subscribed: boolean }>;
   canvasState(
@@ -75,6 +285,40 @@ export interface E2EControlHost {
   simulateEdit(path: string, change: unknown): Promise<{ applied: boolean }>;
   setFlag(name: string, value: unknown): { set: boolean };
   waitQuiescent(timeoutMs: number): Promise<{ quiescent: boolean }>;
+  // WP47 (T3_SharedContract §6.1) — the scratch half of the surface. Optional on the
+  // *interface* so pre-WP47 fake hosts in existing tests stay valid; `buildPluginHost`
+  // below always provides both. `routeCommand` treats an absent method as a structured
+  // 400, never as a crash.
+  scratchCreate?(path: string, content?: string): Promise<{ created: boolean; path: string }>;
+  scratchRemove?(path: string): Promise<{ removed: boolean }>;
+  // WP49 (T3_SharedContract §6.1) — the file-level read-back. Optional on the
+  // *interface* for the same reason as the two above: the hand-rolled fake hosts in
+  // the pre-WP49 tests stay valid. `buildPluginHost` always provides it, and
+  // `routeCommand` turns an absent method into a structured 400 rather than a crash.
+  canvasFile?(path: string): Promise<CanvasFileResult>;
+}
+
+/**
+ * WP47 — an `E2EControlHost` that definitely has the scratch commands. This is what
+ * `buildPluginHost` returns, so a caller holding a real host can invoke
+ * `scratchCreate` / `scratchRemove` directly without an optional-call dance, while the
+ * base interface keeps them optional for the hand-rolled fake hosts in existing tests.
+ */
+export interface E2EScratchControlHost extends E2EControlHost {
+  scratchCreate(path: string, content?: string): Promise<{ created: boolean; path: string }>;
+  scratchRemove(path: string): Promise<{ removed: boolean }>;
+}
+
+/**
+ * WP49 — the same narrowing one step further: a host that definitely has the file
+ * read-back as well. This is what `buildPluginHost` now returns, so a caller holding
+ * a real host calls `canvasFile` directly, while `E2EControlHost` (and therefore
+ * every existing fake host) keeps it optional. Extending `E2EScratchControlHost`
+ * rather than replacing it keeps WP47's contract intact: anything that accepted the
+ * scratch host still accepts this one.
+ */
+export interface E2EFileControlHost extends E2EScratchControlHost {
+  canvasFile(path: string): Promise<CanvasFileResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +339,19 @@ function requireString(args: Record<string, unknown>, key: string): string {
     throw new Error(`missing or invalid string arg: '${key}'`);
   }
   return v;
+}
+
+/**
+ * WP47 — the `path` arg of a scratch command: a string, and a path the rig owns.
+ * Throwing here means `routeCommand`'s catch turns it into a structured 400 with the
+ * adapter never touched (AC1).
+ */
+function requireScratchPath(args: Record<string, unknown>): string {
+  const path = requireString(args, "path");
+  if (!isScratchPath(path)) {
+    throw new Error(`refused: path is not inside '${SCRATCH_FOLDER}': ${path}`);
+  }
+  return path;
 }
 
 /**
@@ -138,6 +395,40 @@ export async function routeCommand(
         const t = args.timeoutMs;
         const timeoutMs = typeof t === "number" && t >= 0 ? t : 2000;
         return ok(await host.waitQuiescent(timeoutMs));
+      }
+      // --- WP47 (T3_SharedContract §6.1) ------------------------------------
+      // Both commands validate the path BEFORE the host — and therefore before the
+      // adapter — is reached, so a refused path never causes a single filesystem
+      // call. The host validates again (see `buildPluginHost`): the confinement is
+      // a property of the surface, not of one caller.
+      case "scratch.create": {
+        const path = requireScratchPath(args);
+        const content = args.content;
+        if (content !== undefined && typeof content !== "string") {
+          throw new Error("invalid arg: 'content' must be a string when present");
+        }
+        if (typeof host.scratchCreate !== "function") {
+          throw new Error("scratch.create unavailable on this host");
+        }
+        return ok(await host.scratchCreate(path, content));
+      }
+      case "scratch.remove": {
+        const path = requireScratchPath(args);
+        if (typeof host.scratchRemove !== "function") {
+          throw new Error("scratch.remove unavailable on this host");
+        }
+        return ok(await host.scratchRemove(path));
+      }
+      // --- WP49 (T3_SharedContract §6.1) ------------------------------------
+      // The file-level read-back rides the SAME envelope as every command above:
+      // no second endpoint, no socket, no new dependency (AC4). A missing `path`
+      // is the existing structured 400, exactly like `canvas.state`.
+      case "canvas.file": {
+        const path = requireString(args, "path");
+        if (typeof host.canvasFile !== "function") {
+          throw new Error("canvas.file unavailable on this host");
+        }
+        return ok(await host.canvasFile(path));
       }
       default:
         return badRequest(`unknown cmd: ${cmd}`);
@@ -321,6 +612,33 @@ export interface E2EPluginLike {
   muxConnected?: boolean;
   controlConnected?: boolean;
   saveSettings?: () => Promise<void> | void;
+  // --- WP46 identity sources (all optional; every one degrades, none is guessed) ---
+  /** Obsidian's `App`. `appId` is the stable per-vault identity; the adapter knows the path. */
+  app?: {
+    appId?: string;
+    vault?: {
+      getName?(): string;
+      /**
+       * Obsidian's `DataAdapter`. `getBasePath()` exists on the desktop
+       * `FileSystemAdapter` but is NOT on the public `DataAdapter` type, so typing it
+       * as `{ getBasePath?(): string }` here would stop the real `LiveSharePlugin`
+       * from satisfying this interface at all (`main.ts` would not compile). It is
+       * therefore held loosely and read through one guarded accessor below.
+       */
+      adapter?: unknown;
+    };
+  };
+  /** The plugin manifest — only `version` is read, and only for `pluginBuild`. */
+  manifest?: { version?: string };
+  /** Explicit canvas-surface probe. When present it wins over the `canvasSync` heuristic. */
+  hasCanvasSurface?: () => boolean;
+  /**
+   * WP47 — explicit scratch adapter. When absent, `resolveScratchAdapter` falls back to
+   * `app.vault.adapter`, which structurally satisfies `ScratchAdapterLike` already, so
+   * the production path needs no wiring in `main.ts`. `null` means "no adapter": every
+   * scratch command then fails structurally rather than guessing a writer.
+   */
+  scratchAdapter?: ScratchAdapterLike | null;
   canvasSync?: {
     subscribe(path: string, role: "host" | "guest"): Promise<void>;
     isSubscribed(path: string): boolean;
@@ -333,7 +651,17 @@ export interface E2EPluginLike {
 
 /**
  * Upsert a flat record into a `Y.Map<Y.Map>` collection, minimal-diff, mirroring
- * `writeRecordMinimal` in canvas-binding.ts: set changed keys, delete absent ones.
+ * `writeRecordMinimal` in canvas-binding.ts: set changed keys, and **touch nothing
+ * else**.
+ *
+ * WP22 / C22 AC3. This helper is the rig's own copy of the production write shape,
+ * and it used to sweep keys absent from `record` exactly as the binding did. Now
+ * that the binding is upsert-only, the mirror has to be too — otherwise the rig
+ * could still manufacture the removed R1 behaviour by hand, and a live E2E run of
+ * the fixed code could still disconnect an edge through `canvas.simulateEdit`.
+ *
+ * The rig keeps its EXPLICIT removals: `simulateEdit`'s `removeNodes` /
+ * `removeEdges` still delete whole entries. What is gone is deletion by omission.
  */
 function upsertRecord(map: YMapOfMaps, id: string, record: Record<string, unknown>): void {
   let ymap = map.get(id);
@@ -344,9 +672,124 @@ function upsertRecord(map: YMapOfMaps, id: string, record: Record<string, unknow
   for (const [k, v] of Object.entries(record)) {
     if (ymap.get(k) !== v) ymap.set(k, v);
   }
-  for (const k of [...ymap.keys()]) {
-    if (!(k in record)) ymap.delete(k);
+}
+
+// --- WP46 identity resolution (T3_SharedContract §6.2) -----------------------
+// Every helper below is a READ. None mutates a setting, writes to a doc or calls
+// `bump` — that is the TypeScript-side mirror of AC2's "no edit is issued".
+// Each one degrades to a defined empty value; none throws and none guesses.
+
+/** `f()` guarded against a missing hook and against a throwing host object. */
+function safeCall<T>(fn: (() => T) | undefined): T | undefined {
+  if (typeof fn !== "function") return undefined;
+  try {
+    return fn();
+  } catch {
+    return undefined;
   }
+}
+
+/** The value when it is a non-empty string, else `undefined`. */
+function nonEmptyString(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+/** Absolute vault path the adapter exposes, or `null` — never `""` (AC3 honesty). */
+function resolveVaultPath(plugin: E2EPluginLike): string | null {
+  // The one place the loosely-typed adapter is narrowed. `getBasePath` is a desktop-only
+  // Obsidian API (I5: degrade, never break) — absent on mobile and absent from the
+  // public type, so its absence is a defined answer (`null`), not an error.
+  const adapter = plugin.app?.vault?.adapter as
+    | { getBasePath?: () => unknown }
+    | undefined;
+  return nonEmptyString(safeCall(adapter?.getBasePath)) ?? null;
+}
+
+/** Stable vault identity: `app.appId`, else the absolute vault path, else `""`. */
+function resolveVaultId(plugin: E2EPluginLike): string {
+  return nonEmptyString(plugin.app?.appId) ?? resolveVaultPath(plugin) ?? "";
+}
+
+/** Vault basename as Obsidian knows it, else `""`. */
+function resolveVaultName(plugin: E2EPluginLike): string {
+  const name = safeCall(plugin.app?.vault?.getName);
+  return typeof name === "string" ? name : "";
+}
+
+/** `<manifest version>+<build marker>`; always a non-empty string. */
+function resolvePluginBuild(plugin: E2EPluginLike): string {
+  return `${nonEmptyString(plugin.manifest?.version) ?? "0.0.0"}+${E2E_BUILD_MARKER}`;
+}
+
+/** Explicit hook wins; otherwise the presence of `canvasSync` is the surface signal. */
+function resolveCanvasSurface(plugin: E2EPluginLike): boolean {
+  const explicit = safeCall(plugin.hasCanvasSurface);
+  return explicit === undefined ? Boolean(plugin.canvasSync) : Boolean(explicit);
+}
+
+// --- WP47 scratch adapter resolution ----------------------------------------
+// Obsidian's `DataAdapter` already exposes `exists`/`mkdir`/`write`/`remove` with the
+// shapes `ScratchAdapterLike` asks for, so the real `app.vault.adapter` IS a scratch
+// adapter. Resolving it here rather than binding it in `main.ts` keeps the wiring
+// inside the module that has tests (charter §7b item 1) and keeps `main.ts` untouched.
+// An explicitly supplied `scratchAdapter` always wins, so tests inject a fake and
+// `null` means "none" rather than "fall back".
+
+/** Does `value` implement all four `ScratchAdapterLike` methods? */
+function isScratchAdapter(value: unknown): value is ScratchAdapterLike {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.exists === "function" &&
+    typeof candidate.mkdir === "function" &&
+    typeof candidate.write === "function" &&
+    typeof candidate.remove === "function"
+  );
+}
+
+/** The scratch adapter for this plugin, or `null` when there is none. Never guesses. */
+function resolveScratchAdapter(plugin: E2EPluginLike): ScratchAdapterLike | null {
+  if (plugin.scratchAdapter !== undefined) return plugin.scratchAdapter;
+  const vaultAdapter = plugin.app?.vault?.adapter;
+  return isScratchAdapter(vaultAdapter) ? vaultAdapter : null;
+}
+
+// --- WP49 read-back adapter resolution --------------------------------------
+// Obsidian's real `DataAdapter` already exposes `exists` and `readBinary`, so the
+// production `app.vault.adapter` satisfies `CanvasFileAdapterLike` structurally and
+// no wiring is needed in `main.ts`. It is narrowed to the READ-ONLY view above, so
+// no code path below can reach a mutator (AC3).
+
+/** Can `value` answer the two read questions the oracle asks? */
+function isCanvasFileAdapter(value: unknown): value is CanvasFileAdapterLike {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.exists !== "function") return false;
+  return typeof candidate.readBinary === "function" || typeof candidate.read === "function";
+}
+
+/** The read-only file adapter for this plugin, or `null`. Never guesses a reader. */
+function resolveCanvasFileAdapter(plugin: E2EPluginLike): CanvasFileAdapterLike | null {
+  const vaultAdapter = plugin.app?.vault?.adapter;
+  return isCanvasFileAdapter(vaultAdapter) ? vaultAdapter : null;
+}
+
+/**
+ * The raw bytes of `path` — never a parsed, re-serialised or normalised form.
+ * `readBinary` is exact and is preferred; the text reader is a documented fallback
+ * and is decoded back to the same bytes. Nothing here opens the file for writing.
+ */
+async function readCanvasBytes(
+  adapter: CanvasFileAdapterLike,
+  path: string,
+): Promise<Buffer> {
+  if (typeof adapter.readBinary === "function") {
+    return Buffer.from(new Uint8Array(await adapter.readBinary(path)));
+  }
+  if (typeof adapter.read === "function") {
+    return Buffer.from(await adapter.read(path), "utf8");
+  }
+  throw new Error("file adapter exposes no reader");
 }
 
 /**
@@ -356,7 +799,7 @@ function upsertRecord(map: YMapOfMaps, id: string, record: Record<string, unknow
 export function buildPluginHost(
   plugin: E2EPluginLike,
   hooks: { counters: BindingCounters; bump: () => void },
-): E2EControlHost {
+): E2EFileControlHost {
   const runtimeFlags = new Map<string, unknown>();
 
   const roleOf = (): "host" | "guest" =>
@@ -368,13 +811,48 @@ export function buildPluginHost(
     hooks.bump();
   };
 
+  // --- WP49 AC1: activity is observed at the doc, not at the command ---------
+  // Before WP49 the only thing that could mark activity was a control-initiated
+  // `canvas.simulateEdit`, so on a real instance `sync.waitQuiescent` answered
+  // "quiescent" while relay deltas were still landing and while the user's hand
+  // was still on the mouse. Subscribing to the shared doc moves the seam to where
+  // the traffic actually is: EVERY update to a canvas this instance has open
+  // marks activity, whatever its origin — relay, canvas view, or control channel.
+  // Subscription is idempotent per doc (a canvas may be opened repeatedly) and is
+  // itself an observation: it issues no transaction and writes nothing.
+  const observedDocs = new WeakSet<Y.Doc>();
+  const observeDoc = (doc: Y.Doc | null | undefined): void => {
+    if (!doc || observedDocs.has(doc)) return;
+    observedDocs.add(doc);
+    doc.on("update", markActivity);
+  };
+  /** Observe the doc behind `path`, if the host exposes one. Never breaks the caller. */
+  const observeCanvas = (path: string): void => {
+    try {
+      observeDoc(plugin.canvasSync?.getCanvasDocHandle(path)?.doc);
+    } catch {
+      /* an unavailable handle is not an error for the observer */
+    }
+  };
+
   return {
     sessionInfo() {
       return {
+        // --- pre-WP46 quartet: names, defaults and semantics unchanged ---
         clientId: String(plugin.settings.clientId ?? ""),
         role: plugin.settings.role ?? null,
         roomId: String(plugin.settings.roomId ?? ""),
         connected: Boolean(plugin.muxConnected) && Boolean(plugin.controlConnected),
+        // --- WP46 instance identity (T3_SharedContract §6.2) ---
+        // Replaces "the port answered" with a positive statement of which vault,
+        // which build and which surface is answering. Read-only, degrades, never
+        // guesses: an unknown vault is `""` and an unknown path is `null`, so the
+        // rig-side readiness check can refuse instead of inferring (AC3).
+        vaultId: resolveVaultId(plugin),
+        vaultName: resolveVaultName(plugin),
+        vaultPath: resolveVaultPath(plugin),
+        pluginBuild: resolvePluginBuild(plugin),
+        canvasSurface: resolveCanvasSurface(plugin),
       };
     },
 
@@ -382,6 +860,8 @@ export function buildPluginHost(
       const cs = plugin.canvasSync;
       if (!cs) return { opened: false, subscribed: false };
       await cs.subscribe(path, roleOf());
+      // From here on this canvas's traffic is visible to quiescence (AC1).
+      observeCanvas(path);
       return { opened: true, subscribed: cs.isSubscribed(path) };
     },
 
@@ -406,6 +886,10 @@ export function buildPluginHost(
         removeEdges?: string[];
       };
       const doc = handle.doc;
+      // A canvas can be edited through the control channel without ever having been
+      // opened through `canvas.open`; observe it here too so the two entry points
+      // agree on what "this instance's traffic" means.
+      observeDoc(doc);
       const nodesMap = doc.getMap<Y.Map<unknown>>("nodes");
       const edgesMap = doc.getMap<Y.Map<unknown>>("edges");
       doc.transact(() => {
@@ -418,8 +902,90 @@ export function buildPluginHost(
         }
         for (const id of c.removeEdges ?? []) edgesMap.delete(id);
       });
-      markActivity();
+      // WP58: no explicit markActivity() here.
+      //
+      // Before WP49 this call WAS the activity seam, and it was correct. WP49
+      // moved the seam onto the doc itself (`observeDoc` above, registered
+      // BEFORE this transaction), so the `update` event raised by `doc.transact`
+      // already marks activity for this very edit. Calling markActivity() again
+      // counted one edit twice: `bump` fired 2x for a single simulateEdit,
+      // deterministically.
+      //
+      // That is why C46 AC2's structural argument ("exactly one outbound request
+      // site, one frozen payload") did not catch it — the second bump never came
+      // from the probe or from a request at all. It came from this line, on the
+      // edit path, once WP49 made it redundant.
+      //
+      // This removes a duplicate count; it does NOT make the seam origin-aware.
+      // WP49 AC1 ("never inspects origin") is preserved exactly: every update to
+      // an observed doc still marks activity, whatever its origin.
       return { applied: true };
+    },
+
+    // --- WP47 scratch commands (T3_SharedContract §6.1) ---------------------
+    // The confinement check is repeated here on purpose: the router refuses first, but
+    // the host must be unable to write outside the rig folder even when called
+    // directly. Neither method ever touches a path it did not validate, and neither
+    // adopts an existing file — `created:false` reports the collision instead.
+
+    async scratchCreate(path, content) {
+      if (!isScratchPath(path)) {
+        throw new Error(`refused: path is not inside '${SCRATCH_FOLDER}': ${path}`);
+      }
+      if (content !== undefined && typeof content !== "string") {
+        throw new Error("invalid arg: 'content' must be a string when present");
+      }
+      const adapter = resolveScratchAdapter(plugin);
+      if (!adapter) throw new Error("scratch adapter unavailable on this plugin");
+
+      // Never adopt and never overwrite: an existing file belongs to someone else.
+      if (await adapter.exists(path)) return { created: false, path };
+
+      if (!(await adapter.exists(SCRATCH_FOLDER))) await adapter.mkdir(SCRATCH_FOLDER);
+      await adapter.write(path, content ?? DEFAULT_SCRATCH_CONTENT);
+      return { created: true, path };
+    },
+
+    async scratchRemove(path) {
+      if (!isScratchPath(path)) {
+        throw new Error(`refused: path is not inside '${SCRATCH_FOLDER}': ${path}`);
+      }
+      const adapter = resolveScratchAdapter(plugin);
+      if (!adapter) throw new Error("scratch adapter unavailable on this plugin");
+
+      // Idempotent: teardown may well run twice, and the second call must be a
+      // no-op success rather than an error or a second delete.
+      if (!(await adapter.exists(path))) return { removed: false };
+      await adapter.remove(path);
+      return { removed: true };
+    },
+
+    // --- WP49 file read-back (T3_SharedContract §6.1) -----------------------
+    // `CanvasPersistence` is the single CRDT→disk writer and this method must not
+    // become a second one. It therefore: resolves a READ-ONLY adapter view, asks
+    // whether the file is there, and — only if it is — reads its bytes. It never
+    // writes, never creates the file or its folder, never touches `mtime`, and
+    // never parses or re-serialises what it read. What it reports is exactly what
+    // the plugin's own writer produced (AC3).
+    //
+    // An absent file is a defined answer, not an error: `{exists:false, sha256:"",
+    // size:0, content:null}`. `content:null` is what tells a missing file apart
+    // from an empty one, so it is never softened to `""`.
+    async canvasFile(path) {
+      const adapter = resolveCanvasFileAdapter(plugin);
+      if (!adapter) throw new Error("file adapter unavailable on this plugin");
+
+      if (!(await adapter.exists(path))) {
+        return { exists: false, sha256: "", size: 0, content: null };
+      }
+
+      const bytes = await readCanvasBytes(adapter, path);
+      return {
+        exists: true,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        size: bytes.byteLength,
+        content: bytes.toString("utf8"),
+      };
     },
 
     setFlag(name, value) {
@@ -439,14 +1005,22 @@ export function buildPluginHost(
       const quietWindowMs = 50;
       const pollMs = 20;
       const deadline = Date.now() + timeoutMs;
-      // Deterministic settle: resolve once no control-driven canvas activity has
-      // occurred for `quietWindowMs`, or `false` at the timeout.
+      // Deterministic settle: resolve once no canvas activity of ANY origin has
+      // occurred for `quietWindowMs`, or `false` at the timeout. `timeoutMs` keeps
+      // its meaning and its 2000 ms router default (T3_SharedContract §6).
+      //
+      // WP49 — the first check happens AFTER the first poll interval, never before
+      // it. A wait is a question about the interval it covers, not about the instant
+      // it was asked in: a caller that starts waiting and then sees deltas land for
+      // the whole timeout must be told `false`, even though the instance happened to
+      // be idle at the moment of the call. Answering out of the pre-call history is
+      // how a wait ends up certifying a settle it never observed.
       // eslint-disable-next-line no-constant-condition
       while (true) {
+        await new Promise((r) => setTimeout(r, pollMs));
         const idleFor = Date.now() - lastActivity;
         if (idleFor >= quietWindowMs) return { quiescent: true };
         if (Date.now() >= deadline) return { quiescent: false };
-        await new Promise((r) => setTimeout(r, pollMs));
       }
     },
   };
@@ -458,6 +1032,25 @@ export function buildPluginHost(
  *   - hidden `e2eControlPort` setting (NOT a typed setting, read loosely so the
  *     identifier never enters the typed production surface).
  * Returns `null` when neither flag is set → the server never listens (US4 AC1).
+ *
+ * D14 — why the real two-vault rig provisions the port through the *setting* and
+ * never through `process.env` (WP44 AC1). Obsidian is single-instance: opening the
+ * second vault does not start a second program, it adds another renderer window to
+ * the SAME Obsidian process tree. Both windows therefore read one and the same
+ * `process.env.LIVESHARE_E2E`, so an env-provisioned port hands both vault
+ * instances the identical port — one control server wins the bind and the rig
+ * drives one vault twice while believing it drove two, with a green-looking run.
+ * `data.json` lives inside the vault, so the hidden `e2eControlPort` setting below
+ * is the only channel that can carry a different value for role a and role b. The
+ * rig-side provisioner is `tools/obsidian_e2e/ports.py`, which borrows that file
+ * byte-exactly and restores it on every exit path.
+ *
+ * The precedence below is FROZEN (T3_SharedContract §4, WP44 AC4): numeric env →
+ * loose `e2eControlPort` setting → truthy-non-numeric env → ephemeral 0 → `null`.
+ * WP44 adds no branch, no dependency and no new precedence rule here — a vault with
+ * no provisioned port still starts no control server at all. The env path stays
+ * exactly as it is: it remains correct for the single-instance headless rig, where
+ * each host is its own process.
  */
 function resolvePort(plugin: E2EPluginLike): number | null {
   const env = process.env.LIVESHARE_E2E;
@@ -465,6 +1058,8 @@ function resolvePort(plugin: E2EPluginLike): number | null {
     if (/^\d+$/.test(env)) return Number(env);
     // Truthy-but-non-numeric env: fall through to setting, else ephemeral.
   }
+  // The per-vault provisioning site (D14, above): this is the one value that can
+  // differ between two vault windows sharing a single Obsidian process.
   const setting = (plugin.settings as Record<string, unknown>).e2eControlPort;
   if (typeof setting === "number" && setting > 0) return setting;
   if (typeof setting === "string" && /^\d+$/.test(setting)) return Number(setting);

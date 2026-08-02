@@ -22,6 +22,16 @@ from obsidian_e2e import constants, vaults  # noqa: E402
 _MAIN_REL = getattr(constants, "PLUGIN_MAIN_REL", constants.PLUGIN_DIR_REL + "/main.js")
 
 
+def _failure_names(instance) -> tuple:
+    """Named failure reasons of a descriptor, tolerant of a tuple or a single-value field."""
+    value = getattr(instance, "failures", None)
+    if value is None:
+        value = getattr(instance, "failure", None)
+    if value is None:
+        return ()
+    return (value,) if isinstance(value, str) else tuple(value)
+
+
 def _vault(root: Path) -> Path:
     (root / "Zettel").mkdir(parents=True, exist_ok=True)
     (root / "Zettel" / "z1.md").write_text("fixture\n", encoding="utf-8")
@@ -49,7 +59,7 @@ def test_empty_registry_names_the_failure_for_every_role(tmp_path: Path) -> None
 
     for role in (constants.ROLE_A, constants.ROLE_B):
         instance = result.instances[role]
-        failures = tuple(instance.failures)
+        failures = _failure_names(instance)
         assert constants.VAULT_NOT_IN_REGISTRY in failures
         assert instance.registry_id is None
         assert instance.resolved_path is None

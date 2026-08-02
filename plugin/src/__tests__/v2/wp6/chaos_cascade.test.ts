@@ -125,7 +125,11 @@ function fingerprint(doc: Y.Doc): string {
 }
 
 function canonical(doc: Y.Doc): string {
-  return serializeCanvas(doc.getMap<Y.Map<unknown>>("nodes"), doc.getMap<Y.Map<unknown>>("edges"));
+  return serializeCanvas(
+        doc.getMap<Y.Map<unknown>>("nodes"),
+        doc.getMap<Y.Map<unknown>>("edges"),
+        doc.getMap<unknown>("deleted"),
+      );
 }
 
 /**

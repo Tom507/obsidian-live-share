@@ -41,7 +41,7 @@ The two target vaults are the owner's **live working vaults**, currently open in
 | # | Invariant |
 |---|---|
 | S1 | **No production note, canvas or attachment is ever opened for writing.** The only write locations the *module design* sanctions are `<vault>/_e2e-rig/` (scratch) and `<vault>/.obsidian/plugins/live-share/` (port provisioning, WP44) — and see **S5a**, which forbids exercising either of them against the owner's real vaults in this batch. |
-| S1a | **B9a BATCH BOUNDARY — not a standing prohibition. Scoped to batch B9a only; see §0.1 before assuming it applies to you.** For the duration of B9a: do not install a dev build into either live vault, and do not touch `<vault>/.obsidian/plugins/**` in either live vault. Code that *would* provision may be written and unit-tested against fixture vaults; it must not be pointed at a real vault during B9a. |
+| S1a | **~~SUPERSEDED 2026-08-01 — no longer in force.~~** *Was:* do not install a dev build into either live vault, do not touch `<vault>/.obsidian/plugins/**`. **The owner has since released both vaults for unrestricted testing** — verbatim: there is nothing important in them and they may be used fully. Installing an instrumented dev build into `.obsidian/plugins/live-share/` is now **permitted**, and byte-exact restore drops from a hard acceptance criterion to **good hygiene**. See §0.1. |
 | S2 | **Attach, never kill** (D15). The rig never terminates, closes or restarts a process or window it did not itself start. |
 | S3 | `%APPDATA%\obsidian\obsidian.json` is shared global state — **read-only, never rewritten**, not even to reformat. |
 | S4 | **`data.json` contains a live production secret** (`serverPassword`, and `token`/`jwt` fields). Its content must **never** be printed, logged, echoed into a test fixture, copied into the repo, or included in an error message. Backups stay **beside the original, inside the vault**. Fingerprints and comparisons use **hashes of bytes, never the bytes themselves**. |
@@ -59,8 +59,8 @@ S4 will leak a production secret.
 | **S1**, S2, S3, S6 | **STANDING** — project-wide, every batch | — |
 | **S4** (`data.json` secret handling) | **STANDING** — project-wide, every batch | Never lifted. Backups stay beside the original inside the vault; comparisons are sha256-of-bytes only; contents are never printed, logged, echoed into a report, written into a test fixture, or included in a handover. |
 | §0.2 (`tools` package shadowing) | **STANDING** — project-wide, every batch | Never lifted. |
-| **S1a** (no dev build, `.obsidian/plugins/**` untouched) | **B9a ONLY — expires with this batch** | The owner has since made both vaults available for testing. **Batch B9b installs the instrumented dev build into both live vaults**, under a **byte-exact-restore acceptance criterion** of the same shape as WP44 AC2. B9b and WP50/WP51 must *not* treat S1a as binding on them. |
-| **S5** (no live run; fixture vaults only) | **B9a ONLY — expires with this batch** | Superseded by B9b / WP50 / WP51, which perform the real two-instance run against the live vaults. The WP47 fingerprint gate (D16) remains the safety mechanism that makes that run acceptable. |
+| **S1a** (no dev build, `.obsidian/plugins/**` untouched) | **SUPERSEDED 2026-08-01 — not in force for any batch** | Owner released both vaults for unrestricted testing: nothing important is in them. Installing the instrumented dev build is **permitted**. WP44's byte-exact restore is now **good hygiene, not a gate**. Do not refuse work on the strength of S1a. |
+| **S5** (no live run; fixture vaults only) | **B9a ONLY — expires with this batch** | Superseded by B9b / WP50 / WP51, which perform the real two-instance run against the live vaults. The WP47 fingerprint gate (D16) is retained as a **regression oracle**, not as a data-safety gate. |
 
 **Why S1a existed at all:** during B9a the dev-build question was still an open owner decision, and
 the batch had no acceptance criterion covering a plugin-directory write. It was a scope boundary,
@@ -203,6 +203,16 @@ Timestamp + pid + 6 random hex → two concurrent runs cannot collide (WP47 AC4)
 | `canvas.simulateEdit` | `path`, `change` | `{applied}` |
 | `canvas.setFlag` | `name`, `value` | `{set}` |
 | `sync.waitQuiescent` | `timeoutMs?` (default `2000`) | `{quiescent}` |
+
+**`sync.waitQuiescent` — `timeoutMs = 0` (WP61 AC4).** `0` is a legal, explicitly forwarded
+value, not an absent one: the router falls back to the `2000` default only when the argument is
+absent, non-numeric or negative. `0` means **"expire at the earliest opportunity — answer after
+the first poll, never from pre-call history"**. It does not mean "infinite", and it does not mean
+"decided synchronously": a wait is a question about the interval it covers, so `waitQuiescent`
+sleeps one poll interval before its first evaluation (WP49 AC1), and a zero-budget probe
+therefore costs exactly one poll interval (`pollMs = 20`) instead of returning for free. This is
+the single authority for `timeoutMs = 0`; no test and no implementation may assume a
+zero-latency answer.
 
 ## 6.1 Control protocol — commands ADDED in this batch (exact names, pinned)
 

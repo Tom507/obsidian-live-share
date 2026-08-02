@@ -794,17 +794,10 @@ export default class LiveSharePlugin extends Plugin {
     // Authoritative enforcement is server-side in ws-handler; this stops a read-only
     // guest from diverging locally. `path` is the canonical canvas path.
     this.canvasSync.setCanWrite((path) => this.canWriteCanvasPath(path));
-    // WP3: advisory per-node lock gates + diff-inferred fallback hook, backed by
-    // the per-canvas CanvasPresence controllers. When no presence is mounted
-    // (canvas not open) the gates default to allow so nothing is blocked.
-    this.canvasSync.setCanWriteNode((path, nodeId) => {
-      const presence = this.canvasPresences.get(path);
-      return presence ? presence.canWriteNode(nodeId) : true;
-    });
-    this.canvasSync.setCanDeleteNode((path, nodeId) => {
-      const presence = this.canvasPresences.get(path);
-      return presence ? presence.canDeleteNode(nodeId) : true;
-    });
+    // WP3: the diff-inferred lock-acquisition hook, backed by the per-canvas
+    // CanvasPresence controllers. WP21 removed the per-node lock write/delete
+    // gates that used to be injected alongside it — locks are pure UX and no
+    // longer carry write authority — so a claim is all that is wired here.
     this.canvasSync.setOnLocalNodeChange((path, nodeId) => {
       this.canvasPresences.get(path)?.onDiffInferredChange(nodeId);
     });
@@ -1239,6 +1232,10 @@ export default class LiveSharePlugin extends Plugin {
         {
           logger: this.logger,
           onWritten: (content) => this.canvasSync?.noteExternalDiskWrite(canonical, content),
+          // WP63 (I11): the HOST seed refuses during `CanvasSync.subscribe`,
+          // which has already run by the time we get here — so the writer reads
+          // the refused set from the object that filled it.
+          seedRefusals: this.canvasSync?.seedRefusalLedger(canonical),
         },
       );
       // A session teardown may have raced the awaited cold open.
@@ -1304,9 +1301,11 @@ export default class LiveSharePlugin extends Plugin {
           binding = new CanvasBinding(handle.doc, bridge, {
             path: canonical,
             logger: this.logger,
+            // WP21: the two lock mirrors that used to sit beside this line are
+            // gone. `canWrite` is AUTHORISATION (read-only permission and guest
+            // globs) and stays; the per-node lock gates carried no authority
+            // once the data model resolved same-register conflicts.
             canWrite: (p) => this.canWriteCanvasPath(p),
-            canWriteNode: (p, id) => this.canvasPresences.get(p)?.canWriteNode(id) ?? true,
-            canDeleteNode: (p, id) => this.canvasPresences.get(p)?.canDeleteNode(id) ?? true,
           });
           this.canvasBindings.set(canonical, binding);
           this.canvasModelBridges.set(canonical, bridge);

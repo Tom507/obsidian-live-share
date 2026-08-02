@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { serializeCanonicalCanvas } from "../../../canvas/canvas-canonical";
-import { parseCanvas } from "../../../files/canvas-sync";
+import { decodeEndpointToFile } from "../../../canvas/canvas-registers";
+import { decodeCanvasDataToFlat, parseCanvas } from "../../../files/canvas-sync";
 
 // AC4 (file shape unchanged) — angle: structural assertions over the emitted
 // LINES (depth per line, delimiter placement) plus the degenerate canvases an
@@ -73,9 +74,33 @@ describe("the `.canvas` file shape and tab indentation are unchanged (AC4)", () 
       edges: [{ id: "e-only", fromNode: "ghost-a", toNode: "ghost-b" }],
     });
     const parsed = parseCanvas(out);
+    // WP59 amendment (extended licence, 2026-08-02): `parseCanvas` is a V2
+    // reader since WP16, and WP10 AC5 made a side-less `{fromNode}` a WHOLE
+    // endpoint register — `*Node` alone decides presence — so this bare,
+    // edge-only record now reads `{from, id, to}`. This assertion previously
+    // passed only because `toV2Edge` keeps an edge's flat keys when the
+    // endpoint register FAILS to build: pre-AC5 a side-less endpoint failed to
+    // build, so `fromNode` survived. The green was produced by the very defect
+    // AC5 exists to fix. The file bytes are identical either way; the test's
+    // stated subject — that an edge-only canvas stays readable, endpoints
+    // intact — survives verbatim, read through the sanctioned inverse.
+    const flat = decodeCanvasDataToFlat(parsed);
 
     expect(Object.keys(parsed.nodes)).toEqual([]);
     expect(Object.keys(parsed.edges)).toEqual(["e-only"]);
-    expect(parsed.edges["e-only"].fromNode).toBe("ghost-a");
+    expect(flat.edges["e-only"].fromNode).toBe("ghost-a");
+    // Added strictness (WP59 AC6): the bare edge's FULL flat key set, exact and
+    // whole-collection — the side-less round trip is pinned as a whole rather
+    // than one field at a time, so a spurious `fromSide`/`fromEnd` is caught
+    // here even if `fromNode` itself survives.
+    expect(Object.keys(flat.edges["e-only"]).sort()).toEqual(["fromNode", "id", "toNode"]);
+    // Added strictness (WP59 AC6): pin AC5's actual contract, which nothing
+    // pinned here before — a side-less endpoint decodes to its `*Node` key and
+    // NO `*Side`/`*End` key at all. An implementation that re-emitted
+    // `fromSide: null` or `fromSide: ""` would still satisfy the read above but
+    // fails this exact whole-object `toEqual`.
+    expect(decodeEndpointToFile("from", parsed.edges["e-only"].from)).toEqual({
+      fromNode: "ghost-a",
+    });
   });
 });

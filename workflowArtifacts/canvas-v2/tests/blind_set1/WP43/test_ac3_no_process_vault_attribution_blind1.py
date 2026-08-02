@@ -30,6 +30,16 @@ _EXE = (
 )
 
 
+def _failure_names(instance) -> tuple:
+    """Named failure reasons of a descriptor, tolerant of a tuple or a single-value field."""
+    value = getattr(instance, "failures", None)
+    if value is None:
+        value = getattr(instance, "failure", None)
+    if value is None:
+        return ()
+    return (value,) if isinstance(value, str) else tuple(value)
+
+
 def _as_mapping(obj) -> dict:
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         return dataclasses.asdict(obj)
@@ -96,8 +106,8 @@ def test_single_process_naming_one_vault_does_not_degrade_the_other_role(tmp_pat
 
     # role a keeps a fully resolved identity despite no process naming it
     assert result.instances[constants.ROLE_A].registry_id == "1a2b000000000001"
-    assert constants.VAULT_NOT_IN_REGISTRY not in tuple(result.instances[constants.ROLE_A].failures)
-    assert constants.VAULT_PATH_MISSING not in tuple(result.instances[constants.ROLE_A].failures)
+    assert constants.VAULT_NOT_IN_REGISTRY not in _failure_names(result.instances[constants.ROLE_A])
+    assert constants.VAULT_PATH_MISSING not in _failure_names(result.instances[constants.ROLE_A])
 
     for blob in (blob_a, blob_b):
         assert "987654" not in json.dumps(blob, default=str)

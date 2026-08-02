@@ -1,6 +1,6 @@
 # Task Charter — WP15: Shadow at register granularity
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP15
 **Phase:** P1
 **task_mode:** `standard`
@@ -116,31 +116,143 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ---
 
-## 7. Visible Test Cases / Producer Artifacts
+## 7. Visible Test Cases
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+Module under test (modify-path, already exists and is green under P0): `plugin/src/canvas/canvas-shadow.ts`.
+
+**Required implementation delta, derived from the test suite below (no `TombstoneView` shape
+change, no new export is strictly required for the visible tests to compile — only a behaviour
+fix in `planIntentDiff` rule 2):**
+
+- **AC2 is the only genuine gap.** `ShadowFieldValue` must widen (type-only) to admit the
+  composite register shapes (`readonly [number, number]` for `pos`/`size`, `{node, side, end?}`
+  for `from`/`to`) so `npm run build`'s `tsc -noEmit` stays clean once callers pass V2-shaped
+  fields. At runtime, rule 2's staleness comparison (`value === getField(...)`) is currently
+  **reference** equality. `encodePos`/`encodeSize` (`canvas-registers.ts`) freeze a **freshly
+  allocated** array on every call, so two calls with fractional input that round to the identical
+  integer pair produce two different array instances holding the same numbers — `===` reports
+  them unequal, a same-pixel restatement reads as intent, and I6 breaks. Rule 2 must use
+  **structural/value equality** for array and plain-object field values (falling back to `===`
+  for primitives, which is unaffected and preserves every existing primitive-keyed test). This can
+  be a small local helper in `canvas-shadow.ts` — no new import is required to satisfy it.
+- **AC1, AC3 and AC4 are already satisfied by the current, unmodified implementation** for
+  V2-shaped composite fields, because the shadow's storage (`advanceField`/`advanceRecord`/
+  `getField`/`getRecordFields`) and `planIntentDiff`'s field iteration are field-name- and
+  field-shape-agnostic — they treat a field's value as one opaque unit regardless of whether a
+  caller passes `"x": 10` or `"pos": [10, 20]`. The visible suite below confirms this rather than
+  driving new production code for those three ACs. See the Impact Assessment / verification notes
+  in `ImplementationReport_WP15.md` (Coder Sub-Agent) for confirmation once implemented.
+- **AC3 — do not gate the delete-intent rule (rule 4) on tombstone status.** `test_tp05` locks in
+  the existing, intentional "re-asserting an existing tombstone converges" design
+  (`canvas-shadow.ts`'s own rule-4 docstring) and the existing `wp2/test_tp03_delete_gating_visible
+  .test.ts` — "the block covers records in the save only — a missing record still follows the
+  delete rule" — already pins a proven-missing + already-tombstoned record producing a delete
+  intent. Making rule 4 suppress that intent would break a licensed-green existing test; WP15 is
+  **not** one of the batch's licensed test-deleters (WP4/WP21/WP22/WP33 only). If a future reading
+  of AC3 requires that suppression anyway, that is a `SPEC_CONTRADICTION` against the existing
+  test — escalate, do not weaken the test.
+
+### TC1 — pos/size/from/to are stored as single composite fields, never split
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp15/test_tp01_composite_single_field_visible.test.ts`
+- What it checks: one `advanceField`/`advanceRecord` call with a `pos` (`[x, y]`), `size`
+  (`[w, h]`) or `from`/`to` (`{node, side, end?}`) value produces exactly one shadow field key
+  (`getRecordFields` returns one key per composite, never a split `x`/`y`/`width`/`height`/
+  `fromNode`/... key), and `getField` round-trips the whole value intact.
+- Test data channel: literal fractional/rounded coordinates via `encodePos`/`encodeSize`/
+  `encodeEndpoint` (`canvas-registers.ts`).
+
+### TC2 — a change to ONE component of a composite marks the WHOLE register as intent (I8)
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp15/test_tp02_component_change_whole_register_visible.test.ts`
+- What it checks: `planIntentDiff` over a save whose `pos`/`size` register differs from the shadow
+  in only one component (e.g. x moves, y does not) produces exactly ONE upsert for the composite
+  field name, whose value carries BOTH components — never two component-shaped upserts, never a
+  discard for the unchanged component (which cannot exist, since there is no such field).
+- Test data channel: `encodePos`/`encodeSize` pairs differing in exactly one component.
+
+### TC3 — a rounding-only difference produces zero intent (I6, the highest-risk gap)
+- Verifies AC: AC2
+- Test file: `plugin/src/__tests__/v2/wp15/test_tp03_rounding_no_intent_visible.test.ts`
+- What it checks: a shadow holding a rounded `pos`/`size` register and a save re-encoding a
+  fractional coordinate that rounds to the SAME integer pair (via a fresh, reference-distinct
+  `encodePos`/`encodeSize` call) produces zero upserts and one `discarded` entry
+  (`reason: "equals-shadow"`); a genuine move to a different pixel still produces a real upsert
+  (discrimination case, proves the fix does not over-suppress).
+- Test data channel: fractional coordinates chosen to round to a pre-established integer register,
+  plus one coordinate chosen to round to a different pixel.
+
+### TC4 — the resurrect block reads the real WP12 tombstone predicate, for V2 registers
+- Verifies AC: AC3
+- Test file: `plugin/src/__tests__/v2/wp15/test_tp04_resurrect_block_tombstone_view_visible.test.ts`
+- What it checks: a `TombstoneView` test double built entirely from `canvas-tombstone.ts`'s own
+  `applyTombstoneOp` + `isTombstoneSuppressed` (never a local `Set`/boolean reimplementation of "is
+  this deleted") still fully blocks a tombstoned record's changed `pos`/`size` registers from
+  producing any upsert, delete or discard; the identical save without the tombstone yields the real
+  upsert (discrimination).
+- Test data channel: real `TombstoneEntry` values applied via `applyTombstoneOp` to a stub
+  `TombstoneMap`.
+
+### TC5 — the delete rule stays correct for V2 registers under the real tombstone view
+- Verifies AC: AC3
+- Test file: `plugin/src/__tests__/v2/wp15/test_tp05_delete_rule_tombstone_view_visible.test.ts`
+- What it checks: a proven-missing (open view + hand-over receipt) record with a V2 `pos` register
+  produces a delete intent identically whether or not it already carries an active tombstone
+  (applied via the same real `isTombstoneSuppressed`-backed view as TC4) — pins the existing,
+  intentional "re-asserting an existing tombstone converges" design rather than introducing a
+  tombstone-status gate on rule 4 (see the delta note above).
+- Test data channel: real `TombstoneEntry` values via `applyTombstoneOp`, `pos` registers via
+  `encodePos`.
+
+### TC6 — a dynamic scan finds zero V1 key names anywhere in the shadow
+- Verifies AC: AC4
+- Test file: `plugin/src/__tests__/v2/wp15/test_tp06_no_v1_key_names_visible.test.ts`
+- What it checks: after driving the shadow through `advanceRecord` with V2 composite fields and
+  through a `planIntentDiff` pass over a V2-shaped save, every field key actually stored/emitted is
+  scanned (`Object.keys` of `getRecordFields` output and of the intent plan's field names) against
+  the literal eight-name V1 list (`x`, `y`, `width`, `height`, `fromNode`, `fromSide`, `toNode`,
+  `toSide`) — none may appear, checked by membership, not a hand-picked spot check.
+- Test data channel: `encodePos`/`encodeSize`/`encodeEndpoint` values across multiple records.
 
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+*None — all 4 ACs are unit-testable directly against the pure `canvas-shadow.ts` module with no
+Obsidian/Yjs/filesystem seam involved; nothing here is INTEGRATION_SCOPE.*
 
 ---
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** 15 of the 17 visible tests already passed against the unmodified
+  module. The two failures were both in `test_tp03_rounding_no_intent_visible.test.ts` (`pos` and
+  `size` rounding-only restatement): `planIntentDiff` rule 2 compared with `===`, so the freshly
+  frozen array `encodePos`/`encodeSize` allocates on every call never matched the value-identical
+  array already in the shadow, and a same-pixel restatement was classified as intent (I6 broken).
+- **Approach:** two changes in `canvas-shadow.ts`, no restructuring.
+  1. `ShadowFieldValue` widened (type-only) with `PosRegister | SizeRegister | EndpointRegister`,
+     **imported** via `import type` from `canvas-registers.ts` rather than re-declared (Shared
+     Ownership Contract §1). Erased at compile time, so the runtime purity contract is untouched.
+  2. Rule 2's comparison replaced by a module-private `fieldValueEquals(a, b)`: `===` first (so the
+     primitive path is byte-identical to before), then element-wise for arrays and observed-key-wise
+     for plain data objects, with a depth cap so a malformed cyclic value degrades instead of
+     blowing the stack. AC1/AC3/AC4 needed no production change, exactly as §7 predicted.
+- **Fallback path if all attempts fail:** not needed — attempt 1 passed all 17 visible tests with
+  the five P0 buckets and `tsc -noEmit` clean.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs. 17/17 visible tests green; the five P0 buckets (wp1, wp2, wp4,
+  wp5v2, wp6) 164/164 green; the whole `src/__tests__/v2/` tree 330/330 green; the five non-v2 files
+  that consume this seam 136/136 green; `npx tsc -noEmit -skipLibCheck` exits 0.
+- **What remains open:** nothing in WP15's scope. No existing test was adjusted, deleted or relaxed.
+  Note for the batch: `canvas-shadow.ts` consumes the tombstone view as an INPUT seam and holds zero
+  copies of the suppression predicate — the `isTombstoneSuppressed` binding lives at the call site,
+  which is what TC4/TC5 exercise. See the report's AC3 note.
+- **Final status:** `DONE`.
 
 ---
 

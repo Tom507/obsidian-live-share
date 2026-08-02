@@ -3,6 +3,7 @@ import * as Y from "yjs";
 
 import {
   type BindingCounters,
+  E2E_BUILD_MARKER,
   type E2EControlHost,
   type E2EPluginLike,
   buildPluginHost,
@@ -194,11 +195,21 @@ describe("buildPluginHost", () => {
     const doc = new Y.Doc();
     const { plugin, counters } = fakePlugin(doc);
     const host = buildPluginHost(plugin, { counters, bump: () => {} });
+    // WP46 (BUILD_SPEC §7 amendment ledger) — `session.info` now reports vault,
+    // build and canvas-surface identity alongside the legacy quartet. Still an
+    // exact whole-object `toEqual` over all nine keys: this fixture has
+    // `canvasSync` but neither `app` nor `manifest`, so it additionally pins the
+    // AC3 honest-degradation values (`vaultId: ""`, `vaultPath: null`).
     expect(host.sessionInfo()).toEqual({
       clientId: "cid",
       role: "guest",
       roomId: "room",
       connected: true,
+      vaultId: "",
+      vaultName: "",
+      vaultPath: null,
+      pluginBuild: `0.0.0+${E2E_BUILD_MARKER}`,
+      canvasSurface: true,
     });
   });
 

@@ -34,7 +34,11 @@ import {
   getRecordState,
   shadowToCanvasRecords,
 } from "../../../canvas/canvas-shadow";
-import { CanvasSync } from "../../../files/canvas-sync";
+// WP19 AC1: a delete writes a tombstone and never removes a key, so
+// `nodes.has(id)` proves nothing in EITHER direction. Every survival and every
+// deletion oracle below is read through suppression + the projection.
+import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
+import { CanvasSync, buildCanvasData } from "../../../files/canvas-sync";
 
 const PATH = "wiki/map.canvas";
 const OTHER = "wiki/other.canvas";
@@ -84,13 +88,19 @@ function createSyncManager() {
   };
 }
 
+// WP64 — this helper stands in for what `buildCanvasData()` hands the view, so
+// post-WP19 it must not hand over a record the projection suppresses: a
+// tombstoned record is deleted, and handing it to the view as live would make
+// every hand-over oracle below unable to tell a live card from a deleted one.
 function docRecords(doc: Y.Doc): {
   nodes: Record<string, unknown>[];
   edges: Record<string, unknown>[];
 } {
+  const deleted = doc.getMap<unknown>("deleted");
   const read = (name: string): Record<string, unknown>[] => {
     const out: Record<string, unknown>[] = [];
-    for (const [, record] of doc.getMap<Y.Map<unknown>>(name)) {
+    for (const [id, record] of doc.getMap<Y.Map<unknown>>(name)) {
+      if (isTombstoneSuppressed(readTombstoneEntry(deleted, id))) continue;
       out.push(Object.fromEntries(record.entries()));
     }
     return out;
@@ -154,6 +164,22 @@ describe("WP5 — the reconcile receipt supplies the capture path's surface stat
       p.doc.getMap<Y.Map<unknown>>("nodes").has("n2"),
       "an omission without a hand-over receipt deleted a record (I7)",
     ).toBe(true);
+    // WP19 AC1 — this test's ONLY oracle was the line above, and no delete path
+    // removes a key any more, so it can no longer fail. I7 is pinned where
+    // deletion now actually lives: the tombstone and the user-visible projection.
+    const t1Deleted = p.doc.getMap<unknown>("deleted");
+    expect(
+      isTombstoneSuppressed(readTombstoneEntry(t1Deleted, "n2")),
+      "an omission without a hand-over receipt TOMBSTONED a record (I7)",
+    ).toBe(false);
+    expect(
+      buildCanvasData(
+        p.doc.getMap<Y.Map<unknown>>("nodes"),
+        p.doc.getMap<Y.Map<unknown>>("edges"),
+        t1Deleted,
+      ).nodes.map((n) => n.id),
+      "the record the user never handed over vanished from the canvas",
+    ).toContain("n2");
   });
 
   it("T2 after a confirmed apply the same omission is a deletion", async () => {
@@ -165,7 +191,21 @@ describe("WP5 — the reconcile receipt supplies the capture path's surface stat
     p.vault.files.set(PATH, canvasJson([N1, N3]));
     await p.cs.handleLocalModify(PATH);
 
-    expect(p.doc.getMap<Y.Map<unknown>>("nodes").has("n2")).toBe(false);
+    // WP19 AC1 — the confirmed apply still licenses the omission to delete; the
+    // deletion is now a tombstone plus disappearance from the projection.
+    const t2Deleted = p.doc.getMap<unknown>("deleted");
+    expect(isTombstoneSuppressed(readTombstoneEntry(t2Deleted, "n2"))).toBe(true);
+    expect(
+      buildCanvasData(
+        p.doc.getMap<Y.Map<unknown>>("nodes"),
+        p.doc.getMap<Y.Map<unknown>>("edges"),
+        t2Deleted,
+      ).nodes.map((n) => n.id),
+    ).toEqual(["n1", "n3"]);
+    // ...and the container survives untouched, so the delete is undoable.
+    const t2N2 = p.doc.getMap<Y.Map<unknown>>("nodes").get("n2") as Y.Map<unknown>;
+    expect(t2N2.get("text")).toBe("two");
+    expect(t2N2.get("x")).toBe(300);
     expect(getRecordState(p.cs.getSurfaceShadow(), PATH, "node", "n2")).toBe("absent");
   });
 
@@ -189,10 +229,37 @@ describe("WP5 — the reconcile receipt supplies the capture path's surface stat
     await p.cs.handleLocalModify(PATH);
 
     const nodes = p.doc.getMap<Y.Map<unknown>>("nodes");
-    expect(nodes.has("n1"), "a handed-over record survived its proven deletion").toBe(false);
+    const t3Deleted = p.doc.getMap<unknown>("deleted");
+    const t3Visible = buildCanvasData(
+      nodes,
+      p.doc.getMap<Y.Map<unknown>>("edges"),
+      t3Deleted,
+    ).nodes.map((n) => n.id);
+
+    // WP19 AC1 — THE discrimination this test exists for. Under key presence
+    // both halves now read `true` and the test proves nothing; read as
+    // suppression they diverge again: the handed record goes, the held one stays.
+    expect(
+      isTombstoneSuppressed(readTombstoneEntry(t3Deleted, "n1")),
+      "a handed-over record survived its proven deletion",
+    ).toBe(true);
+    expect(t3Visible).not.toContain("n1");
+    expect(
+      isTombstoneSuppressed(readTombstoneEntry(t3Deleted, "n2")),
+      "the card the user was holding was deleted by a save it never saw",
+    ).toBe(false);
+    expect(
+      t3Visible,
+      "the card the user was holding vanished from the canvas",
+    ).toContain("n2");
+    // Row 11 is a STRENGTHENING, not a swap: the original key-presence oracle is
+    // kept verbatim beside the pins above. It can no longer fail on its own, but
+    // nothing is deleted — the pins are added strictness, not a replacement.
     expect(nodes.has("n2"), "the card the user was holding was deleted by a save it never saw").toBe(
       true,
     );
+    // AC1 — the honoured delete destroyed nothing either.
+    expect((nodes.get("n1") as Y.Map<unknown>).get("text")).toBe("one");
   });
 
   it("T4 closing the view drops the hand-over only, never the shared shadow", async () => {

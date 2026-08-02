@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { serializeCanonicalCanvas } from "../../../canvas/canvas-canonical";
+import { decodeEndpointToFile } from "../../../canvas/canvas-registers";
 import { parseCanvas } from "../../../files/canvas-sync";
 
 // ===========================================================================
@@ -87,13 +88,22 @@ describe("WP3 AC4 — the `.canvas` file shape is unchanged", () => {
     expect(JSON.stringify(JSON.parse(out), null, "\t")).toBe(out);
   });
 
-  it("round-trips through the unchanged `parseCanvas` reader", () => {
+  it("round-trips through the `parseCanvas` reader", () => {
     const data = parseCanvas(serializeCanonicalCanvas(INPUT));
 
     expect(Object.keys(data.nodes).sort()).toEqual(["n1", "n2"]);
     expect(Object.keys(data.edges)).toEqual(["e1"]);
     expect(data.nodes.n1.file).toBe("Notes/A.md");
-    expect(data.edges.e1.toSide).toBe("left");
+    // WP16 (P1) changed the READER's output shape from flat file keys to V2
+    // registers; it did not change the FILE, which is this suite's subject —
+    // see the header: "This test pins the bytes, not the intent." The identical
+    // claim ("the emitted file's e1 carries toSide 'left', and it reads back")
+    // is therefore restated through WP10's documented endpoint codec rather
+    // than through a raw property that the reader no longer emits.
+    // Falsifiability is unchanged: if `parseCanvas` dropped or corrupted the
+    // `to` register, the decoded `toSide` would be wrong or undefined and this
+    // still fails. Nothing is removed or relaxed.
+    expect(decodeEndpointToFile("to", data.edges.e1.to).toSide).toBe("left");
   });
 
   it("emits an empty canvas as two empty arrays", () => {

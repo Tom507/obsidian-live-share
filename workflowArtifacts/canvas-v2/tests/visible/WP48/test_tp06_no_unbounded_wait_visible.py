@@ -32,10 +32,21 @@ TIMEOUT_PARAM_NAMES = {"timeout_s", "timeout", "timeout_ms", "budget_s"}
 
 
 class Clock:
-    def __init__(self) -> None:
+    """Virtual clock with a hard call budget.
+
+    The budget matters: an implementation that accepts an unbounded timeout would
+    otherwise hang the whole suite instead of failing. Here it fails loudly.
+    """
+
+    def __init__(self, max_calls: int = 5_000) -> None:
         self.t = 0.0
+        self.calls = 0
+        self.max_calls = max_calls
 
     def now(self) -> float:
+        self.calls += 1
+        if self.calls > self.max_calls:
+            raise AssertionError("wait helper never terminated — the timeout was not enforced")
         return self.t
 
     def sleep(self, seconds: float) -> None:

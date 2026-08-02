@@ -1,6 +1,6 @@
 # Task Charter — WP12: Tombstone map core
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP12
 **Phase:** P1
 **task_mode:** `standard`
@@ -120,6 +120,131 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 *Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
 
+Module under test (create-path, does not exist yet): `plugin/src/canvas/canvas-tombstone.ts`.
+
+**Binding API surface for the Coder Sub-Agent** (Shared Ownership Contract §1 — WP12 is the single
+owner of the `deleted` entry shape, its LWW merge and the suppression predicate; WP15 and WP17
+import from here and must never re-implement any of it):
+
+```ts
+export interface TombstoneEntry {
+  readonly t: number; // Lamport timestamp
+  readonly by: string; // clientID
+  readonly on: boolean; // true = suppressed (deleted/quarantined)
+  readonly q?: boolean; // true only alongside on:true = quarantine, not a user delete
+}
+
+export interface TombstoneMap {
+  get(key: string): unknown;
+  set(key: string, value: unknown): unknown;
+}
+
+// The pure merge: given two candidate entries for the SAME id, returns the
+// LWW winner. Higher `t` wins outright; on equal `t`, the entry whose `by`
+// sorts GREATER under plain lexicographic string comparison wins (never a
+// numeric interpretation, never Yjs's own clientID tie-break). Commutative
+// (argument order never changes the result) and idempotent (merging an
+// entry with an equal-value copy of itself is a no-op).
+export function mergeTombstoneEntries(a: TombstoneEntry, b: TombstoneEntry): TombstoneEntry;
+
+// Read the current entry for `id`, or undefined if none exists yet.
+export function readTombstoneEntry(map: TombstoneMap, id: string): TombstoneEntry | undefined;
+
+// Apply one op (delete / undo / quarantine / release-quarantine — all are
+// the SAME shape, just different `on`/`q` values) to `map` for `id`: reads
+// the current entry, merges it with `op` via mergeTombstoneEntries, stores
+// and returns the result. Undo, quarantine and release are not special
+// cases — they are ordinary ops that win or lose by the same (t, by) rule
+// as a delete, so a stale op of any kind can never override a fresher one.
+export function applyTombstoneOp(map: TombstoneMap, id: string, op: TombstoneEntry): TombstoneEntry;
+
+// THE single suppression predicate (AC2) — reconcile output, serialisation
+// and capture resurrect-blocking must ALL call this one function, never
+// reimplement "is this record deleted". true iff entry !== undefined && entry.on === true.
+export function isTombstoneSuppressed(entry: TombstoneEntry | undefined): boolean;
+
+// Distinguishes quarantine from a user delete (AC4): true iff the entry is
+// CURRENTLY suppressed (on:true) AND q:true. A lingering q:true on an
+// on:false (released/undone) entry must read as false — quarantine is a
+// property of the current suppressed state, not a permanent tag.
+export function isTombstoneQuarantined(entry: TombstoneEntry | undefined): boolean;
+```
+
+**Naming constraints the dynamic-scan tests enforce** (do not introduce a name matching these
+patterns for any purpose other than the function it is pinned to): no exported name besides
+`isTombstoneSuppressed` may match `/suppress|isdeleted|isremoved|ishidden|shouldhide|shouldsuppress/i`
+or the broader `/delete|remove|hidden|suppress/i`; no exported name may match
+`/event|notify|emit|listener|subscribe|onchange/i` (this module offers no event/notification
+side channel at all); no exported name may match `/releasequarantine|unquarantine|revokequarantine|quarantinerelease/i`
+— releasing a quarantine is an ordinary `applyTombstoneOp` call, not a dedicated function.
+
+The module must import nothing but plain TypeScript (no Yjs, no Obsidian, no filesystem, no clock) —
+the purity contract every P1 core in this batch follows (precedent: `canvas-ord.ts`, `canvas-type-guard.ts`).
+The tombstone container is reached through the structural `TombstoneMap` interface, exactly as
+`canvas-registers.ts`'s `V2RecordMap` lets its accessors stay unit-testable without a real `Y.Map`.
+Losslessness (AC3) follows structurally from this module never being handed a record's own field
+container at all — it only ever touches the separate `deleted` map keyed by id.
+
+### TC1 — a higher Lamport t wins the merge outright, regardless of on or by
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp01_higher_t_wins_visible.test.ts`
+- What it checks: `mergeTombstoneEntries(a, b)` picks the entry with the strictly higher `t` in both directions (delete-over-undo and undo-over-delete), and the result is identical however the two arguments are ordered.
+- Test data channel: hand-picked `(t, by, on)` literal pairs.
+
+### TC2 — equal t breaks the tie on by, lexicographically and deterministically
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp02_equal_t_by_tiebreak_visible.test.ts`
+- What it checks: with equal `t`, the entry whose `by` sorts greater under plain string comparison wins, argument order does not matter, and the comparison is confirmed to be lexicographic (not numeric) via an `"aaa"`/`"aab"` pair.
+- Test data channel: hand-picked equal-`t` literal pairs.
+
+### TC3 — the merge is commutative and idempotent
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp03_merge_commutative_idempotent_visible.test.ts`
+- What it checks: `mergeTombstoneEntries(a, b) === mergeTombstoneEntries(b, a)` for several distinct pairs, merging an entry with itself changes nothing, and re-applying the identical op to the same map twice via `applyTombstoneOp` is a no-op the second time.
+- Test data channel: hand-picked literal entries plus a `StubTombstoneMap` (local `get`/`set` stub, no Yjs).
+
+### TC4 — tombstone convergence is identical on every replica regardless of arrival order
+- Verifies AC: AC1
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp04_replica_order_independent_convergence_visible.test.ts`
+- What it checks: three independent stub maps ("replicas") applying the same three ops in three different orders via `applyTombstoneOp` converge on the identical final entry — the pure-merge analogue of a CRDT convergence test, deliberately not staging a raw concurrent `Y.Map` write race (Shared Ownership Contract §4).
+- Test data channel: three literal ops (including one equal-`t` tie) plus three arrival-order permutations.
+
+### TC5 — one shared suppression predicate answers all three consumer questions identically
+- Verifies AC: AC2
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp05_single_predicate_three_consumers_visible.test.ts`
+- What it checks: three tiny stand-ins for reconcile output, serialisation and capture resurrect-blocking are each implemented purely in terms of `isTombstoneSuppressed`, and all three agree for a deleted entry, a visible (undone) entry and an absent (`undefined`) entry.
+- Test data channel: two literal entries plus the `undefined` (never-deleted) case.
+
+### TC6 — the module exports exactly one suppression predicate
+- Verifies AC: AC2
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp06_no_duplicate_suppression_predicate_export_visible.test.ts`
+- What it checks: a dynamic scan (`Object.keys` of the imported module namespace) confirms exactly one exported function matches a suppression-predicate naming pattern, and it is `isTombstoneSuppressed` — the same pattern WP13's `test_tp07_no_mutating_export_visible.test.ts` uses to pin its own surface.
+- Test data channel: introspection of the module namespace itself, no fixture data.
+
+### TC7 — undo of a delete restores the record with all field values intact
+- Verifies AC: AC3
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp07_lossless_undo_field_container_untouched_visible.test.ts`
+- What it checks: a full field set on an independent `FieldContainer` stub (whose own `delete`/`clear` throw if ever called) survives a delete+undo cycle byte-identical, and the tombstone operations never touch it at all — proving the field container was never destroyed, not merely that it looks intact afterward.
+- Test data channel: a literal node-shaped field record (`id`, `type`, `pos`, `size`, `text`, `color`) plus a `StubTombstoneMap`.
+
+### TC8 — a stale undo never resurrects a record over a later delete
+- Verifies AC: AC3
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp08_stale_undo_does_not_override_later_delete_visible.test.ts`
+- What it checks: undo is not special-cased — a lower-`t` undo arriving after a higher-`t` delete leaves the record suppressed, while a higher-`t` undo does restore it; proves delete/undo/quarantine are "one converging mechanism with a single suppression rule" (Definition of Done), not separately-arbitrated operations.
+- Test data channel: hand-picked literal `(t, by, on)` op sequences applied via `applyTombstoneOp`.
+
+### TC9 — quarantine is distinguishable from a user delete even though both suppress
+- Verifies AC: AC4
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp09_quarantine_distinguishable_from_user_delete_visible.test.ts`
+- What it checks: `isTombstoneSuppressed` is true for both a plain delete and a quarantine, but only `isTombstoneQuarantined` distinguishes them; also pins the edge case that a lingering `q:true` on an `on:false` entry does not read as quarantined.
+- Test data channel: hand-picked literal entries covering the delete / quarantine / released-with-stale-q cases.
+
+### TC10 — releasing a quarantine restores the record with no separate user-visible event channel
+- Verifies AC: AC4
+- Test file: `plugin/src/__tests__/v2/wp12/test_tp10_quarantine_release_no_visible_event_visible.test.ts`
+- What it checks: the module exports no event/notification surface at all (dynamic scan), and a quarantine release goes through the exact same `applyTombstoneOp` call shape as an ordinary undo, producing a result with the identical key shape — there is no dedicated "release" function whose existence alone could signal something user-visible happened.
+- Test data channel: literal quarantine + release op pairs plus introspection of the module namespace.
+
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
@@ -130,17 +255,17 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** `plugin/src/canvas/canvas-tombstone.ts` did not exist; all 10 visible test files failed at import. V1 still models deletion as key ABSENCE (`canvas-sync.ts:620–704`), which carries no author, no time and no intent and therefore cannot merge — the resurrection / lossy-undo pair this WP removes.
+- **Approach:** one pure module, zero imports. `TombstoneEntry = {t, by, on, q?}`; `TombstoneMap` is a structural `get`/`set` seam that `Y.Map<unknown>` satisfies without a cast (WP9's `V2RecordMap` technique). The merge is `max` over the **total** order `(t, by, on, q)` — higher `t` outright, equal `t` breaks on the greater `by` under plain lexicographic string comparison. Making the order total (rather than stopping at `(t, by)`) is what buys commutativity, associativity and idempotence in one step, hence convergence under any arrival permutation, without ever consulting Yjs's random-clientID arbitration. Delete / undo / quarantine / release are one call, `applyTombstoneOp`, differing only in payload, so a stale op of any kind loses by the same rule. Losslessness (AC3) is structural: the module is never handed a record's field container, and the seam exposes no `delete`/`clear`. `isTombstoneSuppressed` is the single, `q`-agnostic suppression predicate; `isTombstoneQuarantined` requires `on:true` AND `q:true`. `q` is normalised to "present only when true" so an undo and a quarantine release produce identical key shapes.
+- **Fallback path if all attempts fail:** not needed — attempt 1 passed all visible tests and the typecheck.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** `plugin/src/canvas/canvas-tombstone.ts` created (zero imports, pure core). All four ACs met. All 10 visible test files pass (18 tests, `npx vitest run src/__tests__/v2/wp12/ --reporter=dot`). `npx tsc -noEmit -skipLibCheck` clean, 0 errors, none new. No existing test deleted, skipped, weakened or relaxed. `ImplementationReport_WP12.md` written, including the precise statements of the suppression predicate and the merge rule that WP15/WP17 consume instead of re-deriving them.
+- **What remains open:** nothing in WP12's scope. Downstream by design: wiring into capture / reconcile / serialisation (WP19), the quarantine auditor's decision logic (WP20), sidecar tombstone GC (WP25 — note the `TombstoneMap` seam deliberately has no `delete`, so WP25 must widen it explicitly). WP23's fuzzer `delete`/`undo` ops map onto `applyTombstoneOp` with `on:true`/`on:false`.
+- **Final status:** `DONE`
 
 ---
 

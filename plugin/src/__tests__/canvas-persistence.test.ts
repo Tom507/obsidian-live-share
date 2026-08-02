@@ -10,6 +10,8 @@ import {
   type LocalChange,
 } from "../canvas/canvas-binding";
 import {
+  CANVAS_MIGRATION_ORIGIN,
+  CANVAS_SEED_ORIGIN,
   CanvasPersistence,
   type PersistenceIO,
   attachCanvasPersistence,
@@ -171,14 +173,30 @@ function seedDoc(
 }
 
 /** Count ALL transactions applied to `doc` after attach — used to prove the
- * writer originates none (only intentional deltas/captures should ever appear). */
-function countTransactions(doc: Y.Doc): { count: () => number; stop: () => void } {
-  let n = 0;
-  const handler = (): void => {
-    n++;
+ * writer originates none (only intentional deltas/captures should ever appear).
+ *
+ * `countWithOrigin(o)` narrows the same tally to transactions stamped `o`. A bare
+ * total answers "did anything write?"; it cannot answer "did THIS write happen,
+ * and did that one not?" — and cold open can legitimately open exactly one
+ * transaction (the V1→V2 migration) on a branch whose defining property is that
+ * it performs NO file→CRDT seed. Origins are compared by identity, so an
+ * unstamped (`undefined`-origin) transaction matches neither named origin and is
+ * still caught by the total. */
+function countTransactions(doc: Y.Doc): {
+  count: () => number;
+  countWithOrigin: (origin: unknown) => number;
+  stop: () => void;
+} {
+  const origins: unknown[] = [];
+  const handler = (tr: Y.Transaction): void => {
+    origins.push(tr.origin);
   };
   doc.on("afterTransaction", handler);
-  return { count: () => n, stop: () => doc.off("afterTransaction", handler) };
+  return {
+    count: () => origins.length,
+    countWithOrigin: (origin) => origins.filter((o) => o === origin).length,
+    stop: () => doc.off("afterTransaction", handler),
+  };
 }
 
 /** Count only CANVAS_BINDING_ORIGIN updates — a nonzero count is an echo/re-push. */
@@ -278,7 +296,11 @@ describe("CanvasPersistence — debounced writer + zero CRDT writes (SPEC_03 §8
     const written = io.files.get("board.canvas") ?? "";
     // Exact reuse of the canvas-sync serializer (pruned + tabs).
     expect(written).toBe(
-      serializeCanvas(doc.getMap<Y.Map<unknown>>("nodes"), doc.getMap<Y.Map<unknown>>("edges")),
+      serializeCanvas(
+        doc.getMap<Y.Map<unknown>>("nodes"),
+        doc.getMap<Y.Map<unknown>>("edges"),
+        doc.getMap<unknown>("deleted"),
+      ),
     );
     const parsed = JSON.parse(written) as { nodes: { id: string }[]; edges: { id: string }[] };
     expect(written).toContain("\n\t"); // tab-indented
@@ -399,11 +421,24 @@ describe("CanvasPersistence.coldOpen — load path (SPEC_03 §4/§8)", () => {
 
     expect(result).toBe("doc-wins");
     expect(io.read).not.toHaveBeenCalled(); // NO file→CRDT read
-    expect(tx.count()).toBe(0); // doc-wins path opens no transaction on the doc
+    // WP18 E3 amendment. The test's subject is its title: NO file→CRDT read.
+    // `tx.count() === 0` was a PROXY for that, valid only while a seed was the
+    // sole thing that could open a transaction here. WP18 gives `migrateV1ToV2`
+    // its production call site on this very branch — a doc-internal translation
+    // that reads nothing from the file — so the proxy started forbidding a
+    // transaction the spec mandates while STILL not pinning the property it
+    // exists to protect. Replaced by three strictly stronger conjuncts:
+    expect(tx.countWithOrigin(CANVAS_SEED_ORIGIN)).toBe(0); // the subject, pinned directly
+    expect(tx.countWithOrigin(CANVAS_MIGRATION_ORIGIN)).toBe(1); // exactly one, not "at least one"
+    expect(tx.count()).toBe(1); // and nothing else opened a transaction at all
     // Stale file overwritten with the canonical doc serialization.
     const written = io.files.get("stale.canvas") ?? "";
     expect(written).toBe(
-      serializeCanvas(doc.getMap<Y.Map<unknown>>("nodes"), doc.getMap<Y.Map<unknown>>("edges")),
+      serializeCanvas(
+        doc.getMap<Y.Map<unknown>>("nodes"),
+        doc.getMap<Y.Map<unknown>>("edges"),
+        doc.getMap<unknown>("deleted"),
+      ),
     );
     expect(written).not.toContain("STALE");
 
@@ -470,7 +505,7 @@ describe("WP7 / US5 AC13 — single writer per canvas path", () => {
     vault._files.set(
       "board.canvas",
       JSON.stringify({
-        nodes: [{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 }],
+        nodes: [{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "" }],
         edges: [],
       }),
     );
@@ -538,6 +573,7 @@ describe("WP7 / US5 AC13 — single writer per canvas path", () => {
     const postDelta = serializeCanvas(
       doc.getMap<Y.Map<unknown>>("nodes"),
       doc.getMap<Y.Map<unknown>>("edges"),
+      doc.getMap<unknown>("deleted"),
     );
 
     await vi.advanceTimersByTimeAsync(3000); // let everything drain
@@ -625,7 +661,7 @@ describe("WP7 / US5 AC15+AC7 — lastWrittenContent never goes stale", () => {
   it("AC7: the persistence write opens CanvasSync's echo window, then closes it", async () => {
     vi.useFakeTimers();
     const f = makeCanvasFixture({
-      nodes: [{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 }],
+      nodes: [{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "" }],
       edges: [],
     });
     await f.cs.subscribe("board.canvas", "host");
@@ -651,7 +687,7 @@ describe("WP7 / US5 AC15+AC7 — lastWrittenContent never goes stale", () => {
   it("AC15: after a persistence write, an unchanged-content modify is a no-op (echo-breaker)", async () => {
     vi.useFakeTimers();
     const f = makeCanvasFixture({
-      nodes: [{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 }],
+      nodes: [{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "" }],
       edges: [],
     });
     await f.cs.subscribe("board.canvas", "host");
@@ -755,7 +791,7 @@ describe("WP7 / US5 AC16+AC17 + US6 — write guards, ordering, log signature", 
     io.files.set(
       "cold.canvas",
       JSON.stringify({
-        nodes: [{ id: "n1", type: "text", x: 5, y: 6, width: 100, height: 50 }],
+        nodes: [{ id: "n1", type: "text", x: 5, y: 6, width: 100, height: 50, text: "" }],
         edges: [],
       }),
     );

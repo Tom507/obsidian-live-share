@@ -16,8 +16,26 @@ Members:
 
 - :mod:`obsidian_e2e.constants` — every value shared by WP43–WP49, pinned once (WP43 owns it).
 - :mod:`obsidian_e2e.vaults`    — WP43's **read-only** vault registry / instance probe.
+- :mod:`obsidian_e2e.ports`     — WP44's per-vault control-port provisioning with byte-exact
+  capture and restore of the plugin settings file.
+- :mod:`obsidian_e2e.lifecycle` — WP45's attach-vs-launch lifecycle for the real rig.
+- :mod:`obsidian_e2e.readiness` — WP46's readiness / instance-identity handshake, and its
+  inverted teardown form.
+- :mod:`obsidian_e2e.scratch`   — WP47's per-run scratch canvas, the single sanctioned
+  vault-write funnel, and the before/after vault fingerprint that is the run's
+  data-safety verdict.
+- :mod:`obsidian_e2e.teardown`  — WP48's ordered teardown, bounded waits, mid-run endpoint
+  liveness and the start-up reclaim of a previous crashed run's artefacts.
 """
 
 from __future__ import annotations
 
-__all__ = ["constants", "vaults"]
+__all__ = [
+    "constants",
+    "lifecycle",
+    "ports",
+    "readiness",
+    "scratch",
+    "teardown",
+    "vaults",
+]

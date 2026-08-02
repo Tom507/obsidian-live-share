@@ -23,6 +23,16 @@ from obsidian_e2e import constants, vaults  # noqa: E402
 _MAIN = getattr(constants, "PLUGIN_MAIN_REL", constants.PLUGIN_DIR_REL + "/main.js")
 
 
+def _failure_names(instance) -> tuple:
+    """Named failure reasons of a descriptor, tolerant of a tuple or a single-value field."""
+    value = getattr(instance, "failures", None)
+    if value is None:
+        value = getattr(instance, "failure", None)
+    if value is None:
+        return ()
+    return (value,) if isinstance(value, str) else tuple(value)
+
+
 def _key(value) -> str:
     return os.path.normcase(os.path.normpath(os.path.abspath(str(value))))
 
@@ -68,5 +78,5 @@ def test_both_roles_with_different_trailing_separators_keep_distinct_identities(
     assert instance_a.registry_id == "aa00000000000001"
     assert instance_b.registry_id == "aa00000000000002"
     assert _key(instance_a.resolved_path) != _key(instance_b.resolved_path)
-    assert constants.VAULT_NOT_IN_REGISTRY not in tuple(instance_a.failures)
-    assert constants.VAULT_NOT_IN_REGISTRY not in tuple(instance_b.failures)
+    assert constants.VAULT_NOT_IN_REGISTRY not in _failure_names(instance_a)
+    assert constants.VAULT_NOT_IN_REGISTRY not in _failure_names(instance_b)

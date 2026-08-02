@@ -1,11 +1,11 @@
 # Task Charter — WP49: Real quiescence + file-level oracle
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP49
 **Phase:** P0 (PHASE T3 group)
 **task_mode:** `standard`
 **Depends on:** WP46
-**W4 Test Targets:** `0`
+**W4 Test Targets:** `3`
 
 > **Metadata block** — Worker 3 Core reads only these fields to determine execution order and routing. Worker 4 checks `W4 Test Targets` before deciding whether to read section 7b. Full charter content is loaded by sub-agents in their own context windows.
 
@@ -138,29 +138,195 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+All visible tests run under Vitest 4.0.18 from `plugin/`, open no socket, touch no
+vault and contain no wall-clock sleep — every timing assertion runs on
+`vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync`. They are staged by copying
+them into `plugin/src/__tests__/wp49/` (hence the `../../testing/e2e-control`
+import depth); the staged copies are already in place and currently red.
+
+> **Staging note:** the artifact filenames already end in `.test.ts`, which matches
+> the default vitest `include`, so staging is a plain copy — no rename. Run with
+> `npx vitest run src/__tests__/wp49` from `plugin/`.
+
+> **Data safety.** No test opens `H:\Developement\_NeuralAngels\ObsidianOrga`,
+> `...\ObsidianOrga - Kopie` or anything under `%APPDATA%\obsidian\`. The filesystem
+> tests create their own directory with `mkdtempSync(join(tmpdir(), "ls-wp49-…"))`
+> and remove it in `afterEach`; everything else is an in-memory double.
+
+> **CRDT assertion hygiene (T3 contract §10).** No test asserts a value produced by
+> two concurrent same-key writes. Where a peer writes, its `Y.Doc` is seeded from the
+> host state first, so every asserted value has a single author with a causal
+> predecessor chain; where both sides must write, the writes are ordered and the
+> first is observed before the second is made.
+
+### Required implementation surface (pinned by these tests)
+
+- `E2EControlHost.canvasFile(path): Promise<{exists, sha256, size, content}>` — the
+  `canvas.file` command of T3 contract §6.1; `sha256` is lowercase hex over the raw
+  bytes; an absent file is exactly `{exists:false, sha256:"", size:0, content:null}`
+  (`content:null` is what distinguishes absent from an empty file).
+- `E2EPluginLike.app?.vault.adapter` with `exists` / `readBinary` (`read` accepted) —
+  the real `LiveSharePlugin` already satisfies this structurally, so no production
+  change is needed.
+- `buildPluginHost` observes `update` on the `Y.Doc` of every canvas opened through
+  `canvasOpen`, whatever the origin, once per doc.
+- `evaluateCanvasConvergence(a, b)` (pure) → `{converged, docConverged, fileConverged,
+  reason}` plus the exported constant `DOC_CONVERGED_FILE_DIVERGED`, whose value is
+  the T3 contract §7 enum string verbatim. `reason` is that constant only for the D17
+  class and `null` otherwise.
+
+### TC1 — An update arriving from the peer keeps the instance non-quiescent
+- Verifies AC: 1
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp1_peer_origin_blocks_quiescence_visible.test.ts
+- What it checks: after settling, a probe shorter than the quiet window reports `quiescent:true`; a relay-origin `Y.applyUpdate` then flips it to `false`; once the relay stops it returns to `true`. The doc content is asserted too, so the oracle cannot be reacting to nothing.
+- Test data channel: in-memory `Y.Doc` pair (peer doc seeded from host state)
+
+### TC2 — An update from a user interaction does the same
+- Verifies AC: 1
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp2_user_origin_blocks_quiescence_visible.test.ts
+- What it checks: a local view-origin transaction — never routed through the control channel — blocks quiescence and then settles; a simulated drag (ten geometry writes 20 ms apart) keeps it non-quiescent for the whole burst and quiescent once the hand comes off.
+- Test data channel: in-memory `Y.Doc` + fake timers
+
+### TC3 — A control-initiated edit still works exactly as before
+- Verifies AC: 1
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp3_control_edit_still_bumps_visible.test.ts
+- What it checks: `simulateEdit` still returns `{applied:true}`, still writes the doc, still blocks and then releases quiescence, still calls the `bump` hook, and still throws on a canvas that was never opened (→ router 400). Regression guard for the seam being widened.
+- Test data channel: in-memory `Y.Doc` + `vi.fn()` bump spy
+
+### TC4 — `sync.waitQuiescent` keeps its name and its timeout contract
+- Verifies AC: 1
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp4_timeout_semantics_preserved_visible.test.ts
+- What it checks: the router still defaults `timeoutMs` to `2000` when absent and when the value is non-numeric or negative, still forwards an explicit value, still returns the `{quiescent}` envelope; on a live host, sustained activity yields `false` at the deadline and `true` once activity stops.
+- Test data channel: fake host spy + in-memory `Y.Doc`
+
+### TC5 — Quiescence answers for the whole instance, not one canvas
+- Verifies AC: 1
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp5_multi_canvas_activity_tracked_visible.test.ts
+- What it checks: `sync.waitQuiescent` takes no `path`, so an edit on the second open canvas blocks it exactly like the first; the negative control proves a doc the instance never opened does **not** block it.
+- Test data channel: two tracked in-memory `Y.Doc`s + one untracked
+
+### TC6 — Doc converged, disk diverged → the run fails under the named reason (D17)
+- Verifies AC: 2
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp6_doc_converged_file_diverged_visible.test.ts
+- What it checks: identical `canvas.state` on both sides with different `canvas.file` digests gives `docConverged:true`, `fileConverged:false`, `converged:false`, `reason:"DOC_CONVERGED_FILE_DIVERGED"`; the constant is asserted to equal the contract enum string verbatim; a third case demonstrates that a doc-only oracle would have passed this exact input.
+- Test data channel: fixture (hand-built `canvas.state` + `canvas.file` observations)
+
+### TC7 — Doc converged and disk converged → honest green
+- Verifies AC: 2
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp7_honest_green_convergence_visible.test.ts
+- What it checks: both projections agreeing gives `converged:true` with `reason:null`; the doc comparison is id-keyed and order-independent (array order and record key order do not change the verdict), mirroring the existing `_compare` in the MCP driver.
+- Test data channel: fixture (nodes + edges, reordered variants)
+
+### TC8 — Files agree but the docs do not → still a failed run, not the D17 class
+- Verifies AC: 2
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp8_files_agree_doc_diverges_visible.test.ts
+- What it checks: identical bytes with divergent docs gives `fileConverged:true`, `docConverged:false`, `converged:false` and `reason:null` — the D17 reason is reserved for the case the doc oracle would have passed. A single differing geometry value is enough to break doc convergence.
+- Test data channel: fixture
+
+### TC9 — `canvas.file` reads back and never writes
+- Verifies AC: 3
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp9_file_read_is_readonly_visible.test.ts
+- What it checks: every mutating adapter method is a spy that also throws, so a write is fatal twice over; after the read the bytes and the `mtime` on disk are unchanged, no mutator was called, and the reported `content`/`size`/`sha256` match the file exactly. Repeated reads are byte-identical and still write nothing. **This is the single most important test in the WP.**
+- Test data channel: real temp directory (`mkdtempSync` under `tmpdir()`) + spy adapter double
+
+### TC10 — An absent file stays absent
+- Verifies AC: 3
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp10_absent_file_not_created_visible.test.ts
+- What it checks: a missing path resolves (never rejects) to `{exists:false, sha256:"", size:0, content:null}`; the directory listing is byte-identical afterwards, no file appears, and a missing file inside a missing folder does not create the folder.
+- Test data channel: real temp directory + spy adapter double
+
+### TC11 — The read-back reports what the writer produced, not a normalised form
+- Verifies AC: 3
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp11_no_normalisation_bytes_verbatim_visible.test.ts
+- What it checks: the fixture is deliberately in a shape the plugin's canonical serialiser would rewrite — keys out of schema order, records not id-sorted, ragged whitespace, no trailing newline. `content` equals the file byte-for-byte and is explicitly **not** `JSON.stringify(JSON.parse(content))`; `sha256` is the digest of the bytes on disk and `size` their byte length; record and key order survive.
+- Test data channel: real temp directory (hand-written non-canonical `.canvas`)
+
+### TC12 — Both oracles ride the existing protocol, with no new dependency or transport
+- Verifies AC: 4
+- Test file: workflowArtifacts/canvas-v2/tests/visible/WP49/test_tp12_existing_protocol_no_new_dependency_visible.test.ts
+- What it checks: `canvas.file` routes through `routeCommand`/`parseAndRoute` with the existing `{ok:true,result}` envelope and the existing structured `400 {ok:false,error}` on a missing `path`; `plugin/package.json` still declares exactly the five known runtime dependencies and no socket library; `e2e-control.ts` imports nothing outside the allow-list and still contains exactly one `createServer(` and one `.listen(`.
+- Test data channel: fake host + structural read of `package.json` and the module source
 
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+Three AC halves cannot be reached headlessly — they need a real Obsidian instance
+and the two real vaults, which is WP50/WP51 territory and out of scope for this
+batch (T3 contract §0/S5). The unit tests above cover every seam that is reachable
+without one; what is left is genuinely the host half.
+
+1. **AC1 (real-host half) — `INTEGRATION_SCOPE`.** On a real instance the three origins are the relay socket, the Obsidian canvas view and the disk writer. The unit tests prove the seam observes *any* doc update; only a real run can prove that the plugin's actual relay and view paths go through that doc rather than around it. Oracle: with a peer actively editing, `sync.waitQuiescent` must not return `{quiescent:true}` before the peer's last delta has been applied locally.
+2. **AC2 (two-vault half) — `INTEGRATION_SCOPE`.** `evaluateCanvasConvergence` is verified as a pure function; wiring it to two live `canvas.file` read-backs from two different vaults, and failing the run under `DOC_CONVERGED_FILE_DIVERGED`, needs both endpoints up. Oracle: a deliberately induced disk divergence (one instance's `CanvasPersistence` prevented from flushing) must turn a doc-green run red with that reason.
+3. **AC3 (real adapter half) — `INTEGRATION_SCOPE`.** The read-only proof here runs against an adapter double over a temp directory. Against Obsidian's real `DataAdapter` the same property must be shown with the WP47 vault fingerprint: before-run and after-teardown fingerprints equal, with the oracle having read every scratch canvas in between.
+
+**Environment prerequisite (not an AC):** the build installed in both vaults is a
+production build with no control server (T3 contract §1.1), so none of the three can
+run until WP50/WP51 install a dev build. Blocked on that, not on WP49.
 
 ---
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
 - **Observed current behavior:**
+  - `buildPluginHost` marked activity in exactly one place — inside `canvas.simulateEdit`.
+    Nothing else could move `lastActivity`, so `sync.waitQuiescent` reported `quiescent:true`
+    on a real instance while relay deltas were still landing and while the user's hand was
+    still on the mouse. Both host builders pass `bump = () => {}`, so the outward hook was
+    equally blind.
+  - `waitQuiescent` answered out of *pre-call* history: it evaluated the idle window before
+    its first sleep, so a caller that started waiting while the instance happened to be idle
+    got `true` even if activity then continued for the entire timeout.
+  - No file-level projection existed at all: `canvas.state` returns the shared-doc snapshot,
+    so a run could converge in the doc while the two `.canvas` files on disk differed (D17).
 - **Approach:**
-- **Fallback path if all attempts fail:**
+  - **AC1 — move the seam to the doc.** `buildPluginHost` subscribes `markActivity` to the
+    `update` event of the `Y.Doc` behind every canvas opened through `canvas.open` (and the
+    one reached through `simulateEdit`), idempotently, via a `WeakSet<Y.Doc>`. Origin is
+    never inspected, so peer, view and control updates are equally visible; a doc the
+    instance never opened is never observed and therefore never blocks it.
+  - **AC1 — the wait covers the interval it was asked about.** The poll loop sleeps first
+    and evaluates afterwards. `timeoutMs`, the 2000 default, the 50 ms quiet window and the
+    `{quiescent}` envelope are unchanged.
+  - **AC2 — `evaluateCanvasConvergence(a, b)`,** a pure exported function over one
+    `canvas.state` plus one `canvas.file` observation per instance, plus the exported
+    `DOC_CONVERGED_FILE_DIVERGED` constant mirrored over T3 contract §7. Doc comparison is
+    id-keyed and order-independent (array order and record key order); file comparison is
+    digest/size/content exact with no normalisation. The named reason is emitted **only**
+    for the D17 class, so it stays diagnostic rather than decorative.
+  - **AC3 — `canvas.file` reads through a read-only adapter view.** `CanvasFileAdapterLike`
+    declares `exists` + `readBinary`/`read` and **no mutating member at all**, so no code
+    path can reach a writer even by accident. Absent → `{exists:false, sha256:"", size:0,
+    content:null}` without touching the filesystem further. Present → the raw bytes,
+    hashed and decoded, never parsed and re-serialised.
+  - **AC4 — no new transport, no new dependency.** One extra `case "canvas.file"` in the
+    existing `routeCommand` switch on the existing envelope; the only new import is the
+    Node built-in `node:crypto`.
+  - **Type pattern (WP47's, one step further):** `canvasFile?` is optional on
+    `E2EControlHost` so the pre-WP49 hand-rolled fake hosts stay valid, and required on
+    `E2EFileControlHost extends E2EScratchControlHost`, which is what `buildPluginHost`
+    now returns.
+- **Fallback path if all attempts fail:** not needed — no attempt failed.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs, in `plugin/src/testing/e2e-control.ts` only.
+  12/12 visible test files, 36/36 tests PASS. `tsc -noEmit -skipLibCheck` reports
+  **0 errors in `wp49/`** (down from 17). The production esbuild build succeeds and
+  `main.js` is **byte-identical in size** to the pre-change build with 0 matches for
+  `e2e-control|LIVESHARE_E2E|e2eControlPort` — the whole module still tree-shakes out.
+- **What remains open:** the three `INTEGRATION_SCOPE` halves in §7b (real host, two
+  vaults, real `DataAdapter`) — WP50/WP51 territory, unchanged by this WP.
+- **Inherited, NOT caused by WP49 (for Worker 3):** `src/__tests__/e2e-control.test.ts`
+  → "sessionInfo maps settings + connection state" and `src/__tests__/t3/wp44/`
+  → `test_tp11_resolveport_precedence_visible.test.ts` both `toEqual` a four-field
+  `session.info`; WP46's five identity fields break them. `src/__tests__/v2/wp8/**`
+  (5 files) is blocked on a missing `canvas/canvas-schema`, another worker's file.
+  `src/__tests__/wp5/latency.test.ts` is a wall-clock flake (154 ms vs a 150 ms band)
+  that passes in isolation.
+- **Final status:** `DONE`
 
 ---
 

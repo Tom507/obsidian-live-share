@@ -1,6 +1,6 @@
 # Task Charter — WP16: `parseCanvas` V2 + `ord` capture
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP16
 **Phase:** P1
 **task_mode:** `standard`
@@ -116,9 +116,104 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ---
 
-## 7. Visible Test Cases / Producer Artifacts
+## 7. Visible Test Cases
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+Contract pinned by these tests (none of it existed before this WP):
+
+- `parseCanvas(content: string): CanvasData` — same signature, new return shape:
+  `CanvasData.nodes: Record<string, V2Node>`, `.edges: Record<string, V2EdgeRecord>`
+  (both from `canvas-registers.ts`, WP9/WP10), plus a new field
+  `order: RecordOrderObservation` (`{ nodes: readonly string[]; edges: readonly string[] }`) —
+  the ids in exact file-array order, independent of `Record` key iteration.
+- New export `deriveOrdAssignments(previous: readonly OrdIdEntry[], nextOrder: readonly string[], clientID: string, rng?: OrdRng): Map<string, string>`
+  — the conservative `ord` capture policy. Returns an id→ord map containing **only**
+  ids whose `ord` is new or reassigned; an id absent from the map keeps its existing
+  `ord` unchanged. Must determine the "has order changed" question via `(ord, id)`
+  canonical order (`compareOrd` / `compareOrdId`, imported from `canvas-ord.ts`,
+  never re-derived), not via the caller's raw array position.
+
+### TC1 — parseCanvas emits V2-shaped node/edge records
+- Verifies AC: AC1 (part 1 — V2 record shape)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp1_v2_record_shape_visible.test.ts`
+- What it checks: a node's flat `x/y/width/height` become one `pos` register and one
+  `size` register (values matching WP9's own `encodePos`/`encodeSize`), an edge's flat
+  `fromNode/fromSide/toNode/toSide` become one `from` and one `to` register (matching
+  WP10's `encodeEndpointFromFile`), and the flat keys are gone from the returned record.
+- Test data channel: inline `JSON.stringify` `.canvas`-shaped fixtures.
+
+### TC2 — parseCanvas exposes an explicit order observation
+- Verifies AC: AC1 (part 2 — order preserved as an explicit observation)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp2_order_observation_explicit_visible.test.ts`
+- What it checks: `data.order.nodes` / `data.order.edges` equal the exact file-array
+  order; ids are chosen so their alphabetical order is the reverse of file order, so an
+  `Object.keys(...).sort()`-style fallback fails the assertion instead of passing by luck.
+- Test data channel: inline `JSON.stringify` fixtures with adversarial id naming.
+
+### TC3 — reparsing an unchanged document reassigns zero existing ord values
+- Verifies AC: AC2 (negative case)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp3_unchanged_document_zero_churn_visible.test.ts`
+- What it checks: parse → derive baseline ords → reparse byte-identical content →
+  rederive; the reassignment map must be empty. This is the DoD statement itself
+  ("order round-trips through the file without churn on unchanged documents").
+- Test data channel: inline fixtures; a seeded deterministic RNG for `allocateOrd`.
+
+### TC4 — appending a new record allocates only its own ord
+- Verifies AC: AC2 (positive case)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp4_append_only_no_existing_touch_visible.test.ts`
+- What it checks: parsing `[a,b]` then `[a,b,c]` reassigns exactly `{c}`; `a`/`b` are
+  absent from the reassignment map, and `c`'s new ord sorts (`compareOrd`) after `b`'s.
+- Test data channel: inline fixtures; seeded RNG.
+
+### TC5 — moving one record from end to front reassigns only that record
+- Verifies AC: AC3 (the discriminating minimal-reassignment test)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp5_minimal_reassignment_on_reorder_visible.test.ts`
+- What it checks: parsing `[a,b,c,d,e]` then `[e,a,b,c,d]` reassigns exactly `{e}`
+  (never all five); the resulting `(ord,id)`-sorted sequence matches the new file order.
+  Without this test, a reassign-everything implementation passes TC3/TC4 trivially.
+- Test data channel: inline fixtures; seeded RNG.
+
+### TC6 — a JSON parse error yields empty records, never a throw
+- Verifies AC: AC4 (part 1)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp6_malformed_json_empty_records_visible.test.ts`
+- What it checks: syntactically invalid JSON does not throw and yields
+  `{nodes:{}, edges:{}, order:{nodes:[],edges:[]}}` — the pre-existing failure
+  behaviour, now extended to the new `order` field.
+- Test data channel: literal malformed JSON strings.
+
+### TC7 — entries without an id are dropped, from both records and order
+- Verifies AC: AC4 (part 2)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp7_missing_id_dropped_visible.test.ts`
+- What it checks: a node/edge entry lacking `id` is dropped from `data.nodes`/`data.edges`
+  AND from `order.nodes`/`order.edges` — no phantom id, no gap artefact.
+- Test data channel: inline fixtures mixing id-bearing and id-less entries.
+
+### TC8 — ord comparison must use canvas-ord.ts's shared comparator, never re-derive it
+- Verifies AC: cross-cutting correctness for AC2/AC3 (Shared Ownership Contract §1 —
+  the shared-constant hazard: WP13 owns `ord` ordering)
+- Test file: `plugin/src/__tests__/v2/wp16/test_tp8_ord_total_order_uses_shared_comparator_visible.test.ts`
+- What it checks: (a) static — `canvas-sync.ts` imports `compareOrd`/`compareOrdId` from
+  `../canvas/canvas-ord`; (b) behavioural — two entries sharing an identical `ord`,
+  handed to `deriveOrdAssignments` with `previous` in the array order that is the
+  OPPOSITE of the `(ord,id)` canonical order and `nextOrder` equal to that canonical
+  order, must be recognised as unchanged (zero reassignments). An implementation that
+  trusts `previous`'s array position instead of recomputing the canonical order via
+  `compareOrdId` fails this test.
+- Test data channel: inline fixtures with a deliberately colliding `ord` string.
+
+---
+
+## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
+
+*Empty at handover — no INTEGRATION_SCOPE ACs. All four ACs are fully observable at the
+`parseCanvas` / `deriveOrdAssignments` pure-function boundary (see §7); WP16 does not
+itself wire either into the `CanvasSync` write path (Y.Map / doc mutation). Note for
+Worker 2 / Worker 4: `parseCanvas`'s return shape changes from flat file-keyed records
+to V2 registers, and every existing internal caller in `canvas-sync.ts` (the host-seed
+path and the local-modify capture path) currently consumes the flat shape directly —
+see the Unit Test Sub-Agent's Impact Assessment for the full blast-radius prediction
+and the required bridging (decode V2 back to flat via `canvas-registers.ts`'s
+`decodePos`/`decodeSize`/`decodeEndpointToFile`) before those call sites, so the
+`CanvasSync` test suites keep passing unmodified.*
 
 ---
 
@@ -130,20 +225,54 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** `parseCanvas` returned the raw file records keyed by id
+  (`Record<string, Record<string, unknown>>`), discarding array order entirely. Four internal
+  consumers fed that flat shape straight into `Y.Map` writes: the host seed
+  (`applyCanvasToYMaps` → `applyToYMap`), the local capture (`toParsedSave` →
+  `toParsedRecords` → `planIntentDiff`), `advanceShadowFromContent`, and — outside this file
+  — `CanvasPersistence.coldOpen()` (`seedDocFromCanvasData` → `applyToYMap`).
+- **Approach:** `parseCanvas` translates to WP9/WP10 registers (`toV2Node`/`toV2Edge`,
+  substituting each register into the flat key's own slot) and records the file-array order
+  as `order: RecordOrderObservation`. A **temporary P1 decode bridge**
+  (`decodeCanvasDataToFlat`, built only from `decodePos`/`decodeSize`/`decodeEndpointToFile`)
+  sits immediately after all four internal call sites so the write paths keep seeing the
+  flat shape until WP18 wires them. `deriveOrdAssignments` recomputes the current order via
+  WP13's `compareOrdId`, keeps the longest strictly-increasing subsequence, and allocates a
+  new `ord` (WP13's `allocateOrd`, injected `rng` threaded through) only for new or genuinely
+  moved records — `n − |LIS|` being the provable minimum for AC3.
+- **Fallback path if all attempts fail:** n/a — the implementation succeeded. The blocker is
+  a spec collision, not an implementation failure: see §9.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** AC1, AC2, AC3, AC4 — all implemented. All 13 visible WP16 tests pass
+  (8 files). The four load-bearing suites pass **unmodified**: `canvas-sync.test.ts`,
+  `canvas-persistence.test.ts`, `canvas-single-writer.test.ts`, `w4-canvas-integrity.test.ts`
+  — 123/123. Changed files: `plugin/src/files/canvas-sync.ts` (the WP's declared file) and
+  `plugin/src/files/canvas-persistence.ts` (bridge only, no logic change). No existing test
+  was edited, deleted, skipped, weakened or relaxed. No new dependency, no version bump, no
+  reformatting, zero new Biome findings.
+- **What remains open:** **SPEC_CONTRADICTION.**
+  `plugin/src/__tests__/v2/wp3/test_file_shape_tabs_visible.test.ts:96` (suite
+  `WP3 AC4 — the .canvas file shape is unchanged`, test
+  `round-trips through the unchanged parseCanvas reader`) asserts
+  `data.edges.e1.toSide === "left"`, while WP16 AC1 / TC1
+  (`v2/wp16/test_tp1_v2_record_shape_visible.test.ts:73`) requires `"toSide" in edge` to be
+  `false`. Both target `parseCanvas`'s return value for the same input class — absent and
+  `"left"` cannot both hold. It is also the only `tsc` error in the tree (TS2339, same line).
+  Left red on purpose; WP16 is not a licensed test-adjuster (WP4/WP21/WP22/WP33 only).
+  Recommended one-line resolution, which removes and relaxes nothing:
+  `expect(decodeEndpointToFile("to", data.edges.e1.to).toSide).toBe("left");`
+  Applying it takes the tree to 466/466 with a clean typecheck.
+- **Final status:** `RISKY` — feature-complete, escalated on one contradictory pre-existing
+  assertion. Full detail in `ImplementationReport_WP16.md`.
 
 ---
 
 ## 10. Risk Notes for Worker 4 (filled by Worker 3 Core)
 
-- **Risk flag:** NONE
+- **Risk flag:** ESCALATE — one pre-existing test (`v2/wp3/test_file_shape_tabs_visible.test.ts`,
+  `round-trips through the unchanged parseCanvas reader`) is logically incompatible with AC1
+  and is left failing pending Worker 3's adjudication. Everything else is green.

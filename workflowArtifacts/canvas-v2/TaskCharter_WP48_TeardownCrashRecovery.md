@@ -1,6 +1,6 @@
 # Task Charter — WP48: Teardown, crash recovery, orphan reclaim
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP48
 **Phase:** P0 (PHASE T3 group)
 **task_mode:** `standard`
@@ -139,29 +139,147 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+Framework **pytest**. Run from the AgenticWorkspace root:
+
+```text
+.venv\Scripts\python.exe -m pytest ^
+  --rootdir="Projects/_external/liveshareCollab/obsidian-live-share" ^
+  "Projects/_external/liveshareCollab/obsidian-live-share/workflowArtifacts/canvas-v2/tests/visible/WP48" -q
+```
+
+- `--rootdir` is **required**: without it pytest's rootdir scan walks `Projects/_external/` and dies on the broken `FinaleAbgabe` junction. This is an environment artefact, not a test defect.
+- Every test file bootstraps itself: it walks up to the repo root (the directory holding both `tools/` and `plugin/`), puts `<repo>/tools` on `sys.path` and imports `from obsidian_e2e import constants, teardown`. **Never** `from tools.obsidian_e2e import …` — the AgenticWorkspace ships a regular `tools` package that wins over this repo's namespace portion regardless of `sys.path` order.
+- **No constant is redeclared.** Roles, ports, settings/marker/backup paths, scratch naming and every failure-reason string come from `tools/obsidian_e2e/constants.py` (WP43). Verified present with the expected values.
+
+**Data safety of the suite itself.** No test references the owner's vaults, `%APPDATA%\obsidian\`, a real socket or a real process. Fixture vaults are built under pytest `tmp_path`; the port probe, the process control, the clock and the teardown IO are all injected fakes. Settings bytes are compared **only by sha256** — no test asserts on, prints or serialises settings content (S4).
+
+### API surface these tests pin (the contract for `tools/obsidian_e2e/teardown.py`)
+
+```text
+TEARDOWN_STEP_ORDER = ("restore_provisioned_settings",
+                       "remove_scratch_artefacts",
+                       "stop_rig_started_processes")
+RECLAIM_KIND_SETTINGS / RECLAIM_KIND_SCRATCH / RECLAIM_KIND_PORT = "settings" / "scratch" / "port"
+
+WaitTimeout(condition, timeout_s)        ← .reason == constants.WAIT_TIMEOUT, .condition, .to_dict()
+EndpointLostMidrun(role)                 ← .reason == constants.ENDPOINT_LOST_MIDRUN, .role, .to_dict()
+wait_for(condition, predicate, *, timeout_s, poll_s=…, clock=None, sleep=None) -> float
+check_endpoints_alive(probe, roles=constants.ROLES) -> None
+ProcessRecord(pid, role, rig_started, label="")
+TeardownRunner(*, io, provisioned_settings, scratch_artefacts, processes, recorder=None)
+    .executions: int   .run() -> TeardownResult          ← run() is idempotent per instance
+TeardownResult: .steps_run  .failures  .stopped_pids  .skipped_pids  .ok  .to_dict()
+RunOutcome:     .exit_status  .failure_reason  .teardown_result  .error  .interrupted
+                .green  .to_dict()
+run_with_teardown(body, runner) -> RunOutcome
+reclaim_stale_state(vault_path, *, ports=(), port_probe=None, process_control=None,
+                    clock=None, sleep=None, timeout_s=<finite>) -> ReclaimReport
+ReclaimReport:  .artefacts  .reclaimed  .unreclaimed  .actions  .to_dict()
+ReclaimedArtefact: .kind  .target  .reclaimed  .reason  .detail
+```
+
+Injected boundaries: `io.restore_setting(record)` · `io.remove_scratch(path)` · `io.terminate_process(pid)`;
+`port_probe.is_bound(port)` · `.answers_control(port)` · `.owner_pid(port)`;
+`process_control.is_alive(pid)` · `.terminate(pid)`.
+**Reclaim must read the provision marker before the settings step deletes it** — the marker's `pid` is the only record of rig ownership the port step has.
+
+### TC1 — Teardown runs exactly once on every exit path
+- Verifies AC: AC1
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp01_teardown_once_visible.py`
+- What it checks: parameterised over all four exit paths (success, assertion failure, raised exception, `KeyboardInterrupt`), `runner.executions == 1` and each step appears exactly once — a counter, not a boolean, so a double teardown fails. Also: a body that already tore itself down does not get a second teardown, and three explicit `run()` calls execute the steps once.
+- Test data channel: in-memory recording IO fake; no filesystem, no process.
+
+### TC2 — The step sequence is identical and ordered on all four exit paths
+- Verifies AC: AC1
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp02_step_order_visible.py`
+- What it checks: the recorded sequence equals the literal ordered triple `restore → remove scratch → stop processes` on every path, `TEARDOWN_STEP_ORDER` matches it, and the four paths agree with each other. Includes a guard proving the assertion is positional: a permutation has the same set but must not compare equal.
+- Test data channel: step recorder list plus an ordered IO call log; injected fakes only.
+
+### TC3 — A raising teardown step does not stop the remaining steps and still surfaces
+- Verifies AC: AC1
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp03_step_failure_isolation_visible.py`
+- What it checks: with the first step raising, all three steps still run in order, the later steps really do their work, the original exception object is retrievable from `result.failures`, `result.ok is False`, and the run is non-green with a non-zero exit status. A teardown failure on an otherwise successful run also makes it non-green, and the failure appears in `to_dict()`.
+- Test data channel: IO fake with per-primitive exception injection.
+
+### TC4 — Teardown stops only rig-started processes (D15)
+- Verifies AC: AC1
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp04_only_rig_started_visible.py`
+- What it checks: a process the rig did **not** start receives **zero** terminate calls, while the rig-started one is stopped; a run that attached to both windows terminates nothing yet still records the step; and D15 holds on the interrupt path too.
+- Test data channel: process ledger of `ProcessRecord`s plus a terminate-call spy; no real PID is ever inspected or signalled.
+
+### TC5 — An expired wait reports WAIT_TIMEOUT and names its condition
+- Verifies AC: AC2
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp05_wait_timeout_names_condition_visible.py`
+- What it checks: the raised `WaitTimeout` carries `reason == constants.WAIT_TIMEOUT` **and** the awaited condition name, which must survive into the serialised payload — a bare timeout with no condition name fails. Two different conditions produce two different payloads, and a condition that becomes true returns without raising.
+- Test data channel: injected virtual clock (`now`/`sleep`), so the test consumes no wall-clock time.
+
+### TC6 — No wait helper can exist without a bounded timeout
+- Verifies AC: AC2
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp06_no_unbounded_wait_visible.py`
+- What it checks: the module is introspected — every wait-shaped callable must take a timeout that is required or has a positive finite default; `wait_for`'s `timeout_s` is keyword-only with no default; `None`, `0`, negative, `inf` and `nan` are rejected with `ValueError`; and a never-satisfied predicate terminates instead of blocking. A newly added unbounded wait fails this test too.
+- Test data channel: `inspect.signature` plus a virtual clock with a hard call budget, so a non-enforcing implementation fails loudly rather than hanging.
+
+### TC7 — Endpoint lost mid-run: named reason + full teardown + non-zero exit (false-pass guard)
+- Verifies AC: AC3
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp07_endpoint_lost_not_green_visible.py`
+- What it checks: **all three in one scenario.** Two matrix cases pass, then role b stops answering: the run fails under `constants.ENDPOINT_LOST_MIDRUN`, teardown still completes all three steps in order (`result.ok is True`), and the exit status is asserted explicitly as a non-zero int with `green is False`. D15 still holds while failing. A clean run is asserted to exit `0` so "non-zero" actually discriminates.
+- Test data channel: injected endpoint probe that answers twice then goes silent; teardown IO spy.
+
+### TC8 — A leftover provisioned port setting is reclaimed at start-up
+- Verifies AC: AC4
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp08_reclaim_settings_visible.py`
+- What it checks: the saved original is restored **byte-exactly** (sha256 + size), the backup and the provision marker are removed, nothing outside the plugin directory changes, the report names the artefact, and the serialised report contains no settings content. A vault with no leftover is a no-op.
+- Test data channel: fixture vault under `tmp_path` with `data.json`, `data.json.e2e-original` and `.e2e-provision.json`; comparisons by hash only.
+
+### TC9 — A stale scratch artefact is reclaimed at start-up
+- Verifies AC: AC4
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp09_reclaim_scratch_visible.py`
+- What it checks: the stale scratch canvas and the rig-owned folder are removed while every other vault file keeps its hash; several stale runs in one folder are all cleared; and when removal is impossible at the OS level the artefact comes back `reclaimed is False` with `reason == constants.SCRATCH_STALE_UNRECLAIMED` instead of being swallowed.
+- Test data channel: fixture vault under `tmp_path`; the unremovable case patches `Path.unlink` / `os.remove` / `os.rmdir` / `shutil.rmtree` to fail for paths under the rig folder only.
+
+### TC10 — A bound-but-dead control port is reclaimed, and only if the rig owns it
+- Verifies AC: AC4
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp10_reclaim_port_visible.py`
+- What it checks: a port that is bound, silent and held by the pid recorded in the rig's own marker is reclaimed (one terminate call); a port held by anything else is reported unreclaimed and **never** terminated; a port that still answers is left completely alone; an unbound port produces no artefact.
+- Test data channel: injected port probe (`is_bound` / `answers_control` / `owner_pid`) and process control, plus a virtual clock — no socket is opened, no process signalled.
+
+### TC11 — All three crash artefacts present at once are reclaimed in one pass
+- Verifies AC: AC4
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp11_reclaim_combined_visible.py`
+- What it checks: settings, scratch and port are all reclaimed in a single start-up pass (`actions == 3`) with the per-kind end state verified, the owner's content untouched, the three `RECLAIM_KIND_*` names pinned, and the port step still running when the settings step found nothing (guards against an early return).
+- Test data channel: fixture vault under `tmp_path` carrying all three artefacts; injected port/process fakes.
+
+### TC12 — Reclaiming is idempotent
+- Verifies AC: AC4
+- Test file: `workflowArtifacts/canvas-v2/tests/visible/WP48/test_tp12_reclaim_idempotent_visible.py`
+- What it checks: after a full reclaim, a second pass reports `actions == 0` and `reclaimed == []`, issues no further terminate call, and leaves a byte-identical end state (relative-path → sha256 map incl. directories) — in particular the restored original is not overwritten by a second "restore". Holds for three consecutive passes and for an already-clean vault.
+- Test data channel: fixture vault under `tmp_path`; state captured as a hash map, never as content.
+
+### Suite validation performed
+
+The suite was validated against a **throwaway reference implementation** in an isolated sandbox (`h:\tmp\wp48_ref`, its own `tools/` + `plugin/` skeleton, deleted afterwards) — nothing was written into `tools/` in this repo. Result: **131 tests pass** (visible + both blind sets). Twelve targeted mutations of the reference — step order swapped, idempotence guard removed, a raising step aborting teardown, D15 dropped, condition name stripped from the timeout payload, timeout made optional/unbounded, a lost endpoint exiting zero, settings re-serialised instead of restored byte-exactly, stale scratch reused, reclaim killing any port holder, reclaim returning early after the first kind, reclaim never becoming a no-op — were **all killed**, each by its intended test point.
 
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+**W4 Test Targets: 0.** All four ACs are fully decidable at the unit level through injected seams (teardown IO, endpoint probe, port probe, process control, clock) against fixture vaults under `tmp_path`. Nothing in WP48 needs a live target: T3 shared contract S5 forbids any live run against the owner's vaults in this batch, and driving real Obsidian is WP50/WP51. Worker 4 has nothing to validate here beyond the green unit suite.
 
 ---
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** `tools/obsidian_e2e/teardown.py` did not exist. `tools/launch_obsidian_e2e.py` (WP45) probed, planned and printed, then returned `0`/`1` from three separate branches — with no teardown on any of them, no start-up reclaim and no mid-run endpoint check. The three primitives teardown needs were already built and were consumed rather than reimplemented: WP44 `ports.restore_port` (byte-exact restore + backup/marker removal, safe no-op when nothing is borrowed), WP47 `scratch.stale_scratch_relpaths` / `reclaim_stale_scratch` / `assert_write_allowed`, WP46 `readiness.check_endpoints_gone` (the inverted probe), WP45 `lifecycle.request_process_stop` + `RigStartedProcesses`.
+- **Approach:** one module, four seams. `TeardownRunner` claims its execution slot *before* running the steps (so a re-entrant or repeated `run()` cannot produce a second pass) and counts executions; each step is guarded by `except BaseException` and records into `failures`, so a raising step neither stops the remaining steps nor disappears. `wait_for` takes a keyword-only `timeout_s` with no default and rejects `None`/`0`/negative/`inf`/`nan` before touching the clock. `run_with_teardown` catches `BaseException` (interruption is one of the four exit paths), records `interrupted`, and derives `green` conjunctively, with `exit_status` non-zero whenever `green` is false. `reclaim_stale_state` reads the provision marker **first** (its `pid` is the port step's only ownership evidence, and the settings step deletes it), then runs all three kinds unconditionally. Both stop paths go through a single funnel (`_stop_rig_started`, `_terminate_rig_owned`) that refuses anything not tagged rig-started / not named by the rig's own marker.
+- **Fallback path if all attempts fail:** not needed — no attempt failed and nothing was blocked.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs. `tools/obsidian_e2e/teardown.py` created; `tools/launch_obsidian_e2e.py` wired so start-up reclaim runs before probing and teardown runs on every exit path with a non-zero status on any non-green outcome. WP48 visible suite 46/46; whole visible tree 266/266; three targeted mutations (step order swapped, D15 guard dropped, reclaim returning early after the settings kind) all killed by their intended test points.
+- **What remains open:** the entrypoint passes `process_control=None` and a port probe whose `owner_pid` is `None`, because mapping a listening port to its holder needs an OS query the rig has no sanctioned primitive for. A bound-but-silent port is therefore *reported* to the operator, never force-reclaimed — which is the D15-correct behaviour. The forced-reclaim path is fully implemented and unit-covered; a later WP that can supply a real owner lookup injects it. No TypeScript was touched, so the `plugin/` vitest gate is unaffected by this WP and was deliberately not re-run (another Worker 3 is mid-edit in `plugin/src/**`).
+- **Final status:** DONE.
 
 ---
 

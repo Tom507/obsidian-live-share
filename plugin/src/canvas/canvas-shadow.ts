@@ -32,12 +32,55 @@
 // Path canonicalisation happens at the subsystem boundary (BUILD_SPEC §4.4).
 // This module never normalises, never lower-cases and never prefix-matches a
 // path: keys are compared and deleted exactly as handed in.
+//
+// WP15 / C15 — the shadow at ATOMIC-REGISTER granularity.
+//
+// The storage hierarchy above is unchanged; what changes is the vocabulary of
+// its lowest level. A V2 field is an atomic REGISTER (BUILD_SPEC §4.3): `pos` is
+// one `[x, y]` value, `size` one `[w, h]`, `from`/`to` one `{node, side, end?}`
+// each. The four V1 geometry keys and the six V1 endpoint keys no longer exist
+// as shadow field names (AC4) — they describe the `.canvas` FILE, and the
+// file↔doc translation is `canvas-registers.ts`'s codec, not this module's.
+//
+// Two consequences fall out of that, and both are the point of the change:
+//
+//   ├── a change to ONE component of a composite marks the WHOLE register as
+//   │      intent (I8), automatically — the diff below never sees "x", only
+//   │      "pos", so there is no per-component verdict to get wrong; and
+//   └── staleness must therefore be judged by VALUE, not by reference, because
+//          `encodePos`/`encodeSize`/`encodeEndpoint` freeze a freshly allocated
+//          value on every call (see `fieldValueEquals`).
+//
+// The type-only import below is the Shared Ownership Contract §1 in action: the
+// register value shapes are WP9's and WP10's, so they are imported rather than
+// re-declared here. It is erased at compile time, so the runtime purity contract
+// (no import at all) is untouched.
+
+import type { EndpointRegister, PosRegister, SizeRegister } from "./canvas-registers";
 
 /** The two record kinds of a `.canvas` file. */
 export type ShadowRecordKind = "node" | "edge";
 
-/** The value types a `.canvas` field can carry on the surface. */
-export type ShadowFieldValue = string | number | boolean | null;
+/**
+ * The value types a shadow field can carry.
+ *
+ * The scalars are V1's and are unchanged. The three composite members are the
+ * V2 ATOMIC REGISTERS, imported from their owning module (`canvas-registers.ts`,
+ * WP9/WP10) rather than re-spelled here — a second declaration of `{node, side,
+ * end?}` that drifted from WP10's would be invisible to every test.
+ *
+ * `undefined` is deliberately NOT a member: `getField` uses it as the sentinel
+ * for "never observed", so a stored `undefined` would make an observed field
+ * read back as unobserved.
+ */
+export type ShadowFieldValue =
+  | string
+  | number
+  | boolean
+  | null
+  | PosRegister
+  | SizeRegister
+  | EndpointRegister;
 
 /** What the shadow knows about one record on one surface. */
 export type ShadowRecordState = "present" | "absent" | "unknown";
@@ -349,6 +392,99 @@ export interface IntentPlan {
 }
 
 /**
+ * Is this an ordinary data object — the shape a register or a parsed `.canvas`
+ * value can actually take?
+ *
+ * Prototype-checked rather than `typeof === "object"`, so a class instance, a
+ * `Map`, a `Date` or anything else exotic falls through to reference equality
+ * instead of being key-compared as if it were plain data. `null` prototype is
+ * admitted because `Object.create(null)` is the safe shape for a container whose
+ * keys are attacker-influenced content, which record fields are.
+ */
+function isPlainDataObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+/**
+ * A register's own keys that carry an observed value.
+ *
+ * A key whose value is `undefined` is treated as ABSENT, which is exactly how
+ * `canvas-registers.ts` treats it: `encodeEndpoint` OMITS `end` rather than
+ * storing `undefined`, and `endpointEquals` compares `a.end === b.end` so the
+ * two spellings already mean one thing to the owning module. Disagreeing with
+ * the owner here would make the same endpoint read as two different values.
+ */
+function observedKeys(value: Record<string, unknown>): string[] {
+  return Object.keys(value).filter((key) => value[key] !== undefined);
+}
+
+/**
+ * A comparison depth no `.canvas` value can legitimately reach. Registers are
+ * one level deep; the cap exists only so a malformed or self-referential value
+ * from an untyped boundary cannot blow the stack inside a save path (I5:
+ * degrade, never break). Hitting it yields "not equal", i.e. an upsert, which is
+ * the same verdict the pre-WP15 reference comparison gave for any composite.
+ */
+const MAX_FIELD_COMPARE_DEPTH = 8;
+
+/**
+ * Whole-value equality for ONE shadow field — the WP15 AC2 fix.
+ *
+ * Rule 2 below used to ask `value === getField(...)`. For a V1 world in which
+ * every field was a lone primitive that was exactly right. For V2 registers it
+ * is a silent defect: `encodePos`/`encodeSize`/`encodeEndpoint` build a FRESHLY
+ * ALLOCATED, frozen value on every call, so a save that re-encodes `100.3` and a
+ * shadow holding the register built from `100` are two different objects holding
+ * the same numbers. Reference equality calls them different, the restatement
+ * reads as fresh INTENT, it is pushed to the CRDT and it overwrites newer peer
+ * state — the Symptom-2 cascade, reintroduced through the one comparison this
+ * module exists to get right (I6).
+ *
+ * The semantics, stated precisely:
+ *
+ *   ├── PRIMITIVES and identical references are decided by `===` and nothing
+ *   │      else, byte-identically to before this WP. `0`/`-0` remain one
+ *   │      observed value, `NaN` still never equals itself, `"1"` and `1` still
+ *   │      differ, and `null` is still a value while `undefined` is not.
+ *   ├── ARRAYS (`pos`, `size`) are equal iff same length and every element is
+ *   │      equal under this same rule.
+ *   └── PLAIN OBJECTS (`from`, `to`) are equal iff they carry the same observed
+ *          keys and every one of those values is equal under this same rule.
+ *
+ * Mixed shapes (an array against an object, a register against a primitive) are
+ * never equal, so a genuine shape change is intent, not staleness. The relation
+ * is reflexive apart from `NaN`, symmetric and transitive — a save compared
+ * against a shadow gets the same verdict whichever side holds which instance.
+ */
+function fieldValueEquals(a: unknown, b: unknown, depth = 0): boolean {
+  if (a === b) return true;
+  if (depth >= MAX_FIELD_COMPARE_DEPTH) return false;
+
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index += 1) {
+      if (!fieldValueEquals(a[index], b[index], depth + 1)) return false;
+    }
+    return true;
+  }
+
+  if (isPlainDataObject(a) && isPlainDataObject(b)) {
+    const keysA = observedKeys(a);
+    const keysB = observedKeys(b);
+    if (keysA.length !== keysB.length) return false;
+    for (const key of keysA) {
+      if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+      if (!fieldValueEquals(a[key], b[key], depth + 1)) return false;
+    }
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Classify one parsed save against the shadow (AC1–AC5).
  *
  * Exactly four parameters — the arity is part of the contract, because a fifth
@@ -359,12 +495,17 @@ export interface IntentPlan {
  *   1. Resurrect block (AC4) — a tombstoned id contributes to NO category, not
  *      even a discard. It is not staleness, it is out of scope. It still counts
  *      as "present in the save", so rule 4 never fires for it either.
- *   2. Staleness (AC1) — a field strictly equal to the shadow value is a
- *      `DiscardedStaleness`, never an intent. `undefined` from `getField` means
- *      "never observed" and can therefore never match an observed value.
+ *   2. Staleness (AC1) — a field whose value equals the shadow value is a
+ *      `DiscardedStaleness`, never an intent. Equality is whole-value and
+ *      per-REGISTER (`fieldValueEquals`, WP15 AC2), so a save that restates the
+ *      same pixel through a freshly encoded register is staleness rather than
+ *      intent. `undefined` from `getField` means "never observed" and can
+ *      therefore never match an observed value.
  *   3. Intent (AC2) — otherwise exactly one upsert for that (record, field).
- *      A field the shadow holds but the save does not mention produces nothing:
- *      a save is a PARTIAL observation, never a removal (I7).
+ *      Because `pos`/`size`/`from`/`to` are single fields, one changed component
+ *      yields one upsert carrying the WHOLE register (I8), never a per-component
+ *      patch. A field the shadow holds but the save does not mention produces
+ *      nothing: a save is a PARTIAL observation, never a removal (I7).
  *
  * And once over the shadow:
  *
@@ -401,9 +542,11 @@ export function planIntentDiff(
 
       for (const field of Object.keys(record.fields)) {
         const value = record.fields[field];
-        // Rule 2 — staleness. Strict equality: `0`/`-0` are one observed value,
-        // `"1"` and `1` are not, and `null` is a value while `undefined` is not.
-        if (value === getField(shadow, save.path, kind, record.id, field)) {
+        // Rule 2 — staleness, judged per WHOLE register by VALUE (WP15 AC2).
+        // Primitives keep their exact `===` verdict; a composite register is
+        // equal when it holds the same value, not when it is the same instance
+        // — see `fieldValueEquals` for why reference equality is a defect here.
+        if (fieldValueEquals(value, getField(shadow, save.path, kind, record.id, field))) {
           plan.discarded.push({
             path: save.path,
             kind,

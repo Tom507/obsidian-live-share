@@ -127,6 +127,7 @@ describe("WP4 AC3 — the closed-view persistence write is a surface receipt", (
     const persisted = serializeCanvas(
       doc.getMap<Y.Map<unknown>>("nodes"),
       doc.getMap<Y.Map<unknown>>("edges"),
+      doc.getMap<unknown>("deleted"),
     );
     t.vault.files.set(A_PATH, persisted);
     t.cs.noteExternalDiskWrite(A_PATH, persisted);
@@ -169,6 +170,7 @@ describe("WP4 AC3 — the closed-view persistence write is a surface receipt", (
     const persisted = serializeCanvas(
       doc.getMap<Y.Map<unknown>>("nodes"),
       doc.getMap<Y.Map<unknown>>("edges"),
+      doc.getMap<unknown>("deleted"),
     );
     t.vault.files.set(A_PATH, persisted);
     t.cs.noteExternalDiskWrite(A_PATH, persisted);

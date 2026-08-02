@@ -1,11 +1,11 @@
 # Task Charter — WP8: `meta` + schemaVersion + V1→V2 migration
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP8
 **Phase:** P1
 **task_mode:** `standard`
 **Depends on:** WP4
-**W4 Test Targets:** `0`
+**W4 Test Targets:** `1`
 
 > **Metadata block** — Worker 3 Core reads only these fields to determine execution order and routing. Worker 4 checks `W4 Test Targets` before deciding whether to read section 7b. Full charter content is loaded by sub-agents in their own context windows.
 
@@ -118,31 +118,107 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ---
 
-## 7. Visible Test Cases / Producer Artifacts
+## 7. Visible Test Cases
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+**Binding API surface required of `plugin/src/canvas/canvas-schema.ts`** (Shared Ownership Contract §1 — WP8 owns this module):
+
+```ts
+export const META_MAP_NAME = "meta";          // top-level Y.Map container name
+export const SCHEMA_VERSION_KEY = "schemaVersion";
+export const SUPPORTED_SCHEMA_MAJOR = 2;
+
+/**
+ * Idempotently bring `doc` to V2: creates+stamps `meta` if absent (fresh doc
+ * case), migrates every V1-shaped node/edge record (x/y->pos, width/height
+ * ->size, from*/to* keys->from/to registers via canvas-registers.ts, an
+ * `ord` allocated via canvas-ord.ts's allocateOrd for every record) in a
+ * SINGLE Y.Doc transaction, and is a no-op (no transaction opened, zero
+ * `update` events, zero delta) whenever `meta` already exists — regardless
+ * of its schemaVersion value. Never replaces the `meta` container.
+ */
+export function migrateV1ToV2(doc: Y.Doc): void;
+
+/**
+ * True only when `meta` EXISTS and its schemaVersion's major differs from
+ * SUPPORTED_SCHEMA_MAJOR. A doc with no `meta` at all (unmigrated V1) is
+ * NOT a mismatch — that is migrateV1ToV2's job, a distinct condition.
+ */
+export function isSchemaMajorMismatch(doc: Y.Doc): boolean;
+```
+
+**Required wiring seam in `plugin/src/files/canvas-sync.ts`:** `CanvasSync.handleLocalModify` must check `isSchemaMajorMismatch(docHandle.doc)` early (same style as the existing `if (!this.canWrite(path)) return;` guard) and return without applying any intent plan when true — i.e. zero writes reach `nodesMap`/`edgesMap` for that path. This must NOT touch `CanvasPersistence` or any other path's capture.
+
+### TC1 — meta container is created once and never replaced
+- Verifies AC: 1
+- Test file: `plugin/src/__tests__/v2/wp8/test_tp01_meta_container_identity_visible.test.ts`
+- What it checks: two `migrateV1ToV2(doc)` calls return the exact same `Y.Map` instance (`===`), and a probe value planted on the container between calls survives the second call untouched — proving identity, not mere existence.
+- Test data channel: an in-memory `Y.Doc` built directly in the test (no vault/file harness).
+
+### TC2 — V1 record fields translate correctly to V2 registers, in one transaction
+- Verifies AC: 2
+- Test file: `plugin/src/__tests__/v2/wp8/test_tp02_migration_field_translation_single_tx_visible.test.ts`
+- What it checks: a node's `x/y/width/height` decode back to the original values via `decodePos`/`decodeSize` (canvas-registers.ts), an edge's endpoint keys decode back via `decodeEndpoint`, every migrated record receives a well-formed `ord` (base-62, non-empty, canonical), and exactly one Yjs `afterTransaction` fires across the whole `migrateV1ToV2` call.
+- Test data channel: an in-memory `Y.Doc` with hand-built V1-shaped node/edge `Y.Map` records.
+
+### TC3 — migration loses no value (completeness property)
+- Verifies AC: 2
+- Test file: `plugin/src/__tests__/v2/wp8/test_tp03_migration_no_data_loss_visible.test.ts`
+- What it checks: a fixture spanning text/file/group node types plus a fully-populated edge (geometry, type, text, file, color, label, both endpoints with `end`, and an unrecognised forward-compat key) — every single input value is independently asserted reachable after migration, not spot-checked.
+- Test data channel: an in-memory `Y.Doc` with hand-built V1-shaped records covering the full realistic key set.
+
+### TC4 — migration is idempotent: zero delta on a second run
+- Verifies AC: 3
+- Test file: `plugin/src/__tests__/v2/wp8/test_tp04_migration_idempotent_no_delta_visible.test.ts`
+- What it checks: after a real first migration, a second `migrateV1ToV2(doc)` call produces an encoded update (against the post-first-migration state vector) byte-identical to a genuinely empty doc's update, and fires zero `update` events — the update-delta oracle, not a JSON deep-equal (which would miss a same-value rewrite that still produces a real delta).
+- Test data channel: an in-memory `Y.Doc`, state-vector/update-delta comparison.
+
+### TC5 — a schema-major mismatch disables local capture for that path (LOCAL half of AC4 only)
+- Verifies AC: 4
+- Test file: `plugin/src/__tests__/v2/wp8/test_tp05_major_mismatch_disables_capture_visible.test.ts`
+- What it checks: on a `CanvasSync` instance with two subscribed paths, a path whose doc is pre-seeded with `meta.schemaVersion` set to an unsupported major receives a local edit that never reaches its CRDT (`x` stays at the original value), while a second, matching-major path on the SAME instance captures its own local edit normally in the same test run — proving the client is alive, not merely that one path stopped.
+- Test data channel: `CanvasSync` fed a fake vault + fake `SyncManager` (same harness pattern as `canvas-sync.test.ts` / the WP4 `v2/wp4` suite), no real Obsidian/filesystem.
 
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+**1 AC — AC4, the "persistence continues" half.**
+
+AC4 has two independent halves: "the client disables local capture for that path" (LOCAL — covered by TC5 above, fully unit-testable through `CanvasSync` alone) and "**while persistence continues**" (the CRDT->disk direction, owned by `CanvasPersistence`, which this WP's fake-vault/fake-`SyncManager` harness does not wire up at all). Asserting only the capture-stopped half would also pass a client that had simply crashed on that path. Confirming persistence keeps flushing a mismatched-major doc to disk needs the real `CanvasPersistence` + `CanvasSync` stack running together (per BUILD_SPEC §4.5: `CanvasPersistence` remains the single CRDT->disk writer, `coldOpen` after `waitForSync` and before `start()`) — that composition is Worker 4's integration scope, not a unit test.
+
+- **AC:** 4 (persistence-continues half)
+- **What W4 must verify:** with a canvas doc whose `meta.schemaVersion` major mismatches this client's `SUPPORTED_SCHEMA_MAJOR`, the running `CanvasPersistence` instance still performs its normal CRDT->disk flush for that path (the doc's current on-disk `.canvas` reflects the doc's CRDT state) even while `CanvasSync.handleLocalModify` refuses to push local edits for the same path back into the CRDT.
 
 ---
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** no `meta` container existed anywhere in the plugin; docs carried
+  flat V1 keys (`x`/`y`/`width`/`height`, `fromNode`/`fromSide`/`fromEnd` + `to*`) and no `ord`.
+  `handleLocalModify` guarded only on `recentDiskWrites`, `subscribedPaths`, `canWrite` and the WP4
+  byte echo breaker.
+- **Approach:** new module `plugin/src/canvas/canvas-schema.ts` — `meta` reached via
+  `doc.getMap(META_MAP_NAME)` (identity, never replaced), a pre-transaction existence guard for
+  zero-delta idempotence, and a purely ADDITIVE, translate-and-carry-through record migration in one
+  `doc.transact`. All register/ord symbols imported from `canvas-registers.ts` (WP9/WP10) and
+  `canvas-ord.ts` (WP13). One 21-line seam in `canvas-sync.ts`: `handleLocalModify` early-returns on
+  `isSchemaMajorMismatch(docHandle.doc)`, `CanvasPersistence` untouched.
+- **Fallback path if all attempts fail:** n/a — all 5 visible tests pass on attempt 1.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** ACs 1–4 (AC4 local half; the persistence-continues half is Worker 4's per
+  §7b). 5/5 visible tests, 128/128 on the four canvas-sync-adjacent existing suites, 253/253 across
+  the whole `src/__tests__/v2/` bucket, `tsc -noEmit -skipLibCheck` clean.
+- **What remains open:** `migrateV1ToV2` is not yet CALLED from a production entry point — see
+  ImplementationReport_WP8 "Open decision for Worker 3". Wiring it into `subscribe` in P1 would be
+  actively wrong: WP7 moved the guest seed to `CanvasPersistence.coldOpen()`, which runs AFTER
+  `subscribe`, so stamping `meta` there would mark a still-empty doc as migrated and the records
+  seeded afterwards would never be translated. The invocation site belongs with the write-boundary
+  WPs (WP18+/WP32). `meta.guid` / `meta.epoch` are P2 as specified.
+- **Final status:** DONE.
 
 ---
 

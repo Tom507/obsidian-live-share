@@ -1,6 +1,6 @@
 # Task Charter — WP10: Atomic `from`/`to` registers
 
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `DONE`
 **WP:** WP10
 **Phase:** P1
 **task_mode:** `standard`
@@ -77,8 +77,32 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 2. Two concurrent re-routes of the same endpoint converge to exactly one submitted endpoint on every replica — never one author's `node` with another's `side`.
 3. Concurrent re-routing of `from` on one replica and `to` on another leaves both changes intact.
 4. An endpoint register is either wholly present or wholly absent; a partially populated endpoint cannot be constructed through the module's API.
+5. **A side-less endpoint is a first-class, representable endpoint.** `side` and `end` are optional components of the single register value (§4.3); `node` alone decides the register's presence. Specifically: an endpoint may be constructed from a `node` with no `side`; a register carrying a `node` and no `side` reads back as **present**, not absent; and it round-trips to the file as `fromNode`/`toNode` with the `fromSide`/`toSide` key **absent** — never `null`, never `""`. A register with no `node` is not a register.
 
-**Definition of Done:** the "arrow points at a side where nothing hangs" class is unrepresentable.
+**Definition of Done:** the "arrow points at a side where nothing hangs" class is unrepresentable, **and every edge legal under the JSON Canvas format is representable.**
+
+---
+
+<!-- Updated: E1 ruling — WP10 REOPENED; the endpoint model could not represent a legal side-less JSON Canvas edge 2026-08-02 -->
+
+### Amendment (2026-08-02, Worker 2 — E1 ruling). WP10 is REOPENED. AC5 is new; AC1–AC4 are unchanged.
+
+**Why.** `fromSide`/`toSide` are **optional** in the JSON Canvas format. The landed implementation requires a whole `{node, side}` pair — `encodeEndpoint` throws on an empty `side`, `encodeEndpointFromFile` returns `undefined` unless both are non-empty, and `isEndpointRegister` reads a side-less value back as **absent**. A fully-connected, perfectly legal side-less edge therefore has no representable V2 endpoint; WP14 reports `MISSING_FROM`, WP18 refuses it, and `CanvasPersistence.flush()` then writes the doc back over the file — **deleting the user's edge from their own `.canvas` file.** This is silent, permanent data loss on a document the user did not create with this plugin. `migrateV1ToV2` cannot rescue it either, because `migrateEndpoint` calls the same encoder.
+
+**Reading of AC4 (this is the part that was implemented wrongly).** AC4 was read as *"all components must be present"*. It is a rule about **write granularity**, not about component obligation: the register is written and replaced as **one value**, so no author's `node` can ever combine with another author's `side` — Teil 4's chimera, W2. "Wholly present or wholly absent" refers to the **register**, whose presence is decided by `node`. AC4 and AC5 are both binding and consistent: the module must offer **no** API that mutates one component of an existing register in place, **and** must accept a `node` with no `side` as a complete construction.
+
+**The atomicity must not be weakened to achieve this.** `{node, side?, end?}` stays **one** LWW register holding **one** value. Splitting the pair back into separate keys would reintroduce W2 and torn writes and is forbidden. Optionality is a property of the value's shape, never of the write granularity.
+
+**Two absences must stay distinguishable:** a register that is *absent* (no endpoint — the edge is dangling, `Edge valid` fails) versus a register that is *present with no side* (attached to a node, side unspecified — legal and valid). Reading the second as the first is the whole defect.
+
+**Concretely, the three predicates that must change:**
+- construction must accept a missing/`undefined` `side` and still produce a complete register — while still refusing a missing or empty `node`;
+- the file reader must build the register whenever the `*Node` key is present, taking `*Side`/`*End` only when present;
+- the register predicate must decide presence on `node` alone, treating `side`/`end` as optional-when-present.
+
+Empty (`""`), `null` and `undefined` all count as **absent** for `side`/`end`. Any other string is carried through **verbatim and opaquely** — WP10 does not validate side vocabulary and must not start; an unrecognised value is preserved, not normalised, so no forward-compatible file loses information.
+
+**Consumer note:** WP14 and WP17 have matching amendments (WP14 pins the side-less edge as valid directly; WP17 pins key omission and the byte-identical file round-trip). Landing AC5 without those is incomplete.
 
 ---
 
@@ -119,7 +143,29 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+### TC1 — lossless from/to round trip, including optional end
+- Verifies AC: 1
+- Test file: `plugin/src/__tests__/v2/wp10/test_tp01_lossless_endpoint_roundtrip_visible.test.ts`
+- What it checks: the pure encode/decode codec and a real `Y.Map` write/read cycle both reproduce the original `node`, `side` and optional `end` exactly for a table of representative cases (end present, end omitted), for both the `from` and `to` directions independently.
+- Test data channel: fixture
+
+### TC2 — two concurrent re-routes converge to one submitted endpoint, never a mixture
+- Verifies AC: 2
+- Test file: `plugin/src/__tests__/v2/wp10/test_tp02_concurrent_reroute_convergence_visible.test.ts`
+- What it checks: with three replicas and two concurrent `writeTo` authors, after a full-mesh merge every replica agrees, the agreed value is exactly one author's whole submitted `{node, side, end}`, and none of the torn combinations across the three fields appear — no hardcoded winner is asserted.
+- Test data channel: fixture
+
+### TC3 — concurrent from-reroute and to-reroute of the same edge survive independently
+- Verifies AC: 3
+- Test file: `plugin/src/__tests__/v2/wp10/test_tp03_from_to_independence_visible.test.ts`
+- What it checks: with three replicas, a sole `from` author and a sole `to` author writing concurrently both land on every replica after a full-mesh merge — `from` and `to` are resolved as disjoint registers, so both concrete values are asserted directly (single-author registers, not a same-key race).
+- Test data channel: fixture
+
+### TC4 — an endpoint register is wholly present or wholly absent
+- Verifies AC: 4
+- Test file: `plugin/src/__tests__/v2/wp10/test_tp04_wholly_present_or_absent_visible.test.ts`
+- What it checks: the constructor (`encodeEndpoint`) throws at runtime when called with a missing/empty `node` or `side` even past a TypeScript bypass; the read boundary (`isEndpointRegister` / `asEndpointRegister`) treats a value holding only `node` or only `side`, or a wrong-typed field, as absent rather than partial; and the module exports no per-component setter (`writeFromNode`, etc.) that would let a caller build one field of an endpoint at a time.
+- Test data channel: fixture
 
 ---
 

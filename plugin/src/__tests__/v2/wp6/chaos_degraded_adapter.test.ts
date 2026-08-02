@@ -55,7 +55,8 @@ import {
   shadowToCanvasRecords,
 } from "../../../canvas/canvas-shadow";
 import { type CanvasRecords, planReconcile } from "../../../canvas/reconcile-plan";
-import { CanvasSync, serializeCanvas } from "../../../files/canvas-sync";
+import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
+import { CanvasSync, buildCanvasData, serializeCanvas } from "../../../files/canvas-sync";
 import { CanvasDouble } from "../../harness/canvas-double";
 
 const PATH = "chaos/degraded.canvas";
@@ -124,8 +125,24 @@ function nodeField(doc: Y.Doc, id: string, key: string): unknown {
   return doc.getMap<Y.Map<unknown>>("nodes").get(id)?.get(key);
 }
 
+/**
+ * Is the record still THERE, as the user would experience it?
+ *
+ * WP19 AC1 turned deletion from an ABSENCE into a VALUE: a delete writes a
+ * tombstone and never removes the key. Read as `nodes.has(id)` this question
+ * therefore answers `true` unconditionally — it cannot distinguish a record
+ * that survived from one that was deleted, which silently collapsed D2's
+ * enabled-vs-disabled discrimination below (both sides read `true`).
+ *
+ * Reading the PROJECTION restores the distinction, and is the better oracle
+ * anyway: it pins what the canvas actually shows rather than a storage detail.
+ */
 function hasNode(doc: Y.Doc, id: string): boolean {
-  return doc.getMap<Y.Map<unknown>>("nodes").has(id);
+  return buildCanvasData(
+    doc.getMap<Y.Map<unknown>>("nodes"),
+    doc.getMap<Y.Map<unknown>>("edges"),
+    doc.getMap<unknown>("deleted"),
+  ).nodes.some((node) => node.id === id);
 }
 
 /** State-vector fingerprint — identical before/after ⟺ zero CRDT writes. */
@@ -133,8 +150,16 @@ function fingerprint(doc: Y.Doc): string {
   return Array.from(Y.encodeStateVector(doc)).join(",");
 }
 
+// WP64 — `canonical()` stands in for THE BYTES PRODUCTION WOULD WRITE, and
+// production (`canvas-persistence.ts`) serialises with the tombstone map. This
+// helper is captured after the save that omits `n4` — i.e. after a delete — so a
+// 2-arg call here would have emitted a record the real writer suppresses.
 function canonical(doc: Y.Doc): string {
-  return serializeCanvas(doc.getMap<Y.Map<unknown>>("nodes"), doc.getMap<Y.Map<unknown>>("edges"));
+  return serializeCanvas(
+    doc.getMap<Y.Map<unknown>>("nodes"),
+    doc.getMap<Y.Map<unknown>>("edges"),
+    doc.getMap<unknown>("deleted"),
+  );
 }
 
 /** Drain the settle window the production code itself opened. Names no duration. */
