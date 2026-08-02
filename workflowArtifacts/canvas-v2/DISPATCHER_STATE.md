@@ -2,7 +2,7 @@
 
 > **Purpose:** resumable orchestration state. If the Dispatcher's context is compacted or lost,
 > this file plus the BUILD_SPEC and the handovers are sufficient to continue the run.
-> **Last updated:** 2026-08-02, during batch B4 (phase P2).
+> **Last updated:** 2026-08-02, during batch B4 (phase P2), after the Worker 2 WP68 charter + §7 audit.
 
 ---
 
@@ -19,7 +19,9 @@
 | Workflow | `Coding/Workflows/AtomicAgentOrchestrator/AtomicOrchestratorWorkflow.md` |
 | worker4_mode | `full` (BUILD_SPEC §7) |
 
-**Commits so far:** `65fbb44` (V2 work, 870 files) · workspace repo `6440d02` (workflow checkpoints feature).
+**Commits so far (this repo):** `65fbb44` (V2 work, 870 files) · `2e3ca6b` (this state file) ·
+`71661fd` (T3 pre-flight) · `a3028fa` (WP68 charter + WP-count correction).
+**Workspace repo:** `6440d02` (workflow commit-checkpoint feature).
 
 ---
 
@@ -43,45 +45,70 @@
 |---|---|---|
 | P0 — shadow diff + canonical serialization | WP1–WP7 | ✅ done (WP7 gate still unrun — see below) |
 | P1 — data model | WP8–WP23 | ✅ done |
-| P2 — sidecar / GUID / epoch / import | WP24–WP30 | 🔄 **in flight (batch B4)** |
+| P2 — sidecar / GUID / epoch / import | WP24–WP30 | 🔄 **in flight (batch B4)** — WP24 ✅, WP26 ✅, WP27 running |
 | P3 — mode consensus, receive-and-persist | WP31–WP35 | ⬜ queued |
 | P4 — Y.Text, blur merge, UndoManager | WP36–WP38 | ⬜ queued |
 | P5 — op-capture promotion | WP39–WP40, WP52–WP54 | ⬜ queued (gated on the real-Obsidian gate) |
 | P6 — relay blob persistence | WP41–WP42 | ✅ done |
 | T3 — real-Obsidian rig | WP43–WP49 infra ✅ · WP50, WP51, WP7 ⬜ | infra done, **gate not yet run** |
 | PHASE VI — verification integrity | WP55–WP58, WP62, WP64, WP67 | ✅ done |
-| Open | WP59 ✅ · WP65 ⬜ · WP66 ⬜ | see queue |
+| Open | WP59 ✅ · WP65 ⬜ · WP66 ⬜ · **WP68 ⬜ (chartered 2026-08-02)** | see queue |
 
-**Chartered total: 67 WPs.**
+**Chartered total: 68 WPs.** <!-- was miscounted as 66; WP65 was never counted in the 64→66 step -->
 
 ---
 
 ## Immediate queue (in order)
 
 1. **B4 returns** (P2) → commit → then:
-2. **WP66** hollow-fixture suite-wide sweep — *held: needs a quiet tree*
-3. **WP65** ledger provenance + intermittent register — *held: touches `_run_blind.py`*
-4. **B9b — WP50, WP51, WP7** → the real two-vault Obsidian gate.
+2. **B9b — WP50, WP51, WP7** → the real two-vault Obsidian gate.
    **Recommended next after P2**, ahead of P3/P4: every green so far is headless.
-5. **B5** P3 (WP31–35) · **B6** P4 (WP36–38)
-6. **B7** P5 (WP39–40 + WP52–54) — promotion gated on WP54's `CaptureTriggerLedger.md`
-7. **W4** integration & system testing (`worker4_mode = full`)
-8. KC routing agents + `consolidate_memory(liveshareCollab)` + final report
+   **Read `T3_PREFLIGHT.md` before writing these charters** — it contains a build blocker.
+3. **WP66** hollow-fixture suite-wide sweep — *held: needs a quiet tree*
+4. **WP65** ledger provenance + intermittent register — *held: touches `_run_blind.py`*
+5. **WP68** file-op rename sidecar boundary (charter ready, `SPEC_COMPLETE`)
+6. **B5** P3 (WP31–35) · **B6** P4 (WP36–38)
+7. **B7** P5 (WP39–40 + WP52–54) — promotion gated on WP54's `CaptureTriggerLedger.md`
+8. **W4** integration & system testing (`worker4_mode = full`)
+9. KC routing agents + `consolidate_memory(liveshareCollab)` + final report
 
 ---
 
 ## Open items that must not be lost
 
-- **`fileOpsManager.onFileRename` leak** — broadcasts a rename over the file-op channel under the same
-  either-side gate WP26 fixed; a peer would recreate the move inside its own sidecar directory.
-  Real, reachable, outside WP26's charter. **Needs chartering by Worker 2.**
+- **⚠ The dev build has no one-shot mode — it will hang a gate batch.**
+  `plugin/esbuild.config.mjs` branches on `argv[2] === "production"`: prod rebuilds and exits,
+  **everything else calls `ctx.watch()` and never returns**. `npm run build` sets `__LS_E2E__=false`;
+  `npm run dev` sets it `true`. So the only E2E-capable build is the one that never exits, and an
+  `await_console` on it blocks to timeout while looking like a slow build. **WP50 must charter an
+  explicit `e2e` build mode** (recommended: `argv[2]==="e2e"` → true + `rebuild()` + `exit(0)`,
+  leaving `production` and default-watch byte-identical). Full detail → `T3_PREFLIGHT.md`.
+- **`fileOpsManager.onFileRename` leak — VERIFIED and now chartered as WP68.** No longer an open
+  question; it is queued work. The *outbound* arm remains **unverified** (depends on Obsidian emitting
+  a vault rename whose destination is under `.obsidian/` — never observed, cannot be until the gate runs).
+  AC1 is written at `onFileRename` directly so it is falsifiable today.
+- **The rename branch is the only asymmetric inbound gate.** `control-handlers.ts:49-50` uses
+  `paths.some(isSharedPath)`; every other op type uses the strict all-paths form. This is the shape
+  that hid WP68 — keep the standing note even after WP68 lands.
+- **`isPathSafe` does not exclude the config directory.** It rejects traversal only. Any peer-supplied
+  path reaching a vault write is protected by `isSharedPath`/`isSidecarPath` and by nothing else.
+  This is the trap for any newly added op type.
+- **`TaskCharter_WP67` status field is stale** — reads `SPEC_COMPLETE` while §7 is filled, the A/B is
+  measured and B17 closed it. Should be `DONE` per the template state machine.
+- **`_B4_P2_running_notes.md:56` quotes the licensed-amendment list without WP64.** Harmless for B4
+  (no WP in that batch is on either list) but it is a stale recall of a §7 list.
 - **Hollow-fixture class** — WP66. Literal grep is a *screen, not an oracle*: `text: ""` is valid,
   `remoteRecord(...)` takes accept-then-quarantine. Scope by measurement, not by the suspected list.
-- **WP7 / T3 gate never executed.** Plugin builds in both vaults are production (`__LS_E2E__=false`) and
-  cannot host the control server — WP50/WP51 must install a dev build.
+- **WP7 / T3 gate never executed.** Both vaults carry production builds (zero `__LS_E2E__`
+  occurrences) and cannot host the control server — WP50/WP51 must install a dev build.
+- **`lan-vault-sync` is enabled in both vaults** — a second sync engine that can move files under the
+  test and produce a failure unrelated to Canvas V2. WP50 must decide explicitly: disable and restore,
+  or accept as noise.
 - **`wp5/latency.test.ts` RTT flake** — owned by WP65, accepted with a falsifiable threshold
   (>1 failure in 10 consecutive runs, or co-occurrence with another `wp5` assertion, voids acceptance).
-- **W4-1**: C46 production-bundle counter-check (confirm `src/testing/` tree-shakes out, else WP60 reopens).
+- **W4-1**: C46 production-bundle counter-check — **partially discharged** by the pre-flight (both
+  installed production builds contain zero `__LS_E2E__` occurrences, so `src/testing/` does tree-shake
+  out). W4 should still confirm against a freshly built bundle rather than the 2026-07-26 install.
 
 ---
 
@@ -104,10 +131,13 @@
    file · line · why-stale · post-amendment strictness. Blind pass without an executed count = UNVERIFIED.
 10. Two agents independently choosing incompatible constants has cost this run a batch. One WP defines,
     the others read.
+11. **Verify a defect against the current tree before chartering it.** WP68's source description was
+    written before WP26's third attempt landed; W2 re-traced it rather than accepting it, and found two
+    reachability facts the original description did not contain.
 
 ---
 
-## Measured state (last quiet measurement)
+## Measured state (last quiet measurement — taken before B4)
 
 | | |
 |---|---|
@@ -117,6 +147,11 @@
 | `npm run build` | PASS |
 | Blind-verification ledger | 58 rows · 58 CONFIRMED · 0 DIVERGENT · 0 VACUOUS |
 | Unlicensed deletions, whole run | **0** |
+
+**B4's own baseline** (its notes, `_B4_P2_running_notes.md`): 1346 → 1424 after WP24 → 1470 after WP26,
+0 failed throughout. B4 has one self-assigned open item: 3 × `TS2493` in
+`wp26/test_tp04_sync_from_manifest_visible.test.ts` authored by its own test sub-agent, new relative to
+the batch baseline, to be fixed without weakening the assertion before the batch closes.
 
 ---
 
@@ -132,5 +167,13 @@
   wrong value**, so byte-equality provably cannot detect it.
 - **Manifest sidecar leak found and closed** (WP26) — `renameFile` wrote to the manifest without consulting
   `isSharedPath`, publishing a sidecar key every peer would then hold.
+- **A second arm of that same leak found, verified and chartered** (WP68) — the file-op broadcast arm,
+  two lines from the arm WP26 closed. Unconditionally reachable inbound: any peer can put the op on the
+  wire and today's gate admits it.
+- **§7 licence registers audited independently and found CLEAN** — deletion list, amendment list, the
+  fixture-completion and hollow-fixture classes, the unfalsifiable-repair register and the
+  named-intermittent register all agree with the charters that claim entries in them. B17's WP67
+  discharge was *stricter* than ordered (kept the row verbatim + appended a discharge block rather than
+  flipping it, per rule 5 above). Nothing re-applied.
 
 **Not yet true:** nothing has been exercised in real Obsidian. All greens are headless.
