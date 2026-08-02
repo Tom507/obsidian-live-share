@@ -149,6 +149,11 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
   path reaching a vault write is protected by `isSharedPath`/`isSidecarPath` and by nothing else.
   This is the trap for any newly added op type.
 - ~~`TaskCharter_WP67` status field stale~~ — **discharged**, flipped to `DONE`.
+- **WP25 fixture-completion licence granted — §7 row owed.** Ruled: extend §7's **4th class**
+  (fixture completion, currently WP18 + WP64) to **WP25**, bounded to the IO double's `wait` signature
+  in `blind_set2/WP25/tp01` and nothing else. The class's demonstration requirement is satisfied and
+  must be recorded in that form: **before the repair, falsification A left set2 47/47 green; after it,
+  falsification A reddens it.** Same owner rule as below — Worker 2 writes the row.
 - **WP27's measured §7 row is owed.** The licence is granted and recorded; the *measured* row (post-
   amendment strictness, falsification result, executed count) was deliberately withheld until B4
   reports what was actually done. **Owner: Worker 2, one instance, nobody else** — this is the exact
@@ -211,7 +216,16 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
    file · line · why-stale · post-amendment strictness. Blind pass without an executed count = UNVERIFIED.
 10. Two agents independently choosing incompatible constants has cost this run a batch. One WP defines,
     the others read.
-11. **Verify a defect against the current tree before chartering it.** WP68's source description was
+11. **An ordering oracle can be stalled at the wrong seam and never reach the ordering it pins.**
+    WP25's blind2 tp01 gated on `hold("exists")`, but `resolveGuidForSubscribe` → `store.bind` →
+    `readIndex()` → `io.exists(sidecarIndexPath())` meant the gate stalled the subscribe *inside
+    identity resolution* — before `getDoc`, before `waitForSync`, before the load. Both ordering tests
+    were vacuous. **Sixth distinct instance of "a green test that cannot fail", and the first located
+    in a GATE rather than in an assertion.** Generalised: *identity resolution touches the sidecar
+    before the doc exists*, so any gate written against `subscribe` must name the seam it blocks.
+    Detected only because falsification A left set2 **47/47 green** — the perturbation that should have
+    reddened it did nothing. **A perturbation that changes nothing is a finding, not a null result.**
+12. **Verify a defect against the current tree before chartering it.** WP68's source description was
     written before WP26's third attempt landed; W2 re-traced it rather than accepting it, and found two
     reachability facts the original description did not contain.
 
