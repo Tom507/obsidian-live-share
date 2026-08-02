@@ -51,7 +51,13 @@ import {
   writePosRegister,
   writeSizeRegister,
 } from "../canvas/canvas-registers";
-import { isSchemaMajorMismatch } from "../canvas/canvas-schema";
+import {
+  EPOCH_KEY,
+  GUID_KEY,
+  META_MAP_NAME,
+  PATH_KEY,
+  isSchemaMajorMismatch,
+} from "../canvas/canvas-schema";
 import { guardTypeWrite } from "../canvas/canvas-type-guard";
 import {
   type DeleteIntent,
@@ -88,9 +94,180 @@ import {
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
+import type { SidecarIndex, SidecarStore } from "./canvas-sidecar";
 import type { FileOpsManager } from "./file-ops";
+import type { ManifestManager } from "./manifest";
 
-const CANVAS_DOC_PREFIX = "__canvas__:";
+// ---------------------------------------------------------------------------
+// WP27 / P2 — GUID DOC IDENTITY (C27). The doc-id surface, and the ONE
+// constructor for it.
+//
+// The defect this closes is R5: a canvas doc used to be addressed by
+// `__canvas__:<vault path>`, which makes the doc's IDENTITY a function of a
+// value the user can change at any moment. Two consequences, both silent:
+//
+//   ├── a rename re-addressed the doc, so a mid-session rename produced a
+//   │   SECOND, empty document and orphaned the one every peer was editing; and
+//   └── a bare-path `getDoc(path)` could collide with a canvas doc and install a
+//       raw `Y.Text` over a document `CanvasSync` owns structurally.
+//
+// After this WP the doc id is `__canvas__:<guid>`, the path is an ATTRIBUTE
+// (`meta.path`, the manifest entry, the sidecar `index.json`), and a rename is a
+// metadata update that touches neither the id nor the doc.
+//
+// Everything path-keyed STAYS path-keyed (AC3): the subscription registry, the
+// doc-handle and snapshot lookups, the mute registry, `canvasOwned`, the
+// persistence seams and — above all — the awareness field `canvasPath`. Re-keying
+// any of them by guid would split every peer's presence into two disjoint rooms
+// for the same canvas and open every advisory lock.
+// ---------------------------------------------------------------------------
+
+/**
+ * The canvas doc-id namespace. Exported (Shared Ownership Contract §1) — WP25
+ * and WP28 import it rather than re-spelling it.
+ */
+export const CANVAS_DOC_PREFIX = "__canvas__:";
+
+/**
+ * The ONE constructor for a canvas doc id. Nobody builds `` `${prefix}${x}` ``
+ * by hand, in this module or any other.
+ *
+ * It THROWS for a non-string, empty or blank guid, and that refusal is the
+ * point rather than defensive noise: an unresolved guid mapped to the bare
+ * prefix would give EVERY canvas whose guid could not be resolved one shared
+ * document — a strictly worse collision than the path-keyed one this WP removes,
+ * and one that no convergence oracle could see (the two boards would converge
+ * beautifully, into each other).
+ */
+export function canvasDocId(guid: string): string {
+  if (typeof guid !== "string") {
+    throw new TypeError(`canvasDocId: guid must be a string, got ${typeof guid}`);
+  }
+  if (guid.trim().length === 0) {
+    throw new Error("canvasDocId: refusing to build a doc id from an empty guid");
+  }
+  return `${CANVAS_DOC_PREFIX}${guid}`;
+}
+
+/** WP27's initial epoch. WP28 owns every rule about what happens to it next. */
+const INITIAL_CANVAS_EPOCH = 0;
+
+function isUsableGuid(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+/**
+ * Mint a fresh canvas guid: 32 lowercase hex characters, no separators.
+ *
+ * No new dependency — `crypto.getRandomValues` is present in Obsidian's Electron
+ * renderer and in the test runner, and `crypto.subtle` is already relied on by
+ * `manifest.ts`. The `Math.random` branch exists only so an exotic host cannot
+ * turn a missing API into a thrown subscribe; it is not a security claim, and it
+ * does not need to be — a canvas guid is a collision-avoidance token, not a
+ * secret.
+ *
+ * Hex-only is deliberate: a guid must never be mistakable for a path, so it
+ * carries no `/` and no extension.
+ */
+function mintCanvasGuid(): string {
+  const bytes = new Uint8Array(16);
+  const source = (globalThis as { crypto?: Crypto }).crypto;
+  if (source?.getRandomValues) {
+    source.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  let out = "";
+  for (const byte of bytes) out += byte.toString(16).padStart(2, "0");
+  return out;
+}
+
+/**
+ * The path <-> guid store. Async because `index.json` is a file.
+ *
+ * `guidForPath` answers `null` rather than minting: minting on a failed lookup
+ * is exactly how a client ends up seeding a SECOND doc for a file a peer is
+ * already editing, and neither doc can ever discover the other.
+ */
+export interface CanvasIdentityStore {
+  guidForPath(path: string): Promise<string | null>;
+  bind(guid: string, path: string): Promise<void>;
+  unbind(path: string): Promise<void>;
+}
+
+/**
+ * The production store: the manifest first (a peer published it this session),
+ * then WP24's sidecar `index.json` (this client wrote it before the last
+ * restart), which is `guid -> path` and is therefore scanned by VALUE.
+ *
+ * `bind` writes BOTH, and enforces the mapping's shape in both directions — one
+ * guid names one path, one path is named by one guid — so a rename cannot leave
+ * a second index row pointing at the file under its old name.
+ *
+ * `unbind` clears the manifest entry's guid at that path (through
+ * `setCanvasGuid` with a blank guid, which is the one spelling this `Pick`
+ * exposes) and drops every index row whose VALUE is that path.
+ *
+ * Both are idempotent: `ManifestManager.renameFile` re-keys the whole entry and
+ * may well have moved the mapping before this runs.
+ */
+export function createCanvasIdentityStore(deps: {
+  manifest: Pick<ManifestManager, "getCanvasGuid" | "setCanvasGuid"> | null;
+  sidecar: Pick<SidecarStore, "readIndex" | "writeIndex"> | null;
+}): CanvasIdentityStore {
+  const { manifest, sidecar } = deps;
+
+  return {
+    async guidForPath(path: string): Promise<string | null> {
+      const fromManifest = manifest?.getCanvasGuid(path) ?? null;
+      if (isUsableGuid(fromManifest)) return fromManifest;
+      if (!sidecar) return null;
+      const index = await sidecar.readIndex();
+      for (const [guid, mapped] of Object.entries(index)) {
+        if (mapped === path && isUsableGuid(guid)) return guid;
+      }
+      return null;
+    },
+
+    async bind(guid: string, path: string): Promise<void> {
+      if (!isUsableGuid(guid)) return;
+      manifest?.setCanvasGuid(path, guid);
+      if (!sidecar) return;
+      const index = await sidecar.readIndex();
+      const next: SidecarIndex = {};
+      let changed = index[guid] !== path;
+      for (const [existingGuid, existingPath] of Object.entries(index)) {
+        // A path is named by exactly ONE guid. A stale row for this path under a
+        // different guid is what a rename would otherwise leave behind, and it
+        // would resolve peers to a doc nobody is editing.
+        if (existingGuid !== guid && existingPath === path) {
+          changed = true;
+          continue;
+        }
+        next[existingGuid] = existingPath;
+      }
+      next[guid] = path;
+      if (changed) await sidecar.writeIndex(next);
+    },
+
+    async unbind(path: string): Promise<void> {
+      manifest?.setCanvasGuid(path, "");
+      if (!sidecar) return;
+      const index = await sidecar.readIndex();
+      const next: SidecarIndex = {};
+      let changed = false;
+      for (const [existingGuid, existingPath] of Object.entries(index)) {
+        if (existingPath === path) {
+          changed = true;
+          continue;
+        }
+        next[existingGuid] = existingPath;
+      }
+      if (changed) await sidecar.writeIndex(next);
+    },
+  };
+}
+
 // Bug L1: remote->disk write latency. Trailing debounce (short) plus a max-wait
 // cap so a continuous stream of remote updates still flushes to disk regularly
 // instead of the trailing timer resetting forever.
@@ -1585,6 +1762,21 @@ export class CanvasSync {
   private syncManager: SyncManager;
   private fileOpsManager: FileOpsManager;
   private subscribedPaths = new Set<string>();
+  // WP27: the injected path <-> guid seam. NULL means "no identity provider",
+  // which is a real and supported state, not a bug — see `canvasDocIdFor`.
+  private identityStore: CanvasIdentityStore | null = null;
+  // WP27: the cached, SYNCHRONOUS view of the identity, canonical path -> guid.
+  // Filled by a successful subscribe and re-keyed by `handleRename`. It is what
+  // makes every path-keyed reader (AC3) able to reach a guid-addressed doc
+  // without going async, and its ABSENCE for a path is what stops
+  // `getCanvasDocHandle` conjuring a doc for a path nobody subscribed.
+  private guidByPath = new Map<string, string>();
+  // WP27 AC2: the observer and `afterTransaction` closures installed by
+  // `subscribe` read the path through this cell instead of capturing it. A
+  // rename that re-keys every map but leaves the closures bound to the old path
+  // produces perfect metadata over a dead data path — the remote hook would fire
+  // with the retired name and the audit would schedule under a key nothing reads.
+  private observedPathRefs = new Map<string, { current: string }>();
   private observers = new Map<string, () => void>();
   private writeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Bug L1: timestamp of the first not-yet-flushed remote update per path, used
@@ -1716,11 +1908,56 @@ export class CanvasSync {
     this.onRemoteCanvasUpdate = cb;
   }
 
+  /**
+   * WP27 — inject the path <-> guid store.
+   *
+   * Identity is a PROVIDED capability, exactly as sidecar I/O is (WP24's
+   * `SidecarIO`). With a store injected, this instance addresses canvas docs by
+   * guid, stamps `meta.guid` / `meta.path` / `meta.epoch`, and honours AC1's
+   * mixed-version rule. With no store it has no identity provider and falls back
+   * to the pre-WP27 addressing (see {@link canvasDocIdFor}) — it does not invent
+   * an identity it cannot publish, because an identity no peer can resolve is
+   * how a file ends up with two documents.
+   */
+  setIdentityStore(store: CanvasIdentityStore): void {
+    this.identityStore = store;
+  }
+
+  /** WP27 — cached, synchronous: the guid for a CANONICAL path, or `null`. */
+  getCanvasGuid(rawPath: string): string | null {
+    const path = toCanonicalPath(normalizePath(rawPath));
+    return this.guidByPath.get(path) ?? null;
+  }
+
+  /**
+   * The doc id for a path, or `null` when this client has no identity for it.
+   *
+   * `null` is a REFUSAL, and the create-on-demand behaviour of
+   * `SyncManager.getDoc` is exactly why it has to be one: asking for an id is
+   * enough to bring the document into existence, so "I do not know this path"
+   * must never be answered with a plausible id.
+   *
+   * The `identityStore === null` branch is the transitional fallback: with no
+   * identity provider the canonical PATH is used as the identity token, which
+   * reproduces the pre-WP27 id byte for byte through the same single
+   * constructor. It is not a second id format and no call site may special-case
+   * it.
+   */
+  private canvasDocIdFor(path: string): string | null {
+    const guid = this.guidByPath.get(path);
+    if (guid !== undefined) return canvasDocId(guid);
+    if (this.identityStore !== null) return null;
+    if (path.trim().length === 0) return null;
+    return canvasDocId(path);
+  }
+
   // WP2: expose the canvas doc handle (incl. its own awareness channel) so the
   // presence layer can read/write canvas cursors + locks on getDoc().awareness.
   getCanvasDocHandle(rawPath: string): DocHandle | null {
     const path = toCanonicalPath(normalizePath(rawPath));
-    return this.syncManager.getDoc(`${CANVAS_DOC_PREFIX}${path}`);
+    const docId = this.canvasDocIdFor(path);
+    if (!docId) return null;
+    return this.syncManager.getDoc(docId);
   }
 
   // Initial-sync fix: expose the current CRDT snapshot (dangling-edge-pruned) so
@@ -1734,7 +1971,9 @@ export class CanvasSync {
   ): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } | null {
     const path = toCanonicalPath(normalizePath(rawPath));
     if (!this.subscribedPaths.has(path)) return null;
-    const docHandle = this.syncManager.getDoc(`${CANVAS_DOC_PREFIX}${path}`);
+    const docId = this.canvasDocIdFor(path);
+    if (!docId) return null;
+    const docHandle = this.syncManager.getDoc(docId);
     if (!docHandle) return null;
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
     const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
@@ -1751,17 +1990,178 @@ export class CanvasSync {
     return this.remoteSeq.get(path) ?? 0;
   }
 
+  /**
+   * WP27 AC1 — resolve the guid a subscribe should use, or refuse.
+   *
+   * ├── resolved  → republished to BOTH stores, so the manifest and `index.json`
+   * │               agree afterwards regardless of which one answered.
+   * ├── host, unresolved → MINT and bind. The host is the one client entitled to
+   * │               name a board nobody has named yet.
+   * └── guest, unresolved → `null`. Minting here is the two-document defect: the
+   *                 guest would create a healthy, converging doc that the peer's
+   *                 healthy, converging doc can never meet.
+   */
+  private async resolveGuidForSubscribe(
+    path: string,
+    role: "host" | "guest",
+  ): Promise<string | null> {
+    const store = this.identityStore;
+    // No identity provider: the canonical path IS the identity token. See
+    // `canvasDocIdFor` — the resulting doc id is the pre-WP27 one, built by the
+    // same single constructor.
+    if (!store) return path;
+
+    let resolved: string | null = null;
+    try {
+      resolved = await store.guidForPath(path);
+    } catch {
+      resolved = null;
+    }
+    if (isUsableGuid(resolved)) {
+      try {
+        await store.bind(resolved, path);
+      } catch {
+        /* the mapping we just READ is still usable if re-publishing it failed */
+      }
+      return resolved;
+    }
+
+    if (role !== "host") return null;
+
+    const minted = mintCanvasGuid();
+    try {
+      await store.bind(minted, path);
+    } catch {
+      this.logger?.warn(
+        "canvas-sync",
+        `subscribe ${path}: minted guid could not be published - peers may not resolve it`,
+      );
+    }
+    return minted;
+  }
+
+  /**
+   * WP27 AC1 — write the identity into `meta`.
+   *
+   * Guarded BEFORE the transaction, never inside it: Yjs emits a real update for
+   * a same-value LWW `set`, so an unguarded stamp would echo to every peer on
+   * every subscribe of every board, forever (the same property WP8 AC3 pins for
+   * the migration).
+   *
+   * `meta` is reached through `doc.getMap`, never assigned — the container is
+   * created once per doc and keeps its identity, so a peer writing into it keeps
+   * merging with us (WP8 AC1).
+   *
+   * `epoch` is seeded ONLY when the doc has none. WP27 defines the key; WP28
+   * owns monotonicity, comparison, host-increment and conflict handling (Shared
+   * Ownership Contract §2). There is deliberately no comparison here.
+   */
+  private stampIdentity(doc: Y.Doc, guid: string, path: string): void {
+    const meta = doc.getMap<unknown>(META_MAP_NAME);
+    const writeGuid = meta.get(GUID_KEY) !== guid;
+    const writePath = meta.get(PATH_KEY) !== path;
+    const writeEpoch = meta.get(EPOCH_KEY) === undefined;
+    if (!writeGuid && !writePath && !writeEpoch) return;
+    doc.transact(() => {
+      if (writeGuid) meta.set(GUID_KEY, guid);
+      if (writePath) meta.set(PATH_KEY, path);
+      if (writeEpoch) meta.set(EPOCH_KEY, INITIAL_CANVAS_EPOCH);
+    });
+  }
+
+  /** The mutable path cell the subscribe-time closures read. See AC2. */
+  private pathRefFor(path: string): { current: string } {
+    const existing = this.observedPathRefs.get(path);
+    if (existing) {
+      existing.current = path;
+      return existing;
+    }
+    const created = { current: path };
+    this.observedPathRefs.set(path, created);
+    return created;
+  }
+
+  /**
+   * WP27 AC2/AC3 — move every PATH-KEYED structure from one key to the other.
+   *
+   * The registries stay path-keyed (AC3 forbids re-keying them by guid); what a
+   * rename changes is which path is the live key. Listed exhaustively and moved
+   * in one place, because a rename that forgets one of them fails in a way that
+   * only shows up under a specific later event — a stale write timer firing for
+   * the retired name, an un-cleared `recentDiskWrite` swallowing the first real
+   * edit, a lost seed-refusal ledger un-withholding a write this client refused.
+   */
+  private rekeyPathState(oldPath: string, newPath: string): void {
+    const moveSet = (set: Set<string>): void => {
+      if (!set.delete(oldPath)) return;
+      set.add(newPath);
+    };
+    const moveMap = <V>(map: Map<string, V>): void => {
+      if (!map.has(oldPath)) return;
+      const value = map.get(oldPath) as V;
+      map.delete(oldPath);
+      map.set(newPath, value);
+    };
+
+    moveSet(this.subscribedPaths);
+    moveSet(this.recentDiskWrites);
+    moveSet(this.recentLocalEdits);
+    moveMap(this.guidByPath);
+    moveMap(this.observers);
+    moveMap(this.seqHandlers);
+    moveMap(this.writeTimers);
+    moveMap(this.writeFirstScheduled);
+    moveMap(this.externalWriteSettleTimers);
+    moveMap(this.lastWrittenContent);
+    moveMap(this.seedRefusalLedgers);
+    moveMap(this.remoteSeq);
+    // WP4's Surface-Shadow is the capture path's intent basis and is per-path.
+    // Left behind, the renamed canvas would have an EMPTY shadow and the first
+    // save after a rename would replay the whole file as fresh intent — the
+    // exact window the cascade starts in.
+    moveMap(this.shadow.paths);
+
+    const ref = this.observedPathRefs.get(oldPath);
+    if (ref) {
+      this.observedPathRefs.delete(oldPath);
+      ref.current = newPath;
+      this.observedPathRefs.set(newPath, ref);
+    }
+  }
+
   async subscribe(rawPath: string, role: "host" | "guest"): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
     // A peer/host controls manifest keys; reject any that would escape the vault.
     if (!isPathSafe(path)) return;
     if (this.subscribedPaths.has(path)) return;
+    // Claimed SYNCHRONOUSLY, before the first await, exactly as before: US5 AC3
+    // ("a pending subscribe already counts as owned") is what keeps the raw-text
+    // path unreachable while a subscribe is in flight, and the identity
+    // resolution below is now the first of several awaits inside that window.
     this.subscribedPaths.add(path);
 
-    const docId = `${CANVAS_DOC_PREFIX}${path}`;
+    // WP27 AC1 — identity BEFORE the doc. Nothing is asked of the sync manager
+    // until this client knows WHICH document the path names, because asking is
+    // what creates it.
+    const guid = await this.resolveGuidForSubscribe(path, role);
+    if (guid === null) {
+      // The mixed-version rule (charter §3): a client that cannot resolve a guid
+      // treats the doc as UNKNOWN and asks peers or the manifest — it never
+      // seeds a second doc for the same file. So a guest with no mapping opens
+      // nothing at all, and a later subscribe joins the peer's doc instead of
+      // meeting it as a stranger.
+      this.subscribedPaths.delete(path);
+      return;
+    }
+    // An unsubscribe (or a destroy) may have landed while identity resolved.
+    if (!this.subscribedPaths.has(path)) return;
+    this.guidByPath.set(path, guid);
+
+    const docId = canvasDocId(guid);
     const docHandle = this.syncManager.getDoc(docId);
     if (!docHandle) {
       this.subscribedPaths.delete(path);
+      this.guidByPath.delete(path);
       return;
     }
 
@@ -1769,6 +2169,7 @@ export class CanvasSync {
       await this.syncManager.waitForSync(docId);
     } catch {
       this.subscribedPaths.delete(path);
+      this.guidByPath.delete(path);
       return;
     }
 
@@ -1820,25 +2221,49 @@ export class CanvasSync {
     // doc entries absent from the host's local file and `coldOpen`'s doc-wins
     // branch does not, so substituting it would silently change rejoin semantics.
 
+    // WP27 AC1 — the IDENTITY STAMP, and its placement is load-bearing.
+    //
+    // It runs AFTER the host seed above and never before it, because WP8's
+    // `migrateV1ToV2` is one-shot on `meta`. The marker was taught to ignore the
+    // three identity keys (`canvas-schema.ts`, `hasSchemaClaim`) so the stamp
+    // cannot arm it at all — but the ordering is kept anyway: the two defences
+    // are independent, and the failure they prevent is silent and permanent (a
+    // V1 doc left with no `schemaVersion`, no `pos`/`size`, no `ord`, while every
+    // convergence oracle stays green).
+    //
+    // Only when an identity store is injected. Without one there is no identity
+    // to stamp — writing the PATH into `meta.guid` would be a claim this client
+    // cannot honour and a lie every peer would read.
+    if (this.identityStore !== null) {
+      this.stampIdentity(docHandle.doc, guid, path);
+    }
+
+    // WP27 AC2: the closures below read the path through this cell, so a rename
+    // re-points the live data path instead of leaving it on the retired name.
+    const pathRef = this.pathRefFor(path);
+
     // WP4 (US5 AC1): bump the per-path remote sequence on every non-local
     // transaction. afterTransaction fires exactly once per transaction (unlike
     // the two deep observers below), so a remote delta touching both maps counts
     // once. Local edits (transact() from applyLocalDiffToYMaps / seeding) have
     // tr.local === true and never bump.
     const afterTx = (tr: Y.Transaction) => {
-      if (!tr.local) this.remoteSeq.set(path, this.currentSeq(path) + 1);
+      if (!tr.local) {
+        this.remoteSeq.set(pathRef.current, this.currentSeq(pathRef.current) + 1);
+      }
     };
     docHandle.doc.on("afterTransaction", afterTx);
     this.seqHandlers.set(path, () => docHandle.doc.off("afterTransaction", afterTx));
 
     const observer = () => {
-      if (this.recentLocalEdits.has(path)) return;
+      const livePath = pathRef.current;
+      if (this.recentLocalEdits.has(livePath)) return;
       // REMOTE delta: patch the OPEN canvas view directly — Obsidian ignores
       // external .canvas writes while the view is open, so a file-only sync leaves
       // the view stale/scattered until a full reload.
       if (this.onRemoteCanvasUpdate) {
         try {
-          this.onRemoteCanvasUpdate(path, buildCanvasData(nodesMap, edgesMap, deletedMap));
+          this.onRemoteCanvasUpdate(livePath, buildCanvasData(nodesMap, edgesMap, deletedMap));
         } catch {
           /* live reconciliation must never break the data path */
         }
@@ -1853,7 +2278,7 @@ export class CanvasSync {
       // WP20: that same pass is now the QUARANTINE AUDITOR, so it needs the
       // tombstone container as well — which this observer already watches, so a
       // peer's repair delta and a peer's quarantine both re-arm it.
-      this.scheduleCanvasAudit(path, nodesMap, edgesMap, deletedMap);
+      this.scheduleCanvasAudit(livePath, nodesMap, edgesMap, deletedMap);
     };
     nodesMap.observeDeep(observer);
     edgesMap.observeDeep(observer);
@@ -1881,6 +2306,10 @@ export class CanvasSync {
 
   unsubscribe(rawPath: string): void {
     const path = toCanonicalPath(normalizePath(rawPath));
+    // WP27: resolved BEFORE the identity is dropped below — the doc to release
+    // is named by the guid, and after a rename the path is no longer able to
+    // name it at all.
+    const docId = this.canvasDocIdFor(path);
     this.subscribedPaths.delete(path);
     const timer = this.writeTimers.get(path);
     if (timer) {
@@ -1909,7 +2338,69 @@ export class CanvasSync {
     // from here would let the very write this WP exists to stop reach the file.
     // A later re-subscribe re-seeds and gets a fresh ledger.
     this.seedRefusalLedgers.delete(path);
-    this.syncManager.releaseDoc(`${CANVAS_DOC_PREFIX}${path}`);
+    this.guidByPath.delete(path);
+    this.observedPathRefs.delete(path);
+    if (docId) this.syncManager.releaseDoc(docId);
+  }
+
+  /**
+   * WP27 AC2 — the RENAME entry point. A rename is a METADATA UPDATE.
+   *
+   * What moves: `meta.path`, the manifest mapping, `index.json`, and every
+   * path-keyed structure in this class. What does NOT move: the guid, the doc
+   * id, and the `Y.Doc` itself.
+   *
+   * What this method deliberately is NOT is `unsubscribe(old)` + `subscribe(new)`.
+   * That variant leaves every key set plausible and destroys peer history: the
+   * doc is released and re-acquired, so un-flushed remote state is gone, the
+   * `Y.Doc` is a different object, and the board silently restarts from whatever
+   * the relay happens to still hold. Nothing throws.
+   *
+   * The three re-pointings are independent and each one alone is insufficient:
+   *
+   *   ├── the MAPS      → `getCanvasDocHandle(new)` and `isSubscribed(new)`
+   *   ├── `meta.path` + the two stores → what a PEER and the next session read
+   *   └── the OBSERVER cell → the live data path. A rename that fixes the maps
+   *       but leaves the closures on the old path gives correct metadata over a
+   *       dead channel: the remote hook fires under the retired name and the
+   *       open view is never patched again.
+   *
+   * A path this client holds no identity for is not ours to rename, so it is a
+   * no-op rather than an error — `vault-events` cannot know which `.canvas`
+   * paths `CanvasSync` owns before it calls.
+   */
+  async handleRename(oldRawPath: string, newRawPath: string): Promise<void> {
+    const oldPath = toCanonicalPath(normalizePath(oldRawPath));
+    const newPath = toCanonicalPath(normalizePath(newRawPath));
+    if (oldPath === newPath) return;
+    const guid = this.guidByPath.get(oldPath);
+    if (guid === undefined) return;
+    if (!isPathSafe(newPath)) return;
+
+    this.rekeyPathState(oldPath, newPath);
+
+    // The doc is reached by its UNCHANGED id — this creates nothing and releases
+    // nothing, it only re-labels what the doc says about itself.
+    if (this.identityStore !== null) {
+      const docHandle = this.syncManager.getDoc(canvasDocId(guid));
+      if (docHandle) this.stampIdentity(docHandle.doc, guid, newPath);
+    }
+
+    const store = this.identityStore;
+    if (!store) return;
+    // BIND first, then UNBIND: in that order the mapping is never absent from
+    // both stores at once, so a peer resolving mid-rename finds the new path or
+    // the old one — never nothing, which would make it mint a second identity.
+    try {
+      await store.bind(guid, newPath);
+    } catch {
+      /* a failed publish must not tear down a live subscription */
+    }
+    try {
+      await store.unbind(oldPath);
+    } catch {
+      /* idempotent by contract; `renameFile` may already have moved the entry */
+    }
   }
 
   async handleLocalModify(rawPath: string): Promise<void> {
@@ -1920,7 +2411,8 @@ export class CanvasSync {
     // depth; the authoritative check is server-side in ws-handler.ts).
     if (!this.canWrite(path)) return;
 
-    const docId = `${CANVAS_DOC_PREFIX}${path}`;
+    const docId = this.canvasDocIdFor(path);
+    if (!docId) return;
     const docHandle = this.syncManager.getDoc(docId);
     if (!docHandle) return;
 
@@ -2333,9 +2825,12 @@ export class CanvasSync {
     }
     this.seqHandlers.clear();
     for (const path of [...this.subscribedPaths]) {
-      this.syncManager.releaseDoc(`${CANVAS_DOC_PREFIX}${path}`);
+      const docId = this.canvasDocIdFor(path);
+      if (docId) this.syncManager.releaseDoc(docId);
     }
     this.subscribedPaths.clear();
+    this.guidByPath.clear();
+    this.observedPathRefs.clear();
     this.recentDiskWrites.clear();
     this.recentLocalEdits.clear();
     this.lastWrittenContent.clear();

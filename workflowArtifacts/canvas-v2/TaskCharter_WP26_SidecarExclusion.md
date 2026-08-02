@@ -1,6 +1,6 @@
 # Task Charter — WP26: Sidecar exclusion
 
-**Charter Status:** `TESTS_ADDED`
+**Charter Status:** `DONE`
 **WP:** WP26
 **Phase:** P2
 **task_mode:** `standard`
@@ -209,19 +209,85 @@ deferred to Worker 4.*
 
 ---
 
-## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
+## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempts 1–2)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** `skipsAutoTextSync` was a bare
+  `return path.endsWith(".canvas")`. Sidecar paths were excluded nowhere. Baseline:
+  27 of the 46 visible tests red, 19 green. Three of the five consumers stop a
+  `.yhistory` at `!isTextFile(path)` one line early, so `index.json` and `.md` under
+  the sidecar directory are the discriminating inputs. `ExclusionManager` excluded the
+  sidecar only by coincidence (`${configDir}/**` with the default config dir).
+- **Approach:** extend the ONE predicate to
+  `path.endsWith(".canvas") || isSidecarPath(path)`, importing WP24's `isSidecarPath`
+  from `files/canvas-sidecar.ts` — the `.canvas` clause left byte-identical, so AC4
+  cannot drift. That covers `startAll`, `onFileAdded`, `onFileRenamed` and
+  `syncFromManifest`'s text branch with no edit at those sites. Two seams are guarded
+  with `isSidecarPath` DIRECTLY, because a `.canvas` must keep passing there:
+  `handleLocalTextModify` (the R10 local-edit fallback) and `ManifestManager.isSharedPath`
+  (the membership gate). `syncFromManifest`'s guard was moved to the TOP of the entry
+  loop so it precedes the directory branch and is not filtered by `!entry.binary`.
+  The contract comment at `utils.ts` was extended to enumerate both consumer groups.
+- **Attempt 2 — generalisation:** re-derived the consumer set from the code instead of the
+  charter's list, by asking which code WRITES the manifest rather than which code reads the
+  membership predicate. Four `manifest.set` writers exist; three consult `isSharedPath`
+  (`publishManifest` via `getSharedFiles`, `updateFile`, `addFolder`) and **`renameFile` does
+  not** — it re-keys an entry directly, so the membership gate cannot constrain it. Reachable
+  via `vault-events.ts:190-194`, which admits a rename when EITHER side is shared: moving an
+  ordinary shared note into the sidecar directory published its entry under a sidecar key.
+  Closed with a destination-only guard (delete + `releaseDoc` still run), mirroring
+  `onFileRenamed`. Verified falsifiable by injection: neutralising the guard reddens exactly
+  one assertion, positive controls stay green. Attempt 2 also corrected the AC3 enumeration in
+  the "only real consumers" direction (it had named `files/exclusion.ts`, which does not call
+  the predicate) and recorded explicit reachability arguments for the three `getDoc` seams
+  left unguarded.
+- **Fallback path if all attempts fail:** not needed.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs. 46/46 visible tests green; WP24 still 76/76;
+  full plugin suite 1470 passed / 0 failed (1424 → 1470, delta = exactly the 46 WP26
+  tests); `tsc --noEmit -skipLibCheck` CLEAN, zero diagnostics. Production files changed:
+  `plugin/src/utils.ts`, `plugin/src/files/background-sync.ts`,
+  `plugin/src/files/manifest.ts` — exactly the three required by §6. Plus, in attempt 3
+  only, three mock parameter signatures in
+  `plugin/src/__tests__/v2/wp26/test_tp04_sync_from_manifest_visible.test.ts` to clear the
+  `TS2493` diagnostics this batch introduced (typing only; no assertion, expected value or
+  test count changed; falsification re-verified afterwards).
+  `exclusion.ts` deliberately NOT modified; the durable guard sits at
+  `isExcluded`'s single consumer instead, which also covers the no-`ExclusionManager`
+  configuration that no pattern could.
+- **Attempt 3 — two correctness fixes, no behaviour change.** (a) The AC3 contract comment
+  contradicted its own stated invariant: the enumeration claimed to name only callers of
+  `isSidecarPath` and named `files/vault-events.ts`, which is the ROUTE INTO the
+  `handleLocalTextModify` seam, not a caller — the same defect as attempt 2's
+  `files/exclusion.ts` entry. Fixed structurally: the consumer list is now a bare four-row
+  `<module> <function>` block with the exhaustiveness claim scoped to it, and all reasoning
+  moved outside it with non-callers labelled in place, so the boundary survives future edits.
+  (b) The three `TS2493` diagnostics in `test_tp04` are fixed — three mock parameter
+  signatures, typing only. They were new relative to the BATCH baseline (clean `tsc`) and
+  authored by this batch's own test sub-agent, so they were our defect rather than a licence
+  question; annotations change no assertion, no expected value and no test count. `tsc` is now
+  completely clean. Production code-only diff is byte-identical to attempt 2.
+- **Documentation-conformance pass (NOT a fourth attempt, logged out-of-budget).** Comment
+  text only; executable diff empty and byte-identical to attempt 3. One AC3 oracle extracts
+  every `*.ts` basename anywhere in the contract comment with a flat regex and admits only
+  real consumers, the owning module and `utils.ts` — it has no notion of a delimited block or
+  a labelled exception, so attempt 3's (correct) restructure could not satisfy it. The
+  `vault-events.ts` token is now gone from that comment; the rationale is kept in full and
+  expressed by ROLE ("the VAULT EVENT ROUTER … named by role, not by filename"). The
+  delimiter structure stays, with its invariant strengthened to the one the oracle checks and
+  an explicit instruction not to restore a filename. Mechanical re-sweep of the comment leaves
+  `background-sync.ts` (2), `manifest.ts` (4), `canvas-sidecar.ts` (2) and nothing else.
+- **What remains open:** nothing in scope. One observation for Worker 3, reported and not
+  fixed: `fileOpsManager.onFileRename`, which broadcasts a
+  rename INTO the sidecar directory to peers over the file-operation channel — same root
+  cause as the `renameFile` leak (`vault-events.ts`'s either-side rename gate) but outside
+  the charter's three files and not reached by any C26 criterion; a candidate follow-up WP.
+  Attempt 1's `setActiveFile` concern is RETIRED — `main.ts:909-912` only ever passes a
+  path that already cleared `isSharedPath`, so it is structurally unreachable.
+- **Final status:** `DONE`
 
 ---
 

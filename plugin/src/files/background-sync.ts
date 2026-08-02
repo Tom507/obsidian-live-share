@@ -16,6 +16,7 @@ import {
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
+import { isSidecarPath } from "./canvas-sidecar";
 import type { FileOpsManager } from "./file-ops";
 import type { ManifestManager } from "./manifest";
 
@@ -29,6 +30,30 @@ const MAX_WAIT_MS = 500;
 // `utils.ts` beside `isTextFile`, so `manifest.ts`'s `syncFromManifest` consults
 // the SAME predicate instead of growing a fourth private copy. Full rationale,
 // including why `subscribe()` is deliberately NOT guarded, is on the predicate.
+//
+// WP26 AC1+AC2 — that same predicate now also excludes the sidecar state
+// directory, so those three entry points need no second guard. The fourth door,
+// `handleLocalTextModify`, is guarded with WP24's `isSidecarPath` ALONE and not
+// with `skipsAutoTextSync`: it is the local-edit half of the R10 text fallback
+// and must keep accepting a `.canvas` that CanvasSync does not own.
+//
+// WP27 AC4 — `setActiveFile` is now GUARDED too, with the same predicate. It
+// was previously left open on a reachability argument ("main.ts only ever sets
+// the active file from a path that already passed `isSharedPath` AND
+// `isTextFile`"), and AC4 rejects reachability arguments explicitly: the guard
+// has to be a line a test can point at. See the guard's own comment.
+//
+// The remaining two `getDoc` sites in this class are deliberately UNGUARDED,
+// each for a different and checked reason — a guard on either would be
+// unfalsifiable by construction, which is worse than none:
+//
+//   subscribe()     the announced R10 text-fallback door. Out of WP26's and
+//                   WP27's scope (WP33 owns it) and pinned open by a test in
+//                   both. It is made unreachable for a sidecar path by guarding
+//                   its callers.
+//   flushWrite()    keyed off `this.writeTimers`, populated only by the observer
+//                   installed in `attachObserver`, which only runs for a path
+//                   that already came through one of the four guarded doors.
 
 export class BackgroundSync {
   private observers = new Map<string, () => void>();
@@ -170,6 +195,25 @@ export class BackgroundSync {
     this.activeFile = path;
 
     if (oldActive && oldActive !== path) {
+      // WP27 AC4 — one of the two unguarded bare-path `getDoc` sites (R5).
+      //
+      // `oldActive` is a VAULT PATH. Handing it to `getDoc` creates a raw
+      // `Y.Text` document under that path for anything CanvasSync owns, and the
+      // block below then flushes that (empty) text straight over the user's
+      // `.canvas` file and republishes the result to the manifest.
+      //
+      // WP27 also defuses this STRUCTURALLY — a canvas doc is now
+      // `__canvas__:<guid>`, which collides with no path — but a structural
+      // defence plus an explicit guard is the ask, not either one alone
+      // (charter AC4: "verified by an explicit test rather than by a
+      // reachability argument"). The guard is what a test can point at.
+      //
+      // Placed BEFORE the `getDoc`, never after: the damage is the CALL, which
+      // creates the document. `skipsAutoTextSync` is the shared predicate
+      // (`utils.ts`) and covers `.canvas` plus the sidecar directory; this
+      // module has twice grown a private `endsWith(".canvas")` copy and must
+      // not grow a third.
+      if (skipsAutoTextSync(oldActive)) return;
       const docHandle = this.syncManager.getDoc(oldActive);
       if (docHandle) {
         const content = docHandle.text.toString();
@@ -285,6 +329,14 @@ export class BackgroundSync {
 
   async handleLocalTextModify(rawPath: string): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
+    // WP26 AC2 — the MODIFY verb, and the WIDEST of the doors: this method has
+    // no `isTextFile` pre-filter, so a `.yhistory` or `.ycheckpoint` write would
+    // otherwise reach `getDoc` and seed a shared `Y.Text` from local replica
+    // state. Guarded with `isSidecarPath` and NOT with `skipsAutoTextSync`:
+    // `vault-events.ts` deliberately routes a `.canvas` that CanvasSync does not
+    // own into here (the local-edit half of the announced R10 text fallback), so
+    // the canvas predicate would silently make that fallback read-only.
+    if (isSidecarPath(path)) return;
     if (this.recentDiskWrites.has(path)) return;
     // Single-writer invariant: the active file is owned exclusively by yCollab
     // (in the CM6 editor). Gate on the active-file identity in addition to the

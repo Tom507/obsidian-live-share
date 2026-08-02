@@ -7,7 +7,7 @@ import * as Y from "yjs";
 
 import type { SyncManager } from "../sync/sync";
 import type { Permission, SessionRole } from "../types";
-import { applyMinimalYTextUpdate, normalizeLineEndings } from "../utils";
+import { applyMinimalYTextUpdate, normalizeLineEndings, skipsAutoTextSync } from "../utils";
 import { conflictExtension } from "./conflict-decoration";
 
 export interface CursorUser {
@@ -55,6 +55,33 @@ export class CollabManager {
     this.currentPath = filePath;
     this.currentView = view;
     if (!filePath) {
+      this.currentAwareness = null;
+      view.dispatch({ effects: this.compartment.reconfigure([]) });
+      return;
+    }
+    // WP27 AC4 — the second of the two unguarded bare-path `getDoc` sites (R5).
+    //
+    // `filePath` is a VAULT PATH. An unguarded host activation over a `.canvas`
+    // asks the sync manager for a document under that path, then seeds the whole
+    // canvas JSON into a raw `Y.Text` for it and installs a `yCollab` binding —
+    // a character-level CRDT over a document `CanvasSync` owns structurally.
+    // That is R5 itself, and its merge destroys edge endpoints.
+    //
+    // Guid-based doc ids defuse the collision structurally, but AC4 asks for the
+    // guard as well ("verified by an explicit test rather than by a reachability
+    // argument"), so this line is the one a test can point at. It sits BEFORE
+    // the `getDoc` because the CALL is what creates the document.
+    //
+    // `skipsAutoTextSync` is the shared predicate (`utils.ts`): `.canvas` plus
+    // the sidecar directory, one definition, no private copy. Nothing legitimate
+    // is refused — both this and `BackgroundSync.setActiveFile` are fed from a
+    // `MarkdownView`, which a `.canvas` never is, and the R10 text fallback runs
+    // through `BackgroundSync.subscribe`, never through an editor binding.
+    //
+    // The early return takes the same shape as the `!docHandle` one below: drop
+    // the awareness reference and reconfigure the compartment to EMPTY, so a
+    // previous file's binding is never left live over the canvas.
+    if (skipsAutoTextSync(filePath)) {
       this.currentAwareness = null;
       view.dispatch({ effects: this.compartment.reconfigure([]) });
       return;

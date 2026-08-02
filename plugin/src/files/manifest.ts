@@ -15,6 +15,7 @@ import {
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
+import { isSidecarPath } from "./canvas-sidecar";
 import type { ExclusionManager } from "./exclusion";
 
 export interface FileEntry {
@@ -23,6 +24,14 @@ export interface FileEntry {
   mtime: number;
   binary?: boolean;
   directory?: boolean;
+  /**
+   * WP27 — the `path -> guid` half of AC1.
+   *
+   * An ATTRIBUTE of the path's entry, never a second keyspace: the manifest
+   * stays keyed by canonical path, and `renameFile` (which re-keys the whole
+   * entry object) therefore carries the guid with it for free.
+   */
+  guid?: string;
 }
 
 async function hashBuffer(buf: ArrayBuffer): Promise<string> {
@@ -34,6 +43,11 @@ async function hashBuffer(buf: ArrayBuffer): Promise<string> {
 
 function hashContent(content: string): Promise<string> {
   return hashBuffer(new TextEncoder().encode(content).buffer);
+}
+
+/** WP27 — carry an existing entry's guid onto a freshly rebuilt one. */
+function carryGuid(next: FileEntry, previous: FileEntry | undefined): FileEntry {
+  return previous?.guid ? { ...next, guid: previous.guid } : next;
 }
 
 export class ManifestManager {
@@ -120,7 +134,11 @@ export class ManifestManager {
       for (const [filePath, fileEntry] of entries) {
         const existing = this.manifest?.get(filePath);
         if (existing && existing.hash === fileEntry.hash) continue;
-        this.manifest?.set(filePath, fileEntry);
+        // WP27: the guid is IDENTITY, not content. Every writer here rebuilds
+        // the entry from what it just read off disk, so the mapping has to be
+        // carried across explicitly or a single content republish would strand
+        // every peer that resolves this path through the manifest.
+        this.manifest?.set(filePath, carryGuid(fileEntry, existing));
       }
     });
   }
@@ -138,6 +156,17 @@ export class ManifestManager {
 
     for (const [path, entry] of entries) {
       if (!isPathSafe(path)) continue;
+      // WP26 AC1+AC2 — a sidecar entry can only get here because some OTHER
+      // client published it (a legacy peer, or a hostile one); nothing local
+      // ever adds one, because `isSharedPath` below refuses it. Placed at the
+      // TOP of the loop, ahead of everything, because the `.canvas` skip further
+      // down covers exactly one of the three branches: the directory branch runs
+      // BEFORE it, and its `!entry.binary &&` prefix lets a binary entry past —
+      // and `.yhistory` / `.ycheckpoint` are not text extensions, so a published
+      // sidecar file is marked binary by `publishManifest`, which makes that the
+      // likely leak rather than a corner case. Unconditional, in particular NOT
+      // gated on `skipText`: only one of the six call sites passes that option.
+      if (isSidecarPath(path)) continue;
 
       const diskPath = toLocalPath(path);
       if (entry.directory) {
@@ -266,21 +295,77 @@ export class ManifestManager {
         this.manifest.delete(parentDir);
       }
     }
+    const previous = this.manifest.get(canonical);
     if (content instanceof ArrayBuffer) {
-      this.manifest.set(canonical, {
-        hash: await hashBuffer(content),
-        size: content.byteLength,
-        mtime: file.stat.mtime,
-        binary: true,
-      });
+      this.manifest.set(
+        canonical,
+        carryGuid(
+          {
+            hash: await hashBuffer(content),
+            size: content.byteLength,
+            mtime: file.stat.mtime,
+            binary: true,
+          },
+          previous,
+        ),
+      );
     } else {
       const normalized = normalizeLineEndings(content);
-      this.manifest.set(canonical, {
-        hash: await hashContent(normalized),
-        size: normalized.length,
-        mtime: file.stat.mtime,
-      });
+      this.manifest.set(
+        canonical,
+        carryGuid(
+          {
+            hash: await hashContent(normalized),
+            size: normalized.length,
+            mtime: file.stat.mtime,
+          },
+          previous,
+        ),
+      );
     }
+  }
+
+  /**
+   * WP27 AC1 — publish the `path -> guid` mapping for a canvas.
+   *
+   * Creates a MINIMAL entry when the path has none yet: the mapping has to be
+   * publishable before the file's content ever reaches `publishManifest`, and a
+   * zero-hash placeholder is replaced by the first real content write (which
+   * carries the guid across through {@link carryGuid}).
+   *
+   * A BLANK guid CLEARS the mapping instead of storing one. That is the one
+   * spelling `CanvasIdentityStore.unbind` has available — its dependency is
+   * `Pick<ManifestManager, "getCanvasGuid" | "setCanvasGuid">` (WP27 §7.0) — and
+   * an empty guid is not an identity in any case: `canvasDocId` refuses it.
+   * Clearing leaves the entry itself alone; a rename must not delete the old
+   * path's content entry, only its claim on the identity.
+   */
+  setCanvasGuid(rawPath: string, guid: string): void {
+    if (!this.manifest || !this.docHandle) return;
+    const canonical = toCanonicalPath(normalizePath(rawPath));
+    const usable = typeof guid === "string" && guid.trim().length > 0;
+    const existing = this.manifest.get(canonical);
+    if (!usable) {
+      if (!existing?.guid) return;
+      const { guid: _dropped, ...rest } = existing;
+      this.manifest.set(canonical, rest);
+      return;
+    }
+    if (existing?.guid === guid) return;
+    this.manifest.set(
+      canonical,
+      existing
+        ? { ...existing, guid }
+        : { hash: "", size: 0, mtime: 0, guid },
+    );
+  }
+
+  /** WP27 AC1 — the `path -> guid` lookup. `null` when the path has no mapping. */
+  getCanvasGuid(rawPath: string): string | null {
+    if (!this.manifest) return null;
+    const entry = this.manifest.get(toCanonicalPath(normalizePath(rawPath)));
+    const guid = entry?.guid;
+    return typeof guid === "string" && guid.trim().length > 0 ? guid : null;
   }
 
   removeFile(path: string): void {
@@ -301,9 +386,27 @@ export class ManifestManager {
     const normNew = toCanonicalPath(normalizePath(newPath));
     const fileEntry = this.manifest.get(normOld);
     if (fileEntry) {
+      // WP26 AC1 — the one manifest WRITER that does not consult `isSharedPath`.
+      // Guarding the membership predicate constrains every writer that ASKS it
+      // (`publishManifest` via `getSharedFiles`, `updateFile`, `addFolder`); this
+      // method asks nothing and re-keys an existing entry directly, so it needs
+      // its own guard. It is reachable: `vault-events.ts`'s rename handler admits
+      // the event when EITHER side is shared, so moving an ordinary shared note
+      // into the sidecar directory arrives here with a shared `normOld` and a
+      // sidecar `normNew`, and would publish the entry under the sidecar key.
+      //
+      // Destination only, exactly like `BackgroundSync.onFileRenamed` guards
+      // `normNew` alone: the delete and the `releaseDoc` below must still happen,
+      // because a file moved INTO the sidecar directory has left the shared tree
+      // and its old key must go with it. Guarding `normOld` as well would instead
+      // strand the stale entry forever, and would block the legitimate reverse
+      // direction (a file recovered OUT of the sidecar directory is an ordinary
+      // note again — there is no entry under a sidecar key to move, so that case
+      // falls out of `manifest.get(normOld)` returning undefined on its own).
+      const admitsDestination = !isSidecarPath(normNew);
       this.docHandle.doc.transact(() => {
         this.manifest?.delete(normOld);
-        this.manifest?.set(normNew, fileEntry);
+        if (admitsDestination) this.manifest?.set(normNew, fileEntry);
       });
     }
     if (syncManager) {
@@ -318,6 +421,24 @@ export class ManifestManager {
 
   isSharedPath(rawPath: string): boolean {
     const path = toCanonicalPath(normalizePath(rawPath));
+    // WP26 AC1 — the SECOND, independent gate: manifest MEMBERSHIP. This is the
+    // only thing standing between a local sidecar file and `publishManifest` /
+    // `updateFile` / `addFolder`, and it is a different question from the
+    // text-sync skip (which is why the guard is `isSidecarPath` and not
+    // `skipsAutoTextSync` — an ordinary `.canvas` must stay shared).
+    //
+    // Deliberately NOT expressed as an `ExclusionManager` pattern. That gate
+    // excludes the sidecar today only by COINCIDENCE: `setPatterns` prepends
+    // `${configDir}/**` and the sidecar happens to live under the DEFAULT
+    // config dir. Three configurations break the coincidence — no
+    // `ExclusionManager` installed at all, a non-default `app.vault.configDir`
+    // (the sidecar directory is a fixed literal and does not follow it), and a
+    // `sharedFolder` pointing into the config directory. A pattern injected into
+    // `ExclusionManager` would also be rebuilt away by the next `setPatterns`
+    // call on any settings save. Owned here instead: `isExcluded` has exactly
+    // one consumer (the line below), so this placement is strictly wider and
+    // cannot drift.
+    if (isSidecarPath(path)) return false;
     if (this.exclusionManager?.isExcluded(path)) return false;
     if (!this.settings.sharedFolder) return true;
     const folder = normalizePath(

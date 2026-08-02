@@ -75,8 +75,12 @@ function createVault() {
     read: vi.fn(async () => ""),
     readBinary: vi.fn(async () => new ArrayBuffer(0)),
     modify: vi.fn(async () => {}),
-    create: vi.fn(async () => ({})),
-    createFolder: vi.fn(async () => ({})),
+    // Parameter signatures are declared so the recorded `mock.calls` are typed
+    // (`vi.fn(async () => …)` infers a ZERO-arity mock, whose `calls[i][0]` does
+    // not typecheck). Bodies, return values and arity at the call site are
+    // unchanged — the arguments are ignored here exactly as before.
+    create: vi.fn(async (_path: string, _data: string) => ({})),
+    createFolder: vi.fn(async (_path: string) => ({})),
   };
 }
 
@@ -91,7 +95,9 @@ function createMockSyncManager() {
       const entry = docs.get(path)!;
       return { doc: entry.doc, text: entry.text, awareness: { destroy: vi.fn() } };
     }),
-    waitForSync: vi.fn(async () => {}),
+    // Signature declared for the same reason as `create` / `createFolder` above:
+    // `waitForSync.mock.calls` is read positionally at the end of this file.
+    waitForSync: vi.fn(async (_path: string) => {}),
     releaseDoc: vi.fn(),
     _docs: docs,
   };

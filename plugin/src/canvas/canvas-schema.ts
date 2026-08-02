@@ -103,6 +103,40 @@ export const META_MAP_NAME = "meta";
 /** The `meta` key carrying the doc's schema version. */
 export const SCHEMA_VERSION_KEY = "schemaVersion";
 
+// ── WP27 / P2 — the three IDENTITY keys (Shared Ownership Contract §1) ──────
+//
+// They live here, beside `META_MAP_NAME` and `SCHEMA_VERSION_KEY`, because this
+// module owns the `meta` container and every key in it. WP25, WP28 and WP30
+// IMPORT them; the strings `"guid"`, `"path"` and `"epoch"` are never inlined at
+// a call site.
+
+/** The `meta` key carrying the doc's stable identity. */
+export const GUID_KEY = "guid";
+
+/** The `meta` key carrying the canvas file's current vault path. */
+export const PATH_KEY = "path";
+
+/**
+ * The `meta` key carrying the doc's epoch.
+ *
+ * WP27 DEFINES this constant; WP28 owns its SEMANTICS (Shared Ownership
+ * Contract §2). Nothing in this module or in WP27's code compares, increments or
+ * conflict-resolves an epoch — WP27 declares the key and stamps an initial
+ * value, and that is the whole of its remit.
+ */
+export const EPOCH_KEY = "epoch";
+
+/**
+ * The `meta` keys that carry IDENTITY rather than a SCHEMA CLAIM.
+ *
+ * Read {@link migrateV1ToV2}'s guard for why this distinction has to exist at
+ * all: identity is stamped at SUBSCRIBE time and the migration runs later, so a
+ * marker that counted the identity keys would be armed before the translation
+ * had run. This module's own header already anticipated it — the migration "must
+ * remain safe to run on a doc that already carries them".
+ */
+const IDENTITY_KEYS: readonly string[] = [GUID_KEY, PATH_KEY, EPOCH_KEY];
+
 /**
  * The schema major this client speaks.
  *
@@ -158,6 +192,35 @@ function readMeta(doc: Y.Doc): Y.Map<unknown> | undefined {
   if (!doc.share.has(META_MAP_NAME)) return undefined;
   const meta = doc.getMap<unknown>(META_MAP_NAME);
   return meta.size > 0 ? meta : undefined;
+}
+
+/**
+ * Is this doc already MIGRATED — i.e. does `meta` carry a schema claim?
+ *
+ * The one-shot marker, and it is deliberately NOT the same question as
+ * {@link readMeta}. A doc that carries only the P2 IDENTITY keys
+ * (`guid` / `path` / `epoch`) has been NAMED, not TRANSLATED: WP27 stamps those
+ * three at subscribe time, while the migration runs later inside
+ * `CanvasPersistence.coldOpen`. Counting them as the marker would arm it before
+ * the translation had run and leave every V1-shaped doc untranslated forever —
+ * no `schemaVersion`, no `pos`/`size` registers, no `ord`, nothing thrown and
+ * every convergence oracle green.
+ *
+ * Any OTHER key in `meta` — `schemaVersion` above all — still marks the doc as
+ * one this migration has already had its one shot at, so AC3's zero-delta
+ * property is unchanged for every doc that has actually been migrated.
+ *
+ * Side-effect-free for the same reason `readMeta` is: `doc.getMap` is reached
+ * only after the registration has been probed, so asking the question cannot
+ * change the answer to the next one.
+ */
+function hasSchemaClaim(doc: Y.Doc): boolean {
+  if (!doc.share.has(META_MAP_NAME)) return false;
+  const meta = doc.getMap<unknown>(META_MAP_NAME);
+  for (const key of meta.keys()) {
+    if (!IDENTITY_KEYS.includes(key)) return true;
+  }
+  return false;
 }
 
 /** How a stored `schemaVersion` reads. */
@@ -359,7 +422,8 @@ export const CANVAS_MIGRATION_ORIGIN: unique symbol = Symbol("canvas-migration-o
  * ONE transaction, so a peer or a persistence observer sees the migrated doc or
  * the original one and never a half-translated record (AC2).
  *
- * The presence of `meta` IS the migration marker, and the guard sits before
+ * A SCHEMA CLAIM in `meta` is the migration marker ({@link hasSchemaClaim} —
+ * the P2 identity keys are not one), and the guard sits before
  * `doc.transact` rather than inside it: a second call opens no transaction,
  * fires no `update` event and produces zero delta (AC3). "Same values" would not
  * be enough — Yjs emits a real update for a same-value LWW `set`, and that
@@ -377,7 +441,7 @@ export const CANVAS_MIGRATION_ORIGIN: unique symbol = Symbol("canvas-migration-o
  * `origin === this` skip — changes behaviour because of it.
  */
 export function migrateV1ToV2(doc: Y.Doc): void {
-  if (readMeta(doc) !== undefined) return;
+  if (hasSchemaClaim(doc)) return;
 
   doc.transact(() => {
     doc.getMap<unknown>(META_MAP_NAME).set(SCHEMA_VERSION_KEY, SUPPORTED_SCHEMA_MAJOR);

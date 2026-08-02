@@ -1,5 +1,7 @@
 import { Platform, TFile, TFolder, type Vault } from "obsidian";
 
+import { isSidecarPath } from "./files/canvas-sidecar";
+
 export const VAULT_EVENT_SETTLE_MS = 250;
 
 const WIN_CHAR_MAP: [string, string][] = [
@@ -226,22 +228,37 @@ export function isTextFile(path: string): boolean {
 }
 
 /**
- * WP6 / US5 AC1+AC2 — the ONE `.canvas` skip for every automatic raw-text sync
- * path. Lives here, beside `isTextFile`, because it is the exception to it:
- * `"canvas"` IS in `TEXT_EXTENSIONS` (a canvas is JSON text on disk) but a
- * `.canvas` is owned by `CanvasSync`, which syncs it as a structured
- * nodes/edges document.
+ * WP6 / US5 AC1+AC2 and WP26 AC1/AC3/AC4 — the ONE skip for every automatic
+ * raw-text sync path. Two disjoint clauses, one predicate, one definition.
+ *
+ * CLAUSE 1 — `.canvas` (WP6 / US5). Lives here, beside `isTextFile`, because it
+ * is the exception to it: `"canvas"` IS in `TEXT_EXTENSIONS` (a canvas is JSON
+ * text on disk) but a `.canvas` is owned by `CanvasSync`, which syncs it as a
+ * structured nodes/edges document.
  *
  * Without this skip a shared canvas ALSO gets a raw-`Y.Text` document of the
  * same bytes — a second CRDT for a path `CanvasSync` already owns, whose
  * character-level merge destroys edge endpoints.
+ *
+ * CLAUSE 2 — the sidecar state directory (WP26). Everything under it is LOCAL
+ * REPLICA STATE (per-doc update history, checkpoints, the guid index) and must
+ * never become shared content. The membership test is `isSidecarPath` from
+ * `files/canvas-sidecar.ts`, which WP24 owns; this module IMPORTS it and never
+ * re-spells the directory, never writes its own prefix or suffix test and never
+ * adds a second constant. It is a DIRECTORY test, not an extension test, so a
+ * future sidecar file type is covered without touching this line.
+ *
+ * The two clauses are disjoint — no `.canvas` path is a sidecar path — so
+ * neither one widens or narrows the other, and the `.canvas` behaviour is
+ * exactly what it was before clause 2 existed (WP26 AC4).
  *
  * Every caller that would AUTOMATICALLY install or consume a bare-path
  * `Y.Text` must consult this predicate:
  *
  *   files/background-sync.ts  startAll  ..... manifest replay
  *                             onFileAdded ... vault create
- *                             onFileRenamed . vault rename INTO a .canvas
+ *                             onFileRenamed . vault rename INTO a .canvas or
+ *                                             into the sidecar directory
  *   files/manifest.ts         syncFromManifest text branch — join / resume /
  *                             reconnect / reload-from-host
  *
@@ -249,14 +266,65 @@ export function isTextFile(path: string): boolean {
  * private copies of `path.endsWith(".canvas")` is exactly how this defect class
  * propagated (a guard added at one of N call sites).
  *
+ * WP26's exclusion additionally has FOUR seams this predicate must NOT serve,
+ * because at each of them a `.canvas` has to keep passing. They call
+ * `isSidecarPath` directly.
+ *
+ * The CONSUMER LIST is the indented block below, and it is exhaustive in both
+ * directions: every production call site of `isSidecarPath`, other than this
+ * predicate itself and its owning module `files/canvas-sidecar.ts`, appears as a
+ * row; and every row is a real call site. Each row is `<module>  <function>`.
+ *
+ * Every `.ts` name appearing ANYWHERE in this comment is therefore either a row
+ * below, that owning module, or this file. Other components are referred to by
+ * ROLE rather than by filename — deliberately, so the consumer set can be read
+ * off mechanically without disambiguating prose. Do not "helpfully" restore a
+ * filename to the reasoning below: a bare filename here is exactly the ambiguity
+ * that let this defect recur twice, with two different modules (WP26 AC3):
+ *
+ *   files/background-sync.ts  handleLocalTextModify
+ *   files/manifest.ts         syncFromManifest
+ *   files/manifest.ts         isSharedPath
+ *   files/manifest.ts         renameFile
+ *
+ * Why each of the four, and why it takes the sidecar predicate alone rather than
+ * this one:
+ *
+ *   handleLocalTextModify  AC2's "modifying" verb. Guarding it with THIS
+ *                          predicate would make the announced R10 text fallback
+ *                          read-only for local edits, because the VAULT EVENT
+ *                          ROUTER — the module registering the vault `modify`
+ *                          handler — deliberately routes a `.canvas` that
+ *                          CanvasSync does not own into it, immediately after
+ *                          emitting the fallback warning. That router is the
+ *                          CALLER of this seam and consults neither predicate
+ *                          itself, so it is named by role, not by filename.
+ *   syncFromManifest       Guarded at the TOP of the entry loop, ahead of the
+ *                          directory and binary branches, which the `.canvas`
+ *                          skip further down never reaches.
+ *   isSharedPath           The manifest MEMBERSHIP gate — a second and wholly
+ *                          independent gate, which must keep admitting ordinary
+ *                          `.canvas` files.
+ *   renameFile             The one manifest WRITER that does not consult
+ *                          `isSharedPath`; it re-keys an entry directly, so the
+ *                          membership gate cannot constrain it. Destination side
+ *                          only.
+ *
+ * Readers are constrained by `isSharedPath`; writers are not, unless they ask it.
+ * `publishManifest` (via `getSharedFiles`), `updateFile` and `addFolder` all ask
+ * and so need no guard of their own; `renameFile` does not ask and therefore has
+ * one. The remaining manifest mutations are deletions and cannot admit a path.
+ *
  * `BackgroundSync.subscribe()` is the ONE place that does NOT consult it: it is
  * the explicit door of the announced R10 text fallback (BUILD_SPEC § 6.1
  * TEXT-OWNED), entered only by `subscribeCanvasWithHandover` after a
  * `CanvasSync` subscribe genuinely FAILED — i.e. precisely when `CanvasSync`
  * does not own the path. That keeps the fallback exclusive, never concurrent.
+ * WP26 leaves that door open on purpose (closing it is WP33's); it is made
+ * unreachable for a sidecar path by the guards on its callers instead.
  */
 export function skipsAutoTextSync(path: string): boolean {
-  return path.endsWith(".canvas");
+  return path.endsWith(".canvas") || isSidecarPath(path);
 }
 
 export function arrayBufferToBase64(buf: ArrayBuffer): string {

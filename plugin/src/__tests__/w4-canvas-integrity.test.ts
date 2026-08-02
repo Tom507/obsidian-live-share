@@ -48,6 +48,37 @@ import { canvasOwned, registerVaultEvents } from "../files/vault-events";
 import { BackgroundSync } from "../files/background-sync";
 import { ManifestManager } from "../files/manifest";
 
+// ---------------------------------------------------------------------------
+// WP27 AC4 (Dispatcher-licensed amendment) — the GUARD-CONSULT recorder.
+//
+// M1 and K5 below pin that the two bare-path `getDoc` sites are guarded. "The
+// `getDoc` did not happen" is on its own a WEAKER claim than what those two
+// tests pinned before the amendment: it is also true of a broken harness, a
+// renamed method, or an early return somewhere upstream. So the guard itself
+// has to be observable, not only its effect.
+//
+// `skipsAutoTextSync` (`utils.ts`) is the ONE predicate both AC4 sites consult
+// (Shared Ownership Contract §5 / charter §7.0(c) — no private
+// `endsWith(".canvas")` copy exists at either site). This wrapper DELEGATES to
+// the real predicate, so behaviour is byte-identical for every other test in
+// this file, and records each consult into a plain array that the file-wide
+// `vi.restoreAllMocks()` cannot reset. Each consumer clears it immediately
+// before driving the site under test.
+// ---------------------------------------------------------------------------
+const guardConsults = vi.hoisted(() => [] as { path: string; verdict: boolean }[]);
+
+vi.mock("../utils", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../utils")>();
+  return {
+    ...actual,
+    skipsAutoTextSync: (path: string): boolean => {
+      const verdict = actual.skipsAutoTextSync(path);
+      guardConsults.push({ path, verdict });
+      return verdict;
+    },
+  };
+});
+
 const PATH = "board.canvas";
 
 afterEach(() => {
@@ -1591,10 +1622,20 @@ describe("W4 REVALIDATION K — manifest.syncFromManifest, the 4th entry point",
 // are already subscribed, so they cannot originate a canvas doc". M1 tests that
 // claim for `setActiveFile`, whose path comes from `main.ts`'s `sharedPath`
 // (which passes `isTextFile`, TRUE for `.canvas`) — NOT from the subscribed set.
+//
+// WP27 AC4 — AMENDED under a Dispatcher licence. M1's finding was correct WHEN
+// WRITTEN: `setActiveFile` was a second unguarded bare-path `getDoc` and W3's
+// sweep claim was incomplete. WP27 AC4 closed exactly that hole ("the two
+// unguarded bare-path `getDoc` call sites can no longer create or reach a
+// canvas doc, verified by an explicit test rather than by a reachability
+// argument"), which makes the ORIGINAL assertion a characterisation of a defect
+// that no longer exists. M1 is therefore re-pointed at the guard rather than
+// deleted: it is now a second, independent pin on AC4 from a file WP27 does not
+// own. The hole is CLOSED — do not read the paragraph above as a live finding.
 // ===========================================================================
 
 describe("W4 REVALIDATION M — is collab.ts:62 really the last unguarded bare-path getDoc?", () => {
-  it("M1 setActiveFile acquires a bare-path doc for a .canvas that was never subscribed", async () => {
+  it("M1 setActiveFile GUARDS the bare-path getDoc for a .canvas that was never subscribed", async () => {
     const vault = createVault({ [PATH]: canvasJson([], []) });
     const syncManager = createSyncManager();
     const fileOps = createRealFileOps();
@@ -1616,16 +1657,25 @@ describe("W4 REVALIDATION M — is collab.ts:62 really the last unguarded bare-p
 
     // Nothing was ever subscribed. Simulate main.ts's onActiveFileChange:
     // the user is "on" the canvas, then switches to a note.
+    guardConsults.length = 0;
     bg.setActiveFile(PATH);
     bg.setActiveFile("notes/other.md");
 
     const reached = getDoc.mock.calls.map((c) => c[0]).includes(PATH);
     expect(
       reached,
-      "setActiveFile is a SECOND unguarded bare-path getDoc, not gated on subscription — " +
-        "W3's sweep claim is incomplete. Reachable only if a .canvas can become activeFile, " +
-        "which main.ts's getActiveViewOfType(MarkdownView) gate prevents (untested).",
-    ).toBe(true);
+      "setActiveFile handed the .canvas path to getDoc — WP27 AC4's guard on the " +
+        "de-activation branch is gone, and a raw Y.Text doc is created for a path " +
+        "CanvasSync owns structurally (R5).",
+    ).toBe(false);
+    // The guard, not the absence of a call, is the oracle. Without this, the
+    // assertion above would also be satisfied by setActiveFile never running.
+    expect(
+      guardConsults.filter((c) => c.path === PATH).map((c) => c.verdict),
+      "setActiveFile never consulted `skipsAutoTextSync` for the .canvas path, so " +
+        "`reached === false` above is not evidence of AC4's guard — it is only evidence " +
+        "that the call did not happen (broken harness, renamed method, or an earlier return).",
+    ).toEqual([true]);
     bg.destroy();
     fileOps.destroy();
   });
@@ -1665,7 +1715,14 @@ describe("W4 REVALIDATION M — is collab.ts:62 really the last unguarded bare-p
 });
 
 describe("W4 REVALIDATION K — editor/collab.ts reachability for .canvas", () => {
-  it("K5 CollabManager has no internal .canvas guard — protection is main.ts's MarkdownView gate", async () => {
+  // WP27 AC4 — AMENDED under a Dispatcher licence. K5's original finding was
+  // correct when written: `CollabManager` had NO internal `.canvas` guard and was
+  // protected only by `main.ts`'s `getActiveViewOfType(MarkdownView)` gate, which
+  // no test covered. AC4 required that reachability argument to be replaced by a
+  // real guard, and WP27 added one at `editor/collab.ts` immediately before the
+  // `getDoc`. K5 is re-pointed at that guard rather than deleted, so it stays a
+  // second, independent pin on AC4 from a file WP27 does not own.
+  it("K5 CollabManager HAS an internal .canvas guard — protection no longer relies on main.ts's MarkdownView gate", async () => {
     const { CollabManager } = await import("../editor/collab");
     const syncManager = createSyncManager();
     const getDoc = vi.spyOn(syncManager, "getDoc");
@@ -1679,6 +1736,7 @@ describe("W4 REVALIDATION K — editor/collab.ts reachability for .canvas", () =
     // The thin double throws further downstream (it is not a real CodeMirror
     // view); that is irrelevant — the question is whether the bare-path doc was
     // acquired BEFORE that point.
+    guardConsults.length = 0;
     try {
       await cm.activateForFile(fakeView as never, PATH, syncManager as never, "guest");
     } catch {
@@ -1688,10 +1746,19 @@ describe("W4 REVALIDATION K — editor/collab.ts reachability for .canvas", () =
     const reached = getDoc.mock.calls.map((c) => c[0]).includes(PATH);
     expect(
       reached,
-      "CollabManager has NO internal .canvas guard — it acquires a bare-path Y.Text doc for " +
-        "a .canvas if ever called with one. Currently unreachable ONLY because main.ts gates on " +
-        "getActiveViewOfType(MarkdownView), which no test covers.",
-    ).toBe(true);
+      "CollabManager acquired a bare-path Y.Text doc for a .canvas — WP27 AC4's guard in " +
+        "activateForFile is gone, and a character-level CRDT is about to be bound over a " +
+        "document CanvasSync owns structurally (R5).",
+    ).toBe(false);
+    // The guard, not the absence of a call, is the oracle. Without this, the
+    // assertion above would also be satisfied by activateForFile returning early
+    // for an unrelated reason (a null path, a changed signature, a thrown double).
+    expect(
+      guardConsults.filter((c) => c.path === PATH).map((c) => c.verdict),
+      "activateForFile never consulted `skipsAutoTextSync` for the .canvas path, so " +
+        "`reached === false` above is not evidence of AC4's guard — it is only evidence " +
+        "that the call did not happen.",
+    ).toEqual([true]);
   });
 });
 
