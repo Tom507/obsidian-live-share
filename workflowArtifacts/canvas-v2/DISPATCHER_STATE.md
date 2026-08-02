@@ -54,7 +54,32 @@
 | PHASE VI — verification integrity | WP55–WP58, WP62, WP64, WP67 | ✅ done |
 | Open | WP59 ✅ · WP65 ⬜ · WP66 ⬜ · **WP68 ⬜ (chartered 2026-08-02)** | see queue |
 
-**Chartered total: 69 WPs** (→ **70** once WP70 lands; a Worker 2 instance is chartering it now).
+**Chartered total: 70 WPs.**
+
+### ⚠ CONFIRMED LIVE — a gate run would trash the owner's vault files
+
+Verified in the current tree by the Dispatcher, then measured on this host:
+
+```
+manifest.ts:445   if (!this.settings.sharedFolder) return true;   ← empty ⇒ WHOLE VAULT shared
+main.ts:471       guest role → cleanupStaleFiles()
+main.ts:523-540   trashFile()s every shared local file absent from the host's manifest
+```
+
+**Both vaults have `sharedFolder = ""`** (emptiness checked; the value was never read). So a gate run
+with vault B as guest trashes everything in B that is not in the host's manifest. `trashFile` is
+recoverable and the owner has declared both vaults expendable — but this is why **WP70 pinning
+`sharedFolder` to the rig-owned `_e2e-rig` is a data-safety requirement, not a convenience.**
+It is not to be relaxed for convenience later.
+
+### Identity keys — measured by hash, values never read (retires two risks)
+
+| key | A vs B | consequence |
+|---|---|---|
+| `encryptionPassphrase`, `encryptionSalt` | **both empty ⇒ agree** | the decrypt-mismatch failure mode does **not** exist — risk retired |
+| `clientId` | **differ** | the identical-client risk does **not** exist — risk retired |
+| `roomId` | both empty | nothing is provisioned; confirms a room must be minted (WP70) |
+| `serverUrl` | identical | both point at the same relay today; WP70 repoints to local |
 <!-- was miscounted as 66; WP65 was never counted in the 64→66 step. 68 = +WP68, 69 = +WP69. -->
 
 ### T3 gate — newly chartered, must run in this order
@@ -62,7 +87,7 @@
 | WP | What | Why it exists |
 |---|---|---|
 | **WP69** | one-shot `e2e` build mode + install into both vaults | the only E2E-capable build never terminates; the install step was unowned |
-| **WP70** | settings provisioning + local relay lifecycle | *being chartered* — without it the gate is vacuous (see below) |
+| **WP70** | settings provisioning + local relay lifecycle | chartered — without it the gate is vacuous **and unsafe** (see above) |
 | WP50 / WP51 | run matrix · stale-view scenario surface | amended for the pre-flight |
 | WP7 | the gate itself | **was pointing at the mock rig's ports** — corrected |
 
@@ -124,6 +149,21 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
   path reaching a vault write is protected by `isSharedPath`/`isSidecarPath` and by nothing else.
   This is the trap for any newly added op type.
 - ~~`TaskCharter_WP67` status field stale~~ — **discharged**, flipped to `DONE`.
+- **WP27's measured §7 row is owed.** The licence is granted and recorded; the *measured* row (post-
+  amendment strictness, falsification result, executed count) was deliberately withheld until B4
+  reports what was actually done. **Owner: Worker 2, one instance, nobody else** — this is the exact
+  overlap that already cost a reconciliation once.
+- **WP69 and WP70 both add constants to `constants.py`.** No other file overlap, but if they run in the
+  same batch this is a rule-10 hazard. The batch's shared-ownership contract must name who writes
+  which block.
+- **Relay binds on all interfaces** — `server.listen(port)` with no host argument
+  (`server/src/index.ts:236`). Accept for the run, or charter a `server/` change under a WP permitted
+  to touch it (§7 makes `server/` edits outside WP41 an abort criterion). **Undecided.**
+- **Windows graceful relay shutdown is unverified.** The server's only shutdown channel is
+  SIGTERM/SIGINT, so C70 AC3 defines "stopped" as *the port refuses a connection*, not *terminate
+  returned*. Whether a clean shutdown is achievable on this host has not been tested.
+- **Guest `cleanupStaleFiles` will trash rig-owned scratch files** absent from the manifest, including
+  one left by a crashed run — this touches WP47 AC4's stale-scratch reclaim. Noted in WP70, not fixed.
 - **`TaskCharter_WP64` and `TaskCharter_WP59` also read `SPEC_COMPLETE` while apparently closed.**
   Not verified against their handovers; only WP67 was checked. Needs a sweep, not a guess.
 - **Install-then-launch ordering is implied everywhere and stated nowhere.** Replacing `main.js` under

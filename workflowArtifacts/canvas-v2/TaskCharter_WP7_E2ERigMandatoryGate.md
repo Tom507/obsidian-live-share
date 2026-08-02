@@ -31,7 +31,7 @@
   - Enabling `useCanvasBinding`.
   - Any relay deployment; the rig runs against a local relay.
 - **Known interfaces / dependencies:**
-  - Input: two Obsidian hosts against one local relay room (ports 39421/39422)
+  - Input: two real Obsidian hosts, each with an E2E control endpoint on `REAL_CONTROL_PORT_A/B` = **39431 / 39432** (`tools/obsidian_e2e/constants.py:75-76`), against one room on the **rig-started local relay** whose port WP70 defines as a constant. <!-- Updated: corrected 2026-08-02 — this line previously read "ports 39421/39422", which are HEADLESS_RIG_PORT_A/B, i.e. the headless MOCK rig. Following it verbatim would have driven the mock and recorded a green gate that never touched real Obsidian — the exact substitution AC5 exists to prevent. Import the constants; spell no literal. -->
   - Output: a recorded, reproducible green run plus a documented invocation
   - Depends on work packages: WP4, WP5, WP50, WP51, **WP69**
   - <!-- Updated: T3 2026-08-01 --> **"Two Obsidian hosts" now means two real Obsidian instances**, delivered by BUILD_SPEC §5 PHASE T3 (WP43–WP51): `H:\Developement\_NeuralAngels\ObsidianOrga` as role `a` and `H:\Developement\_NeuralAngels\ObsidianOrga - Kopie` as role `b`. The control port is provisioned per vault through the plugin's persisted setting, not through a process environment variable (D14) — both vault windows may share one Obsidian process, so `process.env` cannot differ between them.
@@ -46,7 +46,7 @@
 
 - **Component(s) being changed:** E2E rig promoted to a mandatory gate
 - **Interfaces involved:**
-  - Input: two Obsidian hosts against one local relay room (ports 39421/39422)
+  - Input: two real Obsidian hosts, each with an E2E control endpoint on `REAL_CONTROL_PORT_A/B` = **39431 / 39432** (`tools/obsidian_e2e/constants.py:75-76`), against one room on the **rig-started local relay** whose port WP70 defines as a constant. <!-- Updated: corrected 2026-08-02 — this line previously read "ports 39421/39422", which are HEADLESS_RIG_PORT_A/B, i.e. the headless MOCK rig. Following it verbatim would have driven the mock and recorded a green gate that never touched real Obsidian — the exact substitution AC5 exists to prevent. Import the constants; spell no literal. -->
   - Output: a recorded, reproducible green run plus a documented invocation
 - **Constraints from BUILD_SPEC (invariants — what must not change):**
   - Invariants I1–I5 (`ARCHITECTURE.md`) and I6–I10 (CONCEPT_V2 Teil 3) are binding and must not be weakened.
