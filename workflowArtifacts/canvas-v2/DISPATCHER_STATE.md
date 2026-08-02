@@ -54,7 +54,20 @@
 | PHASE VI — verification integrity | WP55–WP58, WP62, WP64, WP67 | ✅ done |
 | Open | WP59 ✅ · WP65 ⬜ · WP66 ⬜ · **WP68 ⬜ (chartered 2026-08-02)** | see queue |
 
-**Chartered total: 68 WPs.** <!-- was miscounted as 66; WP65 was never counted in the 64→66 step -->
+**Chartered total: 69 WPs** (→ **70** once WP70 lands; a Worker 2 instance is chartering it now).
+<!-- was miscounted as 66; WP65 was never counted in the 64→66 step. 68 = +WP68, 69 = +WP69. -->
+
+### T3 gate — newly chartered, must run in this order
+
+| WP | What | Why it exists |
+|---|---|---|
+| **WP69** | one-shot `e2e` build mode + install into both vaults | the only E2E-capable build never terminates; the install step was unowned |
+| **WP70** | settings provisioning + local relay lifecycle | *being chartered* — without it the gate is vacuous (see below) |
+| WP50 / WP51 | run matrix · stale-view scenario surface | amended for the pre-flight |
+| WP7 | the gate itself | **was pointing at the mock rig's ports** — corrected |
+
+**WP69 must not start until B4 lands:** its AC2 takes a `npm run build` sha256 *before* the config change,
+and a before-bundle built while B4 is mid-write voids the comparison in both directions.
 
 ---
 
@@ -76,6 +89,23 @@
 
 ## Open items that must not be lost
 
+- **⚠ WP7 was pointing at the MOCK rig.** Its §2 named ports `39421`/`39422` — those are
+  `HEADLESS_RIG_PORT_A/B`. Real control is `REAL_CONTROL_PORT_A/B` = `39431`/`39432`, deliberately
+  disjoint per D13. An implementor following WP7 verbatim would have driven the headless mock and
+  recorded a **green gate that never touched real Obsidian** — the exact substitution WP7's own AC5
+  exists to prevent. Corrected to import the constants and spell no literal. **Standing lesson: the
+  gate's own charter is not exempt from the vacuity classes.**
+- **⚠ Vacuity hazard at the gate — the reason WP70 exists.** The scratch canvas lands at
+  `<vault>/_e2e-rig/…` (`constants.py:119`), but nothing establishes that `_e2e-rig` is inside the
+  **shared surface**, nor that both vaults agree on `roomId`/`serverUrl`/`sharedFolder`. If they do not,
+  every matrix case passes while syncing nothing. C50 AC5 is the **detector** (refuses `inconclusive`);
+  WP70 is the **provisioner**. Keep them distinct — a detector its own provisioner can satisfy
+  trivially is worthless.
+- **Dispatcher decision (binding): the gate runs against a LOCAL relay**, started and stopped by the
+  rig. `server/` runs under ordinary process control (`npm run build` → `npm start`). The owner
+  *authorised* deploying to the NeuralAngels box, but that is permission, not a requirement, and a
+  network dependency would inject exactly the flake this run has spent its length eliminating.
+  Remote-relay operation may later be a **non-gating** matrix case.
 - **⚠ The dev build has no one-shot mode — it will hang a gate batch.**
   `plugin/esbuild.config.mjs` branches on `argv[2] === "production"`: prod rebuilds and exits,
   **everything else calls `ctx.watch()` and never returns**. `npm run build` sets `__LS_E2E__=false`;
@@ -93,8 +123,18 @@
 - **`isPathSafe` does not exclude the config directory.** It rejects traversal only. Any peer-supplied
   path reaching a vault write is protected by `isSharedPath`/`isSidecarPath` and by nothing else.
   This is the trap for any newly added op type.
-- **`TaskCharter_WP67` status field is stale** — reads `SPEC_COMPLETE` while §7 is filled, the A/B is
-  measured and B17 closed it. Should be `DONE` per the template state machine.
+- ~~`TaskCharter_WP67` status field stale~~ — **discharged**, flipped to `DONE`.
+- **`TaskCharter_WP64` and `TaskCharter_WP59` also read `SPEC_COMPLETE` while apparently closed.**
+  Not verified against their handovers; only WP67 was checked. Needs a sweep, not a guess.
+- **Install-then-launch ordering is implied everywhere and stated nowhere.** Replacing `main.js` under
+  a running instance needs a plugin reload, and D15 forbids restarting an instance the rig did not
+  start. WP70 is chartering the sequence.
+- **Teardown grey area:** if the owner has Obsidian open on either vault, the rig's launches become
+  windows in a process it did not start (D14/D15). WP48 owns teardown of **rig-started** processes only;
+  window-level teardown inside a foreign process is undefined. Unresolved.
+- **`lan-vault-sync` may sync `.obsidian/plugins/**` between two vaults that are literal copies** — it
+  could mirror the E2E install into vault B, or revert the restore. Raises the stakes on the C50 AC5
+  disposition.
 - **`_B4_P2_running_notes.md:56` quotes the licensed-amendment list without WP64.** Harmless for B4
   (no WP in that batch is on either list) but it is a stale recall of a §7 list.
 - **Hollow-fixture class** — WP66. Literal grep is a *screen, not an oracle*: `text: ""` is valid,
