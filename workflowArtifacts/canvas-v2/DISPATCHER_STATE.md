@@ -231,6 +231,22 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 
 ---
 
+## Measured state — B4 in progress (reported by its sub-agents, tree not quiet)
+
+| | |
+|---|---|
+| Full plugin suite | **1687 passed / 0 failed** (283 files), reported at WP28 attempt 2 |
+| Arithmetic | 1470 (post-WP26) + 54 (WP27) + 59 (WP25) + 104 (WP28) = **1687** — reconciles exactly |
+| `tsc --noEmit -skipLibCheck` | clean |
+| B4 WP status | WP24 ✅ WP26 ✅ WP27 ✅ WP25 ✅ WP28 ✅ · WP29, WP30 remaining |
+
+**Open against B4, must not close without it:** WP28 claimed three `canvas-sync.ts` Biome findings
+pre-existing *by stashing its own diff* — which measures against its own edit, not the batch baseline.
+Rule 4 violation, same shape as the WP26 `TS2493` case. Must be re-established against
+`H:\tmp\liveshare_snap_B4_P2\snapshot_pre_B4.tgz` or the batch merge-base.
+
+---
+
 ## Measured state (last quiet measurement — taken before B4)
 
 | | |
@@ -269,5 +285,18 @@ the batch baseline, to be fixed without weakening the assertion before the batch
   named-intermittent register all agree with the charters that claim entries in them. B17's WP67
   discharge was *stricter* than ordered (kept the row verbatim + appended a discharge block rather than
   flipping it, per rule 5 above). Nothing re-applied.
+
+- **Permanent epoch freeze found and closed** (WP28) — `normalizeEpoch` used `Number.isInteger`, which
+  admits `2 ** 53`, where `n + 1 === n`. `nextEpoch`'s pinned *"strictly greater for every input"* was
+  therefore **false**, and one corrupt cell would have frozen a board's epoch forever, the only symptom
+  being that imports quietly stop winning. Now `Number.isSafeInteger`, with `nextEpoch` throwing at the
+  ceiling rather than returning an unbeatable value, and `bumpEpoch` computing it *before* opening its
+  transaction so a refusal cannot half-write `meta`. **Found by asking the path question of a non-path
+  export** — the generalisation, not the original defect, is what found it.
+- **Conflict-copy clobber found and closed** (WP28) — `conflictCopyPath` is deterministic and
+  day-granular, so a second conflict on the same board on the same day names the *same file*, and the
+  file already there is another loser's only copy. `writeConflictCopy` is now fail-closed: identical
+  body is an idempotent re-run, anything else throws, and the refusal cancels the adoption so nothing
+  is lost rather than one copy traded for another. I11-conformant; keep it that way.
 
 **Not yet true:** nothing has been exercised in real Obsidian. All greens are headless.
