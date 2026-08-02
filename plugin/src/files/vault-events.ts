@@ -208,6 +208,12 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
         if (plugin.settings.role === "host") {
           plugin.manifestManager.renameFile(oldPath, file.path, plugin.syncManager);
         }
+        // WP27 AC2, wired by WP25 (§7.0(e)): a rename is a METADATA UPDATE — the
+        // guid, the doc id and the `Y.Doc` are all unchanged. AFTER
+        // `renameFile`, which re-keys the manifest entry this then re-points.
+        // A path `CanvasSync` holds no identity for is a no-op, so this is safe
+        // for every renamed file, not only canvases.
+        await plugin.canvasSync?.handleRename(oldPath, file.path);
         const activeFile = plugin.app.workspace.getActiveViewOfType(MarkdownView)?.file;
         if (activeFile && (activeFile.path === file.path || activeFile.path === oldPath)) {
           plugin.onActiveFileChange();

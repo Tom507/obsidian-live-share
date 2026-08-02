@@ -95,6 +95,10 @@ import {
   toLocalPath,
 } from "../utils";
 import type { SidecarIndex, SidecarStore } from "./canvas-sidecar";
+// WP25: TYPE-only, deliberately. `canvas-sidecar-lifecycle` imports this module
+// at runtime (for `createCanvasIdentityStore` and `DELETED_MAP_NAME`), so a
+// value import here would close a cycle.
+import type { SidecarLifecycle } from "./canvas-sidecar-lifecycle";
 import type { FileOpsManager } from "./file-ops";
 import type { ManifestManager } from "./manifest";
 
@@ -1765,6 +1769,10 @@ export class CanvasSync {
   // WP27: the injected path <-> guid seam. NULL means "no identity provider",
   // which is a real and supported state, not a bug — see `canvasDocIdFor`.
   private identityStore: CanvasIdentityStore | null = null;
+  // WP25: the injected sidecar lifecycle. NULL means "no durable history for
+  // this client", which is the pre-WP25 behaviour and a supported state — every
+  // pre-WP25 caller constructs a `CanvasSync` without one.
+  private sidecar: SidecarLifecycle | null = null;
   // WP27: the cached, SYNCHRONOUS view of the identity, canonical path -> guid.
   // Filled by a successful subscribe and re-keyed by `handleRename`. It is what
   // makes every path-keyed reader (AC3) able to reach a guid-addressed doc
@@ -1921,6 +1929,19 @@ export class CanvasSync {
    */
   setIdentityStore(store: CanvasIdentityStore): void {
     this.identityStore = store;
+  }
+
+  /**
+   * WP25 — inject the sidecar lifecycle (AC1/AC2).
+   *
+   * Durability is a PROVIDED capability, exactly as identity is. With a
+   * lifecycle injected, `subscribe` replays this guid's history into the doc
+   * BEFORE peer sync and captures every subsequent update; `unsubscribe`
+   * detaches and flushes. With none, both are no-ops and the client behaves
+   * exactly as it did before WP25.
+   */
+  setSidecarLifecycle(lifecycle: SidecarLifecycle | null): void {
+    this.sidecar = lifecycle;
   }
 
   /** WP27 — cached, synchronous: the guid for a CANONICAL path, or `null`. */
@@ -2165,6 +2186,37 @@ export class CanvasSync {
       return;
     }
 
+    // WP25 AC1 — the SIDECAR, between `getDoc` and `waitForSync`, and AWAITED.
+    //
+    // The placement is the whole acceptance criterion. Both orders reach the
+    // same end state (Yjs merges commute), so nothing about the resulting
+    // document can tell you which happened first; what differs is WHAT THE PEER
+    // MEETS. Loaded first, the exchange is between two related replicas of the
+    // same board. Issued CONCURRENTLY with `waitForSync` it usually looks fine
+    // and loses the race on a slow disk, at which point the peer syncs against
+    // an empty replica and the two histories merge as strangers.
+    //
+    // `attach` comes first so no update emitted while the replay is in flight
+    // escapes the history; the load's own apply is stamped `SIDECAR_LOAD_ORIGIN`
+    // and is excluded there, so replaying cannot re-append what was just read.
+    //
+    // Only with an identity store: without one the identity token is the
+    // canonical PATH (see `canvasDocIdFor`), and naming sidecar files after a
+    // path would both leak `.canvas` into the sidecar directory and lose the
+    // history at the first rename.
+    if (this.sidecar !== null && this.identityStore !== null) {
+      this.sidecar.attach(guid, docHandle.doc);
+      // Never throws by WP24's AC3 — a degraded verdict is reported and nothing
+      // is applied — but a subscribe must not become the first place that
+      // discovers otherwise.
+      try {
+        await this.sidecar.load(guid, docHandle.doc);
+      } catch {
+        /* degrade, never break (I5) */
+      }
+      if (!this.subscribedPaths.has(path)) return;
+    }
+
     try {
       await this.syncManager.waitForSync(docId);
     } catch {
@@ -2310,6 +2362,9 @@ export class CanvasSync {
     // is named by the guid, and after a rename the path is no longer able to
     // name it at all.
     const docId = this.canvasDocIdFor(path);
+    // WP25 AC2 — read BEFORE the identity is dropped below, for the same reason
+    // `docId` is.
+    const sidecarGuid = this.guidByPath.get(path);
     this.subscribedPaths.delete(path);
     const timer = this.writeTimers.get(path);
     if (timer) {
@@ -2340,6 +2395,15 @@ export class CanvasSync {
     this.seedRefusalLedgers.delete(path);
     this.guidByPath.delete(path);
     this.observedPathRefs.delete(path);
+    // WP25 AC2 — the retired doc must STOP appending. Left attached it keeps
+    // writing into a history nobody is reading, and the next subscribe replays
+    // two lifetimes of frames for the same board. The handler is removed
+    // synchronously inside `detach`, before its first await; what the promise
+    // carries is the flush of the tail (`unsubscribe` is synchronous by
+    // contract, so it cannot be awaited here).
+    if (this.sidecar !== null && sidecarGuid !== undefined) {
+      void this.sidecar.detach(sidecarGuid);
+    }
     if (docId) this.syncManager.releaseDoc(docId);
   }
 
@@ -2827,6 +2891,12 @@ export class CanvasSync {
     for (const path of [...this.subscribedPaths]) {
       const docId = this.canvasDocIdFor(path);
       if (docId) this.syncManager.releaseDoc(docId);
+      // WP25: same rule as `unsubscribe` — a released doc that still carries an
+      // update handler keeps writing frames nobody will read. The LIFECYCLE
+      // itself is not destroyed here: it is injected, not owned, and one
+      // lifecycle serves every `CanvasSync` the plugin builds.
+      const guid = this.guidByPath.get(path);
+      if (this.sidecar !== null && guid !== undefined) void this.sidecar.detach(guid);
     }
     this.subscribedPaths.clear();
     this.guidByPath.clear();

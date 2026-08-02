@@ -27,6 +27,11 @@ import {
   attachCanvasPersistence,
   createVaultPersistenceIO,
 } from "./files/canvas-persistence";
+import {
+  type CanvasSidecarWiring,
+  createVaultSidecarIO,
+  wireCanvasSidecar,
+} from "./files/canvas-sidecar-lifecycle";
 import { CanvasSync } from "./files/canvas-sync";
 
 import { ExclusionManager } from "./files/exclusion";
@@ -100,6 +105,10 @@ export default class LiveSharePlugin extends Plugin {
   private testControlHandle: { close(): void } | null = null;
 
   canvasSync: CanvasSync | null = null;
+  // WP25: the sidecar store + lifecycle + identity store, built by
+  // `wireCanvasSidecar`. Held only so the periodic compaction timer can be
+  // stopped at teardown.
+  private canvasSidecar: CanvasSidecarWiring | null = null;
   // WP2/WP3: one presence controller per open, subscribed canvas (keyed by
   // canonical path). Owns that canvas' cursor/lock awareness + DOM overlay.
   private canvasPresences = new Map<string, CanvasPresence>();
@@ -444,6 +453,9 @@ export default class LiveSharePlugin extends Plugin {
     this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
+    // WP25: stop the periodic compaction timer with the session that armed it.
+    void this.canvasSidecar?.lifecycle.destroy();
+    this.canvasSidecar = null;
     this.presenceManager?.destroy();
     this.presenceManager = null;
     this.removeScrollListener();
@@ -550,6 +562,9 @@ export default class LiveSharePlugin extends Plugin {
     this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
+    // WP25: stop the periodic compaction timer with the session that armed it.
+    void this.canvasSidecar?.lifecycle.destroy();
+    this.canvasSidecar = null;
     // WP6 (US6 AC5): `CANVAS TEXT FALLBACK:` is once per path per SESSION.
     resetCanvasTextFallbackWarnings();
     this.backgroundSync.setCollabBoundFile(null);
@@ -789,6 +804,15 @@ export default class LiveSharePlugin extends Plugin {
     this.explorerIndicators = new ExplorerIndicators();
     this.canvasSync = new CanvasSync(this.app.vault, this.syncManager, this.fileOpsManager);
     this.canvasSync.setLogger(this.logger);
+    // WP25 (§7.0(e)): the sidecar wiring WP27 could not do. Injects BOTH the
+    // guid identity store (over the manifest AND `index.json`) and the sidecar
+    // lifecycle. Every decision lives in `wireCanvasSidecar` — this file holds
+    // wiring only and has no test file of its own.
+    this.canvasSidecar = wireCanvasSidecar({
+      canvasSync: this.canvasSync,
+      manifest: this.manifestManager,
+      io: createVaultSidecarIO(this.app.vault.adapter),
+    });
     // Defense-in-depth client guard: never push local canvas edits when the effective
     // permission is read-only (global read-only OR a host-designated read-only pattern).
     // Authoritative enforcement is server-side in ws-handler; this stops a read-only

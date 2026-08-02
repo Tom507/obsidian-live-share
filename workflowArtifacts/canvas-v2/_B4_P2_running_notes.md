@@ -24,6 +24,7 @@ Everything here must end up in `Worker3Handover_B4_P2.md`.
 | WP24 | 1 | 76 / 76 | 67 / 67 | 78 / 78 | DONE |
 | WP26 | 3 + 1 doc pass | 46 / 46 | 45 / 45 | 50 / 50 | DONE |
 | WP27 | 1 + licensed amendments | 54 / 54 | 41 / 41 | 47 / 47 | DONE |
+| WP25 | 1 + fixture repairs | 59 / 59 | 46 / 46 | 47 / 47 | DONE |
 | WP27 | — | — | — | — | not started |
 | WP25 | — | — | — | — | not started |
 | WP28 | — | — | — | — | not started |
@@ -165,6 +166,111 @@ assertions in this one file and nothing else.
 **Blocking status: NOT blocking.** WP27's own three test sets are green and the remaining WPs do not
 depend on this ruling, so the batch continues. If the licence is refused, WP27 AC4 and these two
 assertions cannot both hold and Worker 2 must decide which is the spec.
+
+---
+
+## Fixture repairs — §7 third class ("could never have passed"), demonstrated not asserted
+
+§7's third licensed class requires the unsatisfiability to be **shown, not claimed** — because
+*"this test could never pass"* is exactly what a wrong implementation's author would say about a test
+that just caught it. Both repairs below are in **fixture files with zero assertions**, authored by this
+batch, and the mechanism is spelled out for each.
+
+### WP25 visible `harness.ts` — two unsatisfiable fixtures (repaired by the WP25 coder)
+
+Independently verified by Worker 3 before acceptance: `grep -c "expect(" harness.ts` → **0**. The file
+is a pure fixture with no assertions, and is untracked (new this batch). Both repairs are one line each.
+
+| # | Mechanism (demonstrated) | Repair |
+|---|---|---|
+| 1 | `FakeSyncManager.synced` was declared and documented as *"every id ever passed to `waitForSync`"* but **never written** — permanently `[]`. So `expect(sync.synced).toContain(canvasDocId(FIXED_GUID))` and `.toEqual([canvasDocId(FIXED_GUID)])` could not pass under **any** implementation. | one `synced.push(docId)` |
+| 2 | `ManifestManager.connect` awaits `waitForSync("__manifest__")`, and `createManifest` runs it over the same traced fake during setup. `firstContaining(trace, "sync:waitForSync:start:")` therefore resolved to the **manifest's** sync at index ~1, so three ordering assertions compared the sidecar against the wrong event (`expected 15 to be less than 1`). tp01 even does `trace.length = 0` for this reason — but *before* `createManifest`, so the noise is re-added immediately after. | `createManifest` connects through `{ ...sync, waitForSync: async () => {} }`; the doc is still acquired through the real fake, so `docs` / `requested` / `sync:getDoc:` channels are unchanged — only the setup-time sync wait leaves the ordering channel |
+
+Neither repair touches an assertion; both make the suite strictly stronger by letting four previously
+unsatisfiable tests actually discriminate.
+
+### WP25 blind sets — RESOLVED. Verdict: fixture contamination, NOT a real defect.
+
+**The implementation was verified first, before anything was touched.** `CanvasSync.subscribe`
+(`canvas-sync.ts:2207-2226`) does `sidecar.attach(guid, doc)` → `await sidecar.load(guid, doc)` →
+`await syncManager.waitForSync(docId)`. The load is awaited, in the right place. **AC1 is satisfied.**
+
+**Contamination mechanism (demonstrated):** `ManifestManager.connect` (`manifest.ts:74-80`)
+unconditionally does `getDoc("__manifest__")` + `await waitForSync("__manifest__")`. In both blind tp01
+fixtures that runs at setup, *before `CanvasSync` exists*, so it enters the observation channel first —
+blind1 saw `seenAtSync.length === 2` with the manifest at index 0 (so the clientID pin was reading the
+**manifest** doc's state vector); blind2 got `"__manifest__"` into `synced` before the subject ran.
+Unsatisfiable for any implementation. The direction check held throughout: the channel contained the
+manifest's id, **never** `__canvas__:<guid>`.
+
+**Repair (a) — both tp01 files**, mirroring the visible fix:
+`await manifest.connect(sync as never)` → `await manifest.connect({ ...sync, waitForSync: async () => {} } as never)`.
+`getDoc` stays real, so `docs` and requested ids are unchanged.
+
+**Repair (b) — blind2 tp01 only. This is the important one, and it is a LICENSED FIXTURE COMPLETION.**
+
+After (a) both sets went green — but under falsification A, **set2 stayed 47/47 green**. Cause:
+`resolveGuidForSubscribe` awaits `store.bind` → `readIndex()` → `io.exists(sidecarIndexPath())`, so a
+blanket `hold("exists")` gate stalled the subscribe **inside identity resolution** — before `getDoc`,
+before `waitForSync`, before the load. **Both blind2 ordering tests were vacuous, and that predates the
+repair.** Fix, in the IO double only: `wait(op)` → `wait(op, path)` with
+`path === sidecarIndexPath() ? undefined : gates.get(op)`, importing `sidecarIndexPath` from WP24
+rather than re-spelling it.
+
+> **DISPATCHER RULING: repair (b) ACCEPTED — do not revert.** It is the **fixture-completion class**
+> already recognised in BUILD_SPEC §7 (the 4th class, currently WP18 + WP64): a fixture that cannot
+> exercise its own subject, repaired without touching assertions, subjects, names or counts, with
+> strictness strictly increasing. **§7's class is extended to WP25**, bounded explicitly to *the IO
+> double's `wait` signature in `blind_set2/WP25/tp01` and nothing else*.
+> **The §7 register entry is Worker 2's to write — Worker 3 did not edit `BUILD_SPEC_CanvasV2.md`.**
+>
+> **Demonstration, in the required before/after form:** *before (b), falsification A left set2 at
+> 47/47 green; after (b), falsification A reddens it.* That is the proof the fixture now bites — the
+> class requires the unsatisfiability shown, not asserted, and this is the showing.
+
+**Falsification performed (recorded verbatim, not redone).** `canvas-sync.ts` was backed up **outside
+the repo** — correctly never via `git checkout`, since the coder's work is uncommitted — restored and
+sha256-verified after every run: `18a6929d…cecf8aa` identical before and after, zero `FALSIFY` markers,
+`tsc` clean.
+
+| Perturbation | Result |
+|---|---|
+| **A** — load moved after `waitForSync` | set1 43/46, set2 45/47 — five named pins reddened, each on its own subject |
+| **B** — load issued but not awaited | set1 42/46, set2 45/47 — the same five plus blind1 *"the load is not a re-read of the vault file"* |
+
+No masking; no narrowing needed. Two blind2 tests correctly stayed green under both (`lifecycle.load`
+driven directly; corrupt-sidecar degradation) — neither is an ordering pin. In all four perturbation
+runs the only reds were in tp01; tp02–tp10 stayed green in both sets, and the red lists account for the
+whole difference each time.
+
+> **REUSABLE TRAP — the sixth distinct "green test that cannot fail" this run has found, and the FIRST
+> located in a *gate* rather than in an assertion:**
+> **"a gate that blocks identity resolution instead of the load."** Any ordering oracle written against
+> `subscribe` is exposed to it, because identity resolution touches the sidecar *before the doc exists*.
+> An ordering oracle stalled at the wrong seam never reaches the ordering it claims to pin — and it
+> reports green while doing so.
+
+---
+
+## (superseded) WP25 blind sets — in-progress notes
+
+All 5 blind failures are confined to **tp01** (the AC1 ordering point); tp02–tp10 are green in both
+sets. Three of the five show the literal `'__manifest__'` sitting in the observed ordering channel.
+
+**Direction-of-evidence check, done because "the fixture is broken" is the perfect cover for a real
+ordering bug:** the channel contains **the manifest's** sync id, not the canvas doc's. A genuine
+early-peer-sync defect would put the *canvas doc id* in that channel. That asymmetry is what makes this
+read as wrong-sample-point rather than wrong-implementation.
+
+**Routed to the test AUTHOR, not the coder** — deliberate structural isolation, per the AgentBuilding
+rule that an agent validating its own work confirms what it wrote rather than what works. The coder has
+an incentive to conclude its own implementation is fine. Conditions imposed:
+1. verify or refute independently; **if it is a real defect, change nothing and say so**;
+2. repair the **fixture only** — assertions, subjects, names and collected counts (46 / 47) untouched;
+3. **prove the repaired oracle can still fail** — perturb the implementation so the sidecar load runs
+   *after* `waitForSync`, and separately so the probe is not awaited, and confirm each tp01 assertion
+   reddens on its own pin. *An oracle that goes green because it lost the ability to observe is worse
+   than the failure it replaced.*
 
 ---
 
