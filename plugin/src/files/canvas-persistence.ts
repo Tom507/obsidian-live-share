@@ -2,6 +2,12 @@ import * as Y from "yjs";
 
 import { migrateV1ToV2 } from "../canvas/canvas-schema";
 import {
+  NOTHING_KNOWS_DOC,
+  SEED_DECISION,
+  type SeedKnowledge,
+  decideSeed,
+} from "./canvas-seed-decision";
+import {
   DEBOUNCE_MS,
   DELETED_MAP_NAME,
   type FlatCanvasData,
@@ -133,6 +139,17 @@ export interface CanvasPersistenceOpts {
    * the seam cannot ship switched off.
    */
   withholdOnSeedRefusal?: boolean;
+  /**
+   * WP29 (I9/AC1) — what this client learned about the doc before the cold open.
+   * Read on every `coldOpen()`. Default: {@link NOTHING_KNOWS_DOC}.
+   *
+   * Optional, and the default is load-bearing: every caller that predates WP29
+   * supplies nothing, and must keep behaving exactly as it did rather than
+   * silently refusing to seed a genuinely new board. Production fills it from
+   * `CanvasSync.seedKnowledgeFor(path)`, which measures the two conditions
+   * during `subscribe`.
+   */
+  seedKnowledge?: SeedKnowledge;
 }
 
 export class CanvasPersistence {
@@ -156,6 +173,11 @@ export class CanvasPersistence {
   // WP63 (I11): the refused set for THIS path, and the seam that arms the guard.
   private readonly refusals: SeedRefusalLedger;
   private readonly withholdOnSeedRefusal: boolean;
+  // WP29 (I9/AC1): the seed-knowledge probe `coldOpen` consults. Held as a whole
+  // object rather than as two booleans so `decideSeed` sees exactly what the
+  // caller supplied — including a field the caller failed to fill, which the
+  // fail-closed rule must be able to notice.
+  private readonly seedKnowledge: SeedKnowledge;
   // The `SEED REFUSED:` line last emitted at warn level, so the arming (and any
   // later change to the refused set) is narrated exactly once instead of on
   // every debounced flush.
@@ -204,6 +226,11 @@ export class CanvasPersistence {
     // session's refusals for this path).
     this.refusals = opts.seedRefusals ?? new SeedRefusalLedger();
     this.withholdOnSeedRefusal = opts.withholdOnSeedRefusal ?? true;
+    // Only an OMITTED probe defaults to "nothing knows the doc". Anything the
+    // caller actually passed is handed to `decideSeed` unchanged, so a probe
+    // that answered `null` stays an unanswered question instead of being
+    // laundered into permission to seed.
+    this.seedKnowledge = opts.seedKnowledge === undefined ? NOTHING_KNOWS_DOC : opts.seedKnowledge;
   }
 
   /**
@@ -429,6 +456,9 @@ export class CanvasPersistence {
    *
    *  - Doc NON-EMPTY → the doc wins: the file is NOT read (no file→CRDT input).
    *    The stale file is overwritten from the doc so disk reflects shared truth.
+   *  - WP29: doc EMPTY but a sidecar or a peer KNOWS it → `"empty"`. The file is
+   *    not read, nothing is written, no transaction is opened. An empty board
+   *    somebody already holds is a cleared board, not a new one.
    *  - Doc EMPTY + file present & non-empty → read the file ONCE and seed it
    *    into the doc under `CANVAS_SEED_ORIGIN` through WP18's validated
    *    create-once writer. This is the only file→CRDT read, and it happens
@@ -453,6 +483,28 @@ export class CanvasPersistence {
       await this.flush();
       return "doc-wins";
     }
+    // ── WP29 (I9/AC1) — SEED ONCE PER LIFETIME ──────────────────────────────
+    //
+    // The doc is empty. Before WP29 that alone was read as "nobody has ever
+    // seen this board", and the local `.canvas` was pushed in. But an empty doc
+    // that SOMEBODY KNOWS is a different thing entirely: the user cleared the
+    // board last session (the sidecar replays exactly that), or the peers
+    // cleared it and this client's file is a week old. Seeding there resurrects
+    // deleted cards on every replica — R4, wearing cold open's clothes.
+    //
+    // POSITION IS PART OF THE CONTRACT, in both directions:
+    //   ├── AFTER the `docNonEmpty` branch, never before it. WP25's returning
+    //   │   client resumes a sidecar replica, arrives NON-empty and knows the
+    //   │   doc; it must still overwrite its stale file from the doc.
+    //   └── BEFORE `io.exists`, so a doc somebody knows takes NO file input at
+    //       all — not a read, not a parse, not a byte.
+    //
+    // The outcome is `"empty"` and not a fourth `ColdOpenResult` (AC4), and not
+    // `"doc-wins"`: `doc-wins` flushes, and flushing an empty projection over a
+    // `.canvas` that still holds the user's cards is a second, worse data-loss
+    // class than the one this branch exists to remove. It writes nothing, reads
+    // nothing, and opens no transaction (I3).
+    if (decideSeed(this.seedKnowledge) === SEED_DECISION.LOAD_OR_MERGE) return "empty";
     if (!(await this.io.exists(this.diskPath))) return "empty";
     const content = await this.io.read(this.diskPath);
     // WP16's decode bridge stays: the seed writes the FLAT file shape, exactly

@@ -51,6 +51,16 @@ import {
   writePosRegister,
   writeSizeRegister,
 } from "../canvas/canvas-registers";
+// WP28: the epoch rule. A VALUE import, and it does not close a cycle —
+// `canvas-epoch.ts` is a near-pure core importing only `yjs` and
+// `canvas-schema.ts` (charter §7.0), which is exactly why it lives in `canvas/`
+// and takes its `.canvas` projection and its vault write by injection.
+import {
+  type EpochConflictEnv,
+  type EpochConflictOutcome,
+  readEpoch,
+  resolveEpochConflict,
+} from "../canvas/canvas-epoch";
 import {
   EPOCH_KEY,
   GUID_KEY,
@@ -94,6 +104,9 @@ import {
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
+// WP29: the seed decision's knowledge shape. A VALUE import of a ZERO-import
+// pure core, so it cannot close a cycle with anything.
+import { NOTHING_KNOWS_DOC, type SeedKnowledge } from "./canvas-seed-decision";
 import type { SidecarIndex, SidecarStore } from "./canvas-sidecar";
 // WP25: TYPE-only, deliberately. `canvas-sidecar-lifecycle` imports this module
 // at runtime (for `createCanvasIdentityStore` and `DELETED_MAP_NAME`), so a
@@ -1761,6 +1774,32 @@ function planQuarantineActions(
   }
 }
 
+/**
+ * WP28 — `YYYY-MM-DD` in LOCAL time, the default for `EpochConflictEnv.today()`.
+ *
+ * Local, not UTC: the date in the archive's name is the date the user believes
+ * it is, and a board archived at 23:30 must not be named with tomorrow's date in
+ * the folder the user is looking at. `toISOString()` would do exactly that.
+ */
+function isoCalendarDate(now: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * WP29 (AC1): byte equality of two encoded state vectors.
+ *
+ * A Yjs state vector only ever grows, so "the bytes changed across this await"
+ * and "this replica gained state across this await" are the same statement.
+ */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export class CanvasSync {
   private vault: Vault;
   private syncManager: SyncManager;
@@ -1801,6 +1840,11 @@ export class CanvasSync {
   // `CanvasPersistence` so a refusal withholds the write-back instead of
   // deleting the record from the user's file.
   private seedRefusalLedgers = new Map<string, SeedRefusalLedger>();
+  // WP29 (AC1): what THIS client learned about each subscribed doc, measured
+  // during `subscribe` and read by the wiring layer when it attaches that path's
+  // `CanvasPersistence`. Path-keyed because one `CanvasSync` serves every canvas
+  // in the vault; a path that was never subscribed knows nothing.
+  private seedKnowledgeByPath = new Map<string, SeedKnowledge>();
   // Bug G (client-side guard): predicate deciding whether local edits to a
   // canvas path may be pushed into the shared Y.Doc. Defaults to allow-all; the
   // owner of permission state (main.ts) injects the real predicate via
@@ -1851,6 +1895,13 @@ export class CanvasSync {
   // save against the shadow — every observed field becomes intent, exactly the
   // pre-V2 behaviour. Test-only; there is no production caller.
   private shadowRebaseEnabled = true;
+  // WP28: the two impure halves of `EpochConflictEnv`, defaulted to the real
+  // world so the archive path needs no wiring to function. Replaceable through
+  // `setEpochConflictHooks`.
+  private epochNotify: (message: string) => void = (message) => {
+    new Notice(message);
+  };
+  private epochToday: () => string = () => isoCalendarDate(new Date());
 
   constructor(
     vault: Vault,
@@ -1942,6 +1993,20 @@ export class CanvasSync {
    */
   setSidecarLifecycle(lifecycle: SidecarLifecycle | null): void {
     this.sidecar = lifecycle;
+  }
+
+  /**
+   * WP28 — replace the two impure seams the epoch conflict archive needs.
+   *
+   * Both default to the real world (`new Notice(...)` and the system calendar
+   * date), so nothing has to be wired for the archive to work; the setter exists
+   * so a harness can drive the path without a live Obsidian surface and without
+   * freezing time. `canvas-epoch.ts` itself never reads a clock and never
+   * imports Obsidian — {@link EpochConflictEnv} is where both enter.
+   */
+  setEpochConflictHooks(hooks: { notify?: (message: string) => void; today?: () => string }): void {
+    if (hooks.notify) this.epochNotify = hooks.notify;
+    if (hooks.today) this.epochToday = hooks.today;
   }
 
   /** WP27 — cached, synchronous: the guid for a CANONICAL path, or `null`. */
@@ -2090,6 +2155,158 @@ export class CanvasSync {
     });
   }
 
+  // ── WP28 — the epoch rule, wired ─────────────────────────────────────────
+  //
+  // `canvas-epoch.ts` is a pure core and takes the impure world by injection.
+  // This is where the real world is supplied: the `.canvas` projection is
+  // `serializeCanvas` (the SAME single projection `CanvasPersistence` writes with
+  // — an archive produced by a second serializer could agree with a broken one),
+  // the write is a vault write that PROPAGATES its failure, the notification is
+  // an Obsidian `Notice`, and the date is the local calendar day.
+
+  /**
+   * The archive write, and it is deliberately NOT {@link writeToDisk}.
+   *
+   * `writeToDisk` swallows its error into a `Notice`, applies the WP4 sequence
+   * gate and mutes vault events — all correct for the CRDT→disk projection of a
+   * LIVE board, and all wrong here. The conflict copy is fail-closed: if these
+   * bytes do not land, {@link resolveEpochConflict} must adopt nothing, and it
+   * can only know that if the rejection reaches it. It is also a NEW user file
+   * that nothing is subscribed to, so nothing about it is an echo to suppress.
+   */
+  private async writeConflictCopy(canonicalPath: string, content: string): Promise<void> {
+    if (!isPathSafe(canonicalPath)) {
+      throw new Error(`canvas-epoch: refusing to write a conflict copy to ${canonicalPath}`);
+    }
+    const diskPath = toLocalPath(canonicalPath);
+    // NEVER CLOBBER. `conflictCopyPath` is deterministic and day-granular, so a
+    // second conflict on the same board on the same day names the SAME file — and
+    // the file already there is another loser's only surviving copy. Overwriting
+    // it destroys exactly the data the archive exists to preserve, which is the
+    // one outcome this mechanism may not produce. An identical body is an
+    // idempotent re-run and is fine; anything else is refused, and fail-closed
+    // then means the adoption does not happen either, so nothing is lost at all.
+    if (await this.vault.adapter.exists(diskPath)) {
+      const existing = await this.vault.adapter.read(diskPath);
+      if (existing === content) return;
+      throw new Error(
+        `canvas-epoch: ${diskPath} already exists with different content - refusing to overwrite an existing conflict copy`,
+      );
+    }
+    const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
+    if (parentDir) await ensureFolder(this.vault, parentDir);
+    await this.vault.adapter.write(diskPath, content);
+  }
+
+  /** The real {@link EpochConflictEnv}. One builder, so both call sites agree. */
+  private epochConflictEnv(): EpochConflictEnv {
+    return {
+      serializeDoc: (doc: Y.Doc) =>
+        serializeCanvas(
+          doc.getMap<Y.Map<unknown>>("nodes"),
+          doc.getMap<Y.Map<unknown>>("edges"),
+          doc.getMap<unknown>(DELETED_MAP_NAME),
+        ),
+      writeConflictCopy: (path: string, content: string) => this.writeConflictCopy(path, content),
+      notify: (message: string) => this.epochNotify(message),
+      today: () => this.epochToday(),
+      logger: this.logger ?? undefined,
+    };
+  }
+
+  /**
+   * WP28's seam for WP30 — adopt a materialised WINNER into this path's live doc.
+   *
+   * This is the COMPLETE half of AC1 and the only place a full adoption can
+   * happen, because it is the only place a winner exists as its own document.
+   * WP30's "import from file" builds exactly that (parse the file into a staged
+   * doc, {@link bumpEpoch} it) and calls this; the wholesale container
+   * replacement then propagates to every peer as ordinary Yjs deletes and sets.
+   *
+   * Returns `null` when this client has no doc for the path — never a synthesised
+   * "equal" outcome, which a caller could not tell from a real one.
+   */
+  async adoptEpochWinner(rawPath: string, winner: Y.Doc): Promise<EpochConflictOutcome | null> {
+    const path = toCanonicalPath(normalizePath(rawPath));
+    const docId = this.canvasDocIdFor(path);
+    if (docId === null) return null;
+    const docHandle = this.syncManager.getDoc(docId);
+    if (!docHandle) return null;
+    return resolveEpochConflict({
+      doc: docHandle.doc,
+      winner,
+      canvasPath: path,
+      env: this.epochConflictEnv(),
+    });
+  }
+
+  /**
+   * AC2/AC4 on the LOSING side, at the seam where two replicas of one guid
+   * actually meet: `subscribe`, once `waitForSync` has settled.
+   *
+   * The doc this client is now holding is its own sidecar replay MERGED with what
+   * the peers had. If the settled epoch is higher than the epoch this client's
+   * own durable replica carried, then this replica was behind — its history was
+   * superseded by a deliberate re-seed it did not take part in — and AC2 says its
+   * state is ARCHIVED and NAMED rather than silently absorbed.
+   *
+   * Two things make this the right seam and not merely an available one:
+   *
+   *   ├── the local replica is materialisable HERE and nowhere else. The sidecar
+   *   │   is a second, independent replay of exactly this guid, so staging it
+   *   │   into a scratch doc reconstructs the loser's pre-merge state byte for
+   *   │   byte. After `subscribe` returns, that state exists only inside the
+   *   │   union and can no longer be separated from it.
+   *   └── it is INERT until an epoch actually differs. Nothing in the shipped
+   *       plugin calls `bumpEpoch` yet (that is WP30's import command), so
+   *       `settled === 0` short-circuits before any extra I/O — this costs a
+   *       comparison per subscribe today and becomes live the moment WP30 lands.
+   *
+   * The scratch doc is what {@link resolveEpochConflict} adopts into, and that is
+   * not a wasted transaction: it is what proves the archive was written from the
+   * loser's state BEFORE anything replaced it, and it leaves the scratch replica
+   * holding the winner's state so the two are never confused. The LIVE doc is
+   * never touched here — its convergence is Yjs's, driven by the winner's own
+   * wholesale replacement (see {@link adoptEpochWinner}).
+   *
+   * Never throws. A failed archive means "not archived yet" and is logged; a
+   * subscribe must not die because a conflict copy could not be written.
+   */
+  private async reconcileEpochOnSubscribe(path: string, guid: string, doc: Y.Doc): Promise<void> {
+    const sidecar = this.sidecar;
+    if (sidecar === null || this.identityStore === null) return;
+    // Epoch 0 is "nobody has ever deliberately re-seeded this board". No replica
+    // can be behind a board that has never moved, so there is nothing to compare.
+    if (readEpoch(doc) === 0) return;
+
+    const staged = new Y.Doc();
+    try {
+      await sidecar.load(guid, staged);
+      // A missing or corrupt sidecar is the defined degradation (WP24 AC3): this
+      // client behaves like a fresh peer. Archiving an empty board would hand the
+      // user a file with none of their work in it and a notice claiming it holds
+      // their previous version.
+      if (staged.getMap<unknown>("nodes").size === 0 && staged.getMap<unknown>("edges").size === 0) {
+        return;
+      }
+      await resolveEpochConflict({
+        doc: staged,
+        winner: doc,
+        canvasPath: path,
+        env: this.epochConflictEnv(),
+      });
+    } catch (error) {
+      this.logger?.warn(
+        "canvas-epoch",
+        `epoch reconcile failed for ${path}: ${
+          error instanceof Error ? error.message : String(error)
+        } - nothing was archived`,
+      );
+    } finally {
+      staged.destroy();
+    }
+  }
+
   /** The mutable path cell the subscribe-time closures read. See AC2. */
   private pathRefFor(path: string): { current: string } {
     const existing = this.observedPathRefs.get(path);
@@ -2135,6 +2352,10 @@ export class CanvasSync {
     moveMap(this.externalWriteSettleTimers);
     moveMap(this.lastWrittenContent);
     moveMap(this.seedRefusalLedgers);
+    // WP29: the knowledge is about the DOC, and a rename does not change which
+    // doc the (renamed) path names — left behind, the renamed canvas would
+    // report "nothing knows this board" and become seedable from a stale file.
+    moveMap(this.seedKnowledgeByPath);
     moveMap(this.remoteSeq);
     // WP4's Surface-Shadow is the capture path's intent basis and is per-path.
     // Left behind, the renamed canvas would have an EMPTY shadow and the first
@@ -2204,19 +2425,44 @@ export class CanvasSync {
     // canonical PATH (see `canvasDocIdFor`), and naming sidecar files after a
     // path would both leak `.canvas` into the sidecar directory and lose the
     // history at the first rename.
+    //
+    // WP29 (AC1), FIRST MEASUREMENT: the `SidecarLoadResult` this load already
+    // returns and used to discard. "The sidecar knows this doc" is a claim about
+    // a REPLICA having been replayed, so it is true iff a checkpoint was applied
+    // or at least one history frame was. A MISSING (or otherwise degraded) load
+    // is explicitly NOT knowledge — reading "a load ran" as "the sidecar knows
+    // it" would make every board unseedable the moment a lifecycle is wired. A
+    // frame log with no checkpoint IS knowledge: that is a sidecar's normal
+    // state between compactions.
+    let sidecarKnowsDoc = false;
     if (this.sidecar !== null && this.identityStore !== null) {
       this.sidecar.attach(guid, docHandle.doc);
       // Never throws by WP24's AC3 — a degraded verdict is reported and nothing
       // is applied — but a subscribe must not become the first place that
       // discovers otherwise.
       try {
-        await this.sidecar.load(guid, docHandle.doc);
+        const loaded = await this.sidecar.load(guid, docHandle.doc);
+        sidecarKnowsDoc = loaded.checkpointApplied === true || loaded.historyEntriesApplied > 0;
       } catch {
         /* degrade, never break (I5) */
       }
       if (!this.subscribedPaths.has(path)) return;
     }
 
+    // WP29 (AC1), SECOND MEASUREMENT: "a peer knows this doc" is a STATE-VECTOR
+    // DELTA ACROSS THE SYNC STEP, and it has to be, for two reasons:
+    //
+    //   ├── not "the doc is non-empty" — that is the condition that already
+    //   │   existed, and it is exactly the one that is wrong for a cleared
+    //   │   board.
+    //   └── not "foreign clientIDs are present" — the sidecar load ran a moment
+    //       ago, REPLAYS UPDATES UNDER THEIR ORIGINAL AUTHORS' IDs, and would
+    //       therefore be read as a peer. That collapses AC1's two independent
+    //       conditions into one.
+    //
+    // A state vector only ever grows, so byte-inequality across the await is
+    // exactly "this replica gained state while the peers were speaking".
+    const stateBeforeSync = Y.encodeStateVector(docHandle.doc);
     try {
       await this.syncManager.waitForSync(docId);
     } catch {
@@ -2224,9 +2470,23 @@ export class CanvasSync {
       this.guidByPath.delete(path);
       return;
     }
+    const peerKnowsDoc = !sameBytes(stateBeforeSync, Y.encodeStateVector(docHandle.doc));
 
     if (!this.subscribedPaths.has(path)) return;
+    // Recorded before the two early returns below, so a path whose observer is
+    // already installed still reports what this subscribe measured.
+    this.seedKnowledgeByPath.set(path, { sidecarKnowsDoc, peerKnowsDoc });
     if (this.observers.has(path)) return;
+
+    // WP28 AC2/AC4 — THE EPOCH RULE, at the moment the two replicas have met.
+    //
+    // Placed after `waitForSync` (the peers' state is in) and BEFORE the host
+    // seed below (which pushes this client's local file into the doc): the
+    // question "was my history superseded?" has to be answered about the state
+    // this client arrived with, not about the state it is about to write.
+    // Awaited, so the archive is durable before anything else moves.
+    await this.reconcileEpochOnSubscribe(path, guid, docHandle.doc);
+    if (!this.subscribedPaths.has(path)) return;
 
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
     const edgesMap = docHandle.doc.getMap<Y.Map<unknown>>("edges");
@@ -2269,9 +2529,11 @@ export class CanvasSync {
     //   │                   this replaces, minus the second writer.
     //   └── doc EMPTY     → the file is parsed ONCE and SEEDS the doc, instead of
     //                       only recording a diff baseline. Deliberate change.
-    // The HOST branch above stays exactly as it was: `applyCanvasToYMaps` DELETES
-    // doc entries absent from the host's local file and `coldOpen`'s doc-wins
-    // branch does not, so substituting it would silently change rejoin semantics.
+    // The HOST branch above no longer deletes: WP29 (AC2) removed the
+    // record-level delete-by-omission, so it is an UPSERT of the records the
+    // file names and nothing else. It still differs from `coldOpen`'s doc-wins
+    // branch — that one writes the doc to disk, this one writes the file into
+    // the doc — so the two are still not interchangeable.
 
     // WP27 AC1 — the IDENTITY STAMP, and its placement is load-bearing.
     //
@@ -2393,6 +2655,10 @@ export class CanvasSync {
     // from here would let the very write this WP exists to stop reach the file.
     // A later re-subscribe re-seeds and gets a fresh ledger.
     this.seedRefusalLedgers.delete(path);
+    // WP29: the measurement belongs to the subscribe that took it. A later
+    // re-subscribe takes it again; until then this path knows nothing, which is
+    // the same answer it gave before it was ever subscribed.
+    this.seedKnowledgeByPath.delete(path);
     this.guidByPath.delete(path);
     this.observedPathRefs.delete(path);
     // WP25 AC2 — the retired doc must STOP appending. Left attached it keeps
@@ -2907,6 +3173,7 @@ export class CanvasSync {
     // WP63: same rule as `unsubscribe` — release the references, never reset the
     // ledgers themselves.
     this.seedRefusalLedgers.clear();
+    this.seedKnowledgeByPath.clear();
   }
 
   /**
@@ -2922,12 +3189,12 @@ export class CanvasSync {
    *   │         existing one is merged in place, never replaced.
    *   └── AC3 — no key is deleted because the file omitted it (I7).
    *
-   * The RECORD-level delete below is deliberately kept: the host's file is the
-   * host's picture of the whole board, and rejoin semantics ("the host's file
-   * wins over stale doc records") are C29/WP29's to change, not AC3's — AC3 is
-   * about KEYS. A record whose local proposal was REFUSED is exempted from it:
-   * dropping the doc's own copy because our file's version is malformed would
-   * be a local refusal reaching out and deleting shared state.
+   * WP29 (AC2) extended that from KEYS to RECORDS: the record-level
+   * delete-by-omission this method used to drive through {@link seedFlatSpace}
+   * is gone. The host's local file is no longer the host's picture of the WHOLE
+   * board — it is a set of proposals about the records it names, and a rejoin is
+   * an ordinary related-replica merge. `ledger.reset()` stays: this is still a
+   * re-seed of the path, and this seed's refusals are the only ones that count.
    */
   private applyCanvasToYMaps(
     path: string,
@@ -2955,6 +3222,20 @@ export class CanvasSync {
    * it. Created on demand so the wiring layer can hand it to the writer without
    * caring whether a host seed ever ran.
    */
+  /**
+   * WP29 (AC1) — what THIS client learned about the doc behind `rawPath` during
+   * `subscribe`, for the wiring layer to hand to that path's `CanvasPersistence`.
+   *
+   * Path-keyed (one `CanvasSync` serves every canvas in the vault), stable
+   * across repeat calls, and {@link NOTHING_KNOWS_DOC} for a path that was never
+   * subscribed — which is the honest answer, and also the one that keeps a
+   * genuinely new board seedable.
+   */
+  seedKnowledgeFor(rawPath: string): SeedKnowledge {
+    const path = toCanonicalPath(normalizePath(rawPath));
+    return this.seedKnowledgeByPath.get(path) ?? NOTHING_KNOWS_DOC;
+  }
+
   seedRefusalLedger(rawPath: string): SeedRefusalLedger {
     const path = toCanonicalPath(normalizePath(rawPath));
     let ledger = this.seedRefusalLedgers.get(path);
@@ -2970,11 +3251,9 @@ export class CanvasSync {
     records: Record<string, Record<string, unknown>>,
     kind: IngestRecordKind,
   ): SeedRefusal[] {
-    const absentFromFile = new Set(container.keys());
     const signatures: string[] = [];
     const refusals: SeedRefusal[] = [];
     for (const [id, source] of Object.entries(records)) {
-      absentFromFile.delete(id);
       const admission = admitRecordIngest(
         projectPostWriteRecord(container.get(id), source, kind),
         kind,
@@ -2994,9 +3273,18 @@ export class CanvasSync {
       }
       writeRecordCreateOnce(container, id, source, signatures);
     }
-    for (const id of absentFromFile) {
-      container.delete(id);
-    }
+    // WP29 (AC2) — R4 IS GONE FROM HERE. This is where the record-level
+    // delete-by-omission used to be: a `Set` of every id already in the
+    // container, emptied of everything the file mentioned, and then deleted.
+    // The host's file was allowed to speak for records it had never heard of,
+    // so a rejoin with a stale `.canvas` silently removed every card the peers
+    // had drawn while this client was away — and shipped that removal to them.
+    //
+    // NOTHING REPLACES IT, deliberately. A tombstone would be the same removal
+    // in WP19's vocabulary; a seed has no opinion about deletion. What is left
+    // is what `seedRecordsIntoYMaps` (the cold-open seed writer) has always
+    // done: validated, create-once, upsert-only writes of the ids the source
+    // actually names. Destruction is only ever an explicit user action (WP30).
     for (const signature of signatures) {
       this.logger?.warn("canvas-sync", signature);
     }

@@ -25,6 +25,7 @@ Everything here must end up in `Worker3Handover_B4_P2.md`.
 | WP26 | 3 + 1 doc pass | 46 / 46 | 45 / 45 | 50 / 50 | DONE |
 | WP27 | 1 + licensed amendments | 54 / 54 | 41 / 41 | 47 / 47 | DONE |
 | WP25 | 1 + fixture repairs | 59 / 59 | 46 / 46 | 47 / 47 | DONE |
+| WP28 | 2 | 104 / 104 | 62 / 62 | 67 / 67 | DONE |
 | WP27 | — | — | — | — | not started |
 | WP25 | — | — | — | — | not started |
 | WP28 | — | — | — | — | not started |
@@ -287,9 +288,77 @@ edit is indistinguishable from one made to manufacture a green.
 
 ---
 
+## Biome findings — re-measured against the TRUE baseline (Dispatcher flag, resolved)
+
+The WP28 coder claimed `canvas-sync.ts`'s three Biome findings were pre-existing, verified **by stashing
+its own diff**. That is the method rule 4 forbids — it measures staleness against your own edit, not
+against the batch baseline, and it is the same mistake the WP26 coder made with the three `TS2493`
+errors, which turned out to be *new* and authored by this batch.
+
+**Re-measured properly, against `H:\tmp\liveshare_snap_B4_P2\snapshot_pre_B4.tgz` (taken before the
+first B4 edit). The claim is CORRECT.**
+
+| | Baseline (pre-B4) | Current | Verdict |
+|---|---|---|---|
+| `lint/style/useTemplate` | `:2054` | `:2815` | **same occurrence** — the two lines are byte-identical (`` `local modify ${path}: +${applied.created.length} …` + ``); shifted 761 lines by this batch's additions |
+| `organizeImports` | present | present | pre-existing |
+| `format` | present | present | pre-existing |
+| **total** | **Found 3 errors** | **Found 3 errors** | **no new finding introduced by B4** |
+
+Method: extracted the baseline file from the snapshot, copied it to the repo root as a probe so it
+resolved the same `biome.json`, ran the real binary, then deleted the probe. Not a licence question
+either way — Biome findings are not assertions.
+
+> ### ⚠ MEASUREMENT TRAP FOUND WHILE DOING THIS — carries past this batch
+> **`npx biome` in this repo resolves to an unrelated npm package `biome@0.3.3`, which produces no
+> output and exits 0.** The real linter is `@biomejs/biome@1.9.4` at
+> `plugin/node_modules/.bin/biome`. There is no `node_modules/.bin` at the repo root at all.
+>
+> So `npx biome check <anything>` reports a **silent all-clear on any input**, including deliberately
+> broken code. Any past or future "Biome clean" claim made via `npx biome` is unverified — it measured
+> nothing. This is a lint-side instance of the same class this run keeps finding on the test side: an
+> instrument that cannot fail. Always invoke `plugin/node_modules/.bin/biome` or `npm run lint`.
+
+---
+
 ## Open defects found but deliberately NOT patched
 
-### D2 — WP27's `setIdentityStore` / `handleRename` have NO production caller (OPEN, belongs to WP25)
+### D4 — a merged replica CANNOT prune to the winner's record set (ARCHITECTURAL — brief WP30)
+
+- **Found by:** WP28. **Not a defect in WP28's code — a property of single-doc Yjs replication.**
+- `SyncManager.getDoc` creates exactly one `Y.Doc` per doc id and all peer state arrives as updates
+  into it. After the merge the doc holds `winner ∪ loser`, and shared record ids are in **both** sides,
+  so **no local subtraction yields the winner's set**. The information needed to prune lives on the
+  winner's side.
+- Consequence: the "wins **completely**" half of AC1 must be executed by the **importer** and published
+  as a wholesale replacement — CONCEPT_V2 Teil 7 (*"epoch++, Datei seeden, Peers folgen der
+  Epoch-Regel"*), and charter §2 puts that import in **WP30**. WP28 exposes
+  `CanvasSync.adoptEpochWinner(rawPath, winner)` as the seam.
+- **Standing instruction:** if any later WP asserts *"every replica prunes independently after the
+  merge"*, that assertion is **unsatisfiable** and must be escalated, not implemented.
+
+### D5 — two latent defects WP28's generalization pass found (both FIXED, recorded as findings)
+
+1. **`normalizeEpoch` used `Number.isInteger`, which admits `2 ** 53`** — and at that value
+   `n + 1 === n`, so `nextEpoch`'s pinned *"strictly greater for every input"* was **false**. One
+   corrupt cell would have frozen a board's epoch **permanently**, the only symptom being that imports
+   quietly stop winning. Now `Number.isSafeInteger`; `nextEpoch` throws `RangeError` at the ceiling
+   instead of returning an unbeatable value; `bumpEpoch` computes it *before* opening its transaction
+   so a refusal cannot half-write `meta`. Found by asking the path-validation question of a **non-path**
+   export — which is what made it a generalization rather than a patch.
+2. **`conflictCopyPath` is deterministic and day-granular** (pinned by the tests), so a second conflict
+   on the same board on the same day names the **same file** — and the file already there is another
+   loser's only copy. `CanvasSync.writeConflictCopy` now never clobbers: an identical body is an
+   idempotent re-run, anything else throws, and because the mechanism is fail-closed that **cancels the
+   adoption**. Nothing is lost, rather than one copy traded for another. **Worker 4 should confirm the
+   cancelled adoption leaves the user with a recoverable state and a notice, not a silent no-op** (I11).
+
+Also retracted honestly by WP28: attempt 1's own comment claimed the `date` parameter could not carry a
+`..`, while its charset `[A-Za-z0-9._-]+` admitted `..` and `.` outright, and `env.today()` is a
+caller-supplied clock the module cannot audit. That was a **live path escape through the date
+parameter**. A retracted false guarantee recorded as such is worth more than a quiet fix.
+
+### D2 — WP27's `setIdentityStore` / `handleRename` have NO production caller (RESOLVED by WP25)
 
 - **Found by:** WP27, attempt 1. **Deliberately not wired, and the reasoning is sound.**
 - **What it means:** WP27 ships a **two-mode** design. *With* an identity store: guid doc ids, `meta`

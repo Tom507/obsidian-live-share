@@ -1260,6 +1260,10 @@ export default class LiveSharePlugin extends Plugin {
           // which has already run by the time we get here — so the writer reads
           // the refused set from the object that filled it.
           seedRefusals: this.canvasSync?.seedRefusalLedger(canonical),
+          // WP29 (I9/AC1): the two conditions were measured by `subscribe`,
+          // which has already resolved by the time we get here — so the cold
+          // open reads them from the object that took them.
+          seedKnowledge: this.canvasSync?.seedKnowledgeFor(canonical),
         },
       );
       // A session teardown may have raced the awaited cold open.
