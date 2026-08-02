@@ -1,6 +1,7 @@
 # Task Charter — WP67: Falsifiability pins for the WP64 helper repairs
 
-**Charter Status:** `SPEC_COMPLETE`
+<!-- Updated: status carried to DONE — B17 closed this WP (Worker3Handover_B17_WP67: WP67 DONE, risk_flag NONE), §7 is filled and the A/B is measured; the field had been left at SPEC_COMPLETE 2026-08-02 -->
+**Charter Status:** `DONE`
 **WP:** WP67
 **Phase:** P1
 **task_mode:** `lightweight`
