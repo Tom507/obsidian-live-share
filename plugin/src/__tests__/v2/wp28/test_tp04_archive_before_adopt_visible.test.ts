@@ -30,7 +30,7 @@
 // with a log line.
 
 import { describe, expect, it } from "vitest";
-import * as Y from "yjs";
+import type * as Y from "yjs";
 
 import { conflictCopyPath, readEpoch, resolveEpochConflict } from "../../../canvas/canvas-epoch";
 import {

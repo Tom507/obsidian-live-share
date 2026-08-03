@@ -19,8 +19,8 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 
-import { EPOCH_KEY, GUID_KEY, META_MAP_NAME, PATH_KEY } from "../../../canvas/canvas-schema";
 import { bumpEpoch, nextEpoch, readEpoch } from "../../../canvas/canvas-epoch";
+import { EPOCH_KEY, GUID_KEY, META_MAP_NAME, PATH_KEY } from "../../../canvas/canvas-schema";
 import { CANVAS_PATH, FIXED_GUID, createProbe, makeDoc, metaSnapshot, node } from "./harness";
 
 describe("WP28 AC1 — the epoch is monotonic", () => {
@@ -111,13 +111,17 @@ describe("WP28 AC1 — the epoch is HOST-incremented: one author, one write", ()
       edges: { "e-1": { id: "e-1", fromNode: "n-a", toNode: "n-b" } },
     });
     const beforeNodes = JSON.stringify(
-      Object.fromEntries([...doc.getMap<Y.Map<unknown>>("nodes")].map(([id, m]) => [id, m.toJSON()])),
+      Object.fromEntries(
+        [...doc.getMap<Y.Map<unknown>>("nodes")].map(([id, m]) => [id, m.toJSON()]),
+      ),
     );
 
     bumpEpoch(doc);
 
     const afterNodes = JSON.stringify(
-      Object.fromEntries([...doc.getMap<Y.Map<unknown>>("nodes")].map(([id, m]) => [id, m.toJSON()])),
+      Object.fromEntries(
+        [...doc.getMap<Y.Map<unknown>>("nodes")].map(([id, m]) => [id, m.toJSON()]),
+      ),
     );
     expect(afterNodes).toBe(beforeNodes);
     expect([...doc.getMap<Y.Map<unknown>>("edges").keys()]).toEqual(["e-1"]);

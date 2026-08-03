@@ -111,9 +111,7 @@ describe("WP24 AC3 — a truncated history is a defined degradation", () => {
       [sidecarHistoryPath(GUID)]: concatBytes(frames[0], Uint8Array.from([0x00, 0x00, 0x00])),
     });
     const store = createSidecarStore(io);
-    expect((await store.load(GUID, new Y.Doc())).degradation).toBe(
-      SIDECAR_DEGRADATION.TRUNCATED,
-    );
+    expect((await store.load(GUID, new Y.Doc())).degradation).toBe(SIDECAR_DEGRADATION.TRUNCATED);
 
     io.files.set(sidecarHistoryPath(GUID), concatBytes(...frames));
     const doc = new Y.Doc();

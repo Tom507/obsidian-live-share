@@ -257,7 +257,7 @@ function assertPathComponent(value: unknown, label: string): asserts value is st
 /** A `.canvas` path. The extension is case-SENSITIVE; Obsidian's view keys on it. */
 function assertCanvasPath(value: unknown, label: string): asserts value is string {
   assertVaultPath(value, label);
-  if (!value.endsWith(CANVAS_EXT)) {
+  if (!isCanvasPath(value)) {
     throw new Error(
       `${label} is not a ${CANVAS_EXT} path - the archive would not open as a canvas`,
     );
@@ -414,6 +414,27 @@ export function bumpEpoch(doc: Y.Doc): number {
     meta.set(EPOCH_KEY, next);
   });
   return next;
+}
+
+/**
+ * Is this path a canvas AT ALL — the extension test, spelt once.
+ *
+ * `CANVAS_EXT` lives in this module and this is its predicate form, so a caller
+ * that only needs the QUESTION answered does not have to re-spell the literal
+ * (contract §1: define once, import). It is deliberately the plain extension
+ * test and nothing more — no vault-path validation, no ownership, no sync
+ * state. Callers that need those ask the predicate that owns them.
+ *
+ * NOT interchangeable with `skipsAutoTextSync` (`utils.ts`), which answers a
+ * different question — `.canvas` OR the sidecar state directory — and would
+ * therefore admit sidecar paths anywhere a canvas file is what is wanted.
+ *
+ * TOTAL and non-throwing: it runs on the wiring side, inside Obsidian
+ * `checkCallback`s that are called on every palette keystroke and that discard
+ * exceptions. A non-string is simply not a canvas path.
+ */
+export function isCanvasPath(path: unknown): path is string {
+  return typeof path === "string" && path.endsWith(CANVAS_EXT);
 }
 
 /**

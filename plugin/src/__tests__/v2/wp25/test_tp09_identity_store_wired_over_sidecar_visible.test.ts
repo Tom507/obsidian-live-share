@@ -255,9 +255,9 @@ describe("WP25 — the identity store is wired, and the plugin uses guid identit
     expect(canvasSync.getCanvasGuid(renamed)).toBe(guid);
     expect(canvasSync.getCanvasGuid(CANVAS_PATH)).toBeNull();
     expect(sync.released, "the rename released the doc").toEqual([]);
-    expect(
-      [...new Set(sync.requested.filter((id) => id.startsWith(CANVAS_DOC_PREFIX)))],
-    ).toEqual([canvasDocId(guid)]);
+    expect([...new Set(sync.requested.filter((id) => id.startsWith(CANVAS_DOC_PREFIX)))]).toEqual([
+      canvasDocId(guid),
+    ]);
     // `index.json` carries ONE row for the guid, under the NEW path — a stale
     // second row would resolve a peer to a board nobody is editing.
     expect(await wiring.store.readIndex()).toEqual({ [guid]: renamed });
@@ -286,12 +286,9 @@ describe("WP25 — the identity store is wired, and the plugin uses guid identit
     ).toMatch(/canvasSync\??\.handleRename\s*\(/);
     // It has to run on the rename path, i.e. inside the `vault.on("rename", …)`
     // registration, not merely somewhere in the file.
-    const renameBlock = VAULT_EVENTS_CODE.slice(
-      VAULT_EVENTS_CODE.indexOf('vault.on("rename"'),
+    const renameBlock = VAULT_EVENTS_CODE.slice(VAULT_EVENTS_CODE.indexOf('vault.on("rename"'));
+    expect(renameBlock, "handleRename is in the file but not on the rename path").toMatch(
+      /handleRename\s*\(/,
     );
-    expect(
-      renameBlock,
-      "handleRename is in the file but not on the rename path",
-    ).toMatch(/handleRename\s*\(/);
   });
 });

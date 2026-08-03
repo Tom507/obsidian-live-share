@@ -31,9 +31,7 @@ describe("WP28 AC2 — `conflictCopyPath` produces `<name>.conflict-<date>.canva
   });
 
   it("a vault-root canvas stays at the vault root", () => {
-    expect(conflictCopyPath("plan.canvas", "2026-08-02")).toBe(
-      "plan.conflict-2026-08-02.canvas",
-    );
+    expect(conflictCopyPath("plan.canvas", "2026-08-02")).toBe("plan.conflict-2026-08-02.canvas");
   });
 
   it("a deeply nested canvas keeps every segment of its folder", () => {

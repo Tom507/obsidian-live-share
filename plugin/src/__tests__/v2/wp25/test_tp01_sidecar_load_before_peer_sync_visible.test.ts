@@ -100,9 +100,7 @@ describe("WP25 AC1 — the sidecar is loaded before peer sync begins", () => {
 
     await canvasSync.subscribe(CANVAS_PATH, "guest");
 
-    const loadEnd = trace.lastIndexOf(
-      `sidecar:read:end:${sidecarCheckpointPath(FIXED_GUID)}`,
-    );
+    const loadEnd = trace.lastIndexOf(`sidecar:read:end:${sidecarCheckpointPath(FIXED_GUID)}`);
     const syncStart = firstContaining(trace, "sync:waitForSync:start:");
 
     expect(loadEnd, `the sidecar checkpoint was never read\n${trace.join("\n")}`).toBeGreaterThan(

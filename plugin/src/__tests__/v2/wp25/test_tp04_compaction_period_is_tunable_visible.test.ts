@@ -31,14 +31,7 @@ import {
   SIDECAR_COMPACTION_PERIOD_MS,
   createSidecarLifecycle,
 } from "../../../files/canvas-sidecar-lifecycle";
-import {
-  FIXED_GUID,
-  NODE_A,
-  NODE_B,
-  createSidecarIO,
-  createTrace,
-  seedRecord,
-} from "./harness";
+import { FIXED_GUID, NODE_A, NODE_B, createSidecarIO, createTrace, seedRecord } from "./harness";
 
 /** Checkpoint writes are the observable signature of a compaction having run. */
 function checkpointWrites(io: ReturnType<typeof createSidecarIO>): number {

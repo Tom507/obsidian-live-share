@@ -9,8 +9,8 @@ import {
   createSidecarStore,
 } from "./canvas-sidecar";
 import {
-  DELETED_MAP_NAME,
   type CanvasIdentityStore,
+  DELETED_MAP_NAME,
   createCanvasIdentityStore,
 } from "./canvas-sync";
 

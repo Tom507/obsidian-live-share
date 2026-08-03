@@ -18,6 +18,8 @@ import {
   createSurfaceStateStore,
   shadowToCanvasRecords,
 } from "./canvas/canvas-shadow";
+import { isCanvasPath } from "./canvas/canvas-epoch";
+import type { ImportAvailability } from "./canvas/canvas-import-command";
 import { canvasIds, planReconcile } from "./canvas/reconcile-plan";
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
@@ -27,6 +29,10 @@ import {
   attachCanvasPersistence,
   createVaultPersistenceIO,
 } from "./files/canvas-persistence";
+import {
+  type ImportFromFileResult,
+  runImportFromFile,
+} from "./files/canvas-import";
 import {
   type CanvasSidecarWiring,
   createVaultSidecarIO,
@@ -38,6 +44,7 @@ import { ExclusionManager } from "./files/exclusion";
 import { FileOpsManager } from "./files/file-ops";
 import { ManifestManager } from "./files/manifest";
 import {
+  canvasOwned,
   registerVaultEvents,
   resetCanvasTextFallbackWarnings,
   subscribeCanvasWithHandover,
@@ -58,6 +65,7 @@ import { DEFAULT_SETTINGS, type LiveShareSettings } from "./types";
 import { AuditLogModal } from "./ui/audit-modal";
 
 import { ExplorerIndicators } from "./ui/explorer-indicators";
+import { confirmImportFromFile } from "./ui/import-canvas-modal";
 import { ConfirmModal, PromptModal } from "./ui/modals";
 import { LiveShareSettingTab } from "./ui/settings";
 import {
@@ -1063,6 +1071,122 @@ export default class LiveSharePlugin extends Plugin {
         this.canvasModelBridges.delete(path);
       }
     }
+  }
+
+  // ── WP30 (C30): wiring for the explicit "Import from file" command ───────
+  //
+  // Three members, all of them MEASUREMENT and PLUMBING. Every decision they
+  // feed belongs elsewhere: availability is decided by
+  // `canvas-import-command.ts`, the sequence by `files/canvas-import.ts`, the
+  // epoch and the archive by WP28. `main.ts` holds wiring only.
+
+  /**
+   * The `.canvas` path the import command targets, or `null` when there is none.
+   *
+   * "In context" is the canvas the user is LOOKING AT: the active file, only if
+   * it is a `.canvas` AND an open canvas leaf is showing it. The leaf check is
+   * what makes a markdown view, a non-canvas file and a closed board all answer
+   * `null` — an import aimed at a board the user cannot see is exactly the
+   * "timing side effect" C30 exists to abolish.
+   *
+   * Defensive throughout: Obsidian's Canvas view is private and untyped (I5 —
+   * degrade, never break), and this runs inside a `checkCallback` on every
+   * palette keystroke.
+   */
+  activeCanvasPathForImport(): string | null {
+    try {
+      const rawPath = this.app.workspace.getActiveFile()?.path;
+      // `isCanvasPath` (`canvas/canvas-epoch.ts`) rather than a private
+      // `endsWith` here: the canvas extension has ONE definition in the tree
+      // (`CANVAS_EXT`, contract §1), and this file holds wiring, not the test.
+      // Not `skipsAutoTextSync`, which also answers true for the sidecar
+      // directory and would offer sidecar state as an import target.
+      if (!isCanvasPath(rawPath)) return null;
+      const leaves = this.app.workspace.getLeavesOfType("canvas") as Array<{
+        view?: { file?: { path?: string } };
+      }>;
+      if (!leaves.some((leaf) => leaf.view?.file?.path === rawPath)) return null;
+      return toCanonicalPath(normalizePath(rawPath));
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * AC4's two conditions for `path`. MEASURED, never decided.
+   *
+   * `owned` is `canvasOwned(path, this.canvasSync)` — the ONE existing ownership
+   * predicate (`files/vault-events.ts`), not a second one written here.
+   *
+   * `degraded` reads the degradation concepts that already exist for a canvas
+   * path, and both of them mean the same thing for this command: THIS CLIENT'S
+   * VIEW OF THE BOARD IS KNOWN TO BE INCOMPLETE.
+   *
+   *   ├── a WITHHOLDING `SeedRefusalLedger` (WP63/I11) — this path's seed refused
+   *   │   records, so the write-back is suspended and the doc does not hold
+   *   │   everything the file did; and
+   *   └── a canvas adapter that is registered but reports UNAVAILABLE — the
+   *       private Canvas API went away under an open board (I5 DEGRADE).
+   *
+   * Both are bars rather than caveats: the import publishes a wholesale
+   * replacement computed from a local file, and the confirmation quotes what is
+   * about to be lost. On a degraded client the user would be told the wrong
+   * thing and would then destroy state they were never shown.
+   *
+   * A path with NO adapter is not degraded — that is an unopened board, not a
+   * broken one, and `owned` already answers for it.
+   */
+  canvasImportAvailability(path: string): ImportAvailability {
+    const canonical = toCanonicalPath(normalizePath(path));
+    const owned = canvasOwned(canonical, this.canvasSync);
+    const withholding = this.canvasSync?.seedRefusalLedger(canonical).hasRefusals() === true;
+    const adapter = this.canvasAdapters.get(canonical);
+    const surfaceLost = adapter !== undefined && adapter.isAvailable() !== true;
+    return { owned, degraded: withholding || surfaceLost };
+  }
+
+  /**
+   * Builds the real `ImportFromFileEnv` and calls `runImportFromFile`.
+   *
+   * `adoptEpochWinner` is the ONLY write channel handed over, which is what
+   * makes "cancelling performs no write of any kind" a property of the wiring
+   * and not merely of the sequence. The confirmation goes through
+   * `confirmImportFromFile`, so the dialog and the summary in the result are
+   * built from the same object.
+   */
+  async runCanvasImportFromFile(path: string): Promise<ImportFromFileResult> {
+    const canonical = toCanonicalPath(normalizePath(path));
+    return runImportFromFile(canonical, {
+      availability: (canvasPath) => this.canvasImportAvailability(canvasPath),
+      liveDoc: (canvasPath) => this.canvasSync?.getCanvasDocHandle(canvasPath)?.doc ?? null,
+      // Everyone else in the session, NOT only the people whose view happens to
+      // be on this board right now. A participant reading another file still
+      // holds a replica of this canvas, and that replica is what gets archived
+      // and replaced — so filtering on `currentFile` would omit exactly the
+      // people whose work is destroyed while they were not looking. Naming one
+      // extra collaborator is a mild over-statement; omitting one is the dialog
+      // failing at the only job AC3 gives it.
+      peers: () =>
+        Array.from(this.remoteUsers.values())
+          .map((user) => ({ displayName: user.displayName }))
+          .filter((peer) => typeof peer.displayName === "string" && peer.displayName.length > 0)
+          .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+      readCanvasFile: async (canvasPath) => {
+        const diskPath = toLocalPath(toCanonicalPath(normalizePath(canvasPath)));
+        try {
+          if (!(await this.app.vault.adapter.exists(diskPath))) return null;
+          return await this.app.vault.adapter.read(diskPath);
+        } catch (err) {
+          this.logger.error("canvas-import", `failed to read ${diskPath}`, err);
+          return null;
+        }
+      },
+      confirm: (summary) => confirmImportFromFile(this.app, summary),
+      adoptEpochWinner: async (canvasPath, winner) =>
+        (await this.canvasSync?.adoptEpochWinner(canvasPath, winner)) ?? null,
+      notify: (message) => this.notify(message),
+      logger: this.logger,
+    });
   }
 
   // Scatter fix: patch the OPEN Obsidian canvas view to match a just-integrated

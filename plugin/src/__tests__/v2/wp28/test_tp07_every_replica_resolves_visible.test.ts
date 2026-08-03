@@ -27,18 +27,10 @@
 //          wrote. Never which one.
 
 import { describe, expect, it } from "vitest";
-import * as Y from "yjs";
+import type * as Y from "yjs";
 
 import { readEpoch, resolveEpochConflict } from "../../../canvas/canvas-epoch";
-import {
-  CANVAS_PATH,
-  createProbe,
-  fieldOf,
-  makeDoc,
-  mergeDocs,
-  node,
-  recordIds,
-} from "./harness";
+import { CANVAS_PATH, createProbe, fieldOf, makeDoc, mergeDocs, node, recordIds } from "./harness";
 
 const REPLICA_COUNT = 3;
 
@@ -80,10 +72,7 @@ describe("WP28 AC1 — every replica resolves to the winner, none merges the two
     }
 
     for (const [index, replica] of replicas.entries()) {
-      expect(recordIds(replica, "nodes"), `replica ${index}`).toEqual([
-        "n-imported",
-        "n-shared",
-      ]);
+      expect(recordIds(replica, "nodes"), `replica ${index}`).toEqual(["n-imported", "n-shared"]);
       expect(
         replica.getMap<Y.Map<unknown>>("nodes").has(`n-only-${index}`),
         `replica ${index} kept its own private record — it merged the two histories`,
@@ -125,10 +114,9 @@ describe("WP28 AC1 — every replica resolves to the winner, none merges the two
 
     for (const [index, probe] of probes.entries()) {
       expect(probe.writes.length, `replica ${index} archived ${probe.writes.length} times`).toBe(1);
-      expect(
-        probe.writes[0].content,
-        `replica ${index} archived somebody else's state`,
-      ).toContain(`private to replica ${index}`);
+      expect(probe.writes[0].content, `replica ${index} archived somebody else's state`).toContain(
+        `private to replica ${index}`,
+      );
       expect(probe.writes[0].content).not.toContain("imported only");
     }
     for (const replica of replicas) replica.destroy();

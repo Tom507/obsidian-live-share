@@ -33,13 +33,10 @@
 import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
+import { type PersistenceIO, attachCanvasPersistence } from "../../../files/canvas-persistence";
 import { createSidecarStore } from "../../../files/canvas-sidecar";
 import { createSidecarLifecycle } from "../../../files/canvas-sidecar-lifecycle";
 import { CanvasSync, canvasDocId, createCanvasIdentityStore } from "../../../files/canvas-sync";
-import {
-  type PersistenceIO,
-  attachCanvasPersistence,
-} from "../../../files/canvas-persistence";
 import {
   CANVAS_PATH,
   FIXED_GUID,

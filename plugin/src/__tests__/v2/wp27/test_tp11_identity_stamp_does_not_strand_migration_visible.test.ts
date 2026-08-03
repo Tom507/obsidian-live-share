@@ -32,11 +32,7 @@ import {
   migrateV1ToV2,
 } from "../../../canvas/canvas-schema";
 import { createSidecarStore } from "../../../files/canvas-sidecar";
-import {
-  CanvasSync,
-  canvasDocId,
-  createCanvasIdentityStore,
-} from "../../../files/canvas-sync";
+import { CanvasSync, canvasDocId, createCanvasIdentityStore } from "../../../files/canvas-sync";
 import {
   CANVAS_PATH,
   FIXED_GUID,
@@ -66,11 +62,7 @@ async function guestOverV1Doc() {
     awareness: {},
   });
 
-  const canvasSync = new CanvasSync(
-    vault as never,
-    sync as never,
-    createFileOps() as never,
-  );
+  const canvasSync = new CanvasSync(vault as never, sync as never, createFileOps() as never);
   canvasSync.setIdentityStore(createCanvasIdentityStore({ manifest, sidecar }));
   return { vault, sync, doc, canvasSync };
 }
@@ -89,9 +81,7 @@ describe("WP27 AC1 — the identity stamp coexists with the V1→V2 migration", 
 
     migrateV1ToV2(doc);
 
-    expect(doc.getMap<unknown>(META_MAP_NAME).get(SCHEMA_VERSION_KEY)).toBe(
-      SUPPORTED_SCHEMA_MAJOR,
-    );
+    expect(doc.getMap<unknown>(META_MAP_NAME).get(SCHEMA_VERSION_KEY)).toBe(SUPPORTED_SCHEMA_MAJOR);
     doc.destroy();
   });
 

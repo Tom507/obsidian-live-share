@@ -14,11 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
 import { createSidecarStore } from "../../../files/canvas-sidecar";
-import {
-  CanvasSync,
-  canvasDocId,
-  createCanvasIdentityStore,
-} from "../../../files/canvas-sync";
+import { CanvasSync, canvasDocId, createCanvasIdentityStore } from "../../../files/canvas-sync";
 import {
   CANVAS_PATH,
   FIXED_GUID,
@@ -40,11 +36,7 @@ async function subscribedHost() {
   const manifest = await createManifest(vault, sync);
   const sidecar = createSidecarStore(createMemoryIO());
   manifest.setCanvasGuid(CANVAS_PATH, FIXED_GUID);
-  const canvasSync = new CanvasSync(
-    vault as never,
-    sync as never,
-    createFileOps() as never,
-  );
+  const canvasSync = new CanvasSync(vault as never, sync as never, createFileOps() as never);
   canvasSync.setIdentityStore(createCanvasIdentityStore({ manifest, sidecar }));
   await canvasSync.subscribe(CANVAS_PATH, "host");
   return { vault, sync, canvasSync };

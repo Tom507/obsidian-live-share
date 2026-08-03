@@ -148,10 +148,9 @@ describe("WP25 AC2 — a clean unsubscribe/resubscribe cycle loses no update", (
     seedRecord(doc, "nodes", { ...NODE_B, id: "n-ghost" });
     await settle();
 
-    expect(
-      io.appends.length,
-      "the update handler was still attached after unsubscribe",
-    ).toBe(afterTeardown);
+    expect(io.appends.length, "the update handler was still attached after unsubscribe").toBe(
+      afterTeardown,
+    );
 
     canvasSync.destroy();
   });

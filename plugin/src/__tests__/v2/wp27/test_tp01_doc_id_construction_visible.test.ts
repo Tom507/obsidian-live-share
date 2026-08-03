@@ -28,19 +28,9 @@ import {
 } from "../../../canvas/canvas-schema";
 import { CANVAS_DOC_PREFIX, canvasDocId } from "../../../files/canvas-sync";
 
-const GUIDS = [
-  "0f2a9c6e1b4d47aa9d316c0e2f8b5a70",
-  "a",
-  "guid-with-dashes",
-  "9F2A-UPPER-CASE",
-];
+const GUIDS = ["0f2a9c6e1b4d47aa9d316c0e2f8b5a70", "a", "guid-with-dashes", "9F2A-UPPER-CASE"];
 
-const PATHS = [
-  "boards/board.canvas",
-  "board.canvas",
-  "a b/c d.canvas",
-  "notes/journal.md",
-];
+const PATHS = ["boards/board.canvas", "board.canvas", "a b/c d.canvas", "notes/journal.md"];
 
 describe("WP27 AC1 — CANVAS_DOC_PREFIX and canvasDocId are the doc-id surface", () => {
   it("CANVAS_DOC_PREFIX is exported and is exactly the announced namespace", () => {
@@ -96,8 +86,8 @@ describe("WP27 AC1 — CANVAS_DOC_PREFIX and canvasDocId are the doc-id surface"
     expect(PATH_KEY).toBe("path");
     expect(EPOCH_KEY).toBe("epoch");
     // One namespace, five names, no accidental aliasing of an existing key.
-    expect(
-      new Set([GUID_KEY, PATH_KEY, EPOCH_KEY, META_MAP_NAME, SCHEMA_VERSION_KEY]).size,
-    ).toBe(5);
+    expect(new Set([GUID_KEY, PATH_KEY, EPOCH_KEY, META_MAP_NAME, SCHEMA_VERSION_KEY]).size).toBe(
+      5,
+    );
   });
 });

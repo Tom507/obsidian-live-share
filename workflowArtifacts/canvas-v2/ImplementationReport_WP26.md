@@ -438,3 +438,137 @@ three mock parameter signatures, to clear three `TS2493` diagnostics this batch 
 assertion, expected value or test count changed, and the file's falsification was re-verified
 afterwards. Flagged explicitly here because attempts 1 and 2 reported "no test file altered"
 and that is no longer true.
+
+---
+
+## Cross-WP AC3 repair (post-batch sweep)
+
+A final full-batch blind sweep ran `blind_set2` tp09 at **50 collected / 48 passed / 2 failed**.
+Neither failure was a formatting artefact and neither was a defect in WP26's own work: WP26's
+AC3 is a *live, mechanically-checked invariant of the whole tree*, and two later WPs violated
+it after WP26 landed. WP26's production code was correct and unchanged; the repair is to the
+contract comment WP26 owns and to the later WP's own call site.
+
+**No test file was edited, added or deleted for this repair.** Both oracles are correct.
+
+### Violation 1 — an undocumented real consumer (introduced by WP27)
+
+```text
+WP26 AC3 blind2 — every real consumer module is named in the contract comment
+AssertionError: expected [ 'collab.ts' ] to deeply equal []
+```
+
+WP27 AC4 added the second bare-path `getDoc` guard in `plugin/src/editor/collab.ts`
+(`:10` imports `skipsAutoTextSync`, `:84` calls it in `activateForFile`). That made
+`collab.ts` a genuine consumer of the exclusion, and AC3 requires the contract comment above
+`skipsAutoTextSync` to enumerate **every** real consumer.
+
+**Fix** — `plugin/src/utils.ts`: one row added to the *callers-of-this-predicate* block
+(the first enumeration block, which lists `skipsAutoTextSync` call sites; the second block
+lists the four `isSidecarPath`-only seams and is unchanged):
+
+```text
+files/background-sync.ts  startAll  ..... manifest replay
+                          onFileAdded ... vault create
+                          onFileRenamed . vault rename INTO a .canvas or
+                                          into the sidecar directory
+files/manifest.ts         syncFromManifest text branch — join / resume /
+                          reconnect / reload-from-host
+editor/collab.ts          activateForFile the editor binding (WP27 AC4),
+                          guarding the bare-path `getDoc` that would seed
+                          the whole document into a raw `Y.Text` and
+                          install a character-level binding over it
+```
+
+The self-describing sentence that used to say "either a row **below**" was corrected to name
+**both** enumeration blocks, since the new row sits in the block *above* it. No prose was
+added inside either block and no new filename was introduced anywhere in the comment.
+
+**Mechanical re-extraction** (the oracle's own procedure: last `/**` before
+`function skipsAutoTextSync`, then `/([a-z0-9-]+\.ts)\b/gi`) — run as a script, not by eye,
+because this comment had already broken twice in this batch in the *opposite* direction:
+
+```text
+CONSUMERS (derived from the tree) : background-sync.ts, collab.ts, manifest.ts
+NAMED_IN_COMMENT                  : background-sync.ts, canvas-sidecar.ts, collab.ts, manifest.ts
+ALLOWED (consumers + owner + home): background-sync.ts, canvas-sidecar.ts, collab.ts,
+                                    manifest.ts, utils.ts
+PHANTOM (named but not a consumer): []
+UNDOCUMENTED (consumer not named) : []
+```
+
+Set equality holds in both directions.
+
+### Violation 2 — a second private canvas-extension test in `main.ts` (introduced by WP30)
+
+```text
+WP26 AC3 blind2 — a second private copy is detectable by shape, not only by name
+AssertionError: main.ts canvas-extension tests: expected 2 to be less than or equal to 1
+```
+
+The oracle forbids any *new* private spelling of the canvas-extension test outside `utils.ts`,
+and permits `main.ts` exactly the one occurrence that predates WP26.
+
+- `plugin/src/main.ts:860` — `isTextFile(path) && path.endsWith(".canvas")` — pre-existing,
+  permitted, **untouched**.
+- `plugin/src/main.ts:1098` — `!rawPath || !rawPath.endsWith(".canvas")` inside WP30's
+  `activeCanvasPathForImport` — the offender.
+
+**Fix** — route the check through one shared definition rather than re-spelling the literal
+(contract §1: where two places need the same constant, define it once and import it):
+
+- `plugin/src/canvas/canvas-epoch.ts` — WP28 already owns the canvas-extension notion here as
+  the module-private `CANVAS_EXT = ".canvas"`. It now also exports its predicate form,
+  `isCanvasPath(path): path is string`, implemented as a `typeof` guard plus
+  `path.endsWith(CANVAS_EXT)`. Total and non-throwing, because it runs inside Obsidian
+  `checkCallback`s that fire on every palette keystroke and discard exceptions. The module's
+  own private `assertCanvasPath` now calls it, so the extension test has exactly one body in
+  that module too. No new constant, no new literal, zero new dependencies.
+- `plugin/src/main.ts` — imports `isCanvasPath` and calls it. `main.ts` keeps holding wiring
+  only; the test itself now lives in a module. WP30 → WP28 is the dependency direction the
+  batch contract already declares (`compareEpoch`, `conflictCopyPath`, the epoch bump).
+
+`skipsAutoTextSync` was deliberately **not** used here: it means "skip auto text sync" and is
+`.canvas` **OR** sidecar, so it would offer sidecar state files as importable canvases. That
+distinction is recorded in a comment at the call site.
+
+**Behaviour preserved exactly.** The old disjunction and `!isCanvasPath(rawPath)` accept the
+same set: `undefined` and `""` both fail the string/suffix test, every other path answers
+identically. `activeCanvasPathForImport` is unchanged otherwise.
+
+### Falsification
+
+Each fix was reverted individually and the blind2 tp09 file was run on its own pin
+(`npx vitest run --root .. workflowArtifacts/canvas-v2/tests/blind_set2/WP26/test_tp09_one_predicate_one_definition_blind2.test.ts`):
+
+| Reverted | Assertion that reddened | Message |
+|---|---|---|
+| the `editor/collab.ts` row in `utils.ts` | *the enumeration is derived from the code, both ways → every real consumer module is named in the contract comment* (`:107`) | `AssertionError: expected [ 'collab.ts' ] to deeply equal []` |
+| `isCanvasPath` in `main.ts` (literal restored) | *a second private copy is detectable by shape, not only by name → neither permitted file grew a SECOND such test* (`:156`) | `AssertionError: main.ts canvas-extension tests: expected 2 to be less than or equal to 1` |
+
+In both cases exactly one assertion reddened (1 failed / 7 passed in that file) and the other
+fix stayed green, so neither is load-bearing for the other. Both were restored afterwards.
+
+### Gates after the repair
+
+```text
+python _run_blind.py 26 both   set1 45/45 PASS · set2 50/50 PASS
+vitest wp26 / wp27 / wp30      46 / 54 / 78 — all green
+vitest run (full suite)        299 files · 1833 passed / 0 failed  (unchanged — this is a
+                               repair, not a feature)
+tsc --noEmit -skipLibCheck     clean, zero diagnostics
+biome lint (plugin/node_modules/.bin/biome, on the three changed files)  clean
+```
+
+`biome check` also reports pre-existing CRLF format diffs on these files; untouched modules
+(`files/manifest.ts`, `files/vault-events.ts`) report the identical class, so that is the
+repo-wide baseline and not a product of this repair.
+
+### The reusable lesson
+
+WP26's AC3 is not documentation — it is an **invariant over the whole tree**, and any WP that
+later adds a consumer of `skipsAutoTextSync`/`isSidecarPath`, or spells `.canvas` privately in
+a production module, breaks it from the outside. Two consecutive WPs did exactly that without
+touching a line WP26 wrote. When a WP adds a call site to a shared exclusion, updating the
+owner's contract comment is part of *that* WP's work, and a new extension test must go through
+the module that owns the constant rather than being re-spelt at the call site.

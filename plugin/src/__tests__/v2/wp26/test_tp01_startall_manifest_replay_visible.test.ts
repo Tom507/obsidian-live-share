@@ -22,11 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
 import { BackgroundSync } from "../../../files/background-sync";
-import {
-  SIDECAR_DIR,
-  sidecarHistoryPath,
-  sidecarIndexPath,
-} from "../../../files/canvas-sidecar";
+import { SIDECAR_DIR, sidecarHistoryPath, sidecarIndexPath } from "../../../files/canvas-sidecar";
 
 const SIDECAR_INDEX = sidecarIndexPath();
 const SIDECAR_HISTORY = sidecarHistoryPath("wp26-tp01");

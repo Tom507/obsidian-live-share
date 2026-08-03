@@ -261,6 +261,10 @@ export function isTextFile(path: string): boolean {
  *                                             into the sidecar directory
  *   files/manifest.ts         syncFromManifest text branch — join / resume /
  *                             reconnect / reload-from-host
+ *   editor/collab.ts          activateForFile the editor binding (WP27 AC4),
+ *                             guarding the bare-path `getDoc` that would seed
+ *                             the whole document into a raw `Y.Text` and
+ *                             install a character-level binding over it
  *
  * The predicate is shared rather than copied per module deliberately: four
  * private copies of `path.endsWith(".canvas")` is exactly how this defect class
@@ -275,12 +279,14 @@ export function isTextFile(path: string): boolean {
  * predicate itself and its owning module `files/canvas-sidecar.ts`, appears as a
  * row; and every row is a real call site. Each row is `<module>  <function>`.
  *
- * Every `.ts` name appearing ANYWHERE in this comment is therefore either a row
- * below, that owning module, or this file. Other components are referred to by
- * ROLE rather than by filename — deliberately, so the consumer set can be read
- * off mechanically without disambiguating prose. Do not "helpfully" restore a
- * filename to the reasoning below: a bare filename here is exactly the ambiguity
- * that let this defect recur twice, with two different modules (WP26 AC3):
+ * Every `.ts` name appearing ANYWHERE in this comment is therefore a row of one
+ * of the two enumeration blocks — this one and the callers-of-this-predicate
+ * block above — or that owning module, or this file. Other components are
+ * referred to by ROLE rather than by filename — deliberately, so the consumer
+ * set can be read off mechanically without disambiguating prose. Do not
+ * "helpfully" restore a filename to the reasoning below: a bare filename here is
+ * exactly the ambiguity that let this defect recur twice, with two different
+ * modules (WP26 AC3):
  *
  *   files/background-sync.ts  handleLocalTextModify
  *   files/manifest.ts         syncFromManifest

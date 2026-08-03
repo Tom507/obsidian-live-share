@@ -55,7 +55,9 @@ vi.mock("@codemirror/state", () => {
     Compartment: MockCompartment,
     EditorState: { readOnly: { of: (val: boolean) => ({ readOnly: val }) } },
     RangeSet: { empty: [], of: (ranges: unknown[]) => ranges },
-    StateEffect: { define: () => ({ of: (val: unknown) => ({ type: "state-effect", value: val }) }) },
+    StateEffect: {
+      define: () => ({ of: (val: unknown) => ({ type: "state-effect", value: val }) }),
+    },
     StateField: { define: () => "mock-state-field" },
     Transaction: { remote: "remote" },
   };

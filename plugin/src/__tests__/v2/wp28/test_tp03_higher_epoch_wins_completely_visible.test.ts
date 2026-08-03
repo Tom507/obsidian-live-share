@@ -18,14 +18,14 @@
 // tombstone map — is where the loser's work is preserved.
 
 import { describe, expect, it } from "vitest";
-import * as Y from "yjs";
+import type * as Y from "yjs";
 
-import { EPOCH_KEY, GUID_KEY, META_MAP_NAME, PATH_KEY } from "../../../canvas/canvas-schema";
 import {
   CANVAS_EPOCH_ADOPT_ORIGIN,
   readEpoch,
   resolveEpochConflict,
 } from "../../../canvas/canvas-epoch";
+import { EPOCH_KEY, GUID_KEY, META_MAP_NAME, PATH_KEY } from "../../../canvas/canvas-schema";
 import {
   CANVAS_PATH,
   FIXED_GUID,
@@ -163,9 +163,7 @@ describe("WP28 AC1 — the higher epoch wins completely, not partially", () => {
 
     await resolveEpochConflict({ doc: loser, winner, canvasPath: CANVAS_PATH, env: probe.env });
 
-    const adoptions = probe.transactions.filter(
-      (tr) => tr.origin === CANVAS_EPOCH_ADOPT_ORIGIN,
-    );
+    const adoptions = probe.transactions.filter((tr) => tr.origin === CANVAS_EPOCH_ADOPT_ORIGIN);
     expect(
       adoptions.length,
       "the adoption must be exactly one transaction carrying WP28's origin — a doc " +

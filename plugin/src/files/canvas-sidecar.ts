@@ -113,8 +113,7 @@ export const SIDECAR_DEGRADATION = {
   TRUNCATED: "truncated",
   CORRUPT: "corrupt",
 } as const;
-export type SidecarDegradation =
-  (typeof SIDECAR_DEGRADATION)[keyof typeof SIDECAR_DEGRADATION];
+export type SidecarDegradation = (typeof SIDECAR_DEGRADATION)[keyof typeof SIDECAR_DEGRADATION];
 
 export interface SidecarLoadResult {
   readonly degradation: SidecarDegradation;
@@ -172,12 +171,7 @@ function encodeFrame(payload: Uint8Array): Uint8Array {
 }
 
 function readFrameLength(bytes: Uint8Array, at: number): number {
-  return (
-    ((bytes[at] << 24) >>> 0) +
-    (bytes[at + 1] << 16) +
-    (bytes[at + 2] << 8) +
-    bytes[at + 3]
-  );
+  return ((bytes[at] << 24) >>> 0) + (bytes[at + 1] << 16) + (bytes[at + 2] << 8) + bytes[at + 3];
 }
 
 type HistoryScan =
@@ -262,10 +256,7 @@ function missingResult(detail: string): SidecarLoadResult {
   };
 }
 
-function degradedResult(
-  degradation: SidecarDegradation,
-  detail: string,
-): SidecarLoadResult {
+function degradedResult(degradation: SidecarDegradation, detail: string): SidecarLoadResult {
   return { degradation, checkpointApplied: false, historyEntriesApplied: 0, detail };
 }
 

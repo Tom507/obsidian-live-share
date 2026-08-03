@@ -16,11 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GUID_KEY, META_MAP_NAME, PATH_KEY } from "../../../canvas/canvas-schema";
 import { createSidecarStore } from "../../../files/canvas-sidecar";
-import {
-  CanvasSync,
-  canvasDocId,
-  createCanvasIdentityStore,
-} from "../../../files/canvas-sync";
+import { CanvasSync, canvasDocId, createCanvasIdentityStore } from "../../../files/canvas-sync";
 import {
   CANVAS_PATH,
   FIXED_GUID,
@@ -41,11 +37,7 @@ async function subscribedHost() {
   const sidecar = createSidecarStore(createMemoryIO());
   const identity = createCanvasIdentityStore({ manifest, sidecar });
   manifest.setCanvasGuid(CANVAS_PATH, FIXED_GUID);
-  const canvasSync = new CanvasSync(
-    vault as never,
-    sync as never,
-    createFileOps() as never,
-  );
+  const canvasSync = new CanvasSync(vault as never, sync as never, createFileOps() as never);
   canvasSync.setIdentityStore(identity);
   await canvasSync.subscribe(CANVAS_PATH, "host");
   // The file moves on disk first; the handler runs afterwards.

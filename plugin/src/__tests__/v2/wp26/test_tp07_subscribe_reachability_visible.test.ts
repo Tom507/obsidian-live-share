@@ -89,11 +89,9 @@ describe("WP26 AC1 — no guarded entry point routes a sidecar path into subscri
     ]);
     const { bg } = createHarness(entries);
     const seen: string[] = [];
-    const subscribe = vi
-      .spyOn(bg, "subscribe")
-      .mockImplementation(async (path: string) => {
-        seen.push(path);
-      });
+    const subscribe = vi.spyOn(bg, "subscribe").mockImplementation(async (path: string) => {
+      seen.push(path);
+    });
 
     await bg.startAll("host");
     await bg.onFileAdded(SIDECAR_NESTED);

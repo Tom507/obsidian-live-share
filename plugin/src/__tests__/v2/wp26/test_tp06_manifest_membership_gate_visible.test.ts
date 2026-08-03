@@ -22,8 +22,8 @@
 //
 // AC1 says "ever". None of these three may leak.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TFile } from "obsidian";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
 import {

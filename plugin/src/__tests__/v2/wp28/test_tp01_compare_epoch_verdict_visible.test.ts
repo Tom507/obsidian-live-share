@@ -95,7 +95,7 @@ describe("WP28 AC1 — `compareEpoch` orders two epochs", () => {
     expect(normalizeEpoch(41)).toBe(41);
   });
 
-  it("a numeric STRING never wins — `\"9\"` is not epoch 9", () => {
+  it('a numeric STRING never wins — `"9"` is not epoch 9', () => {
     expect(compareEpoch("9", 1)).toBe("remote-wins");
     expect(compareEpoch(1, "9")).toBe("local-wins");
     expect(compareEpoch("9", "9")).toBe("equal");

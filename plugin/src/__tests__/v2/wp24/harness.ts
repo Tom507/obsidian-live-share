@@ -151,7 +151,10 @@ export function readFrames(history: Uint8Array): Uint8Array[] {
   while (at < history.length) {
     if (at + 4 > history.length) throw new Error(`incomplete frame header at ${at}`);
     const n =
-      ((history[at] << 24) >>> 0) + (history[at + 1] << 16) + (history[at + 2] << 8) + history[at + 3];
+      ((history[at] << 24) >>> 0) +
+      (history[at + 1] << 16) +
+      (history[at + 2] << 8) +
+      history[at + 3];
     if (at + 4 + n > history.length) throw new Error(`incomplete frame payload at ${at}`);
     out.push(history.slice(at + 4, at + 4 + n));
     at += 4 + n;

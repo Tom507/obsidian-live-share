@@ -22,19 +22,11 @@
 // more file the user must reason about.
 
 import { describe, expect, it } from "vitest";
-import * as Y from "yjs";
+import type * as Y from "yjs";
 
 import { resolveEpochConflict } from "../../../canvas/canvas-epoch";
 import { EPOCH_KEY, META_MAP_NAME } from "../../../canvas/canvas-schema";
-import {
-  CANVAS_PATH,
-  createProbe,
-  edge,
-  makeDoc,
-  node,
-  rawEpoch,
-  recordIds,
-} from "./harness";
+import { CANVAS_PATH, createProbe, edge, makeDoc, node, rawEpoch, recordIds } from "./harness";
 
 /** Every shape of "these two are related replicas", including the unstamped ones. */
 const EQUAL_CASES: readonly { name: string; local: DocEpoch; remote: DocEpoch }[] = [
@@ -93,32 +85,32 @@ describe("WP28 AC3 — equal epochs do not trigger the archive path", () => {
 
     await resolveEpochConflict({ doc, winner: peer, canvasPath: CANVAS_PATH, env: probe.env });
 
-    expect(
-      probe.notices,
-      "the user was warned about a conflict that did not happen",
-    ).toEqual([]);
+    expect(probe.notices, "the user was warned about a conflict that did not happen").toEqual([]);
     doc.destroy();
     peer.destroy();
   });
 
-  it.each(EQUAL_CASES)("$name: nothing is adopted and no signature exists", async ({ local, remote }) => {
-    const { doc, peer } = relatedPair(local, remote);
-    const probe = createProbe();
+  it.each(EQUAL_CASES)(
+    "$name: nothing is adopted and no signature exists",
+    async ({ local, remote }) => {
+      const { doc, peer } = relatedPair(local, remote);
+      const probe = createProbe();
 
-    const outcome = await resolveEpochConflict({
-      doc,
-      winner: peer,
-      canvasPath: CANVAS_PATH,
-      env: probe.env,
-    });
+      const outcome = await resolveEpochConflict({
+        doc,
+        winner: peer,
+        canvasPath: CANVAS_PATH,
+        env: probe.env,
+      });
 
-    expect(outcome.adopted).toBe(false);
-    expect(outcome.archivedTo).toBeNull();
-    expect(outcome.signature).toBeNull();
-    expect(probe.logs).toEqual([]);
-    doc.destroy();
-    peer.destroy();
-  });
+      expect(outcome.adopted).toBe(false);
+      expect(outcome.archivedTo).toBeNull();
+      expect(outcome.signature).toBeNull();
+      expect(probe.logs).toEqual([]);
+      doc.destroy();
+      peer.destroy();
+    },
+  );
 
   it("the local doc is not written to AT ALL on the equal path", async () => {
     const { doc, peer } = relatedPair({ epoch: 5 }, { epoch: 5 });

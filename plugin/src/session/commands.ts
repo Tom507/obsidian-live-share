@@ -1,5 +1,10 @@
 import { MarkdownView } from "obsidian";
 
+import {
+  IMPORT_FROM_FILE_COMMAND_ID,
+  IMPORT_FROM_FILE_COMMAND_NAME,
+  canImportFromFile,
+} from "../canvas/canvas-import-command";
 import type LiveSharePlugin from "../main";
 import { UserPickerModal } from "../ui/modals";
 import { normalizePath, toCanonicalPath } from "../utils";
@@ -178,6 +183,35 @@ export function registerCommands(plugin: LiveSharePlugin): void {
       if (plugin.settings.role !== "host" || !plugin.sessionManager.isActive) return false;
       if (checking) return true;
       void plugin.fetchAuditLog();
+    },
+  });
+
+  // WP30 (C30) — the explicit "Import from file" command: the ONLY way a file
+  // overwrites an already-living shared board.
+  //
+  // `checkCallback`, never `callback`, and that is structural rather than
+  // stylistic. AC4 ("unavailable for a path the client does not own or is
+  // degraded on") can only be expressed in this shape — a `callback` command
+  // sits in the palette unconditionally and leaves the guard nowhere to live.
+  //
+  // The guard asks two questions and both are fail-closed: is there a canvas in
+  // context at all, and does `canImportFromFile` say yes about THAT path.
+  // `main.ts` MEASURES ownership and degradation; the decision belongs to
+  // `canvas-import-command.ts` and is not re-spelt here.
+  plugin.addCommand({
+    id: IMPORT_FROM_FILE_COMMAND_ID,
+    name: IMPORT_FROM_FILE_COMMAND_NAME,
+    checkCallback: (checking) => {
+      const path = plugin.activeCanvasPathForImport();
+      if (path === null) return false;
+      if (!canImportFromFile(plugin.canvasImportAvailability(path))) return false;
+      if (checking) return true;
+      void plugin.runCanvasImportFromFile(path).catch(() => {
+        // Absorbed on purpose: `checkCallback` is not async and Obsidian
+        // discards its result, so an escaping rejection would surface only as an
+        // unhandled rejection. `runImportFromFile` reports every failure as a
+        // status and notifies the user itself (I11).
+      });
     },
   });
 }

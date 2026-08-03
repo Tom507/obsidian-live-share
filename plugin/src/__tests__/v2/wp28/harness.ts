@@ -20,12 +20,7 @@
 import { vi } from "vitest";
 import * as Y from "yjs";
 
-import {
-  EPOCH_KEY,
-  GUID_KEY,
-  META_MAP_NAME,
-  PATH_KEY,
-} from "../../../canvas/canvas-schema";
+import { EPOCH_KEY, GUID_KEY, META_MAP_NAME, PATH_KEY } from "../../../canvas/canvas-schema";
 
 export const CANVAS_PATH = "boards/plan.canvas";
 export const FIXED_GUID = "0f2a9c6e1b4d47aa9d316c0e2f8b5a70";
@@ -82,12 +77,7 @@ export function recordIds(doc: Y.Doc, space: RecordSpace): string[] {
   return [...doc.getMap<Y.Map<unknown>>(space).keys()].sort();
 }
 
-export function fieldOf(
-  doc: Y.Doc,
-  space: RecordSpace,
-  id: string,
-  key: string,
-): unknown {
+export function fieldOf(doc: Y.Doc, space: RecordSpace, id: string, key: string): unknown {
   return doc.getMap<Y.Map<unknown>>(space).get(id)?.get(key);
 }
 
@@ -146,7 +136,10 @@ export interface Probe {
     writeConflictCopy(path: string, content: string): Promise<void>;
     notify(message: string): void;
     today(): string;
-    logger: { debug(category: string, message: string): void; warn(category: string, message: string): void };
+    logger: {
+      debug(category: string, message: string): void;
+      warn(category: string, message: string): void;
+    };
   };
   readonly writes: RecordedWrite[];
   readonly notices: RecordedEvent[];
@@ -160,9 +153,7 @@ export interface Probe {
   now(): number;
 }
 
-export function createProbe(
-  opts: { today?: string; failWriteWith?: Error } = {},
-): Probe {
+export function createProbe(opts: { today?: string; failWriteWith?: Error } = {}): Probe {
   let seq = 0;
   const next = () => ++seq;
   const writes: RecordedWrite[] = [];

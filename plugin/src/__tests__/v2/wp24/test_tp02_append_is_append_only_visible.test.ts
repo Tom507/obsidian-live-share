@@ -15,11 +15,7 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 
-import {
-  SIDECAR_DIR,
-  createSidecarStore,
-  sidecarHistoryPath,
-} from "../../../files/canvas-sidecar";
+import { SIDECAR_DIR, createSidecarStore, sidecarHistoryPath } from "../../../files/canvas-sidecar";
 import { createFakeIO, readFrames, recordUpdates } from "./harness";
 
 const GUID = "guid-append-only";

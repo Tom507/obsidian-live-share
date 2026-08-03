@@ -44,11 +44,7 @@ async function subscribedHost() {
   const manifest = await createManifest(vault, sync);
   const sidecar = createSidecarStore(createMemoryIO());
   manifest.setCanvasGuid(CANVAS_PATH, FIXED_GUID);
-  const canvasSync = new CanvasSync(
-    vault as never,
-    sync as never,
-    createFileOps() as never,
-  );
+  const canvasSync = new CanvasSync(vault as never, sync as never, createFileOps() as never);
   canvasSync.setIdentityStore(createCanvasIdentityStore({ manifest, sidecar }));
   await canvasSync.subscribe(CANVAS_PATH, "host");
   vault.files.set(RENAMED_PATH, vault.files.get(CANVAS_PATH) as string);

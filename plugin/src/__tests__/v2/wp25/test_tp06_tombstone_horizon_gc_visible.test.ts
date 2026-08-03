@@ -38,13 +38,7 @@ import {
   createSidecarLifecycle,
 } from "../../../files/canvas-sidecar-lifecycle";
 import { DELETED_MAP_NAME, nextTombstoneTime } from "../../../files/canvas-sync";
-import {
-  FIXED_GUID,
-  createSidecarIO,
-  createTrace,
-  seedRecord,
-  writeTombstone,
-} from "./harness";
+import { FIXED_GUID, createSidecarIO, createTrace, seedRecord, writeTombstone } from "./harness";
 
 const HORIZON = 10;
 
@@ -146,10 +140,7 @@ describe("WP25 AC3 — tombstones beyond the horizon are physically removed", ()
 
     expect(result.removedTombstoneIds).not.toContain("n-undone");
     expect(readTombstoneEntry(doc.getMap<unknown>(DELETED_MAP_NAME), "n-undone")?.on).toBe(false);
-    expect(
-      nodeIds(doc),
-      "a restored record was deleted by the tombstone GC",
-    ).toContain("n-undone");
+    expect(nodeIds(doc), "a restored record was deleted by the tombstone GC").toContain("n-undone");
 
     await lifecycle.destroy();
   });

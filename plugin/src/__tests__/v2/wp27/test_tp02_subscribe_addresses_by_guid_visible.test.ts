@@ -11,7 +11,7 @@
 // production or make the test a coin flip.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as Y from "yjs";
+import type * as Y from "yjs";
 
 import { GUID_KEY, META_MAP_NAME, PATH_KEY } from "../../../canvas/canvas-schema";
 import { createSidecarStore } from "../../../files/canvas-sidecar";
@@ -42,11 +42,7 @@ async function wire(preboundGuid: string | null) {
   const sidecar = createSidecarStore(io);
   if (preboundGuid) manifest.setCanvasGuid(CANVAS_PATH, preboundGuid);
   const identity = createCanvasIdentityStore({ manifest, sidecar });
-  const canvasSync = new CanvasSync(
-    vault as never,
-    sync as never,
-    createFileOps() as never,
-  );
+  const canvasSync = new CanvasSync(vault as never, sync as never, createFileOps() as never);
   canvasSync.setIdentityStore(identity);
   return { vault, sync, manifest, sidecar, identity, canvasSync };
 }
@@ -110,9 +106,7 @@ describe("WP27 AC1 — a canvas doc is addressed by its guid", () => {
     expect(minted).not.toContain("/");
     expect(minted).not.toContain(".canvas");
 
-    expect(canvasIdsRequested(sync, CANVAS_DOC_PREFIX)).toEqual([
-      canvasDocId(minted as string),
-    ]);
+    expect(canvasIdsRequested(sync, CANVAS_DOC_PREFIX)).toEqual([canvasDocId(minted as string)]);
     expect(await identity.guidForPath(CANVAS_PATH)).toBe(minted);
     expect(manifest.getCanvasGuid(CANVAS_PATH)).toBe(minted);
 
@@ -128,11 +122,7 @@ describe("WP27 AC1 — a canvas doc is addressed by its guid", () => {
     const sync = createSyncManager();
     const manifest = await createManifest(vault, sync);
     const sidecar = createSidecarStore(createMemoryIO());
-    const canvasSync = new CanvasSync(
-      vault as never,
-      sync as never,
-      createFileOps() as never,
-    );
+    const canvasSync = new CanvasSync(vault as never, sync as never, createFileOps() as never);
     canvasSync.setIdentityStore(createCanvasIdentityStore({ manifest, sidecar }));
 
     await canvasSync.subscribe(CANVAS_PATH, "host");

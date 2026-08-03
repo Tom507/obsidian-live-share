@@ -43,11 +43,7 @@ async function wire() {
   const io = createMemoryIO();
   const sidecar = createSidecarStore(io);
   const identity = createCanvasIdentityStore({ manifest, sidecar });
-  const canvasSync = new CanvasSync(
-    vault as never,
-    sync as never,
-    createFileOps() as never,
-  );
+  const canvasSync = new CanvasSync(vault as never, sync as never, createFileOps() as never);
   canvasSync.setIdentityStore(identity);
   return { vault, sync, manifest, io, sidecar, identity, canvasSync };
 }
