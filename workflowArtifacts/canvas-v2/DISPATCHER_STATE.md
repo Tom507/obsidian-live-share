@@ -62,7 +62,7 @@ Nothing may run against real Obsidian until these land. Each was found by a batc
 
 | WP | State | Without it, the gate… |
 |---|---|---|
-| **WP70** | 🔄 attempt 2, `risk_flag HIGH` | …**trashes the owner's vault** (`sharedFolder=""` ⇒ whole vault shared ⇒ guest `cleanupStaleFiles`). Also owns the relay and the `obsidian-git` borrow. |
+| **WP70** | ⚠ attempt 2 done, `RISKY` — **2 blind failures escalated, ruling below** | …**trashes the owner's vault** (`sharedFolder=""` ⇒ whole vault shared ⇒ guest `cleanupStaleFiles`). Also owns the relay and the `obsidian-git` borrow. |
 | **WP74** | ⬜ chartered | …can run against a canvas **never opened**, or treat a **timeout** as convergence — a false green under exactly the conditions a real sync bug creates. |
 | **WP75** | ⬜ chartered | …**cannot tell two vaults from one** (D14: both windows may share one process), over an unidentified build, with `applied` a constant. |
 | **WP76** | ⬜ chartered | …**never runs the path the fix lives on.** Proves Yjs converges; says nothing about P0/P1. |
@@ -231,6 +231,38 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 - **Teardown grey area:** if the owner has Obsidian open on either vault, the rig's launches become
   windows in a process it did not start (D14/D15). WP48 owns teardown of **rig-started** processes only;
   window-level teardown inside a foreign process is undefined. Unresolved.
+### ⚠ FIRST ACTION FOR THE NEXT SESSION — two items from WP70 attempt 2
+
+WP70 went **49 blind failures → 2**, both in `blind_set2/WP70/tp31`, escalated rather than touched.
+
+**1. RULING — a borrow must NOT rewrite when the enabled set does not change.**
+
+The dispute: *must the `community-plugins.json` borrow rewrite the file when there is nothing to remove?*
+**No.** The safety property this WP rests on is **byte preservation**, and a rewrite that changes nothing
+semantically can still change bytes — key order, whitespace, trailing newline, BOM. That is risk for zero
+benefit, and it is the same instinct as I11: do not touch what you do not need to touch. A no-op borrow
+records "no change required" and its restore is trivially verifiable against the marker.
+
+So `tp31` pins a behaviour that **contradicts its own WP's safety property**. Disposition:
+- The blind sets are **batch-authored**, so the **D-1 precedent applies** — §7's classes govern
+  *inherited* tests, and inherited-vs-batch-authored is the distinction that matters, **not**
+  fixture-vs-assertion. No §7 licence is required. B10a's caution in escalating was still correct: an
+  implementer who freely rewrites blind assertions that disagree with it destroys the point of a blind
+  set, so the **ruling had to come from outside the batch**, which it now has.
+- **Before correcting it, re-read `tp31` and confirm it actually contradicts this ruling** rather than
+  testing something subtler. If it does, correct and log it; if it does not, it is a real defect and the
+  implementation changes instead.
+
+**2. ⚠ CREDENTIAL LEAK, unowned — `ports.BorrowState`.**
+
+It is a **dataclass holding `data.json` bytes**, so its generated `__repr__` renders **live credentials**
+(`encryptionPassphrase`, `encryptionSalt`, `jwt`, `serverPassword`, `token`). Same defect class as the
+`tp02` room-token leak WP70 just closed, but in an **inherited module outside WP70's boundary**, so it
+was carried up rather than fixed. **Needs an owner.** The fix shape is already proven in WP70: a `Secret`
+wrapper that is unrenderable **by type** — redacting `__repr__`/`__str__`/`__format__`, refused
+`__bytes__`/`__iter__`/`__contains__`, `reveal()` as sole accessor, and a `__deepcopy__` returning the
+wrapper so `asdict()` cannot unwrap it. *A type is a guarantee where a call-site audit is only a promise.*
+
 ### Dispatcher rulings on the WP76 pass
 
 - **WP51 depends on WP76** (one-definer rule: C76 defines the unconditional open+gesture primitive,
