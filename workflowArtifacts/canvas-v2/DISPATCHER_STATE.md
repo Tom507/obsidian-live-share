@@ -54,7 +54,41 @@
 | PHASE VI — verification integrity | WP55–WP58, WP62, WP64, WP67 | ✅ done |
 | Open | WP59 ✅ · WP65 ⬜ · WP66 ⬜ · **WP68 ⬜ (chartered 2026-08-02)** | see queue |
 
-**Chartered total: 70 WPs.**
+**Chartered total: 76 WPs.** Implemented: WP1–30, 41–49, 55–64, 67, 69, 72, 73.
+
+### THE GATE — required order, and why each one blocks
+
+Nothing may run against real Obsidian until these land. Each was found by a batch that tried.
+
+| WP | State | Without it, the gate… |
+|---|---|---|
+| **WP70** | 🔄 attempt 2, `risk_flag HIGH` | …**trashes the owner's vault** (`sharedFolder=""` ⇒ whole vault shared ⇒ guest `cleanupStaleFiles`). Also owns the relay and the `obsidian-git` borrow. |
+| **WP74** | ⬜ chartered | …can run against a canvas **never opened**, or treat a **timeout** as convergence — a false green under exactly the conditions a real sync bug creates. |
+| **WP75** | ⬜ chartered | …**cannot tell two vaults from one** (D14: both windows may share one process), over an unidentified build, with `applied` a constant. |
+| **WP76** | ⬜ chartered | …**never runs the path the fix lives on.** Proves Yjs converges; says nothing about P0/P1. |
+| **WP71** | ⬜ chartered | …has no reproducible invocation (the rig is plan-only **by design**; C45 AC4 forbids a spawn backend). |
+| WP50, WP51 | ⬜ | matrix + stale-view surface |
+| **WP7** | ⬜ | the run itself |
+
+**WP75 and WP76 are ORTHOGONAL, not ranked** — I proposed a ranking and Worker 2 rejected it with the better
+argument: a gate running the right path but unable to tell two vaults apart is equally unrescuable.
+WP75 makes the run's **signals** true; WP76 makes its **subject** right. Each independently voids WP7.
+The only asymmetry cuts against my framing: a WP76-less gate with a corrected docstring is *honestly
+labelled*, whereas a WP75-less gate **lies**. Sequencing is WP75 → WP76 only because they edit the same
+two files.
+
+### ⚠ RULING — the gate runs the FILE path, not the binding path
+
+**Measured: both vaults have `useCanvasBinding = false`**, and BUILD_SPEC freezes it there until P5
+(WP39/WP40). So the live capture path is `vault.on("modify")` → `handleLocalModify`
+(`vault-events.ts:230-255`) — **and that is where CONCEPT_V2's surface-shadow repair actually lives**
+(`canvas-sync.ts:2736`, `:2792-2801`). `captureLocal` belongs to `CanvasBinding`, which is switched off.
+
+**This corrected my own framing:** I had told Worker 2 the fix lives on `captureLocal`. A WP scoped that
+way would have chartered a repair for the **switched-off path**. Consequence (S11): `bindingInstrument`
+fires only inside `CanvasBinding`, so with the flag off **all four binding counters are permanently zero
+however much capture ran** — "counters moved ⇒ the path ran" is the `__LS_E2E__` mistake with the sign
+flipped. The path witness must be the gesture's own report plus file/doc observation.
 
 ### ⚠ CONFIRMED LIVE — a gate run would trash the owner's vault files
 
@@ -197,6 +231,34 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 - **Teardown grey area:** if the owner has Obsidian open on either vault, the rig's launches become
   windows in a process it did not start (D14/D15). WP48 owns teardown of **rig-started** processes only;
   window-level teardown inside a foreign process is undefined. Unresolved.
+### Dispatcher rulings on the WP76 pass
+
+- **WP51 depends on WP76** (one-definer rule: C76 defines the unconditional open+gesture primitive,
+  C51 composes it, C51 AC2 unchanged). Recorded as a decision; **not back-dated into WP51**, which is
+  still `planned`.
+- **WP76's 5 ACs accepted.** Not to be split; AC2's gesture is meaningless without AC1's open.
+- **Warning owed to WP50's implementor:** the D17 file oracle is **vacuous against a canvas with no
+  writer attached** — `sameFileObservation` returns `true` for two `{exists:false, sha256:"", size:0,
+  content:null}` observations, so it would report `fileConverged: true` over **two files that do not
+  exist**. Not a defect in C50; a precondition C50 cannot supply itself. **First instance of the
+  unfalsifiable-green class caught *before* it landed.**
+- **The vacuity sweep is declared exhausted.** Six consecutive passes each found something; the sixth
+  found S8/S9/S11, none of which is "a field with no reader" — it is a different question (does the gate
+  run the right code). Worker 2's own read: a seventh pass would return nothing. Accepted.
+
+### ⚠ My own errors this stretch, recorded so they are not repeated
+
+1. **Twice I specified a check that cannot fire.** `__LS_E2E__` count (zero in *both* bundles), then
+   "a production build refuses to start the run" (a production build has **no control port to answer
+   on** — `src/testing` tree-shakes out). Both rewritten as positive identification.
+2. **I told Worker 2 the fix lives on `captureLocal`.** It lives on `handleLocalModify`; `captureLocal`'s
+   path is switched off by default. Caught by the sweep, not by me.
+3. **I committed while a sibling batch had staged work** — `git commit` commits the whole **shared
+   index**, so explicit `git add` is not protection. `b8a541e` swept in 94 of B10a's files.
+   **Fix adopted: `git commit -o <paths>`, or verify `git diff --cached` immediately before committing.**
+   Nothing was lost; WP70's implementation is mislabelled under a WP74 message and history was **not**
+   rewritten because agents were live on the branch.
+
 ### ⚠ `plugin/main.js` is NOT a safe bundle oracle (B10b, 2026-08-04)
 
 It is **untracked, shared, and last-build-wins — including a concurrent batch's build.** B10b observed
