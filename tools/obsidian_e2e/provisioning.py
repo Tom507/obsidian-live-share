@@ -69,6 +69,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Optional, Sequence, Union
 
 from . import constants, ports, relay
+from .constants import Secret
 from .ports import ProvisionError, _atomic_write_bytes, _read_bytes_or_none, _remove_if_present
 from .relay import GateOrderViolation, RelayRoom
 
@@ -690,15 +691,34 @@ class _CommunityState:
     it in full into any traceback that happens to hold this object — which is the same
     defect as a credential in a repr, one file away. The fingerprint is what a human
     needs; the content is what only the restore needs.
+
+    **WP77 / S12 — why the handwritten repr below was not enough, measured.** WP70
+    repaired this record by hand: ``repr=False`` plus the ``__repr__``/``__str__`` under
+    this docstring. That closes ``repr()``, ``str()``, ``format()`` and ``%s`` — and
+    ``dataclasses.asdict()`` does not consult ``__repr__`` at all. It walks the fields
+    and deep-copies each leaf, so the raw bytes came straight back out of a record whose
+    ``repr`` test was green. This is the audit-versus-type argument demonstrated inside
+    this package, on a real landed attempt. The hole is closed the same way WP70 closed
+    the room token and WP77 closed ``ports.BorrowState``: with the **type**. The
+    handwritten repr is kept because its output (fingerprint + size) is more useful to a
+    human than ``Secret(<redacted>)``, but it is no longer what makes this safe.
     """
 
     has_marker: bool
     had_original: bool
     original_sha256: Optional[str]
-    original_bytes: Optional[bytes]
+    original_bytes: Optional[Secret]
+
+    def __post_init__(self) -> None:
+        if self.original_bytes is not None and not isinstance(self.original_bytes, Secret):
+            object.__setattr__(self, "original_bytes", Secret(self.original_bytes))
+
+    def reveal_original_bytes(self) -> Optional[bytes]:
+        """Return the borrowed enabled-list bytes. The only way out, spelled at the site."""
+        return None if self.original_bytes is None else self.original_bytes.reveal()
 
     def __repr__(self) -> str:
-        size = None if self.original_bytes is None else len(self.original_bytes)
+        size = None if self.original_bytes is None else len(self.reveal_original_bytes())
         return (
             f"{type(self).__name__}(has_marker={self.has_marker!r}, "
             f"had_original={self.had_original!r}, "
@@ -1012,7 +1032,9 @@ def disable_community_plugins(
     # Computed before the first write, so a list this module cannot narrow is a refusal
     # with the vault byte-identical rather than a half-finished borrow.
     if state.had_original:
-        remaining, narrowed = _enabled_without_disabled(state.original_bytes or b"", path)
+        remaining, narrowed = _enabled_without_disabled(
+            state.reveal_original_bytes() or b"", path
+        )
     else:
         remaining, narrowed = [], b""
 
@@ -1022,7 +1044,7 @@ def disable_community_plugins(
     # Order matters: the original is durably saved before the live file is touched, so a
     # crash between the two leaves a recoverable vault rather than an unrecoverable one.
     if state.had_original and not backup_path.exists():
-        _atomic_write_bytes(backup_path, state.original_bytes or b"")
+        _atomic_write_bytes(backup_path, state.reveal_original_bytes() or b"")
 
     _atomic_write_bytes(
         marker_path,
@@ -1031,7 +1053,9 @@ def disable_community_plugins(
             role=role,
             had_original=state.had_original,
             original_sha256=state.original_sha256,
-            original_size=len(state.original_bytes) if state.original_bytes is not None else None,
+            original_size=(
+                len(state.reveal_original_bytes()) if state.original_bytes is not None else None
+            ),
             disabled=constants.DISABLED_PLUGIN_IDS,
             pid=pid,
             created_at=created_at,
@@ -1049,7 +1073,9 @@ def disable_community_plugins(
         marker_path=str(marker_path),
         had_original=state.had_original,
         original_sha256=state.original_sha256,
-        original_size=len(state.original_bytes) if state.original_bytes is not None else None,
+        original_size=(
+            len(state.reveal_original_bytes()) if state.original_bytes is not None else None
+        ),
         disabled=tuple(constants.DISABLED_PLUGIN_IDS),
         enabled_after=tuple(remaining),
         run_id=run_id,

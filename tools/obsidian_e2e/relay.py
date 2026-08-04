@@ -145,11 +145,13 @@ NEGATIVE_EVIDENCE_KEYS = ("relayMediated", "changed")
 #: arrived there by a caller copying a settings payload into it.
 SECRET_BEARING_KEYS = constants.SECRET_SETTINGS_KEYS
 
-#: What every general-purpose rendering of a secret produces instead of the value. Named
-#: at module scope so a caller, a run record or a checker can *assert* that a rendering
-#: was redacted rather than merely assert that the secret is absent — "the token is not in
-#: this string" is also true of a string that dropped the field entirely.
-REDACTED = "<redacted>"
+#: What every general-purpose rendering of a secret produces instead of the value.
+#: Named at module scope so a caller, a run record or a checker can *assert* that a
+#: rendering was redacted rather than merely assert that the secret is absent — "the
+#: token is not in this string" is also true of a string that dropped the field
+#: entirely. Defined in `constants` since WP77 (see §10.3 there) and re-exported here,
+#: unchanged, so `relay.REDACTED` is the same object it always was.
+REDACTED = constants.REDACTED
 
 #: The default pause seam. Injectable, and injected in every test: a wait driven by
 #: elapsed time cannot make progress against a frozen clock, while one driven by the
@@ -238,138 +240,17 @@ class GateOrderViolation(RelayError):
 # ---------------------------------------------------------------------------
 # Secret-bearing values — a type, not an audit
 # ---------------------------------------------------------------------------
+#
+# WP70 defined `Secret` and `RedactedMapping` here. WP77 needs them in `ports.py`,
+# and `relay.py` already imports from `ports` (line 88 above), so the reverse import
+# would close a cycle at module-import time. The definition site therefore moved down
+# to `constants.py` §10.3 — which imports nothing from this package — and is
+# **re-exported** here unchanged. `relay.Secret is constants.Secret` and
+# `relay.RedactedMapping is constants.RedactedMapping`: one class each, in the whole
+# package. A second definition would be how one of them stops being applied.
 
-
-class Secret:
-    """A value that carries a credential, and therefore cannot be *rendered*.
-
-    The rule this type exists to make structural: **a value that carries a secret cannot
-    be rendered by any general-purpose stringification, and cannot arrive in a message,
-    a log record or a traceback by accident.**
-
-    Auditing call sites is a promise; a type is a guarantee. The audit form of this rule
-    fails in the ordinary way — ``@dataclass`` synthesises a ``__repr__`` that prints
-    every field, ``repr()`` is what ``str()`` falls back to, ``logging``'s lazy ``%s``
-    interpolation renders at emit time and long after the call site was reviewed, and an
-    exception carries its arguments into every traceback that is ever printed. Each of
-    those is a *different* call site, and every one of them reaches the same object. So
-    the object refuses instead:
-
-    ├── ``__repr__`` / ``__str__`` / ``__format__`` ─ redacted, so f-strings, ``%s``,
-    │   ``.format()``, ``print``, ``logging`` and traceback rendering all yield nothing
-    ├── ``__bytes__`` / ``__iter__`` / ``__contains__`` ─ refused outright, so no
-    │   slicing, joining or membership test can spell the value out one piece at a time
-    └── :meth:`reveal` ─ the **only** accessor, and it has to be written at the call
-        site, which is exactly what makes the few legitimate uses greppable
-
-    Equality is deliberately *not* closed: comparing a secret against a candidate is an
-    explicit act by a caller who already holds the candidate, and it discloses nothing
-    the caller did not have. Rendering is the accidental act, and rendering is what is
-    shut.
-    """
-
-    __slots__ = ("_value",)
-
-    #: The module-level placeholder, bound here so ``Secret.REDACTED`` and
-    #: :data:`REDACTED` can never drift apart.
-    REDACTED = REDACTED
-
-    def __init__(self, value: object) -> None:
-        object.__setattr__(
-            self, "_value", value.reveal() if isinstance(value, Secret) else value
-        )
-
-    # -- the one explicit accessor -------------------------------------------
-
-    def reveal(self):
-        """Return the wrapped value. The only way out, and it is spelled at the site."""
-        return self._value
-
-    # -- immutable: a secret that can be swapped is a secret nobody can reason about --
-
-    def __setattr__(self, name: str, value: object) -> None:
-        raise AttributeError(f"{type(self).__name__} is immutable")
-
-    def __delattr__(self, name: str) -> None:
-        raise AttributeError(f"{type(self).__name__} is immutable")
-
-    # -- copying keeps the wrapper, and never unwraps ------------------------
-    #
-    # ``copy.deepcopy`` — which ``dataclasses.asdict`` uses on every leaf — reconstructs
-    # by assigning attributes, which the immutability above refuses. Left alone that is a
-    # trap: a run-record writer calling ``asdict(record)`` gets an ``AttributeError``, and
-    # the obvious workaround is to unwrap the secret first, which is the whole failure
-    # this type exists to prevent. An immutable value is its own copy, so both hand the
-    # *wrapper* back and the redaction survives the copy.
-
-    def __copy__(self) -> "Secret":
-        return self
-
-    def __deepcopy__(self, memo: dict) -> "Secret":
-        return self
-
-    def __reduce__(self):
-        return (type(self), (self._value,))
-
-    # -- every general-purpose rendering path, closed -------------------------
-
-    def __repr__(self) -> str:
-        return f"{type(self).__name__}({self.REDACTED})"
-
-    def __str__(self) -> str:
-        return self.REDACTED
-
-    def __format__(self, format_spec: str) -> str:
-        return self.REDACTED
-
-    def __bytes__(self) -> bytes:
-        raise TypeError(f"{type(self).__name__} refuses to be encoded; use .reveal()")
-
-    def __iter__(self):
-        raise TypeError(f"{type(self).__name__} refuses to be iterated; use .reveal()")
-
-    def __contains__(self, item: object) -> bool:
-        raise TypeError(f"{type(self).__name__} refuses membership tests; use .reveal()")
-
-    # -- comparison and truthiness disclose nothing ---------------------------
-
-    def __eq__(self, other: object) -> bool:
-        if isinstance(other, Secret):
-            return self._value == other.reveal()
-        return self._value == other
-
-    def __ne__(self, other: object) -> bool:
-        return not self.__eq__(other)
-
-    def __hash__(self) -> int:
-        return hash(self._value)
-
-    def __bool__(self) -> bool:
-        return bool(self._value)
-
-
-class RedactedMapping(dict):
-    """A ``dict`` whose secret-bearing members are never rendered.
-
-    The same property as :class:`Secret`, one level up: a *mapping* that carries a
-    credential under a known key is exactly as renderable as the credential itself, and
-    a caller that logs "the member set it is about to provision" is the ordinary way
-    that happens. Subscripting still returns the real value — this closes the rendering
-    path, not the use.
-    """
-
-    #: The member names whose values are redacted when this mapping is rendered.
-    SECRET_KEYS = SECRET_BEARING_KEYS
-
-    def __repr__(self) -> str:
-        rendered = ", ".join(
-            f"{key!r}: {Secret.REDACTED if key in self.SECRET_KEYS else repr(value)}"
-            for key, value in self.items()
-        )
-        return "{" + rendered + "}"
-
-    def __str__(self) -> str:
-        return self.__repr__()
+Secret = constants.Secret
+RedactedMapping = constants.RedactedMapping
 
 
 # ---------------------------------------------------------------------------

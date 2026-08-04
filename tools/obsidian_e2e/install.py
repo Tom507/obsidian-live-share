@@ -105,6 +105,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence, Tuple, Union
 
 from . import constants
+from .constants import Secret
 
 __all__ = [
     "InstallError",
@@ -255,13 +256,30 @@ class BundleState:
 
     ``original_bytes`` is present only while a caller holds this object; it is never written
     anywhere except back into ``main.js`` or the rig's backup file.
+
+    **WP77 — the field is a :class:`~obsidian_e2e.constants.Secret`.** It holds the owner's
+    ``main.js``, which is shipped code rather than a credential, so the *disclosure*
+    severity is low — but the *defect* is identical to ``ports.BorrowState``'s: a
+    ``@dataclass`` field of file bytes that ``repr``, ``str``, ``format``, ``%s``,
+    ``dataclasses.asdict`` and a failed pytest comparison all spell out in full, into
+    whatever transcript is watching. WP77 closes the defect **class**, not the one
+    reported instance, so this record gets the same type and the same single accessor.
+    ``None`` stays ``None``.
     """
 
     has_marker: bool
     had_original: bool
     original_sha256: Optional[str]
-    original_bytes: Optional[bytes]
+    original_bytes: Optional[Secret]
     marker: Optional[dict]
+
+    def __post_init__(self) -> None:
+        if self.original_bytes is not None and not isinstance(self.original_bytes, Secret):
+            object.__setattr__(self, "original_bytes", Secret(self.original_bytes))
+
+    def reveal_original_bytes(self) -> Optional[bytes]:
+        """Return the borrowed bundle bytes. The only way out, spelled at the site."""
+        return None if self.original_bytes is None else self.original_bytes.reveal()
 
 
 @dataclass(frozen=True)
@@ -830,7 +848,9 @@ def install_bundle(
     pid = os.getpid()
     installed_sha = _sha256(payload)
 
-    original_size = len(state.original_bytes) if state.original_bytes is not None else None
+    original_size = (
+        len(state.reveal_original_bytes()) if state.original_bytes is not None else None
+    )
 
     # The restore point is established and VERIFIED before the live bundle is touched. The
     # backup is written once per borrow and never overwritten by the already-installed
@@ -844,7 +864,7 @@ def install_bundle(
     prior_marker = _read_bytes_or_none(marker_path)
     try:
         if state.had_original and not backup_path.exists():
-            _atomic_write_bytes(backup_path, state.original_bytes or b"")
+            _atomic_write_bytes(backup_path, state.reveal_original_bytes() or b"")
             wrote_backup = True
             written_backup = _read_bytes_or_none(backup_path)
             if (
@@ -885,7 +905,10 @@ def install_bundle(
             or (verified.original_bytes is None) != (state.original_bytes is None)
             or (
                 verified.original_bytes is not None
-                and len(verified.original_bytes) != original_size
+                # WP77: over the revealed bytes, so this stays a comparison of CONTENT
+                # LENGTH. A length taken off the wrapper would be a TypeError, not a
+                # silently-agreeing oracle — but it is spelled explicitly anyway.
+                and len(verified.reveal_original_bytes()) != original_size
             )
         ):
             raise BundleRestoreMismatch(

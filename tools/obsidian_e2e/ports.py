@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Union
 
 from . import constants
+from .constants import RedactedMapping, Secret
 
 __all__ = [
     "ProvisionError",
@@ -211,15 +212,40 @@ class RestoreResult:
 class BorrowState:
     """The vault's borrow record as it exists on disk, already validated.
 
-    ``original_bytes`` is present only while a caller holds this object; it is never
-    written anywhere except back into ``data.json`` or the backup file (S4).
+    ``original_bytes`` is the owner's ``data.json``, verbatim — the file that carries
+    ``encryptionPassphrase``, ``encryptionSalt``, ``jwt``, ``serverPassword`` and
+    ``token``. It is present only while a caller holds this object; it is never written
+    anywhere except back into ``data.json`` or the backup file (S4).
+
+    **WP77 — why the field is a :class:`~obsidian_e2e.constants.Secret` and not bytes.**
+    A ``@dataclass`` synthesises a ``__repr__`` that prints every field, and ``str()``,
+    ``format()``, ``"%s" %``, ``dataclasses.asdict`` and pytest's assertion diff all
+    reach it. Each of those is a *different* call site, so an audit has to be right at
+    all of them forever while the object only has to be right once. Note in particular
+    that a **handwritten** ``__repr__`` is not enough: it closes ``repr()`` and
+    ``dataclasses.asdict`` walks straight past it into the raw field — measured against
+    ``provisioning._CommunityState``, which had exactly that repair and leaked anyway.
+    So the value refuses instead, and :meth:`reveal_original_bytes` is the only way to
+    it — spelled at the call site, which is what keeps the four legitimate uses
+    greppable.
+
+    ``None`` stays ``None``: "the owner had no settings file" is a fact about the vault,
+    not a secret, and every ``is None`` test in the module keeps working unchanged.
     """
 
     has_marker: bool
     had_original: bool
     original_sha256: Optional[str]
-    original_bytes: Optional[bytes]
+    original_bytes: Optional[Secret]
     marker: Optional[dict]
+
+    def __post_init__(self) -> None:
+        if self.original_bytes is not None and not isinstance(self.original_bytes, Secret):
+            object.__setattr__(self, "original_bytes", Secret(self.original_bytes))
+
+    def reveal_original_bytes(self) -> Optional[bytes]:
+        """Return the borrowed bytes. The only way out, and it is spelled at the site."""
+        return None if self.original_bytes is None else self.original_bytes.reveal()
 
 
 # ---------------------------------------------------------------------------
@@ -426,8 +452,14 @@ def _with_port(original: Optional[bytes], members: Mapping[str, object]) -> byte
     """
     if not members:
         raise ValueError("the member set must not be empty")
+    # WP77 / S13 — this frame's `members` local is on every traceback `provision_port`
+    # can raise, and the member set carries the minted room token. `RedactedMapping` is a
+    # `dict` subclass, so ordering, subscripting and `json.dumps` output are unchanged;
+    # the normalisation is idempotent when the caller already passed one in.
+    if not isinstance(members, RedactedMapping):
+        members = RedactedMapping(members)
     if original is None:
-        return json.dumps(dict(members), indent=2).encode("utf-8") + b"\n"
+        return json.dumps(members, indent=2).encode("utf-8") + b"\n"
 
     try:
         text = original.decode("utf-8")
@@ -671,10 +703,22 @@ def provision_port(
     if resolved_port <= 0:
         raise ValueError(f"control port must be a positive integer, got {resolved_port!r}")
 
+    # WP77 / S13 — `dict(members)` used to stand here, and `dict(x)` builds a **plain**
+    # `dict`, not a copy of the subclass. `gate_settings_members` deliberately hands this
+    # function a `RedactedMapping` because the member set carries the minted room token
+    # and "the member set it is about to provision" is exactly the thing a caller prints
+    # while debugging a provisioning — and that line silently threw the protection away,
+    # in two live frames (this local, and `_with_port`'s parameter). `RedactedMapping` is
+    # a `dict` subclass, so subscripting, iteration, ordering and the emitted JSON are
+    # bit-for-bit unchanged; this closes the rendering path, not the use. The default
+    # (port-only) set goes through the same type: closing the class beats closing the
+    # one instance that was reported.
     if members is None:
-        resolved_members: Mapping[str, object] = {constants.SETTINGS_PORT_KEY: resolved_port}
+        resolved_members: Mapping[str, object] = RedactedMapping(
+            {constants.SETTINGS_PORT_KEY: resolved_port}
+        )
     else:
-        resolved_members = dict(members)
+        resolved_members = RedactedMapping(members)
         if not resolved_members:
             raise ValueError("members must name at least one settings key")
 
@@ -692,7 +736,7 @@ def provision_port(
     marker_path = _marker_path(vault)
 
     try:
-        provisioned = _with_port(state.original_bytes, resolved_members)
+        provisioned = _with_port(state.reveal_original_bytes(), resolved_members)
     except _MalformedSettings as err:
         # No content in the message: only the path and the structural complaint (S4).
         raise ProvisionConflict(
@@ -708,7 +752,7 @@ def provision_port(
     # Order matters: the original is durably saved before the live file is touched, so a
     # crash between the two leaves a recoverable vault rather than an unrecoverable one.
     if state.had_original and not backup_path.exists():
-        _atomic_write_bytes(backup_path, state.original_bytes or b"")
+        _atomic_write_bytes(backup_path, state.reveal_original_bytes() or b"")
 
     _atomic_write_bytes(
         marker_path,
@@ -734,7 +778,9 @@ def provision_port(
         marker_path=str(marker_path),
         had_original=state.had_original,
         original_sha256=state.original_sha256,
-        original_size=len(state.original_bytes) if state.original_bytes is not None else None,
+        original_size=(
+            len(state.reveal_original_bytes()) if state.original_bytes is not None else None
+        ),
         run_id=identity,
         pid=pid,
         created_at=created_at,
