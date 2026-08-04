@@ -166,6 +166,17 @@ Present in the working tree and belonging to the sibling batch **B10a** (WP70):
 None was read for content, edited, staged, or "fixed". Reported per the batch contract.
 `tools/obsidian_e2e/`, `constants.py` and both Obsidian vaults were not touched by this batch at all.
 
+## §C2 — Commits, both repositories
+
+| Repo | Branch | Commit | Contents |
+|---|---|---|---|
+| **AgenticWorkspace** | `toms_branch` | **`50b0cf4`** | WP73: `tools/MCPserver/liveshare_e2e_mcp_server.py` + `tools/MCPserver/test_liveshare_e2e_mcp_server.py` |
+| **obsidian-live-share** | `fix-bugs-and-raceconditions` | **`b578b0c`** | WP72 source + visible set + both blind sets; both charters' §7; both implementation reports; this handover |
+
+Explicit path staging in both (22 paths in the plugin repo, 2 in the workspace repo); no
+`git add -A`. Nothing staged that this batch does not own: no vault content, no secret, no build
+output (`plugin/main.js` is untracked), no `__pycache__`, and none of B10a's files.
+
 ## §D — Summary for Worker 4 entry point
 
 Two control-surface defects are closed, and both were of the class this run has now hit eight times.
