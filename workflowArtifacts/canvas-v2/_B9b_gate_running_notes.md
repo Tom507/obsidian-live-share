@@ -243,6 +243,47 @@ borrow settings, create a scratch canvas or run a readiness handshake.
 
 ---
 
+## M10 — host state at the start of the gate, measured through the rig's **own** primitives
+
+Not a re-implementation: this ran `vaults.discover_instances`, `vaults.is_obsidian_running` and
+`lifecycle.default_probe`, so what is recorded is what the rig itself will see.
+
+| | |
+|---|---|
+| Obsidian running | **no** (`obsidian_running_known: true` — measured, not assumed) |
+| vault registry | readable at `%APPDATA%\obsidian\obsidian.json` |
+| role a | `ObsidianOrga`, registry id `703aa794cc73a117`, plugin **present + enabled** |
+| role b | `ObsidianOrga - Kopie`, registry id `55a4253eb7a90dde`, plugin **present + enabled** |
+| `plugin_state`, both roles | **`PLUGIN_NOT_E2E_CAPABLE`** |
+| `discovery_ok` | `false`, failures `["PLUGIN_NOT_E2E_CAPABLE", "PLUGIN_NOT_E2E_CAPABLE"]` |
+
+That refusal is **correct behaviour, not a defect**: both vaults carry the production build, so no
+control endpoint can ever answer at any port, and the rig names the state instead of launching
+windows and timing out. It is also the precise statement of why **WP69 is a hard precondition of
+the run**.
+
+Ports, probed:
+
+| constant | port | free | answers |
+|---|---|---|---|
+| `REAL_CONTROL_PORT_A` | 39431 | yes | **no** |
+| `REAL_CONTROL_PORT_B` | 39432 | yes | **no** |
+| `HEADLESS_RIG_PORT_A` *(mock — not the gate)* | 39421 | yes | — |
+| `HEADLESS_RIG_PORT_B` *(mock — not the gate)* | 39422 | yes | — |
+
+**This is the live confirmation of the standing claim that no control endpoint has ever answered
+on this host.** The mock pair is probed only to record that it is idle too — so no stale mock
+process could be mistaken for a real endpoint (D13). The mock ports are named here **only** to
+exclude them; they appear in no record that claims to satisfy the gate.
+
+Relay-port candidates, all measured free and disjoint from all four above: `39441`, `39442`,
+`39443`. WP70 pins **one** of these in `constants.py` and spells it as a literal nowhere else.
+
+Structural confirmation of M6, from the module itself: the set of console backends that start a
+process is **empty**.
+
+---
+
 ## M8 — ⚠ `canvas.setFlag` can destroy WP70's borrow — an interaction no charter names
 
 Measured directly in `plugin/src/testing/e2e-control.ts:991-1001`:
