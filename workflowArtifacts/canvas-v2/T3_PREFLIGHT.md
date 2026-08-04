@@ -81,10 +81,26 @@ Both vaults carry an **identical** install (byte-identical sizes, same timestamp
 | `main.js` | 626 711 bytes, dated 2026-07-26 |
 | `__LS_E2E__` occurrences in `main.js` | **zero** |
 
-Zero occurrences is the *expected* production signature, not an anomaly: the flag is folded to `false`
-at build time and the whole `src/testing/` tree is dead-code-eliminated. It **confirms** the standing
-claim that the installed build cannot host the control server, and it doubles as W4-1's C46
-production-bundle counter-check evidence (`src/testing/` does tree-shake out).
+> ### ⚠ CORRECTION (2026-08-04) — this evidence was NOT distinguishing
+>
+> The original text read that zero `__LS_E2E__` occurrences *"confirms the installed build cannot host
+> the control server"* and *"doubles as W4-1's C46 production-bundle counter-check evidence"*.
+> **Both claims rested on a test that cannot tell the two builds apart.**
+>
+> Measured by WP69: **`__LS_E2E__` occurs zero times in the e2e bundle too.** esbuild's `define`
+> substitutes the identifier at compile time, so the *name* never survives into any bundle, in either
+> mode. A count of zero is therefore consistent with **every** build and distinguishes nothing.
+>
+> The **distinguishing** signature is the marker triple (`e2eControlPort`, `LIVESHARE_E2E`,
+> `e2e-control`): production is **0 / 0 / 0**, e2e is **1 / 1 / 2**. Together with the size difference
+> (626 711 B production vs ~3.6 MB inline-sourcemap e2e) that is what actually establishes which build
+> is installed.
+>
+> **The conclusion was right and the reasoning was weak** — the installed builds *are* production, on
+> the marker triple and the size. But **W4-1 is NOT discharged by this file**; it must be re-established
+> against the marker triple on a freshly built bundle. I recorded it as partially discharged on the
+> strength of a check that could not fail. That is the same class of error this whole run exists to find,
+> committed in the pre-flight itself.
 
 Pre-existing backups already in both plugin dirs — **not ours, do not overwrite**:
 <!-- Updated: styles.css.bak added — the list was THREE and the measured directory contains FOUR; found by B9b's vault measurement 2026-08-04 -->

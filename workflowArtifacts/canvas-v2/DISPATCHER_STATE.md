@@ -197,7 +197,37 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 - **Teardown grey area:** if the owner has Obsidian open on either vault, the rig's launches become
   windows in a process it did not start (D14/D15). WP48 owns teardown of **rig-started** processes only;
   window-level teardown inside a foreign process is undefined. Unresolved.
-### Dispatcher rulings, 2026-08-04 (from the Worker 2 correction pass)
+### ⚠ `__LS_E2E__` is NOT a distinguishing marker — my pre-flight was wrong
+
+`__LS_E2E__` occurs **zero times in the e2e bundle too**: esbuild's `define` substitutes the identifier
+at compile time, so the name never survives into any bundle in any mode. A count of zero is consistent
+with every build. The **distinguishing** signature is the marker triple (`e2eControlPort`,
+`LIVESHARE_E2E`, `e2e-control`) — production **0/0/0**, e2e **1/1/2** — plus the size difference
+(626 711 B vs ~3.6 MB inline-sourcemap).
+
+**Consequence: W4-1 is NOT discharged.** I recorded it as partially discharged on the strength of a
+check that could not fail. It must be re-established against the marker triple on a freshly built bundle.
+
+### Dispatcher rulings, 2026-08-04 (from WP69 + the Worker 2 correction pass)
+
+- **Both vaults stay on the production build.** B9b installed, verified, restored and re-verified, then
+  deliberately left production in place, asking whether to leave the e2e bundle installed. **Agreed —
+  leave production.** An instrumented 3.6 MB dev build sitting in live vaults with no gate running is an
+  unforced risk, and re-installing at gate time is one call. WP7's run owns the persistent install.
+- **The test-mirror convention is only valid AFTER implementation.** B9b's own WP51 mirror commit broke
+  `npm run build` repo-wide — `tsc` typechecks `src/` including tests, so mirroring a
+  generated-but-unimplemented suite turns "tests fail" into "the repo does not build" **for every other
+  WP**. Reverted at `6b20c17`; all 27 WP51 test files intact under `workflowArtifacts/`. Do not mirror
+  a generated suite into `plugin/src/__tests__/` until its WP is implemented.
+- **⚠ Will hit the gate run: pytest cannot collect from the workspace root.**
+  `h:\My Code\AgenticWorkspace\Projects\_external\FinaleAbgabe` is a **dangling symlink** to
+  `/e/Dateien/Tom/THM/MIB5/FinaleAbgabe` (E: not present). Reproduced on WP44's suite, so pre-existing
+  and unrelated to this run. **It is the owner's thesis link — do not delete or repair it.** The gate
+  must invoke pytest with an **explicit path or rootdir**, never a bare collection from the workspace
+  root. Record this in WP71's procedure.
+- **27 tracked `__pycache__/*.pyc` files removed from the index** (`.gitignore` already listed them; my
+  earlier fix untracked only two directories). They re-dirtied the tree on every import, which makes
+  "the tree is quiet" unmeasurable — and a quiet tree is a precondition of WP69-style hash comparisons.
 
 - **`community-plugins.json` — WP69 vs. the `obsidian-git` precondition is NOT a conflict.**
   WP69 AC4 forbids **WP69** from writing that file, and that stands: WP69 is install-only and must not
