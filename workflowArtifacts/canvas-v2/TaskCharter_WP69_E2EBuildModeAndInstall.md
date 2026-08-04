@@ -1,7 +1,7 @@
 # Task Charter — WP69: One-shot E2E build mode and instrumented-build installation
 
 <!-- Updated: chartered from the measured T3 pre-flight — the only E2E-capable build is the only build that never terminates, and the install step T3_SharedContract §1.1 assigned to "WP50/WP51" was in neither charter 2026-08-02 -->
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `TESTS_ADDED`
 **WP:** WP69
 **Phase:** P0 (PHASE T3 group)
 **task_mode:** `standard`
@@ -144,7 +144,164 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Empty — filled by Worker 3's producer sub-agent. Worker 2 does not generate tests.*
+**Runner:** pytest. All eleven files run as
+`.venv\Scripts\python.exe -m pytest <file>` from the AgenticWorkspace root, using the T3
+shared-contract repo bootstrap (`<repo>/tools` on `sys.path`, `from obsidian_e2e import …`).
+There is no vitest file in this WP: the plugin suite never loads `main.js` or the build config.
+
+**Two seams the tests use instead of a real build — read before implementing.**
+
+- **Fake esbuild (TC1–TC4).** `npm run dev` calls `ctx.watch()` and never returns, and a test that
+  spawns it hangs the suite to timeout. So the *real* `plugin/esbuild.config.mjs` is executed by
+  `node` inside a temp directory whose `node_modules/esbuild` is a recording stub. The stub logs
+  every `context()` / `rebuild()` / `watch()` call plus node's `beforeExit` and `exit` events. That
+  gives a **termination oracle with no timing constant**: `beforeExit` fires when the event loop
+  drains and never when `process.exit()` is called, so a one-shot branch and a watch branch are
+  distinguishable in a process that always terminates. Verified against a hand-patched config: `e2e`
+  → `context, rebuild, exit` / define `"true"` / sourcemap `"inline"`; no argv → `context, watch,
+  beforeExit, exit`; a failing e2e build → exit 1.
+- **Injectable build runner (TC4, TC6).** `install.build_e2e_bundle(plugin_dir, *, runner=None)`
+  must accept a `runner(command, cwd) -> int` seam. The default runner shells out to the added npm
+  script; the tests always inject a fake. **No test ever spawns `npm run build` or `npm run dev`.**
+
+### TC1 — the three build modes, and which of them terminates
+
+- Verifies AC: **AC1**
+- Test file: `tests/visible/WP69/test_tp01_build_mode_termination_visible.py`
+- What it checks: `e2e` rebuilds once and exits 0 without entering the loop, `production` is
+  unchanged, and both a missing and an unknown `argv[2]` still hand control to `ctx.watch()`.
+- Test data channel: deterministic generator (temp harness dir + recording esbuild stub)
+
+### TC2 — the e2e option object is identical in every field to the watch branch
+
+- Verifies AC: **AC1**
+- Test file: `tests/visible/WP69/test_tp02_e2e_options_identical_to_watch_visible.py`
+- What it checks: the options actually passed to `esbuild.context()` for `e2e` deep-equal the
+  no-argv branch's, carry `__LS_E2E__: "true"` and `sourcemap: "inline"`, and differ from
+  `production` in exactly those two fields.
+- Test data channel: deterministic generator (recorded option object)
+
+### TC3 — exactly one added `package.json` script, everything else verbatim
+
+- Verifies AC: **AC1**
+- Test file: `tests/visible/WP69/test_tp03_package_json_one_added_script_visible.py`
+- What it checks: the six existing scripts are character-for-character the B9b baseline, exactly one
+  script was added, it passes the pinned argv token, no dependency changed and the version is not
+  bumped.
+- Test data channel: fixture (frozen baseline literals from commit `fcb2295`)
+
+### TC4 — a failed e2e build exits non-zero and is refused
+
+- Verifies AC: **AC1**, **AC3**
+- Test file: `tests/visible/WP69/test_tp04_failed_e2e_build_exits_nonzero_visible.py`
+- What it checks: the config propagates a build error as a non-zero exit, and the Python seam raises
+  `E2EBuildFailed` on a non-zero status even with a complete bundle already at the outfile, leaving
+  that bundle in place.
+- Test data channel: deterministic generator (esbuild stub + injected runner)
+
+### TC5 — the build-marker counter
+
+- Verifies AC: **AC3** (and the helper AC2's recorded measurement quotes)
+- Test file: `tests/visible/WP69/test_tp05_marker_counting_visible.py`
+- What it checks: `count_build_markers` counts each pinned marker and `__LS_E2E__` independently
+  over raw bytes, returning zero for a production-signature bundle and non-zero for an e2e one.
+- Test data channel: deterministic generator (synthetic bundle blobs)
+- Note: **AC2 itself is not tested here.** The before/after sha256 comparison of two real production
+  builds stays a measurement recorded in `ImplementationReport_WP69.md`, per §4.
+
+### TC6 — success needs the exit status **and** all three markers
+
+- Verifies AC: **AC3**
+- Test file: `tests/visible/WP69/test_tp06_verify_requires_status_and_markers_visible.py`
+- What it checks: `verify_e2e_bundle` accepts only exit 0 *with* every marker; a non-zero status is
+  refused despite a complete file, a single missing marker is refused on a clean exit, and neither
+  file presence nor a moved mtime is ever the signal.
+- Test data channel: deterministic generator (synthetic bundles; mtime moved with `os.utime`, no sleeps)
+
+### TC7 — installation writes exactly one file per vault
+
+- Verifies AC: **AC4**
+- Test file: `tests/visible/WP69/test_tp07_install_writes_exactly_one_file_visible.py`
+- What it checks: only `.obsidian/plugins/live-share/main.js` changes identity, the only new paths
+  are the rig's own backup and marker, and `manifest.json`, `styles.css`, `data.json`,
+  `community-plugins.json` and the owner's `*.bak` files keep their sha256.
+- Test data channel: fixture (synthetic vault under `h:\tmp\`, removed after the test)
+
+### TC8 — an install that cannot establish its restore point does not install
+
+- Verifies AC: **AC4**
+- Test file: `tests/visible/WP69/test_tp08_restore_point_before_write_visible.py`
+- What it checks: a missing plugin directory, an unattributed backup, a marker whose backup is
+  absent and a backup that disagrees with its recorded hash each raise a named refusal and leave the
+  vault's digest map unchanged.
+- Test data channel: fixture (synthetic vault under `h:\tmp\`, removed after the test)
+
+### TC9 — restore runs on every exit path and is byte-exact
+
+- Verifies AC: **AC4**
+- Test file: `tests/visible/WP69/test_tp09_restore_every_exit_path_visible.py`
+- What it checks: `installed_bundle` restores the recorded production sha256 on normal exit, on an
+  exception and on `KeyboardInterrupt`; the bundle really was replaced in between; and restore
+  leaves no rig artefact and is a safe repeated no-op.
+- Test data channel: fixture (synthetic vault under `h:\tmp\`, removed after the test)
+
+### TC10 — the owner's own backups are neither touched nor used as a restore point
+
+- Verifies AC: **AC4**
+- Test file: `tests/visible/WP69/test_tp10_owner_backups_untouched_visible.py`
+- What it checks: `main.js.bak`, `main.js.0.5.9.bak` and `manifest.json.bak` survive install and
+  restore byte-identically; the rig's namespace is disjoint from all three; and with a corrupted rig
+  backup the module raises `BundleRestoreMismatch` instead of falling back to `main.js.bak` —
+  which, in that test, holds bytes that would have made the fallback look correct.
+- Test data channel: fixture (synthetic vault under `h:\tmp\`, removed after the test)
+
+### TC11 — nothing this WP produces carries a byte of `data.json`
+
+- Verifies AC: **AC4** (T3_SharedContract §4 / S4)
+- Test file: `tests/visible/WP69/test_tp11_no_secret_leak_visible.py`
+- What it checks: the settings file is byte-identical throughout, and a planted synthetic sentinel
+  appears in neither the `InstallRecord`, nor the marker file (whose key set is the pinned field
+  set), nor any refusal message.
+- Test data channel: fixture (obviously-fake sentinel values; no real credential anywhere)
+
+**Names these tests pin, which the implementer must adopt** (contract §1 gives WP69 the
+`constants.py` §4.1 block and the first contiguous run of `FAILURE_REASONS` entries):
+
+```python
+# constants.py §4.1 — WP69: E2E build mode and bundle install namespace
+E2E_BUILD_ARGV      = "e2e"             # process.argv[2] token
+E2E_BUILD_SCRIPT    = "build:e2e"       # the one added package.json script name
+BUNDLE_BACKUP_REL   = ".obsidian/plugins/live-share/main.js.e2e-original"
+INSTALL_MARKER_REL  = ".obsidian/plugins/live-share/.e2e-install.json"
+INSTALL_MARKER_FIELDS = (
+    "runId", "role", "hadOriginal", "originalSha256", "originalSize",
+    "installedSha256", "pid", "createdAt",
+)
+# FAILURE_REASONS additions, appended in one contiguous run, each with a `# WP69 ACn` comment:
+E2E_BUILD_FAILED, BUNDLE_NOT_E2E_CAPABLE, BUNDLE_RESTORE_MISMATCH, INSTALL_CONFLICT
+```
+
+`tools/obsidian_e2e/install.py` public surface the tests import:
+
+```text
+├── count_build_markers(data: bytes) -> dict[str, int]        ← keys ⊇ E2E_BUILD_MARKERS + "__LS_E2E__"
+├── verify_e2e_bundle(bundle_path, *, exit_status) -> BuildResult
+├── build_e2e_bundle(plugin_dir, *, runner=None) -> BuildResult
+├── capture_bundle_state(vault_path) -> BundleState           ← read-only, never writes
+├── install_bundle(vault_path, role, source_bundle, *, run_id=None) -> InstallRecord
+├── restore_bundle(vault_path) -> RestoreBundleResult
+├── installed_bundle(vault_path, role, source_bundle, *, run_id=None)   ← context manager
+└── InstallError(reason) · E2EBuildFailed · BundleNotE2ECapable · BundleRestoreMismatch · InstallConflict
+
+BuildResult          : mode, command, exit_status, bundle_path, size, sha256,
+                       markers_found, markers_missing, e2e_capable
+BundleState          : has_marker, had_original, original_sha256, original_bytes, marker
+InstallRecord        : role, vault_path, bundle_path, backup_path, marker_path, had_original,
+                       original_sha256, original_size, installed_sha256, installed_size,
+                       run_id, pid, created_at, adopted_existing_backup
+RestoreBundleResult  : restored, had_original, bundle_file_present, vault_path, bundle_path,
+                       reason, restored_sha256, restored_size
+```
 
 ---
 
