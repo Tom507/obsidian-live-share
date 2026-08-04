@@ -45,7 +45,7 @@
 |---|---|---|
 | P0 — shadow diff + canonical serialization | WP1–WP7 | ✅ done (WP7 gate still unrun — see below) |
 | P1 — data model | WP8–WP23 | ✅ done |
-| P2 — sidecar / GUID / epoch / import | WP24–WP30 | 🔄 **in flight (batch B4)** — WP24 ✅, WP26 ✅, WP27 running |
+| P2 — sidecar / GUID / epoch / import | WP24–WP30 | ✅ **done** — all 7, `HANDOVER_READY`, committed `fcb2295` |
 | P3 — mode consensus, receive-and-persist | WP31–WP35 | ⬜ queued |
 | P4 — Y.Text, blur merge, UndoManager | WP36–WP38 | ⬜ queued |
 | P5 — op-capture promotion | WP39–WP40, WP52–WP54 | ⬜ queued (gated on the real-Obsidian gate) |
@@ -149,12 +149,32 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
   path reaching a vault write is protected by `isSharedPath`/`isSidecarPath` and by nothing else.
   This is the trap for any newly added op type.
 - ~~`TaskCharter_WP67` status field stale~~ — **discharged**, flipped to `DONE`.
-- **WP25 fixture-completion licence granted — §7 row owed.** Ruled: extend §7's **4th class**
+- ~~WP25 fixture-completion §7 row owed~~ · ~~WP27 measured §7 row owed~~ — **both discharged** (`a42845f`).
+- **Dispatcher ruling corrected (D-3):** I originally filed WP25 under §7's **fourth** class. Wrong —
+  the fourth class governs a test that is **RED**, failing on scenery; WP25's ordering tests were
+  **GREEN while asserting nothing**, which is the **fifth** class verbatim, and they were found the
+  fifth class's way (a perturbation that reddened nothing). Being re-filed to the fifth class as a
+  second grantee; the fourth class's own "extended no further" sentence then stands unviolated.
+- **Ruling (D-1):** WP27's restatement of the blind1 tp05 state-vector oracle required **no licence** —
+  the file was **authored by B4 itself**, and every §7 class governs *inherited* tests. Same precedent
+  as WP26's type-annotation edit. Recorded as a note, not a row; WP27's condition 5 narrowed to
+  pre-existing assertions, since as written it would have made a batch's revision of its own new test
+  an abort criterion.
+- **⚠ OUTSTANDING TEST-TITLE CORRECTION owed to a Worker 3 batch.**
+  `workflowArtifacts/canvas-v2/tests/blind_set1/WP27/test_tp05_rename_creates_no_doc_and_no_orphan_blind1.test.ts`
+  still reads *"clientID and state vector are **unchanged** across the rename"* while its assertion now
+  pins a delta of exactly 1. **A title asserting the opposite of its own assertion is the trap that bit
+  WP26/AC3 twice.** Title/message text only — no assertion, no count, no matcher. Not done during B9b
+  because that batch must not have test files moving under it.
+- **§7's lists are authoritative; every quotation of them elsewhere is a snapshot.** Three stale-recall
+  instances so far (`_B4_P2_running_notes.md:56`, `ImplementationReport_WP27.md:62`, and the WP27
+  coder's own reading). Rule 6 exists for exactly this.
+- **Superseded item (kept for the record):** Ruled: extend §7's **4th class**
   (fixture completion, currently WP18 + WP64) to **WP25**, bounded to the IO double's `wait` signature
   in `blind_set2/WP25/tp01` and nothing else. The class's demonstration requirement is satisfied and
   must be recorded in that form: **before the repair, falsification A left set2 47/47 green; after it,
   falsification A reddens it.** Same owner rule as below — Worker 2 writes the row.
-- **WP27's measured §7 row is owed.** The licence is granted and recorded; the *measured* row (post-
+- **Superseded (discharged `a42845f`):** The licence is granted and recorded; the *measured* row (post-
   amendment strictness, falsification result, executed count) was deliberately withheld until B4
   reports what was actually done. **Owner: Worker 2, one instance, nobody else** — this is the exact
   overlap that already cost a reconciliation once.
