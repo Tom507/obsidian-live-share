@@ -67,10 +67,39 @@ also gets a raw `Y.Text` of the same bytes, *"whose character-level merge destro
 arrived; the canvas is not on that path, and a guest cannot open a file it does not have. The run
 proceeded only because the Dispatcher copied the file into B by hand.
 
-**Not yet classified as a defect.** It may be intended (canvas sharing presupposes both sides holding the
-file) or a genuine distribution gap. **Nobody owns the question.** It needs one of: a materialise-on-
-manifest path for `.canvas`, or an explicit concept statement that canvases are not distributed.
-**Do not charter until it is decided which.**
+> ### ✅ RESOLVED 2026-08-05 — it is a **DEFECT**, and it is chartered as **WP79** (B15)
+>
+> **Owner's ruling:** *"auf dem Gast system [soll] ein kompletter Ordner gespiegelt werden mit Canvas —
+> es gibt ja nicht mal eine Option den Canvas nachträglich zu sharen."* A shared folder must mirror
+> **completely**, canvases included. The open question is answered.
+>
+> **The circular dependency, traced in the tree — this is why no "share it afterwards" option exists:**
+>
+> | | |
+> |---|---|
+> | `background-sync.ts:97` | `startAll`'s manifest replay does `if (skipsAutoTextSync(path)) continue;` → **the guest never subscribes a canvas from the manifest** |
+> | `manifest.ts:203` | `syncFromManifest`'s text branch skips `.canvas`, pointing at `coldOpen` as the materialiser |
+> | `CanvasPersistence.coldOpen` | runs only when a canvas is **opened/subscribed** |
+> | opening | requires the file to exist on disk |
+>
+> So the guest gets the file only via `coldOpen`, `coldOpen` runs only on open, and open needs the file.
+> **Nothing can ever break the cycle.** It is not a missing UI affordance; the path does not exist.
+>
+> **⚠ Both skips are individually CORRECT and must NOT be removed.** The `utils.ts` predicate exists
+> because without it a shared canvas *also* gets a bare-path raw `Y.Text` of the same bytes — a second
+> CRDT over a path `CanvasSync` already owns, *"whose character-level merge destroys edge endpoints."*
+> That is the exact data-loss class the redesign exists to eliminate. **A fix that deletes a skip is
+> wrong.** The materialisation must come from the canvas document through the same canonical projection
+> the host writes with, so both sides agree byte-for-byte by construction.
+>
+> Chartered with the hard questions named rather than left to the implementer: seed-once (I9) across
+> join / rejoin / reconnect / reload-from-host; I11 on collision with a diverged local canvas; eager vs
+> lazy materialisation; and the empty-doc guard, since an empty file that then wins a reconcile is
+> precisely how the E2 cascade destroyed data.
+>
+> **Note the provenance: this defect was invisible to 1 856 headless tests and surfaced within minutes of
+> the first real session.** It is the strongest argument yet for the gate the run has not finished
+> building — and equally for running the product early, which cost an afternoon.
 
 ### ⚠ SUSPECTED, UNVERIFIED — `isSharedPath` prefix match
 
