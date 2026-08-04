@@ -83,6 +83,7 @@ __all__ = [
     "gate_settings_members",
     "shared_surface_record",
     "verify_shared_surface",
+    "verify_member_types",
     "disable_community_plugins",
     "restore_community_plugins",
     "borrowed_community_plugins",
@@ -90,6 +91,7 @@ __all__ = [
     "GateOrderViolation",
     "RestartRequiredOperator",
     "SharedSurfaceNotEstablished",
+    "CommunityConfigMissing",
     "CommunityPluginsConflict",
     "CommunityPluginsRestoreMismatch",
 ]
@@ -138,6 +140,19 @@ class CommunityPluginsConflict(ProvisionError):
     """
 
     reason = constants.COMMUNITY_PLUGINS_CONFLICT
+
+
+class CommunityConfigMissing(ProvisionError):
+    """The vault has no ``.obsidian/`` configuration directory, so no borrow can be recorded.
+
+    The rig does not create a configuration directory inside a vault — that would be a
+    write the owner did not have before the run, and a path with no ``.obsidian`` is not
+    an Obsidian vault in the first place. Named rather than left to a bare
+    ``FileNotFoundError`` from the first write: an abort that does not name itself cannot
+    be told apart from a bug, and this one is a statement about the target.
+    """
+
+    reason = constants.VAULT_PATH_MISSING
 
 
 class CommunityPluginsRestoreMismatch(ProvisionError):
@@ -248,6 +263,11 @@ def gate_settings_members(role: str, room: RelayRoom) -> dict:
     ``debugLogging`` is ``False`` on purpose and is written as the JSON literal rather
     than skipped as falsy: a debug log written inside the vault is a vault write the
     fingerprint would report as a mismatch.
+
+    The result is a :class:`~obsidian_e2e.relay.RedactedMapping`, not a plain ``dict``. It
+    carries the minted room token — a live credential — and a member set is exactly the
+    kind of thing a caller prints while debugging a provisioning. Subscripting still
+    returns the real value; only the rendering is closed.
     """
     if role not in constants.SETTINGS_ROLES:
         raise ValueError(f"unknown role {role!r}; expected one of {constants.ROLES!r}")
@@ -255,18 +275,22 @@ def gate_settings_members(role: str, room: RelayRoom) -> dict:
         raise GateOrderViolation(
             "the gate's settings cannot be built without a room minted on the run's relay"
         )
-    members = {
-        "e2eControlPort": constants.REAL_CONTROL_PORTS[role],
-        "serverUrl": room.base_url,
-        "roomId": room.id,
-        "token": room.token,
-        "role": constants.SETTINGS_ROLES[role],
-        "permission": constants.SETTINGS_PERMISSION,
-        "sharedFolder": constants.SETTINGS_SHARED_FOLDER,
-        "excludePatterns": list(constants.SETTINGS_EXCLUDE_PATTERNS),
-        "autoReconnect": constants.SETTINGS_AUTO_RECONNECT,
-        "debugLogging": constants.SETTINGS_DEBUG_LOGGING,
-    }
+    members = relay.RedactedMapping(
+        {
+            "e2eControlPort": constants.REAL_CONTROL_PORTS[role],
+            "serverUrl": room.base_url,
+            "roomId": room.id,
+            # The one legitimate reveal in this module, and it is spelled out so it is
+            # greppable: the token has to reach the file the plugin reads at load.
+            constants.SETTINGS_TOKEN_KEY: room.reveal_token(),
+            "role": constants.SETTINGS_ROLES[role],
+            "permission": constants.SETTINGS_PERMISSION,
+            "sharedFolder": constants.SETTINGS_SHARED_FOLDER,
+            "excludePatterns": list(constants.SETTINGS_EXCLUDE_PATTERNS),
+            "autoReconnect": constants.SETTINGS_AUTO_RECONNECT,
+            "debugLogging": constants.SETTINGS_DEBUG_LOGGING,
+        }
+    )
     assert tuple(members) == constants.PROVISIONED_SETTINGS_KEYS
     return members
 
@@ -312,6 +336,59 @@ def verify_shared_surface(members: Mapping[str, object]) -> None:
     return None
 
 
+#: The declared type of each provisioned member. A settings member is read by the plugin
+#: as this type, so a value that merely *behaves* like it under `bool()` or `str()` is a
+#: different setting wearing the right name — and a record built by coercing it states
+#: something the file does not say. Validated before anything is written.
+_MEMBER_TYPES = {
+    "e2eControlPort": "port",
+    "serverUrl": "text",
+    "roomId": "text",
+    constants.SETTINGS_TOKEN_KEY: "text",
+    "role": "text",
+    "permission": "text",
+    "sharedFolder": "text",
+    "excludePatterns": "list",
+    "autoReconnect": "flag",
+    "debugLogging": "flag",
+}
+
+
+def verify_member_types(members: Mapping[str, object]) -> None:
+    """Refuse a member set whose values are not the types the plugin will read.
+
+    **Validate the type, never the truthiness.** ``1`` is not ``True``, ``0`` is not
+    ``False``, and ``""`` is not "a room id that happens to be short". Each of those
+    passes a truthiness test and then means something different to the code that reads
+    the file — and, worse, a record built with ``bool(value)`` would report the setting
+    the rig *meant* rather than the one it wrote, which is the failure mode a record
+    exists to make impossible.
+
+    Raises :class:`ValueError`: a member set that does not typecheck is a programming
+    error at the call site, not a state of the run — the same distinction
+    :func:`obsidian_e2e.ports.default_port_for_role` already draws for an unknown role.
+    No value is echoed in the message (S4).
+    """
+    missing = [key for key in constants.PROVISIONED_SETTINGS_KEYS if key not in members]
+    if missing:
+        raise ValueError(f"the gate member set is missing the pinned key(s) {missing!r}")
+    for key, kind in _MEMBER_TYPES.items():
+        value = members[key]
+        if kind == "flag" and not isinstance(value, bool):
+            raise ValueError(f"the {key!r} member must be a boolean, not a truthy stand-in")
+        if kind == "text" and (not isinstance(value, str) or not value):
+            raise ValueError(f"the {key!r} member must be a non-empty string")
+        if kind == "port" and (
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        ):
+            raise ValueError(f"the {key!r} member must be a positive integer")
+        if kind == "list" and (
+            not isinstance(value, (list, tuple))
+            or not all(isinstance(entry, str) for entry in value)
+        ):
+            raise ValueError(f"the {key!r} member must be a list of strings")
+
+
 def shared_surface_record(records: Iterable[GateProvisionRecord]) -> dict:
     """State positively, for **both** vaults, which folder the run shares.
 
@@ -337,6 +414,11 @@ def shared_surface_record(records: Iterable[GateProvisionRecord]) -> dict:
         raise SharedSurfaceNotEstablished(
             "a vault carries a non-empty exclude pattern list over the shared surface"
         )
+    # The pinned role order, not the order the caller happened to build the list in. A
+    # record is read by a human comparing two runs, and a list whose order comes from an
+    # accident of call sequence compares differently for reasons that are not about the
+    # run. Ordering by `constants.ROLES` makes two records of the same state identical.
+    ordered = sorted(entries, key=lambda entry: constants.ROLES.index(entry.role))
     return {
         "established": True,
         "sharedFolder": constants.SETTINGS_SHARED_FOLDER,
@@ -348,7 +430,7 @@ def shared_surface_record(records: Iterable[GateProvisionRecord]) -> dict:
                 "sharedFolder": entry.shared_folder,
                 "excludePatterns": list(entry.exclude_patterns),
             }
-            for entry in entries
+            for entry in ordered
         ],
     }
 
@@ -400,8 +482,15 @@ def provision_gate_settings(
             "provisioned with no room is a peer pointed at nowhere"
         )
 
-    resolved = dict(members) if members is not None else gate_settings_members(role, room)
+    # A caller-supplied member set is re-wrapped rather than copied into a plain dict:
+    # redaction is a property of *what the mapping holds*, not of where it came from.
+    resolved = (
+        relay.RedactedMapping(members)
+        if members is not None
+        else gate_settings_members(role, room)
+    )
     verify_shared_surface(resolved)
+    verify_member_types(resolved)
 
     probe = control_probe if control_probe is not None else _default_control_probe
     control_port = constants.REAL_CONTROL_PORTS[role]
@@ -423,13 +512,17 @@ def provision_gate_settings(
         run_id=record.run_id,
         control_port=control_port,
         room_id=room.id,
-        server_url=str(resolved.get("serverUrl", "")),
-        session_role=str(resolved.get("role", "")),
-        permission=str(resolved.get("permission", "")),
-        shared_folder=str(resolved["sharedFolder"]),
+        # Reported as written, never coerced: `verify_member_types` has already
+        # established each of these is the type it claims to be, so a `str()`/`bool()`
+        # here could only ever turn a value the record disagrees with into one it agrees
+        # with — which is precisely the disagreement the record exists to surface.
+        server_url=resolved["serverUrl"],
+        session_role=resolved["role"],
+        permission=resolved["permission"],
+        shared_folder=resolved["sharedFolder"],
         exclude_patterns=tuple(resolved["excludePatterns"]),
-        auto_reconnect=bool(resolved.get("autoReconnect")),
-        debug_logging=bool(resolved.get("debugLogging")),
+        auto_reconnect=resolved["autoReconnect"],
+        debug_logging=resolved["debugLogging"],
         provisioned_keys=tuple(resolved),
         provision=record,
     )
@@ -469,12 +562,67 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+#: The length of a sha256 hex digest. Spelled once; a shape check that hard-codes it in
+#: three places is three places for it to drift.
+_DIGEST_LENGTH = len(hashlib.sha256(b"").hexdigest())
+
+
+def _is_int(value: object) -> bool:
+    """``True`` for a genuine integer. ``bool`` is excluded: it is not a size or a pid."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_digest(value: object) -> bool:
+    """``True`` for something **shaped** like a sha256 hex digest.
+
+    Shape only — the right number of hex characters. Whether they are the *right*
+    characters is a **content** question, answered against the file the digest claims to
+    describe. Keeping the two apart is what keeps ``COMMUNITY_PLUGINS_CONFLICT`` (a
+    damaged record) distinguishable from ``COMMUNITY_PLUGINS_RESTORE_MISMATCH`` (an
+    intact record that the file contradicts) — the same discriminator ``ports.py`` and
+    ``install.py`` use, and losing it would collapse two different human responses into
+    one.
+    """
+    if not isinstance(value, str) or len(value) != _DIGEST_LENGTH:
+        return False
+    return all(character in "0123456789abcdefABCDEF" for character in value)
+
+
+def _is_id_list(value: object) -> bool:
+    """``True`` for a list of distinct non-empty plugin ids — the shape the rig writes."""
+    if not isinstance(value, list) or not value:
+        return False
+    if not all(isinstance(entry, str) and entry for entry in value):
+        return False
+    return len(set(value)) == len(value)
+
+
 def _load_community_marker(vault: Path) -> Optional[dict]:
     """Return the parsed borrow marker, or ``None`` when there is none.
 
     An unreadable or structurally wrong marker is a **conflict**, never a missing marker:
     "no borrow in progress" and "a borrow whose record is damaged" are exactly the
     difference between proceeding and refusing.
+
+    **Every** field of the pinned set is validated, not the two a happy path happens to
+    read back. A record is one statement about what the owner had, and a half-checked
+    statement is not a weaker guarantee — it is a false one: the unchecked fields are
+    trusted precisely because nothing looked at them, and a marker that was truncated,
+    hand-edited, half-written or produced by something other than this module is then
+    indistinguishable from a correct one until the restore it authorises destroys the
+    owner's list. So a field that cannot be what this module writes is a refusal,
+    whichever field it is:
+
+    ├── ``runId`` · ``role`` · ``createdAt`` ← non-empty strings; ``role`` is a real role
+    ├── ``pid``                              ← a non-negative integer, never a ``bool``
+    ├── ``hadOriginal``                      ← a boolean, never a truthy stand-in
+    ├── ``disabled``                         ← a list of distinct non-empty ids
+    └── ``originalSha256`` / ``originalSize`` ← a digest **and** a byte length exactly
+                                                when ``hadOriginal``, both ``None`` otherwise
+
+    Shape is all that is decided here, and this function is called from **both** doors —
+    the disable path and the restore path — so a record refused at one is refused
+    identically at the other.
     """
     path = _community_marker_path(vault)
     raw = _read_bytes_or_none(path)
@@ -491,38 +639,100 @@ def _load_community_marker(vault: Path) -> Optional[dict]:
             f"the borrow marker at {path} does not carry the pinned field set "
             f"{constants.COMMUNITY_PLUGINS_MARKER_FIELDS!r}"
         )
+
+    for field in ("runId", "role", "createdAt"):
+        if not isinstance(marker[field], str) or not marker[field]:
+            raise CommunityPluginsConflict(
+                f"the borrow marker's {field!r} is not a non-empty string"
+            )
+    if marker["role"] not in constants.ROLES:
+        raise CommunityPluginsConflict(
+            f"the borrow marker names a role that is not one of {constants.ROLES!r}"
+        )
+    if not _is_int(marker["pid"]) or marker["pid"] < 0:
+        raise CommunityPluginsConflict("the borrow marker's 'pid' is not a non-negative integer")
     if not isinstance(marker["hadOriginal"], bool):
         raise CommunityPluginsConflict("the borrow marker's 'hadOriginal' is not a boolean")
+    if not _is_id_list(marker["disabled"]):
+        raise CommunityPluginsConflict(
+            "the borrow marker's 'disabled' is not a list of distinct non-empty plugin "
+            "ids; a borrow that does not say what it disabled cannot be undone"
+        )
+
     sha = marker["originalSha256"]
+    size = marker["originalSize"]
     if marker["hadOriginal"]:
-        if not isinstance(sha, str) or len(sha) != 64:
+        if not _is_digest(sha):
             raise CommunityPluginsConflict(
                 "the borrow marker claims an original but carries no sha256 for it"
             )
-        if not isinstance(marker["originalSize"], int):
+        if not _is_int(size) or size < 0:
             raise CommunityPluginsConflict(
                 "the borrow marker claims an original but carries no byte length for it"
             )
-    elif sha is not None:
-        raise CommunityPluginsConflict(
-            "the borrow marker claims there was no enabled list yet carries a sha256"
-        )
+    else:
+        if sha is not None:
+            raise CommunityPluginsConflict(
+                "the borrow marker claims there was no enabled list yet carries a sha256"
+            )
+        if size is not None:
+            raise CommunityPluginsConflict(
+                "the borrow marker claims there was no enabled list yet carries a byte length"
+            )
     return marker
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class _CommunityState:
+    """The validated borrow state. It holds the owner's bytes and never renders them.
+
+    ``original_bytes`` is the owner's file. A generated ``@dataclass`` repr would print
+    it in full into any traceback that happens to hold this object — which is the same
+    defect as a credential in a repr, one file away. The fingerprint is what a human
+    needs; the content is what only the restore needs.
+    """
+
     has_marker: bool
     had_original: bool
     original_sha256: Optional[str]
     original_bytes: Optional[bytes]
 
+    def __repr__(self) -> str:
+        size = None if self.original_bytes is None else len(self.original_bytes)
+        return (
+            f"{type(self).__name__}(has_marker={self.has_marker!r}, "
+            f"had_original={self.had_original!r}, "
+            f"original_sha256={self.original_sha256!r}, original_size={size!r})"
+        )
+
+    def __str__(self) -> str:
+        return self.__repr__()
+
 
 def _capture_community_state(vault: Path) -> _CommunityState:
-    """Validate the borrow state without writing anything (the single decision point)."""
+    """Validate the borrow state without writing anything (the single decision point).
+
+    This is the **entry** door, and it decides one question the exit door does not have
+    to answer: *may this leftover be adopted?* Adoption means continuing somebody's
+    borrow as if it were this run's, and the rig may only do that for a leftover that is
+    recognisably **its own**. The rig disables exactly
+    :data:`~obsidian_e2e.constants.DISABLED_PLUGIN_IDS` and nothing else, so a marker
+    whose ``disabled`` set is not that set was written by something that is not this rig
+    — a different tool, a different version, or a hand edit — and taking it over would
+    mean restoring a file this rig never captured, on behalf of a borrow it does not
+    understand. That is a conflict, not an adoption.
+    """
     marker = _load_community_marker(vault)
     backup = _read_bytes_or_none(_community_backup_path(vault))
     backup_path = _community_backup_path(vault)
+
+    if marker is not None and tuple(marker["disabled"]) != tuple(constants.DISABLED_PLUGIN_IDS):
+        raise CommunityPluginsConflict(
+            f"the borrow marker at {_community_marker_path(vault)} records a disabled set "
+            f"this rig never writes; the rig only ever disables "
+            f"{constants.DISABLED_PLUGIN_IDS!r}, so this leftover is another owner's "
+            "borrow and is not adoptable"
+        )
 
     if marker is None:
         if backup is not None:
@@ -545,11 +755,17 @@ def _capture_community_state(vault: Path) -> _CommunityState:
                 "owner's list can no longer be reconstructed"
             )
         actual = _sha256(backup)
-        if actual != marker["originalSha256"] or len(backup) != marker["originalSize"]:
+        if actual != marker["originalSha256"]:
             raise CommunityPluginsConflict(
                 f"the saved enabled list at {backup_path} ({len(backup)} bytes, sha256 "
-                f"{actual}) does not match the marker's record "
-                f"({marker['originalSize']} bytes, sha256 {marker['originalSha256']})"
+                f"{actual}) does not match the sha256 the marker recorded "
+                f"({marker['originalSha256']})"
+            )
+        # Both halves of the recorded fingerprint, at this door exactly as at the other.
+        if len(backup) != marker["originalSize"]:
+            raise CommunityPluginsConflict(
+                f"the saved enabled list at {backup_path} is {len(backup)} bytes, but the "
+                f"marker records the captured list as {marker['originalSize']} bytes"
             )
         return _CommunityState(
             has_marker=True,
@@ -597,24 +813,172 @@ def _community_marker_blob(
     return json.dumps(marker, indent=2).encode("utf-8") + b"\n"
 
 
-def _enabled_without_disabled(original: bytes, path: Path) -> list:
-    """Parse the enabled list and return it with the rig's ids removed, by **exact** id.
+#: The UTF-8 byte-order mark. Obsidian's own writer does not emit one, but a file that
+#: has been through an editor on Windows may carry it, and it is part of the owner's file.
+_UTF8_BOM = b"\xef\xbb\xbf"
 
-    A substring or prefix match would disable the owner's unrelated plugins, and a
-    rewrite from a filtered *set* would silently reorder or drop entries the rig knows
-    nothing about. Every other entry survives, in its original relative order.
+#: Whitespace JSON permits between tokens — the same set ``ports.py`` scans with.
+_JSON_WS = " \t\r\n"
+
+
+class _MalformedEnabledList(Exception):
+    """Internal: the enabled list is not a JSON array this module can splice."""
+
+
+def _read_json_string(text: str, start: int) -> tuple:
+    """Return ``(raw_slice, index_after)`` for the JSON string starting at ``text[start]``."""
+    index = start + 1
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == '"':
+            return text[start : index + 1], index + 1
+        index += 1
+    raise _MalformedEnabledList("unterminated string")
+
+
+def _skip_value(text: str, start: int) -> int:
+    """Return the index just past the JSON value beginning at ``text[start]``."""
+    char = text[start]
+    if char == '"':
+        _, end = _read_json_string(text, start)
+        return end
+    if char in "{[":
+        depth = 0
+        index = start
+        length = len(text)
+        while index < length:
+            current = text[index]
+            if current == '"':
+                _, index = _read_json_string(text, index)
+                continue
+            if current in "{[":
+                depth += 1
+            elif current in "}]":
+                depth -= 1
+                if depth == 0:
+                    return index + 1
+            index += 1
+        raise _MalformedEnabledList("unterminated container")
+    index = start
+    length = len(text)
+    while index < length and text[index] not in ",}] \t\r\n":
+        index += 1
+    if index == start:
+        raise _MalformedEnabledList("empty value")
+    return index
+
+
+def _array_elements(text: str, open_index: int) -> tuple:
+    """Scan the root array, returning ``([(start, end)], close_index)``."""
+    elements = []
+    index = open_index + 1
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char in _JSON_WS:
+            index += 1
+            continue
+        if char == "]":
+            return elements, index
+        if char == ",":
+            index += 1
+            continue
+        start = index
+        end = _skip_value(text, start)
+        elements.append((start, end))
+        index = end
+    raise _MalformedEnabledList("unterminated array")
+
+
+def _enabled_without_disabled(original: bytes, path: Path) -> tuple:
+    """Return ``(remaining_ids, narrowed_bytes)`` — the rig's ids removed, and nothing else.
+
+    Two properties, and the second is the one attempt 1 did not have:
+
+    ├── **Removal is by exact id.** A substring or prefix match would disable the owner's
+    │   unrelated plugins (``obsidian-git-sync``, ``my-obsidian-git``), and a rewrite from
+    │   a filtered *set* would silently reorder or drop entries the rig knows nothing
+    │   about. Every other entry survives, in its original relative order.
+    └── **The modify path is a textual splice, never a re-serialisation.** Only the spans
+        occupied by the removed entries are cut; every other byte of the file is carried
+        over unchanged, so the owner's BOM, CRLFs, tabs, indentation depth, single-line
+        spacing, escaped non-ASCII and missing trailing newline all survive the borrow.
+
+    That second property is not decoration. The restore already gives the *original* bytes
+    back from the backup — but the borrowed file is the owner's file too: their Obsidian
+    may open it mid-run, a crashed run leaves it in place until the next teardown, and a
+    ``json.dumps`` rewrite silently converts their file to this module's house style and
+    calls it unchanged. This is the same discipline ``ports.py::_with_port`` applies to
+    ``data.json``, applied to the file next to it.
     """
+    prefix = _UTF8_BOM if original.startswith(_UTF8_BOM) else b""
+    body = original[len(prefix) :]
     try:
-        parsed = json.loads(original.decode("utf-8-sig"))
-    except (UnicodeDecodeError, ValueError) as err:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as err:
         raise CommunityPluginsConflict(
             f"the enabled-plugin list at {path} is not readable JSON"
         ) from err
-    if not isinstance(parsed, list):
+
+    index = 0
+    while index < len(text) and text[index] in _JSON_WS:
+        index += 1
+    if index >= len(text) or text[index] != "[":
         raise CommunityPluginsConflict(
             f"the enabled-plugin list at {path} is not a JSON array"
         )
-    return [entry for entry in parsed if entry not in constants.DISABLED_PLUGIN_IDS]
+    open_index = index
+
+    try:
+        spans, _close_index = _array_elements(text, open_index)
+        values = [json.loads(text[start:end]) for start, end in spans]
+    except (_MalformedEnabledList, ValueError) as err:
+        raise CommunityPluginsConflict(
+            f"the enabled-plugin list at {path} is not readable JSON"
+        ) from err
+
+    remaining = [value for value in values if value not in constants.DISABLED_PLUGIN_IDS]
+
+    cuts = []
+    for position, (start, end) in enumerate(spans):
+        if values[position] not in constants.DISABLED_PLUGIN_IDS:
+            continue
+        if position + 1 < len(spans):
+            # Take the entry and the separator that follows it, so the entry after it
+            # inherits this one's leading whitespace and the file keeps its own layout.
+            cuts.append((start, spans[position + 1][0]))
+        elif position > 0:
+            # The last entry: take the separator that precedes it instead.
+            cuts.append((spans[position - 1][1], end))
+        else:
+            # The only entry: take exactly the entry, leaving the brackets and whatever
+            # whitespace the owner had between them.
+            cuts.append((start, end))
+
+    spliced = text
+    for start, end in sorted(cuts, reverse=True):
+        spliced = spliced[:start] + spliced[end:]
+    narrowed = prefix + spliced.encode("utf-8")
+
+    # The splice is verified rather than trusted: it must still be JSON, and it must be
+    # exactly the list the id filter says it is. A splice that cannot be shown to have
+    # done that refuses — with nothing written, because this runs before the first write.
+    try:
+        reparsed = json.loads(narrowed.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError) as err:
+        raise CommunityPluginsConflict(
+            f"narrowing the enabled-plugin list at {path} would not leave readable JSON"
+        ) from err
+    if reparsed != remaining:
+        raise CommunityPluginsConflict(
+            f"narrowing the enabled-plugin list at {path} would not leave exactly the "
+            "entries the rig does not own"
+        )
+    return remaining, narrowed
 
 
 def disable_community_plugins(
@@ -633,16 +997,24 @@ def disable_community_plugins(
     consistent leftover is adopted; a contradictory one is refused with nothing written.
     """
     vault = Path(vault_path)
+    config_dir = _community_path(vault).parent
+    if not config_dir.is_dir():
+        raise CommunityConfigMissing(
+            f"no configuration directory at {config_dir}; the rig does not create one "
+            "inside a vault, and a path without it is not an Obsidian vault"
+        )
     state = _capture_community_state(vault)
 
     path = _community_path(vault)
     backup_path = _community_backup_path(vault)
     marker_path = _community_marker_path(vault)
 
+    # Computed before the first write, so a list this module cannot narrow is a refusal
+    # with the vault byte-identical rather than a half-finished borrow.
     if state.had_original:
-        remaining = _enabled_without_disabled(state.original_bytes or b"", path)
+        remaining, narrowed = _enabled_without_disabled(state.original_bytes or b"", path)
     else:
-        remaining = []
+        remaining, narrowed = [], b""
 
     created_at = datetime.now(timezone.utc).isoformat()
     pid = os.getpid()
@@ -667,9 +1039,7 @@ def disable_community_plugins(
     )
 
     if state.had_original:
-        _atomic_write_bytes(
-            path, json.dumps(remaining, indent=2).encode("utf-8") + b"\n"
-        )
+        _atomic_write_bytes(path, narrowed)
 
     return CommunityPluginsRecord(
         role=role,
@@ -692,10 +1062,34 @@ def disable_community_plugins(
 def restore_community_plugins(vault_path: PathLike) -> CommunityRestoreResult:
     """Put the owner's enabled-plugin list back, byte for byte, or refuse loudly.
 
-    The restore is driven by the backup file and verified — sha256 **and** exact byte
-    length — before anything is written and again afterwards. That the ids come back is
-    not the criterion: a parse-and-rewrite restore reproduces the ids and destroys the
-    owner's tabs, CRLFs and missing trailing newline, which are part of their file.
+    This is the oracle the whole safety argument of the borrow rests on — it is what
+    proves the owner's file was *given back* — so it is written to be falsifiable rather
+    than reassuring. An unreliable restore-verifier is worse than none, because it reads
+    as corroboration.
+
+    The property, stated once:
+
+        A restore is verified against the fingerprint **the marker recorded** — sha256
+        *and* exact byte length — before anything is written and again after, and the
+        comparison is over **raw bytes**.
+
+    Three corollaries, each of which is a way this has been got wrong before:
+
+    ├── **Any path that decodes, parses, re-serialises or normalises the content is not
+    │   a restore.** That the ids come back is not the criterion: a parse-and-rewrite
+    │   reproduces every id and destroys the owner's BOM, tabs, CRLFs, missing trailing
+    │   newline, escaped non-ASCII and single-line spacing, all of which are their file.
+    │   Nothing on this path decodes the bytes at all.
+    ├── **A backup replaced by a semantically-equal but byte-different copy is a
+    │   mismatch, not a success.** The comparand is the recorded fingerprint, so a
+    │   re-serialised copy of the same list fails on both halves of it.
+    └── **A readback compared against the bytes just written proves the write, never the
+        restore.** ``written == backup`` is true whenever the file system works, and says
+        nothing about whether ``backup`` is still what was captured. Both halves of the
+        readback are therefore compared against the *marker's* record.
+
+    ``disabled`` is deliberately **not** consulted here — see :func:`_capture_community_state`
+    for why that check belongs at the entry door and only there.
     """
     vault = Path(vault_path)
     path = _community_path(vault)
@@ -719,7 +1113,7 @@ def restore_community_plugins(vault_path: PathLike) -> CommunityRestoreResult:
             file_present=path.is_file(),
         )
 
-    if bool(marker["hadOriginal"]):
+    if marker["hadOriginal"] is True:
         if backup is None:
             raise CommunityPluginsConflict(
                 f"the marker records a saved enabled list but {backup_path} is gone; the "
@@ -728,21 +1122,37 @@ def restore_community_plugins(vault_path: PathLike) -> CommunityRestoreResult:
         expected_sha = marker["originalSha256"]
         expected_size = marker["originalSize"]
         actual_sha = _sha256(backup)
-        if actual_sha != expected_sha or len(backup) != expected_size:
-            # Verified BEFORE anything is written: the live file is untouched and the
-            # evidence — backup and marker — stays for a human.
+
+        # Verified BEFORE anything is written, so a refusal leaves the vault exactly as it
+        # was and leaves the evidence — backup and marker — for a human. Both halves are
+        # checked separately: a digest that matches while the recorded length does not can
+        # only come from a record edited after it was written, and a record that disagrees
+        # with itself is not a restore point.
+        if actual_sha != expected_sha:
             raise CommunityPluginsRestoreMismatch(
                 f"the saved enabled list at {backup_path} ({len(backup)} bytes, sha256 "
-                f"{actual_sha}) does not match the captured record ({expected_size} "
-                f"bytes, sha256 {expected_sha}); the live file was left untouched"
+                f"{actual_sha}) does not match the captured sha256 {expected_sha}; the "
+                "live file was left untouched"
+            )
+        if len(backup) != expected_size:
+            raise CommunityPluginsRestoreMismatch(
+                f"the saved enabled list at {backup_path} is {len(backup)} bytes, but the "
+                f"marker records the captured list as {expected_size} bytes; the live "
+                "file was left untouched"
             )
 
         _atomic_write_bytes(path, backup)
+
+        # Against what the MARKER recorded, never against the bytes just written.
         written = _read_bytes_or_none(path)
-        if written is None or len(written) != len(backup) or _sha256(written) != expected_sha:
+        if (
+            written is None
+            or len(written) != expected_size
+            or _sha256(written) != expected_sha
+        ):
             raise CommunityPluginsRestoreMismatch(
                 f"after writing {path} the file does not reproduce the captured enabled "
-                f"list (expected {len(backup)} bytes / sha256 {expected_sha})"
+                f"list (expected {expected_size} bytes / sha256 {expected_sha})"
             )
 
         _remove_if_present(backup_path)
@@ -754,7 +1164,7 @@ def restore_community_plugins(vault_path: PathLike) -> CommunityRestoreResult:
             community_path=str(path),
             file_present=True,
             restored_sha256=expected_sha,
-            restored_size=len(backup),
+            restored_size=expected_size,
         )
 
     if backup is not None:
@@ -763,8 +1173,15 @@ def restore_community_plugins(vault_path: PathLike) -> CommunityRestoreResult:
             f"at {backup_path}"
         )
 
-    # There was no list before the run, so "byte-exact" means: no list after it either.
+    # There was no list before the run, so "byte-exact" means: no list after it either —
+    # not an empty file and not `[]`. And that is verified rather than attempted: the exit
+    # door checks its own result exactly as hard as the other branch checks its write.
     _remove_if_present(path)
+    if path.exists():
+        raise CommunityPluginsRestoreMismatch(
+            f"{path} still exists after teardown; the owner had no enabled list, so the "
+            "vault must look as though the rig had never written one"
+        )
     _remove_if_present(marker_path)
     return CommunityRestoreResult(
         restored=True,

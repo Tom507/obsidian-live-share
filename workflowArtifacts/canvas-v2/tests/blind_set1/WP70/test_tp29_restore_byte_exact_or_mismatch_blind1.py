@@ -94,7 +94,11 @@ def test_a_backup_replaced_by_a_reserialised_copy_is_a_mismatch(
     tmp_path: Path, label: str
 ) -> None:
     original = FIXTURES[label]
-    vault = make_vault(tmp_path, f"mismatch-{label}")
+    # `make_vault` uses its second argument BOTH as the directory suffix and as the
+    # FIXTURES key, so decorating it ("mismatch-bom") raised KeyError in the fixture
+    # helper and this test never reached its own assertion. pytest gives each
+    # parametrised invocation its own tmp_path, so the plain label is already unique.
+    vault = make_vault(tmp_path, label)
     provisioning.disable_community_plugins(vault, constants.ROLE_B, run_id=RUN_ID)
 
     reserialised = json.dumps(json.loads(original.decode("utf-8-sig")), indent=2).encode("utf-8")

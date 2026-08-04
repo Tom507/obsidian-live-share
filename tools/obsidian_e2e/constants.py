@@ -485,3 +485,23 @@ FAILURE_REASONS = FAILURE_REASONS + (
     COMMUNITY_PLUGINS_CONFLICT,  # WP70 AC4 (precondition)
     COMMUNITY_PLUGINS_RESTORE_MISMATCH,  # WP70 AC4 (precondition)
 )
+
+# --- §10.2 — the secret-bearing member names (S4) ----------------------------
+#
+# Appended after §10.1 so nothing above moves. `PROVISIONED_SETTINGS_KEYS` is pinned and
+# is not re-spelled or reordered here; this block names the *subset of it* whose values
+# are credentials, so that "a secret is never rendered" can be enforced by a type against
+# a single list rather than re-derived at each call site.
+#
+# The room token is minted server-side by `POST /rooms`, so it is a live credential in
+# exactly the sense the four `data.json` members are — it is simply one the rig created
+# rather than one the owner did. Nothing downstream may distinguish them.
+
+SETTINGS_TOKEN_KEY = "token"
+SECRET_SETTINGS_KEYS = (SETTINGS_TOKEN_KEY,) + CREDENTIAL_SETTINGS_KEYS
+
+#: Drift guard, not decoration: the token key is provisioned, and the four credential
+#: keys are provisioned by nobody. If either statement ever stops holding, the redaction
+#: is pointed at the wrong member set and this fails at import rather than at a leak.
+assert SETTINGS_TOKEN_KEY in PROVISIONED_SETTINGS_KEYS
+assert not set(CREDENTIAL_SETTINGS_KEYS) & set(PROVISIONED_SETTINGS_KEYS)

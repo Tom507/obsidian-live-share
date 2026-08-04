@@ -123,10 +123,18 @@ Reuse the existing headless-rig client ids and doc-id scheme verbatim — do **n
 | headless rig port B | `39422` | *existing*, `launch_liveshare_e2e.py` | **unchanged** — do not touch |
 | `REAL_CONTROL_PORT_A` | `39431` | **WP43** `constants.py` | real rig, role a |
 | `REAL_CONTROL_PORT_B` | `39432` | **WP43** `constants.py` | real rig, role b |
+| `RELAY_PORT` | `39441` | **WP70** `constants.py` | the rig-started **local** relay |
 
 The real rig uses a **disjoint** port pair so a headless run and a real run can never be
 mistaken for one another, and so a stale headless process can never satisfy a real-rig
 readiness check. This is the port-level expression of decision **D13**.
+
+`39441` is a third band, disjoint from both pairs and one decade above the real-control
+pair so a transposed digit lands on nothing at all. It is **spelled as a literal in
+`constants.py` and nowhere else** — not in `relay.py`, not in a default argument, not in a
+docstring example, not in a URL string, not in a test. Every consumer imports it, and
+`LocalRelay` takes a `port=` override that is then the port it probes, launches against,
+reports in its refusals and reports in its `RelayStopResult`.
 
 ---
 
@@ -208,6 +216,64 @@ original and is never overwritten by the already-installed state. Install twice 
 
 **`data.json` is out of scope for WP69 entirely** — it is not read, moved or written by the install,
 and both vaults' `data.json` sha256 must be unchanged when the WP is done.
+
+### 4.2 The provisioned gate member set and the `obsidian-git` borrow (WP70)
+
+Owned by **WP70** (`WP70_PinnedDecisions.md` §2). Appended, never inserted into another block.
+
+```python
+# The ONE data.json borrow of §4, generalised from one member to an ordered member set.
+# `ports.provision_port(..., members=…)` is WP70's single added keyword argument; the
+# RESTORE path does not consult it and is byte-identical to WP44's.
+PROVISIONED_SETTINGS_KEYS = (
+    "e2eControlPort", "serverUrl", "roomId", "token", "role",
+    "permission", "sharedFolder", "excludePatterns", "autoReconnect", "debugLogging",
+)
+SETTINGS_SHARED_FOLDER    = SCRATCH_FOLDER   # the constant itself, NOT a second spelling
+SETTINGS_EXCLUDE_PATTERNS = ()               # provisioned as an EMPTY list
+
+# A SECOND borrow, over a DIFFERENT file, in its own namespace — never inside ports.py,
+# whose whole invariant is one borrow over one file.
+DISABLED_PLUGIN_IDS          = ("obsidian-git",)
+COMMUNITY_PLUGINS_BACKUP_REL = ".obsidian/community-plugins.json.e2e-original"
+COMMUNITY_PLUGINS_MARKER_REL = ".obsidian/.e2e-community-plugins.json"
+COMMUNITY_PLUGINS_MARKER_FIELDS = (
+    "runId", "role", "hadOriginal", "originalSha256", "originalSize",
+    "disabled", "pid", "createdAt",
+)
+
+# The member names whose VALUES are credentials (S4). The room token is minted
+# server-side by POST /rooms, so it is a live credential in exactly the sense the four
+# data.json members are; nothing downstream may distinguish them.
+SETTINGS_TOKEN_KEY   = "token"
+SECRET_SETTINGS_KEYS = (SETTINGS_TOKEN_KEY,) + CREDENTIAL_SETTINGS_KEYS
+```
+
+**Marker validation is total, and it is the same at both doors.** Every field of
+`COMMUNITY_PLUGINS_MARKER_FIELDS` is structurally validated by the one loader the disable
+path and the restore path share — non-empty strings where a string is meant, a `role` that
+is a real role, a non-`bool` non-negative `pid`, an actual `bool` for `hadOriginal`, a list
+of distinct non-empty ids for `disabled`, and a digest **and** a byte length exactly when
+`hadOriginal`. A record is one statement, and a half-checked statement is not a weaker
+guarantee but a false one. **Shape** checks (is this 64 hex characters?) stay distinct from
+**content** checks (are they the right 64?): shape is `COMMUNITY_PLUGINS_CONFLICT`, content
+is `COMMUNITY_PLUGINS_RESTORE_MISMATCH`, the same discriminator §4 and §4.1 already use.
+
+**Adoption is only for this rig's own leftover.** The rig disables exactly
+`DISABLED_PLUGIN_IDS`, so a marker recording any other `disabled` set was written by
+something else and is a `COMMUNITY_PLUGINS_CONFLICT` at the **disable** door. It is *not*
+checked at the **restore** door: there the recorded sha256 and byte length fully determine
+the bytes to write back, and refusing on a field that has no bearing on them would strand
+the owner's file behind a record they cannot edit. Entry asks *may I take this over?*;
+exit asks *what do I give back?*
+
+**The modify path is a textual splice, never a re-serialisation** — the same discipline
+`ports.py::_with_port` applies to `data.json`. Only the spans occupied by the removed ids
+are cut, so the borrowed file keeps the owner's BOM, CRLFs, tabs, indentation, single-line
+spacing and missing trailing newline for the duration of the borrow, and a list with
+nothing to remove is left byte-identical.
+
+**Failure reasons added to §7 by WP70** — see §7.
 
 ---
 
@@ -314,7 +380,27 @@ FINGERPRINT_MISMATCH         # WP47 AC3 — vault changed; fails the run
 SCRATCH_STALE_UNRECLAIMED    # WP47 AC4 / WP48 AC4
 DOC_CONVERGED_FILE_DIVERGED  # WP49 AC2 — the D17 defect class
 WAIT_TIMEOUT                 # WP48 AC2 — always names the awaited condition
+E2E_BUILD_FAILED             # WP69 AC1/AC3
+BUNDLE_NOT_E2E_CAPABLE       # WP69 AC3
+BUNDLE_RESTORE_MISMATCH      # WP69 AC4 — non-byte-exact restore
+INSTALL_CONFLICT             # WP69 AC4
+RELAY_PORT_OCCUPIED          # WP70 AC3 — never adopt, never kill
+RELAY_BUILD_FAILED           # WP70 AC3
+RELAY_READINESS_TIMEOUT      # WP70 AC3 — names the awaited condition on expiry
+RELAY_NOT_STOPPED            # WP70 AC3 — an orphaned listener is a FAILED run
+ROOM_MINT_FAILED             # WP70 AC3/AC4
+GATE_ORDER_VIOLATION         # WP70 AC4 — raised by relay.py AND provisioning.py, one type
+SHARED_SURFACE_NOT_ESTABLISHED    # WP70 AC2
+PROPAGATION_EVIDENCE_UNAVAILABLE  # WP70 AC5 — a leg's channel is absent or is not a channel
+NEGATIVE_CONTROL_LEAKED           # WP70 AC5 — the change arrived anyway ⇒ FAILED run
+COMMUNITY_PLUGINS_CONFLICT        # WP70 precondition — contradictory or foreign leftover
+COMMUNITY_PLUGINS_RESTORE_MISMATCH # WP70 precondition — a restore that is not byte-exact
 ```
+
+`RESTART_REQUIRED_OPERATOR` (WP45, existing) is **reused** by WP70 AC4 for its refusal to
+provision a vault whose plugin is already loaded, and `VAULT_PATH_MISSING` (WP43, existing)
+for a vault with no `.obsidian/` configuration directory. No new reason is invented for
+either: a state that already has a name does not get a second one.
 
 ---
 
@@ -368,6 +454,26 @@ testing**. So a real run has two valid relay targets:
 | local in-process relay | fast iteration; default for headless and for first real-rig bring-up |
 | deployed relay on the NeuralAngels box (`liveshare.neuralangels.de`) | verifying behaviour over real TLS/WS and the real network path |
 
+> ### ⚠ Correction (WP70) — the **gate** relay is the local one, and that is not a preference
+> The table above reads as a free choice. For the Teil-14 gate it is not. **The gate runs
+> against a relay the rig starts locally** (`RELAY_PORT`, §3): a release gate must be
+> hermetic, and a network dependency injects exactly the flake this run has spent its
+> length removing from its own signals. Authorisation to deploy is *permission*, not a
+> requirement. Remote-relay operation is a possible **future, non-gating** matrix case; it
+> is not chartered and must not be added in passing.
+>
+> Two measured facts that go with it, recorded and accepted rather than repaired because
+> `server/**` is a §7 abort criterion outside WP41:
+>
+> - The relay **binds on all interfaces** (`server/src/index.ts:236` — `server.listen(port)`
+>   with no host argument), so it is network-reachable for the run's duration even though
+>   the rig only ever probes `127.0.0.1`.
+> - Only **one** of its three LevelDB stores (`BLOB_STORE_PATH`) is reachable by an
+>   environment variable; room persistence and the audit log take *parameter* defaults that
+>   no variable can reach. All three are **cwd-relative**, so the run-scoped store directory
+>   is established by starting the relay *inside* it — outside the repository and outside
+>   both vaults, removed at teardown.
+
 **Standing constraints on any such deploy — all non-negotiable:**
 
 - Deploys run through the **`ssh-deploy` MCP pipeline**, not ad-hoc ssh.
@@ -378,6 +484,101 @@ testing**. So a real run has two valid relay targets:
 - **No secret may pass through any agent tool** — not in a command string, not in `ssh_args`, not
   in a tool argument. Secrets are typed by the operator in the console's masked SECRET mode.
   This is the same rule as S4 and it is equally absolute.
+
+---
+
+## 10b. The local relay, its evidence channels, and secret handling (WP70)
+
+Owned by **WP70**. Every constant named here lives in `constants.py` §10 and is imported,
+never re-spelled.
+
+### The lifecycle, and the one oracle that is not obvious
+
+```
+port free (probed FIRST, before anything reaches the console)
+  → built (entry point present, or one awaited `tsc` build)
+  → started (exactly ONE launch payload; a second start() is GATE_ORDER_VIOLATION)
+  → healthy (GET /healthz answering ok=true — bounded, polled, never a sleep)
+  → room minted ONCE on THAT relay
+  → …run…
+  → stopped (the PORT no longer completes a connection — never the close call's return)
+  → released (store directory removed on every path, then the failure re-raised)
+```
+
+⚠ **Measured on this host: a closed port raises `TimeoutError`, never
+`ConnectionRefusedError`.** Every unused port drops the SYN and the connect consumes its
+whole timeout. An oracle written `except ConnectionRefusedError: return stopped` can
+**never fire here** and would look correct only because a surrounding `except OSError`
+swallowed the timeout. The shipped oracle is therefore *"a connection no longer completes
+within a bounded budget"*, and it is non-vacuous because the positive direction was
+measured too — a live relay accepted the connection and answered `/healthz` on the first
+poll. `RELAY_STOPPED_CONNECT_TIMEOUT_S = 0.25` is small because every negative poll costs
+it in full.
+
+Readiness is the mirror image: a **refused connection, a socket timeout, a truncated
+response and a malformed body are each "not ready yet", not errors** — node binds late, and
+treating any of them as an error turns that into a failed run. Only the expiry of the
+bounded budget is an error, and it names the awaited condition. Readiness once established
+is **not re-probed**.
+
+`RelayStopResult` carries `host`, `port` and `probes`. `probes` is not decoration: a verdict
+of `stopped=True` reached after **zero** probes is one inferred from the close call's
+return, and without the count the two are indistinguishable in a run record.
+
+**`release()` finishes its own work and then raises.** The store is removed on every path,
+including an unexpected exception out of the console seam — and then the failure propagates.
+"Teardown runs to completion even when a step fails" is a property of the teardown *driver*
+(`provisioning.run_teardown`), which attempts every action and reports each one's reason; it
+is not a licence for a step to hide its own failure in a returned field. An orphaned
+listener is a **failed run**.
+
+### AC5's two evidence channels — the mechanism, never the demonstration
+
+```python
+RELAY_EVIDENCE_KEYS    = ("roomId", "documents", "clients", "frames")
+NEGATIVE_EVIDENCE_KEYS = ("relayMediated", "changed")
+```
+
+`relay.relay_observation(local_relay)` builds the positive channel from **what the relay
+itself holds** — its own `/healthz` body and the frames its own run-scoped store retained.
+A relay with no minted room, or one that never reported healthy, cannot build one:
+`PROPAGATION_EVIDENCE_UNAVAILABLE`. A built channel carries every key of
+`RELAY_EVIDENCE_KEYS` and **no token**.
+
+**Validate the type, never the truthiness.** `0` is not `False`, `""` is not "absent", and
+an empty or wrongly-typed channel is *absent* rather than falsy-but-present. The split that
+runs through the evaluation: **the type decides whether this is a channel (a refusal); the
+value decides the verdict.** A count that is not an integer is a channel that measured
+nothing; a count that is an integer but too small — or negative — is a measurement that
+fails the criterion, i.e. `positive_observed=False`. A window that is absent, zero, negative
+or not a number is the *absence* of an observation, not a short one.
+
+⚠ **The positive leg cannot be settled by WP70 at all** — it needs two real Obsidian
+instances. Content appearing in vault B is **not** sufficient and may not be recorded as
+satisfying AC5, and neither may the `obsidian-git` disposition record: a precondition is a
+claim about what was *configured*, AC5 is a claim about what the relay *observed*.
+
+### Secrets — a type, not an audit (S4)
+
+The room token is **minted server-side by `POST /rooms`**, so it is a live credential. The
+rule is that a value carrying a secret **cannot be rendered by any general-purpose
+stringification and cannot arrive in a message, a log record or a traceback by accident** —
+and it is enforced structurally rather than by auditing call sites, because a `@dataclass`
+repr, `str()`'s fallback to `repr()`, `logging`'s lazy `%s` and a traceback frame are four
+different call sites that all reach the same object.
+
+- `relay.Secret` — redacting `__repr__` / `__str__` / `__format__`, refused `__bytes__` /
+  `__iter__` / `__contains__`, immutable, and `reveal()` as the **only** accessor. Equality
+  is deliberately open: comparing against a candidate a caller already holds discloses
+  nothing; *rendering* is the accidental act and rendering is what is shut. Copying returns
+  the wrapper, so `dataclasses.asdict()` cannot unwrap it.
+- `relay.REDACTED` — the placeholder, named so a check can assert a rendering *was
+  redacted* rather than only that the secret is absent.
+- `RelayRoom.token` is a `Secret`; `RelayRoom.reveal_token()` is the one legitimate reveal.
+- `relay.RedactedMapping` — the same property one level up, for the minted `POST /rooms`
+  payload and for the provisioned member set, both of which are mappings a caller prints.
+- An evidence channel carrying any of `SECRET_SETTINGS_KEYS` is **refused**: a channel is a
+  count, and a credential can only have got there by a caller copying a settings payload in.
 
 ---
 
