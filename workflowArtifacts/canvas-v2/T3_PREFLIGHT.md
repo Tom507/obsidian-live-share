@@ -87,8 +87,22 @@ claim that the installed build cannot host the control server, and it doubles as
 production-bundle counter-check evidence (`src/testing/` does tree-shake out).
 
 Pre-existing backups already in both plugin dirs — **not ours, do not overwrite**:
-`main.js.bak`, `main.js.0.5.9.bak`, `manifest.json.bak`.
+<!-- Updated: styles.css.bak added — the list was THREE and the measured directory contains FOUR; found by B9b's vault measurement 2026-08-04 -->
+`main.js.bak`, `main.js.0.5.9.bak`, `manifest.json.bak`, **`styles.css.bak`**.
 The rig has its own backup namespace (`data.json.e2e-original`, `.e2e-provision.json`); use it.
+
+**⚠ This list was wrong until 2026-08-04 — it named three backups and there are four.** The full
+measured plugin-directory listing, identical in both vaults, is:
+
+```
+data.json · main.js · main.js.0.5.9.bak · main.js.bak · manifest.json · manifest.json.bak
+styles.css · styles.css.bak
+```
+
+The omission mattered: a WP69 install that reasoned *"the backup set is the three the pre-flight
+names, so `styles.css.bak` must be mine to reuse"* would have written over an owner file. Any
+future reader should treat this list as **measured on the day**, not as a fixed fact — the same
+class of error as the `lan-vault-sync`/`obsidian-git` correction below.
 
 ---
 

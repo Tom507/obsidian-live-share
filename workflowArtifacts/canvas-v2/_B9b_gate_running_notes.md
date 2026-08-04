@@ -243,6 +243,62 @@ borrow settings, create a scratch canvas or run a readiness handshake.
 
 ---
 
+## M11 — ⚠ I broke `npm run build` repo-wide, and the mechanism generalises
+
+**Self-inflicted, caught by the AC2 re-measurement, reverted.** Recorded because the mechanism
+will bite any future batch that follows the same convention.
+
+WP47's landed convention is that a visible `.test.ts` is **mirrored** into `plugin/src/__tests__/wpNN/`,
+because vitest's root is `plugin/` and a `.test.ts` living under `workflowArtifacts/` is never
+collected. I applied that convention to WP51's freshly generated suite (`85e2c8f`).
+
+`npm run build` is `tsc -noEmit -skipLibCheck && node esbuild.config.mjs production`, and **`tsc`
+typechecks the whole `src/` tree, tests included.** WP51's tests import the API WP51 has not been
+implemented to provide yet — `STALE_VIEW_FLAG`, `STALE_VIEW_MODES`, `StaleViewMode`,
+`RUNTIME_FLAG_READERS`, `isKnownRuntimeFlag`, `CanvasSaveChannelLike`. Result: **18 × `TS2305` /
+`TS18046`, `tsc` exits 2, esbuild never runs, and `npm run build` fails for every WP in the repo** —
+including WP69, whose Definition of Done requires it to PASS and whose AC2 needs it to emit a
+bundle at all.
+
+**The generalisation:** the mirror convention is only valid **after** the WP is implemented. For a
+WP whose tests exist but whose implementation does not, mirroring converts "tests fail" (correct,
+expected, informative) into "the repo does not build" (blocking, and blocking for *other* WPs).
+Test generation and mirroring must therefore be separated by the implementation step.
+
+**Resolution:** reverted in `6b20c17`. All 27 WP51 test files remain intact under
+`workflowArtifacts/canvas-v2/tests/{visible,blind_set1,blind_set2}/WP51/` — nothing was deleted,
+weakened, retitled or skipped, so no §7 licence is implicated; only my own premature copy into the
+compiled tree was undone. WP51's implementer mirrors them when implementing.
+
+**How it was caught is the part worth keeping.** The coordinator's instruction was to re-check the
+AC2 comparand "the same way, don't assume my word for it". Doing the measurement rather than
+re-reasoning about it is what surfaced this — a broken build gate that no one had looked for.
+Rule 7, holding.
+
+---
+
+## M12 — the AC2 comparand, measured twice at two commits, identical
+
+| | measurement 1 | measurement 2 |
+|---|---|---|
+| commit | `fcb2295` | `6b20c17` |
+| dirty entries | 0 | 0 |
+| `npm run build` exit | 0 | 0 |
+| `plugin/main.js` sha256 | `58fda6f8…46bc` | **`58fda6f8…46bc`** |
+| size | 759 892 | 759 892 |
+| `__LS_E2E__` | 0 | 0 |
+
+Ten commits separate the two, including three by a concurrent Worker 2 and four of mine. The
+agreement is **evidence, not an argument**: whatever landed in between provably did not reach the
+bundle. This is the comparand WP69 AC2's "after" measurement is checked against.
+
+Note the coarse-grep trap I set for myself and then disarmed: a `^plugin/src/` path filter flags
+`plugin/src/__tests__/wp51/**` as a "build input change". Test sources are typechecked by `tsc`
+(so they can **fail** the build) but are unreachable from `src/main.ts` (so they cannot **change**
+the emitted bytes). The re-measurement settles that distinction without needing the argument.
+
+---
+
 ## M10 — host state at the start of the gate, measured through the rig's **own** primitives
 
 Not a re-implementation: this ran `vaults.discover_instances`, `vaults.is_obsidian_running` and
