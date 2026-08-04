@@ -1,7 +1,19 @@
 import process from "node:process";
 import esbuild from "esbuild";
 
-const prod = process.argv[2] === "production";
+// Mode selection, argv[2]. Three modes, one branch point:
+//   ├── "production" → one-shot, __LS_E2E__ "false", no sourcemap   (npm run build)
+//   ├── "e2e"        → one-shot, options IDENTICAL to the watch mode (npm run build:e2e)
+//   └── anything else / absent → watch, never returns                (npm run dev)
+// The `e2e` mode exists because the instrumented build was previously reachable only
+// through `ctx.watch()`, which never terminates; an automated gate cannot use it, and a
+// killed watcher can leave a truncated bundle. It differs from the default watch mode in
+// one-shot versus watch and in nothing else.
+const E2E_MODE = "e2e";
+
+const mode = process.argv[2];
+const prod = mode === "production";
+const oneShot = prod || mode === E2E_MODE;
 
 const ctx = await esbuild.context({
   entryPoints: ["src/main.ts"],
@@ -29,7 +41,9 @@ const ctx = await esbuild.context({
   platform: "node",
 });
 
-if (prod) {
+if (oneShot) {
+  // A rejected rebuild() is a rejected top-level await: node reports it and exits
+  // non-zero, so a failed build is never mistaken for a bundle.
   await ctx.rebuild();
   process.exit(0);
 } else {

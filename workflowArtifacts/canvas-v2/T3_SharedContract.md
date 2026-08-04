@@ -161,6 +161,54 @@ The only sanctioned change is the D14 rationale comment at the provisioning site
 **Idempotence rule (WP44 AC3):** if a backup already exists, it is the *original* and is
 **never** overwritten by the current (already-provisioned) state. Provision twice → one backup.
 
+### 4.1 E2E build mode and bundle install namespace (WP69)
+
+Owned by **WP69** (`SharedOwnershipContract_B9b_Gate.md` §1). Appended, never inserted into another
+block; no other WP modifies, moves, renames or re-orders one line of it.
+
+```python
+E2E_BUILD_ARGV      = "e2e"          # process.argv[2] token, plugin/esbuild.config.mjs
+E2E_BUILD_SCRIPT    = "build:e2e"    # the ONE added plugin/package.json script
+
+# The rig's OWN restore point for the plugin bundle — inside the plugin dir (S4).
+BUNDLE_BACKUP_REL   = ".obsidian/plugins/live-share/main.js.e2e-original"
+INSTALL_MARKER_REL  = ".obsidian/plugins/live-share/.e2e-install.json"
+INSTALL_MARKER_FIELDS = (
+    "runId", "role", "hadOriginal", "originalSha256", "originalSize",
+    "installedSha256", "pid", "createdAt",
+)
+```
+
+**Why the mode exists.** `npm run build` folds `__LS_E2E__` to `"false"`, so `src/testing/` is
+dead-code-eliminated and the shipped bundle can never host a control server (§1.1,
+`PLUGIN_NOT_E2E_CAPABLE`). The instrumented build was reachable only through `npm run dev`, which
+calls `ctx.watch()` and **never returns**. `E2E_BUILD_ARGV` selects a third mode whose build options
+are identical in every field to the watch branch — including `__LS_E2E__: "true"` and
+`sourcemap: "inline"` — and which calls `ctx.rebuild()` then `process.exit(0)`. `production` and the
+default watch branch are unchanged in behaviour.
+
+**Backup namespace, binding.** The owner's own backups in both plugin directories —
+`main.js.bak`, `main.js.0.5.9.bak`, `manifest.json.bak` **and `styles.css.bak`** (a fourth one, found
+by measurement; `T3_PREFLIGHT.md` lists only three) — are never written, moved, renamed, deleted, or
+used as a restore point. The rig restores from `BUNDLE_BACKUP_REL` and from nothing else: a corrupted
+rig backup is a loud `BUNDLE_RESTORE_MISMATCH`, never a fallback to `main.js.bak`.
+
+**Install marker** (`.e2e-install.json`) records, so a crashed run is recoverable:
+`{"runId": str, "role": "a"|"b", "hadOriginal": bool, "originalSha256": str|null, "originalSize": int|null, "installedSha256": str, "pid": int, "createdAt": iso8601}`
+— fingerprints and structure only, **never** file content (S4).
+
+**Idempotence rule (same shape as §4):** if the rig's bundle backup already exists, it *is* the
+original and is never overwritten by the already-installed state. Install twice → one backup.
+
+**Failure reasons added to §7 by WP69,** appended to `FAILURE_REASONS` in one contiguous run:
+`E2E_BUILD_FAILED` (AC1/AC3 — a non-zero build exit is never a bundle, whatever is on disk),
+`BUNDLE_NOT_E2E_CAPABLE` (AC3 — a clean exit with a missing build marker),
+`BUNDLE_RESTORE_MISMATCH` (AC4 — a restore that would not be byte-exact),
+`INSTALL_CONFLICT` (AC4 — an irreconcilable leftover install state).
+
+**`data.json` is out of scope for WP69 entirely** — it is not read, moved or written by the install,
+and both vaults' `data.json` sha256 must be unchanged when the WP is done.
+
 ---
 
 ## 5. Scratch artefacts (WP47)

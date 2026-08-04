@@ -1,7 +1,7 @@
 # Task Charter — WP69: One-shot E2E build mode and instrumented-build installation
 
 <!-- Updated: chartered from the measured T3 pre-flight — the only E2E-capable build is the only build that never terminates, and the install step T3_SharedContract §1.1 assigned to "WP50/WP51" was in neither charter 2026-08-02 -->
-**Charter Status:** `TESTS_ADDED`
+**Charter Status:** `DONE`
 **WP:** WP69
 **Phase:** P0 (PHASE T3 group)
 **task_mode:** `standard`
@@ -313,13 +313,43 @@ RestoreBundleResult  : restored, had_original, bundle_file_present, vault_path, 
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-*Empty at handover.*
-
----
+1. Read the eleven visible tests **before** naming anything — they pin the `§4.1` constants and the
+   module's public surface exactly, so there was nothing to choose.
+2. Append the `§4.1 — WP69` block to `constants.py` (between §4 and §5; no existing line edited,
+   moved or re-indented) and the four failure reasons to the **end** of `FAILURE_REASONS` in one
+   contiguous run; mirror it into `T3_SharedContract.md` §4.1 (contract §1.4).
+3. `esbuild.config.mjs`: derive `oneShot` from `argv[2]` and widen the terminating branch to it.
+   **Leave the option object untouched** — that is what makes AC1's "identical in every field"
+   structural rather than a promise, since `e2e` and the watch branch then evaluate the same
+   expressions.
+4. `package.json`: one added line, `"build:e2e": "node esbuild.config.mjs e2e"`.
+5. `install.py`: follow `ports.py`'s WP44 discipline verbatim (raw bytes, atomic replace, marker with
+   fingerprints only, adopt-consistent / refuse-contradictory) rather than inventing a second one.
+   Establish and **verify** the restore point before writing; restore from the rig's namespace only.
+6. Run the eleven visible files through `visible-console` `run_python`. Take AC3's real measurement by
+   running `npm run build:e2e` once and hashing the emitted bundle. Never invoke `npm run dev`.
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-*Empty at handover.*
+**DONE.** 68 collected / 68 passed / 0 failed across all eleven visible files. `npm run build:e2e`
+terminates with exit 0 and emits a bundle carrying all three E2E build markers (1 / 1 / 2), 3 601 280
+bytes — ~4.7× production because of the inline sourcemap plus the retained `src/testing/` tree, which
+is expected and is recorded so no later reader mistakes it for corruption. AC2's "before" hash was
+Core's and was not re-taken; its "after" half is Core's too.
+
+Two items need Worker 3 Core:
+
+- ⚠ `plugin/main.js` currently holds the **E2E** bundle (`1f905b04…`), because AC3's measurement had to
+  build it and the outfile is fixed. Run `npm run build` in `plugin/` before taking AC2's "after"
+  sha256. The file is git-ignored, so the tree is not dirtied.
+- The visible suite cannot be collected from the AgenticWorkspace root at all: `Projects/_external/
+  FinaleAbgabe` is a dangling symlink and pytest's directory walk dies on it before reading any test
+  file, for every path under `_external/`. Reproduced on WP44's suite, so it is an environment item,
+  not a WP69 one. Worked around by running with the repository as cwd.
+
+No live installation into either owner vault occurred; no `data.json` was read, moved or written; the
+owner's four `*.bak` files were never written, moved, renamed, deleted or used as a restore point.
+Full detail: `ImplementationReport_WP69.md`.
 
 ---
 

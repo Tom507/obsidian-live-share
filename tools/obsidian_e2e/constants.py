@@ -113,6 +113,47 @@ PROVISION_MARKER_FIELDS = (
 E2E_BUILD_MARKERS = ("e2eControlPort", "LIVESHARE_E2E", "e2e-control")
 
 # ---------------------------------------------------------------------------
+# §4.1 — WP69: E2E build mode and bundle install namespace
+#
+# Owned by WP69 (SharedOwnershipContract_B9b_Gate.md §1). Appended, never inserted into
+# another block; WP70 may not modify, move, rename or re-order one line of it.
+#
+# Why these exist: `npm run build` folds ``__LS_E2E__`` to ``"false"`` and the whole
+# ``src/testing/`` tree is eliminated, so the shipped bundle can never host a control
+# server; the only instrumented build was ``npm run dev``, which calls ``ctx.watch()`` and
+# **never returns**. :data:`E2E_BUILD_ARGV` selects a third mode that builds once and
+# exits, reachable through exactly one npm script, :data:`E2E_BUILD_SCRIPT`.
+# ---------------------------------------------------------------------------
+
+E2E_BUILD_ARGV = "e2e"  # process.argv[2] token consumed by plugin/esbuild.config.mjs
+E2E_BUILD_SCRIPT = "build:e2e"  # the one added plugin/package.json script name
+
+#: The rig's **own** restore point for the plugin bundle, inside the plugin dir (S4). It is
+#: deliberately disjoint from the owner's pre-existing ``main.js.bak`` /
+#: ``main.js.0.5.9.bak`` / ``manifest.json.bak`` / ``styles.css.bak``, none of which is ever
+#: written, moved, renamed, deleted or used as a restore point.
+BUNDLE_BACKUP_REL = ".obsidian/plugins/live-share/main.js.e2e-original"
+INSTALL_MARKER_REL = ".obsidian/plugins/live-share/.e2e-install.json"
+
+#: Keys of the install marker, so a crashed run is recoverable. Like the WP44 provisioning
+#: marker it records sha256 fingerprints and structure only — never file content (S4).
+INSTALL_MARKER_FIELDS = (
+    "runId",
+    "role",
+    "hadOriginal",
+    "originalSha256",
+    "originalSize",
+    "installedSha256",
+    "pid",
+    "createdAt",
+)
+
+E2E_BUILD_FAILED = "E2E_BUILD_FAILED"  # WP69 AC1/AC3 — non-zero exit; never a bundle
+BUNDLE_NOT_E2E_CAPABLE = "BUNDLE_NOT_E2E_CAPABLE"  # WP69 AC3 — a marker is missing
+BUNDLE_RESTORE_MISMATCH = "BUNDLE_RESTORE_MISMATCH"  # WP69 AC4 — non-byte-exact restore
+INSTALL_CONFLICT = "INSTALL_CONFLICT"  # WP69 AC4 — irreconcilable leftover install state
+
+# ---------------------------------------------------------------------------
 # §5 — Scratch artefacts (WP47)
 # ---------------------------------------------------------------------------
 
@@ -267,6 +308,10 @@ FAILURE_REASONS = (
     SCRATCH_STALE_UNRECLAIMED,
     DOC_CONVERGED_FILE_DIVERGED,
     WAIT_TIMEOUT,
+    E2E_BUILD_FAILED,  # WP69 AC1
+    BUNDLE_NOT_E2E_CAPABLE,  # WP69 AC3
+    BUNDLE_RESTORE_MISMATCH,  # WP69 AC4
+    INSTALL_CONFLICT,  # WP69 AC4
 )
 
 #: Not a failure — the healthy plugin state. §7 enumerates only failure reasons, but a
