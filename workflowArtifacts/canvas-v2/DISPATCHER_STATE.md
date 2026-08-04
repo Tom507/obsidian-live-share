@@ -11,6 +11,96 @@
 
 ---
 
+## 🚨 AUTONOMOUS MODE — owner away from 2026-08-05. Read this block first.
+
+**Owner's standing instruction:** *"erst bug fixen, dann geh bitte in den autonomen modus … du musst alles
+weitere erst mal selbst klären."* Fix the data-loss chain first, then continue without asking.
+All prior standing decisions remain in force (commit freely, both vaults expendable, max two workers).
+
+### ⚠️⚠️ CONFIRMED DATA LOSS — measured live, files were destroyed
+
+**Vault B lost `hello.md` and `second.canvas`.** Before: `[hello.md, second.canvas, smoke.canvas]`.
+After a restart: `[smoke.canvas]`. No `.obsidian/.trash` directory exists, so `trashFile` sent them to
+the Windows Recycle Bin.
+
+**The chain — three separate defects that compose into destruction:**
+
+| # | Defect | Evidence |
+|---|---|---|
+| **D1** | **A host demotes itself to guest on restart.** Both instances now report `role: guest` — `session.info` on both control ports. Before the restart `data.json` had A = `host`, B = `guest`. **The session now has no host at all**, and nobody publishes a manifest. | measured, both ports |
+| **D2** | **A guest deletes on the strength of a manifest nobody published.** `main.ts:495` guest → `cleanupStaleFiles()`; `main.ts:543-560` trashes every shared local file absent from the manifest. | measured |
+| **D3** | `main.ts:545` `if (manifest.size === 0) return;` guards only the **completely empty** manifest. A **non-empty but stale/partial** manifest passes the guard and licenses deletion. | measured |
+
+**D2 is the dangerous one and it is I11 one level up:** *absence of information is translated into a
+destructive action.* "The manifest does not list it" is read as "it was deleted" when it means "nobody
+told me". That is exactly the composition rule Ä2 proposes as the general form — a validity boundary and
+a destructive write composing with no explicit decision about what happens between them.
+
+**The blast radius was contained by exactly one decision made hours earlier:** scoping `sharedFolder`
+from `""` to `_liveshare-test`. With `""` — which is what **both owner vaults shipped with** — the whole
+of vault B would have been trashed, not three test files. The step labelled *"THE safety step"* in the
+setup script was load-bearing, and it is now the difference between a lost test fixture and a lost vault.
+
+**This also retires a doubt:** Ä15's fail-closed rule is not theoretical. The destructive path needs a
+manifest that is *non-empty but partial*, and a hostless session produces one without any misconfiguration.
+
+### New workflow (owner's instruction, in force from 2026-08-05)
+
+> *"W3 implementiert, keine blackbox tests mehr, wir validieren mit W4 direkt im e2e modus, mit dem
+> anderen plugin. Falls das e2e plugin noch bugs hat gerne bei w3 in revision geben."*
+
+| Before | Now |
+|---|---|
+| visible + 2 blind sets per WP, falsification injections, ledger rows | **W3 implements → W4 validates against two LIVE Obsidian instances** |
+| correctness argued from headless tests | correctness demonstrated by the product doing the thing |
+| blind sets as the anti-overfitting device | the real editor is the anti-overfitting device |
+
+**Blind sets are discontinued for new work.** Existing ledger rows stand as history; no new ones are owed.
+E2E-plugin bugs go back to **W3 as a revision**, not to a separate infrastructure WP.
+
+### The E2E rig — BUILT, WORKING, and it is the validation instrument now
+
+Everything needed already existed; it had simply never been pointed at real Obsidian.
+
+| | |
+|---|---|
+| Build | `npm run build:e2e` (one-shot, WP69) → ~3.6 MB instrumented bundle |
+| Ports | **per-vault `e2eControlPort` in `data.json`** — 39431 (A) / 39432 (B). This solves **D14**: one Obsidian process serves both vaults, so an env var would give them one port. `session.info` returns **distinct `vaultId`s** (`703aa794cc73a117` / `55a4253eb7a90dde`). |
+| Route | `POST /command` `{cmd, args}` · `GET /events` (SSE) |
+| Working commands | `session.info`, `canvas.open`, `canvas.state`, `canvas.file`, `sync.waitQuiescent`, `scratch.create`, `plugin.settings` |
+| **Do NOT use** | **`canvas.simulateEdit`** — writes straight into the `Y.Doc` (`e2e-control.ts:995-1005`) and returns a hardcoded `applied: true` (`:1023`). A suite built on it measures doc→relay→doc and proves nothing about capture. |
+| **Drive edits by** | **writing the `.canvas` file on disk.** `useCanvasBinding` is `false`, so the live path is `vault.on("modify")` → `handleLocalModify` — the real capture path, the one the P0 fix lives on. |
+
+**Scripts (`H:\tmp\`):** `liveshare_smoke_setup.py` (`--restore` undoes everything) · `liveshare_e2e_install.py`
+(kills Obsidian, installs the e2e bundle, sets ports, relaunches, waits for both control servers) ·
+`liveshare_e2e.py` (the scenario suite) · `liveshare_fix_debuglog.py`.
+
+**⚠ The suite is NOT idempotent** — scenarios add nodes that persist into the next run, so a re-run can
+pass or fail vacuously (`[04]` passed on run 2 only because run 1's node was still there). **Fix before
+trusting a re-run.** First instance of the vacuity class in the new E2E suite, found immediately.
+
+### Corrections to my own earlier claims — both were wrong
+
+1. **I said presence/cursors need P5.** **False.** The owner sees cursors at the right position and can
+   see who is touching which card, on today's build. `main.ts:1436`'s `useCanvasBinding` gate gates the
+   follower-apply path, **not** the presence overlay. The real reason presence looked broken: **no second
+   peer was ever subscribed to the same canvas, because the canvas never reached the guest.** The WP79
+   defect was masking presence.
+2. **I said the canvas-distribution defect was confirmed by my scenario 07.** It was not — that scenario
+   passed on run 1. It created the canvas **mid-session**, which works; the defect is a canvas **present
+   before the session starts**. My test asserted the wrong precondition and went green. **The
+   "green test that cannot fail" class, committed by me, in the suite built to escape it.**
+
+### Autonomous queue (this order)
+
+1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
+2. **WP79** — canvas mirror (chartered `24dfed2`; also unblocks presence for pre-existing canvases).
+3. Make the E2E suite **idempotent**, then re-run as the regression gate.
+4. **P4 (WP36–38)** — Y.Text, the dropped keystrokes.
+5. Restore both vaults (`--restore`) before finishing; `obsidian-git` is still disabled in both.
+
+---
+
 ## ⭐ FIRST REAL RUN — 2026-08-05, two vaults, real Obsidian, live relay
 
 **Owner's direction:** *"get the product to an actual in-Obsidian running state with minimal effort."*
