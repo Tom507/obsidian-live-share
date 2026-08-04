@@ -11,6 +11,7 @@
 <!-- Updated: 2026-08-04 — re-derived from §7 and §9, which both landed on 77 with WP77. Re-derived, never edited independently, per the note above. -->
 <!-- Updated: 2026-08-04 — re-derived from §7 and §9, which both landed on 78 with WP78 (install.py's spawning `runner` default). Re-derived, never edited independently, per the note above. -->
 <!-- Updated: 2026-08-05 — re-derived from §7 and §9, which both landed on 79 with WP79 (a shared folder mirrors completely on a guest, canvases included — the first defect this run found by RUNNING the product rather than by testing it). Re-derived, never edited independently, per the note above. -->
+<!-- Updated: 2026-08-05 (B16b) — re-derived from §7 and §9 after P4 (WP36/WP37/WP38) was re-scoped, and it is UNCHANGED at 79. Recorded rather than left silent because "the count did not move" is itself a measurement: P4's scope grew in all three rows but no WP was added, split or removed, and the two new E2E control commands are chartered INSIDE WP37 and WP38 as W3 revisions per the owner's new workflow, not as a new infrastructure WP. Re-derived, never edited independently, per the note above. -->
 **Status:** SPEC_COMPLETE · **Work packages:** **79** (WP1–WP79) · **Phases:** P0–P6 + Teil-14 test rig (incl. **T3**, WP43–WP54, extended by WP69–WP78)
 **worker4_mode:** `full`
 
@@ -1011,46 +1012,57 @@ Consequences that are now binding rather than advisory:
 
 ### PHASE P4 — `Y.Text` node text, blur merge, undo
 
+<!-- Updated: 2026-08-05 (B16b) — P4 re-specified against the CURRENT tree per rule 12, and against the owner's new workflow ("keine blackbox tests mehr; wir validieren mit W4 direkt im e2e modus"). Four substantive changes, each measured rather than argued:
+  (1) C36 AC2 as previously written ("capture uses the EXISTING minimal-diff mechanism") specified a DEFECT. `applyMinimalYTextUpdate` (`plugin/src/utils.ts:65-117`) is a TWO-WAY diff of `ytext.toString()` against the incoming string; on the file-driven capture path the incoming string is the LOCAL file, which does not contain a peer's freshly merged characters, so the helper computes them as a deletion and removes them. Replicas still converge, so every convergence and byte-equality oracle stays green while the remote user's characters are destroyed — LWW with extra steps and a merge-shaped test. AC2 is replaced by the three-way requirement (base = the Surface-Shadow's stored string) and the two-way helper is named as forbidden on this path.
+  (2) The doc→file/view PROJECTION is now an explicit criterion. `buildCanvasData` (`canvas-sync.ts:918`) feeds BOTH `serializeCanvas` (`:971`, disk) AND `reconcileLiveCanvas` (`main.ts:1198`, the open Obsidian view) AND the E2E `canvas.state` command AND, through `buildApplyReceipt`, the Surface-Shadow itself. `JSON.stringify` renders a `Y.Text` to a string through its implicit `toJSON`, so the disk bytes and the HTTP read-back are right BY ACCIDENT while the view receives a raw object and the shadow stores one — the exact shape of a green that cannot fail.
+  (3) The per-field LWW write at `canvas-sync.ts:3025-3027` (`existing.set(upsert.field, upsert.value)`) would replace a `Y.Text` with a plain string on the FIRST capture after conversion, silently un-migrating the record and discarding its history, because `docValueEquals` (`:1403`) has no `Y.Text` arm and answers `false` for every string-vs-`Y.Text` pair.
+  (4) Acceptance evidence moves from headless assertion to two LIVE Obsidian instances. WP37 and WP38 each therefore own one new E2E control command, because the rig as built cannot type into an inline editor or invoke undo, and a criterion with no instrument is not a criterion. -->
+
 #### C36 — `Y.Text` for node text and edge labels
-- Change type: modify (record shape, capture and apply paths)
-- Responsibility: give the content that most needs sequence merging the only merge type that provides it.
+- Change type: modify (record shape, capture, projection and apply paths)
+- Responsibility: give the content that most needs sequence merging the only merge type that provides it — **without** letting a file-driven capture delete the characters the merge just delivered.
 - Interfaces:
-  - Input: text changes from Obsidian saves (and, from P5, adapter ops)
-  - Output: nested `Y.Text` updates via minimal diff
+  - Input: text changes observed as `.canvas` file saves (`handleLocalModify` → the Surface-Shadow intent plan); from P5, adapter ops
+  - Output: nested `Y.Text` insert/delete ops derived from a **shadow→save** diff
 - Acceptance Criteria:
-  1. A text node's `text` and an edge's `label` are nested `Y.Text` instances inside the record map, created once with the record and never replaced.
-  2. Capture uses the existing minimal-diff mechanism including surrogate snapping; an unchanged text produces no update.
-  3. Two clients typing concurrently into the same card converge character-wise on every replica, with no total loss of either side's input.
-  4. Serialisation renders `Y.Text` back into a plain string in the file, and round-trips without change.
-- Definition of Done: concurrent card editing merges instead of one side vanishing.
+  1. A text node's `text` and an edge's `label` are nested `Y.Text` instances inside the record `Y.Map`, **created complete and attached in one operation** (`set(key, new Y.Text(previousString))`), and never subsequently replaced by a plain value. The key is never absent and never deleted, not even transiently, at any point of the conversion — a record observable with `text` missing is refused by `validateNodeIngest` and the refusal composes into deletion.
+  2. **The capture write is a THREE-WAY merge and the two-way helper is forbidden on this path.** The ops applied to a `Y.Text` are derived from the diff between the **Surface-Shadow's** stored string for that field (the base — what this client last confirmed was on the surface) and the **saved file's** string, never from a diff against the `Y.Text`'s own current content. `applyMinimalYTextUpdate` (`plugin/src/utils.ts:65-117`) may be reused only for its surrogate-snapping boundary logic, never as the writer, and `plugin/src/utils.ts` is not modified. Surrogate pairs are still never split. An unchanged text produces zero ops and zero updates.
+  3. Two clients editing the same card converge character-wise on every replica, and **a character present in the doc but absent from a client's own file survives that client's next capture**. This is the criterion the two-way helper fails; it is stated as a property of one client's capture, not only as a property of the converged pair, because a converged pair is exactly what the defect produces.
+  4. **The projection renders explicitly.** `buildCanvasData` converts a `Y.Text` field value to its string before the record leaves the doc, so the disk bytes, the open-view reconcile payload, the E2E `canvas.state` read-back and the Surface-Shadow advance all receive a string. Correctness may not rest on `JSON.stringify`'s implicit `toJSON`, which hides the omission from every JSON-shaped oracle while the live view breaks. Round-trip is byte-unchanged.
+  5. **The migration is lazy, per-record and write-triggered, and both shapes stay readable.** A plain-string `text`/`label` is converted only when this client has a local edit for that field to write, or when the record is created. There is no bulk conversion pass, `migrateV1ToV2` is not modified, `SUPPORTED_SCHEMA_MAJOR` stays `2`, and `isRichTextValue` (`canvas-ingest-schema.ts:167-174`) — the guard that makes a `Y.Text` INGEST-VALID and therefore un-refusable, and hence un-deletable — stays byte-unchanged. `"text": ""` converts to an empty `Y.Text`, stays valid, stays present, and renders back as `""`.
+- Definition of Done: concurrent card editing merges instead of one side vanishing, **and no capture deletes a character it did not observe the user delete.**
 - Assigned to work package: **WP36**
-- Fuzzer link: registers a `text-edit` op in WP23's op registry; SEC and byte-equality assertions must cover it.
+- Fuzzer link: registers a `text-edit` op in WP23's op registry; SEC and byte-equality assertions must cover it. **Note the limit of that link:** cross-replica byte equality provably cannot see AC3's failure, because both replicas converge on the same destroyed string. The fuzzer is supporting evidence; the acceptance evidence is the live two-vault observation.
 
 #### C37 — `isBusy()` extended with inline editing, deferred apply and blur merge
-- Change type: modify (`canvas-adapter.ts:isBusy` `:87`/`:572`, `main.ts:reconcileLiveCanvas` busy gate `:1054–1059`)
-- Responsibility: stop structural reloads from destroying an active inline editor, without freezing the rest of the canvas.
+- Change type: modify (`canvas-adapter.ts` `isBusy` `:87`/`:572`, `main.ts:reconcileLiveCanvas` busy gate `:1212-1217`) + create (one E2E control command)
+- Responsibility: stop structural reloads from destroying an active inline editor, without freezing the rest of the canvas. **This is the component that closes the owner's observed symptom** — today any non-geometry remote difference is classified `"structural"` by `planReconcile` (`reconcile-plan.ts:25`, `:112-150`) and executed as a full `reloadCanvasData` / `setData`, which discards the inline editor and every keystroke Obsidian has not yet flushed to the file.
 - Interfaces:
-  - Input: an "inline editor focused" signal
-  - Output: per-record deferral with merge on blur
+  - Input: an "inline editor focused" signal, and the id of the record being edited
+  - Output: per-record deferral with merge on blur; **no shadow advance for a deferred record**
 - Acceptance Criteria:
-  1. `isBusy()` includes "inline editor focused" as a signal, and the existing drag watchdog behaviour and `DRAG_WATCHDOG_MS` default are unchanged.
-  2. Structural applies for the record being edited are queued and applied on blur; applies for all other records continue immediately.
-  3. Remote `Y.Text` changes to the record being edited are merged on blur, positionally correct, with no loss of locally typed characters.
-  4. The queue cannot grow unboundedly and is drained on blur, on view close and on teardown.
+  1. `isBusy()` includes "inline editor focused" as a signal, and the existing drag watchdog behaviour and the `DRAG_WATCHDOG_MS = 5000` default are unchanged. The editing signal carries its own bounded staleness release, on the watchdog's precedent — a focus flag that is never cleared freezes reconcile for the life of the view.
+  2. Structural applies for the record being edited are **queued**, not dropped, and applied on blur; applies for every other record continue immediately. Today's gate returns early and drops the whole pass (`main.ts:1212-1217`), which is safe but leaves the view stale with no scheduled repair.
+  3. Remote `Y.Text` changes to the record being edited appear after blur, positionally correct, **with no loss of locally typed characters** — measured as: characters typed into the live editor during the deferral are present on **both** vaults' disk after blur and quiescence.
+  4. **A deferred record's Surface-Shadow fields are not advanced.** The receipt only advances what the surface confirmed (`buildApplyReceipt` / `advanceFromReceipt`, `canvas-shadow.ts:795`, `:1048`); a deferred apply is not a confirmation. This is the interlock that keeps C36 AC2's three-way base correct — an advanced shadow for a record whose view never took the value makes the next capture diff against a string that was never on the surface.
+  5. The queue cannot grow unboundedly, is per record, is drained on blur, on view close and on teardown, and a queued entry never outlives the adapter that owns it.
+  6. **The instrument exists.** One E2E control command drives the **real inline editor** on a live instance — focus a node, insert characters through the editing surface Obsidian itself uses — and returns **measured** facts (whether focus was actually taken, and the text the node's own editing surface reports). It must not write into the `Y.Doc`, must not write the `.canvas` file, and must not return a literal — `canvas.simulateEdit`'s hardcoded `applied: true` (`testing/e2e-control.ts:1023`) is the anti-pattern this criterion exists to avoid repeating.
 - Definition of Done: typing is never interrupted, and nothing is lost by deferring.
 - Assigned to work package: **WP37**
 
 #### C38 — `Y.UndoManager` per client and doc
-- Change type: create (undo wiring) + modify (`main.ts` command registration)
-- Responsibility: give each client selective undo of its own actions, including lossless delete-undo.
+- Change type: create (undo wiring) + modify (`main.ts` command registration) + create (one E2E control command)
+- Responsibility: give each client selective undo of its own actions, including lossless delete-undo. **Supporting, not symptom-closing** — no acceptance criterion of C38 bears on dropped keystrokes.
 - Interfaces:
   - Input: local undo/redo commands
   - Output: undo restricted to this client's own origins
 - Acceptance Criteria:
-  1. One `Y.UndoManager` exists per client and canvas doc with `trackedOrigins` limited to `CAPTURE_OP` and `CAPTURE_NET`.
-  2. Undo reverts only this client's own last action, never a peer's, even when the peer's edit happened in between.
-  3. Undo of a delete restores the record and all its field values through the tombstone flag, with no data loss.
+  1. One `Y.UndoManager` exists per client and canvas doc with `trackedOrigins` limited to the local capture origins, and it is destroyed with the doc — a manager that outlives its doc is a retained-reference leak and an undo that reaches a torn-down surface.
+  2. Undo reverts only this client's own last action, never a peer's, even when the peer's edit happened in between. Verified across two live vaults: after the undo, the peer's edit is still present on **both** disks.
+  3. Undo of a delete restores the record and all its field values through the tombstone flag (`on: false`), with no data loss and **without** re-creating the record's `Y.Map` — WP19's whole delete-is-a-value design is what makes this lossless.
   4. A drag burst is bundled into a single undo step via `captureTimeout`, and a multi-node drag is one step because it is captured as one transaction.
+  5. **The undo scope is a doc, not an epoch, and the migration boundary is stated rather than assumed.** Undo does not cross a `text` → `Y.Text` conversion: the conversion is a local capture-path op, so it is tracked, and undoing it must not leave the field absent, non-string and non-`Y.Text`, or empty when it was not. The honest outcome for an undo whose stack predates the conversion is a **no-op with a signature**, never a partially-restored record. CONCEPT_V2's "lossless within an epoch" claim is scoped here to: lossless for records whose representation did not change inside the stack's lifetime.
+  6. **The instrument exists.** One E2E control command invokes the registered undo command on a live instance and returns measured facts (whether a step was actually popped, and the stack depth before and after), never a literal.
 - Definition of Done: undo is per-client, selective and lossless.
 - Assigned to work package: **WP38**
 - Fuzzer link: registers an `undo` op in WP23's op registry.
@@ -2428,9 +2440,10 @@ Ordered list — this is a valid topological order and is the sequence the Dispa
 | WP33 | P3 | REMOVAL: R10 text fallback door | fallback + R6 orphaned `Y.Text` removed | WP32 | planned |
 | WP34 | P3 | Honest degraded reconcile mode | non-reconcilable marking + banner + reopen reconcile | WP32 | planned |
 | WP35 | P3 | Chaos suite II | host rejoin, fallback-coexistence, with discrimination | WP29, WP33 | planned |
-| WP36 | P4 | `Y.Text` node text and edge labels | nested sequence CRDT + minimal diff | WP18, WP19 | planned |
-| WP37 | P4 | `isBusy` + deferred apply + blur merge | editing-aware busy predicate, per-record queue | WP36 | planned |
-| WP38 | P4 | `Y.UndoManager` | per-client selective undo, lossless delete-undo | WP19, WP36 | planned |
+<!-- Updated: 2026-08-05 (B16b) — the three P4 rows re-scoped against the current tree. Scope GREW in each; no WP was added, split or removed, so §7's Definition-of-Done count and the header both still land on 79 and are unchanged. WP36 gains the three-way capture rule (the previous C36 AC2 specified `applyMinimalYTextUpdate`, `utils.ts:65-117`, which is a two-way diff and deletes remote characters on a file-driven path), the explicit doc→file/view projection render (`buildCanvasData` feeds disk, the open view, `canvas.state` and the Surface-Shadow, and only `JSON.stringify` was hiding the omission), the per-field write router (`canvas-sync.ts:3025-3027` would replace a `Y.Text` with a plain string on the first capture after conversion) and the lazy write-triggered migration. WP36 additionally depends on WP5, whose per-field receipt supplies the three-way base. WP37 and WP38 each gain ONE E2E control command, because the rig as built can neither type into an inline editor nor invoke undo, and under the owner's new workflow ("W3 implementiert … wir validieren mit W4 direkt im e2e modus") a criterion with no instrument is not a criterion; per the same instruction these are W3 revisions inside their own WP, not a separate infrastructure WP. -->
+| WP36 | P4 | `Y.Text` node text and edge labels | nested sequence CRDT; **three-way** shadow→save capture (the two-way helper is forbidden here); explicit `Y.Text`→string render in the one doc→file/view projection; per-field write router so a capture never overwrites a `Y.Text` with a string; lazy write-triggered migration inside major 2 with `isRichTextValue` byte-unchanged | WP5, WP18, WP19 | planned |
+| WP37 | P4 | `isBusy` + deferred apply + blur merge | editing-aware busy predicate with its own bounded staleness release, per-record queue drained on blur/close/teardown, **no shadow advance for a deferred record**, + one E2E command that drives the real inline editor and returns measured facts | WP36 | planned |
+| WP38 | P4 | `Y.UndoManager` | per-client selective undo, lossless delete-undo through the tombstone flag, scope stated across the `text`→`Y.Text` conversion boundary, + one E2E command that invokes undo and returns measured facts | WP19, WP36 | planned |
 | WP39 | P5 | Op-capture contract V2 | upsert-only, atomic registers, validated, rounded | WP15, WP18, WP22 | planned |
 | WP40 | P5 | Promote op-capture to primary | trigger verification then `useCanvasBinding` default on | WP7, WP39 | planned |
 | WP41 | P6 | Relay blob store | opaque per-`roomId:docId` append + replay + truncate | WP25 | planned |
