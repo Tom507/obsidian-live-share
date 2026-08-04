@@ -284,6 +284,21 @@ export interface E2EControlHost {
   bindingCounters(path: string): BindingCounters;
   simulateEdit(path: string, change: unknown): Promise<{ applied: boolean }>;
   setFlag(name: string, value: unknown): { set: boolean };
+  // WP72 (C72 AC2) — the reversal half of `setFlag`. An in-memory settings
+  // override the control channel applied is session-scoped AND reversible
+  // *through the protocol*, so a scenario can put an instance into a state and
+  // then put it back without the rig touching `data.json`. Optional on the
+  // *interface* for the same reason as `scratchCreate`/`canvasFile` above: the
+  // hand-rolled fake hosts in the pre-WP72 tests stay valid, and `routeCommand`
+  // turns an absent method into a structured 400 rather than a crash.
+  clearFlags?(): { restored: string[]; cleared: string[] };
+  // WP72 (C72 AC3) — read-only classification of a flag name: the identifier of
+  // the state a value set under this name would reach, or `null` when nothing
+  // consults it. Pure: it stores nothing, mutates nothing and must never be the
+  // place a flag is applied. `undefined` (method absent) means "this host cannot
+  // classify", and `routeCommand` then answers exactly as it did before WP72 —
+  // which is what keeps every hand-rolled fake host in the existing tests valid.
+  flagConsumer?(name: string): string | null;
   waitQuiescent(timeoutMs: number): Promise<{ quiescent: boolean }>;
   // WP47 (T3_SharedContract §6.1) — the scratch half of the surface. Optional on the
   // *interface* so pre-WP47 fake hosts in existing tests stay valid; `buildPluginHost`
@@ -319,6 +334,11 @@ export interface E2EScratchControlHost extends E2EControlHost {
  */
 export interface E2EFileControlHost extends E2EScratchControlHost {
   canvasFile(path: string): Promise<CanvasFileResult>;
+  // WP72 — `buildPluginHost` always provides the reversal and the classifier, so
+  // a caller holding a real host calls them directly; `E2EControlHost` keeps both
+  // optional for the hand-rolled fake hosts.
+  clearFlags(): { restored: string[]; cleared: string[] };
+  flagConsumer(name: string): string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -389,8 +409,75 @@ export async function routeCommand(
         return ok(
           await host.simulateEdit(requireString(args, "path"), args.change),
         );
-      case "canvas.setFlag":
-        return ok(host.setFlag(requireString(args, "name"), args.value));
+      // --- WP72 (C72 AC1) ----------------------------------------------------
+      // `canvas.setFlag` has no persistence mode and never acquires one. A caller
+      // that asks for persistence is refused HERE, at the command boundary, under
+      // its own named reason — before the host is reached, so the refusal cannot
+      // half-apply anything (I11 REFUSAL NEVER DESTROYS). This is deliberately a
+      // refusal rather than a silently-ignored argument: an ignored `persist`
+      // would let a caller believe the write happened.
+      //
+      // WP72 (C72 AC3) — the response distinguishes the three outcomes it used to
+      // conflate. Before this WP the command answered `{set:true}` for ANY name
+      // whatsoever, so a caller could not tell a flag that was applied from one
+      // stashed where nothing reads it from one that does not exist — a control
+      // surface that cannot fail.
+      //
+      //   applied  → `{set:true}`            (shape UNCHANGED — a name whose value
+      //                                       reaches state the plugin consumes)
+      //   inert    → `{set:false, disposition:"inert", …}`
+      //   refused  → structured 400 `{ok:false, error:"refused: …"}`
+      //
+      // The classification comes from the host (`flagConsumer`), which is the only
+      // thing that knows what consumes what. A host that cannot classify keeps its
+      // pre-WP72 answer verbatim, which is why every hand-rolled fake host in the
+      // existing tests is unaffected.
+      //
+      // **This is NOT C51 AC3.** That criterion is the *rejection rule* — "a flag
+      // no path consults is rejected at the command boundary rather than silently
+      // stored" — and it belongs to WP51. WP72 owns only the truthfulness of the
+      // answer: the value is still stored exactly as before, and it is now
+      // *reported* as inert instead of as success. When WP51 lands, names it
+      // rejects move from the `inert` disposition into `refused`; nothing here has
+      // to move for that to happen. Deciding here which names are rejected would
+      // re-implement WP51's criterion, which this WP is forbidden to do.
+      case "canvas.setFlag": {
+        if (args.persist !== undefined) {
+          return badRequest(
+            "refused: persistence-requires-file-write — canvas.setFlag never writes " +
+              "data.json for any name; the settings file is borrowed by the rig",
+          );
+        }
+        const name = requireString(args, "name");
+        const consumer =
+          typeof host.flagConsumer === "function" ? host.flagConsumer(name) : undefined;
+        const result = host.setFlag(name, args.value);
+        if (consumer === undefined) return ok(result);
+        if (consumer === null) {
+          // I11 REFUSAL NEVER DESTROYS — the value was stored, nothing was undone
+          // and nothing was overwritten. What changed is that the caller is told
+          // the truth about where it went.
+          return ok({
+            set: false,
+            disposition: "inert",
+            consumer: null,
+            reason:
+              `no code path consults the flag '${name}'; it was stored in the ` +
+              "host's runtime-flag map, which nothing reads",
+          });
+        }
+        return ok(result);
+      }
+      // WP72 (C72 AC2) — the reversal. Restores every in-memory override this
+      // session applied to the value the instance held before the first override,
+      // and drops the runtime-flag stash. In-memory only: it must not write
+      // `data.json` either, or the restore would be a second clobber.
+      case "canvas.clearFlags": {
+        if (typeof host.clearFlags !== "function") {
+          throw new Error("canvas.clearFlags unavailable on this host");
+        }
+        return ok(host.clearFlags());
+      }
       case "sync.waitQuiescent": {
         const t = args.timeoutMs;
         const timeoutMs = typeof t === "number" && t >= 0 ? t : 2000;
@@ -802,6 +889,20 @@ export function buildPluginHost(
 ): E2EFileControlHost {
   const runtimeFlags = new Map<string, unknown>();
 
+  // WP72 (C72 AC2) — the session-scoped override journal. One entry per settings
+  // key this control channel has overridden, holding the value the instance held
+  // BEFORE the first override, so `clearFlags` restores the loaded value rather
+  // than the previous override. It lives in this closure, so it dies with the
+  // host: an override cannot survive the instance.
+  //
+  // Only keys that ALREADY EXIST on `plugin.settings` are ever journalled — a name
+  // that is not a settings key goes to `runtimeFlags` and never reaches here — so
+  // the restore is always an assignment and never a delete. Stated because the
+  // alternative (a journal entry that also records "this key did not exist") would
+  // carry a branch nothing can reach through the protocol, and an untestable
+  // branch is an invitation to a test that cannot fail.
+  const settingsOverrides = new Map<string, unknown>();
+
   const roleOf = (): "host" | "guest" =>
     plugin.settings.role === "host" ? "host" : "guest";
 
@@ -988,17 +1089,84 @@ export function buildPluginHost(
       };
     },
 
+    // --- WP72 (C72 AC1 + AC2) ------------------------------------------------
+    // This function used to call `plugin.saveSettings?.()` for any name that was
+    // an existing settings key. `saveSettings` rewrites the whole of
+    // `<vault>/.obsidian/plugins/live-share/data.json` FROM THE LIVE IN-MEMORY
+    // COPY — and that file is *borrowed*: C70 AC1 captures it byte-exactly and
+    // restores it verbatim, and C50 AC6 / C7 AC6 then compare it after teardown
+    // against an independent sha256 baseline the rig did not produce, where a
+    // mismatch fails the run on data safety. Every canvas-relevant key the gate
+    // touches (`useCanvasBinding`, `showCanvasPresence`, `showCanvasCursors`,
+    // `sharedFolder`, `roomId`, `serverUrl`) is an existing key, so the NATURAL
+    // use of this command took that branch. One control command could therefore
+    // destroy the borrow its own verdict is checked against, and the failure
+    // would have read as a WP44 restore bug.
+    //
+    // The call is REMOVED, not guarded behind a `persist` option (AC1 says so in
+    // as many words): a guard leaves the clobber one argument away and makes the
+    // gate's data safety depend on every future caller remembering. There is now
+    // no path from this command to any write of `data.json`, for any name — the
+    // router refuses a caller that even asks (`canvas.setFlag` + `persist`).
+    //
+    // `plugin.saveSettings` stays on `E2EPluginLike`: it is the plugin's own
+    // legitimate persistence API and the interface describes the plugin, not
+    // this host's use of it. Nothing in `buildPluginHost` calls it.
     setFlag(name, value) {
-      // Apply to a known settings key when present; otherwise stash a runtime
-      // flag other test hooks can read. Never touches unrelated settings.
       const settings = plugin.settings as Record<string, unknown>;
       if (Object.prototype.hasOwnProperty.call(settings, name)) {
+        // AC2 — in-memory only, session-scoped, reversible. The prior value is
+        // captured on the FIRST override of a key and never overwritten, so a
+        // repeated `setFlag` cannot make the restore target a previous override
+        // instead of the value the instance loaded.
+        if (!settingsOverrides.has(name)) settingsOverrides.set(name, settings[name]);
         settings[name] = value;
-        void plugin.saveSettings?.();
       } else {
         runtimeFlags.set(name, value);
       }
       return { set: true };
+    },
+
+    // WP72 (C72 AC3) — what, if anything, consults a flag of this name.
+    //
+    // Read-only and total: it stores nothing and mutates nothing, so calling it
+    // can never be the thing that applies a flag. An existing settings key is
+    // consumed by the plugin itself, so it names `plugin.settings`. Everything
+    // else lands in `runtimeFlags`, which — grep-verified against the current
+    // tree — is written at exactly one site and READ BY NOTHING in `plugin/src`.
+    // That is not an implementation detail to be papered over: it is why the old
+    // `{set:true}` answer was a lie, and `null` is the honest report of it.
+    //
+    // WP51 owns the *rejection* rule (C51 AC3) and will introduce the register of
+    // names that genuinely have readers; when it does, this function is where the
+    // register is consulted and names with readers stop returning `null`.
+    flagConsumer(name) {
+      const settings = plugin.settings as Record<string, unknown>;
+      if (Object.prototype.hasOwnProperty.call(settings, name)) return "plugin.settings";
+      return null;
+    },
+
+    // WP72 (C72 AC2) — the reversal, in memory and through the protocol.
+    //
+    // Restores each overridden settings key to the value the instance held before
+    // this control channel first touched it, and empties the runtime-flag stash.
+    // Deliberately does NOT call `plugin.saveSettings()` either: writing the
+    // restore to disk would be a second clobber of the borrowed file, and the
+    // file the rig restores from is its own captured copy, not ours.
+    //
+    // Idempotent: a second call is an empty restore, not an error — teardown may
+    // well run twice (the same discipline as `scratchRemove`).
+    clearFlags() {
+      const settings = plugin.settings as Record<string, unknown>;
+      const restored: string[] = [];
+      for (const [name, prior] of settingsOverrides) {
+        settings[name] = prior;
+        restored.push(name);
+      }
+      settingsOverrides.clear();
+      const cleared = [...runtimeFlags.keys()];
+      runtimeFlags.clear();
+      return { restored, cleared };
     },
 
     async waitQuiescent(timeoutMs) {

@@ -125,7 +125,19 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+Location: `workflowArtifacts/canvas-v2/tests/visible/WP72/` · staged to `plugin/src/__tests__/wp72/`
+**after** implementation (mirroring a generated-but-unimplemented suite breaks `npm run build`
+repo-wide — the B9b lesson, reverted at `6b20c17`).
+
+| File | AC | Test points |
+|---|---|---|
+| `test_tp1_setflag_never_writes_the_borrowed_settings_file_visible.test.ts` | AC1 | sha256 unchanged across five existing settings keys with `saveSettings` spied at 0 calls, while the in-memory effect *does* land; **FALSIFICATION** — the same oracle moves when the removed `saveSettings()` call is made explicitly; unknown name reaches no persistence; the whole router path incl. `canvas.clearFlags` leaves the file byte-identical; a caller asking for `persist` is refused by name with the host never reached and the file untouched (`persist:false` too); STRUCTURAL — zero `saveSettings` call sites survive in the module with comments stripped |
+| `test_tp2_override_is_session_scoped_and_reversible_visible.test.ts` | AC2 | override applied in memory and reversed through `canvas.clearFlags`; the prior value is captured on the **first** override, not the last; **an unrelated `saveSettings()` after `clearFlags` writes the borrowed sha256**; **FALSIFICATION** — without the `clearFlags` it writes a different one; an override does not survive the instance (a second host holds no journal, the first still can reverse); `clearFlags` idempotent and clears the runtime stash; a host that cannot reverse gets a structured 400 |
+| `test_tp3_three_distinguishable_dispositions_visible.test.ts` | AC3 | one call per class, **all three whole responses compared pairwise** (`Set(…).size === 3`) — not a single negative case; each is the outcome it claims; success is reserved to the applied class across five inert/edge names; the classifier is read-only; I11 — an inert report destroys neither an unrelated override nor the reversal record; a host that cannot classify keeps its pre-WP72 answer verbatim |
+| `test_tp4_no_production_branch_and_no_new_transport_visible.test.ts` | AC4 | imports still inside WP49's frozen allow-list; exactly one `.listen(` and one `createServer(`, no WebSocket; no canvas module mentions `setFlag`/`clearFlags`/`flagConsumer`/`runtimeFlags`/`settingsOverrides`/`e2e-control`/`__LS_E2E__`; no canvas module imports `testing/`; `main.ts` untouched |
+
+**Credential rule observed throughout:** hash-only comparison, no real vault opened, no real
+`data.json` read; every fixture is a throwaway file in the OS temp dir with non-secret contents.
 
 ---
 

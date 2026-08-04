@@ -127,7 +127,35 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+**No vitest set, by charter §5** — *"the Python side of this phase has no vitest coverage and must not
+pretend to."* Verification is the standalone script, in the AgenticWorkspace repo beside the file it
+verifies (the `tools/test_<name>.py` convention **is** honourable there; §3's worry that it could not
+be was written when the file's repository was recorded wrongly):
+
+`h:\My Code\AgenticWorkspace\tools\MCPserver\test_liveshare_e2e_mcp_server.py` — **40 checks, 40 PASS,
+exit 0**, launched through `visible-console` `run_python` with an absolute path.
+
+| TP | AC | What it pins |
+|---|---|---|
+| tp01 a/b/c | AC1 | **eleven** gesture sites re-derived from the AST (not from prose); the only `_simulate` call left in `_run_case` is inside the checkpoint; the `1+2+3+2+2+1` per-case decomposition |
+| tp02 a–d | control | with no injection all six cases pass — without this the injections prove nothing |
+| tp03 a–i | AC1, AC2 | unapplied **setup** gesture → `inconclusive` naming case + gesture + instance + oracle; `allPass` false; `inconclusive` list; **neighbours green** |
+| tp04 a–f | AC1, AC3 | unapplied **sole** gesture of `initial-sync` (no content predicate ⇒ `converged` is its entire verdict) → `inconclusive`; neighbours green |
+| tp05 a/b | AC1 | never falls through: no `canvas.state` and no `sync.waitQuiescent` between the refused gesture and the next case |
+| tp06, tp07 | AC1 | a missing `applied` key is unapplied; `"true"`, `1`, `False`, `{}`, `None` are all unapplied — identity-true only, no default and no `bool()` cast |
+| tp08 a–c | AC2 | attribution names instance **b** when b's gesture failed, not "a" by default |
+| tp09 a/b | AC1 | `allPass` reduces on `status == "pass"`, not on the bare legacy `pass` key (AST, docstring stripped) |
+| tp10 a–c | AC2 | every passing case reports the gestures it applied, instance-qualified, and names its oracle |
+| tp11 a–c | AC4 | six `MATRIX_CASES` identifiers; seven tool signatures compared parameter-by-parameter from the AST; stdlib-only imports |
+| tp12 a/b | extra | the `edit` tool no longer defaults a missing `applied` to `True` |
+
+Three oracles were first written against the source **text** and false-failed on the module's own
+docstrings (which quote `_simulate(...)` and `result.get("applied", True)` verbatim). Rewritten to
+read the **AST** with docstrings stripped, so a prose mention can neither satisfy nor break them.
+
+**AC3's falsification** is a separate one-off harness (`h:\tmp\wp73_prerepair\falsify_wp73.py`) that
+runs the identical injections against a byte copy of the pre-repair driver. Not committed — it is
+measurement scaffolding; the measurements are in `ImplementationReport_WP73.md` §3.
 
 ---
 
