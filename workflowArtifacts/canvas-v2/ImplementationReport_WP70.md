@@ -2,6 +2,191 @@
 
 ---
 
+# Close-out — batch B11a: the two escalated `tp31` assertions, ruled on and corrected
+
+Batch **B11a** · Worker 3 (Implementation Worker) · 2026-08-04 · branch
+`fix-bugs-and-raceconditions`. This section closes the escalation attempt 2 opened; every
+section below it is retained verbatim.
+
+## Executed counts — all three sets, after the correction
+
+| Test set | files | collected | passed | failed | command |
+|---|---|---|---|---|---|
+| visible | 31 | **259** | **259** | **0** | `pytest workflowArtifacts/canvas-v2/tests/visible/WP70` |
+| blind_set1 | 31 | **345** | **345** | **0** | `pytest workflowArtifacts/canvas-v2/tests/blind_set1/WP70` |
+| blind_set2 | 31 | **300** | **300** | **0** | `pytest workflowArtifacts/canvas-v2/tests/blind_set2/WP70` |
+
+One run, console **`9f96b52b`**, interpreter
+`H:\My Code\AgenticWorkspace\.venv\Scripts\python.exe`, cwd
+`H:\Developement\_NeuralAngels\liveshareCollab\obsidian-live-share` (the junction — pytest
+cannot collect from the workspace root, the `Projects/_external/FinaleAbgabe` thesis symlink
+dangles), `-p no:cacheprovider`, `--rootdir` given explicitly. Every count is **executed and
+non-zero**; the collected counts are unchanged from attempt 2's, which is the point — nothing
+was deleted or skipped, only strengthened.
+
+## Step 1 — the failures were reproduced before anything was touched
+
+Console **`24be910b`**, the file unedited: **2 failed / 18 passed**, and the two are exactly
+the two attempt 2 escalated, no third and nothing subtler:
+
+- `test_the_borrow_is_real_for_every_shape[without_obsidian_git]` → `assert during != original`
+- `test_a_list_without_obsidian_git_is_still_handed_back_unrewritten` → `assert (…).read_bytes() != original`
+
+Both fail with the two sides byte-identical
+(`b'[\r\n\t"periodic-notes",\r\n\t"live-share"\r\n]'`), so the disagreement is precisely the
+one the ruling describes and not a masked defect elsewhere. The `ESCALATE_TO_WORKER2`
+condition attached to this task therefore did **not** fire.
+
+## Step 2 — what was actually true, stated exactly
+
+The Dispatcher's ruling is binding and is recorded here as the rationale, not re-litigated:
+**a borrow must not change the owner's bytes when the enabled set does not change.**
+
+The nuance matters and the corrected prose says it: **this is not "the borrow skips the
+write".** `disable_community_plugins` still calls `_atomic_write_bytes(path, narrowed)`
+whenever `had_original` (`provisioning.py:1041-1042`) — the write happens. It is simply
+**byte-preserving**, because `_enabled_without_disabled` builds `cuts` only for ids in
+`constants.DISABLED_PLUGIN_IDS` (`:946-960`); with none present there is no span to cut, so
+`spliced == text` and `narrowed == original`. That is the whole reason the modify path is a
+**textual splice and never a re-serialisation**: the owner's BOM, CRLFs, tabs and missing
+trailing newline survive the borrow, which is the same instinct as invariant I11 — do not
+touch what you do not need to touch. Requiring a difference there would require exactly the
+gratuitous `json.dumps` rewrite `blind_set1/tp29` forbids.
+
+## Step 3 — the correction, in the only direction permitted
+
+**File:** `workflowArtifacts/canvas-v2/tests/blind_set2/WP70/test_tp31_restore_on_every_exit_path_blind2.py`.
+Nothing was deleted, skipped, loosened or removed; no `pytest.skip` was added; the test count
+is unmoved at **300 collected**.
+
+**`test_the_borrow_is_real_for_every_shape`** — the single blanket `during != original`
+became a **shape-aware** pin, which is strictly more specific than what it replaced:
+
+| shape | now pinned |
+|---|---|
+| `absent` | unchanged — no backup, `had_original is False`, no list conjured into existence |
+| `without_obsidian_git` | `during == original`, sha256 equal, byte length equal, `record.enabled_after == ("periodic-notes", "live-share")` — **plus** every guarantee the old form had: marker present, `had_original is True`, backup byte-exact, `b"obsidian-git" not in during`, and `b"live-share" in during` |
+| `bom_and_crlf` | `during != original` **and removal-only**: sha256 differs, `len(during) < len(original)`, `enabled_after == ("live-share",)`, and the BOM, the CRLFs and the absent final newline all still match the original's disposition |
+
+Assertions inside the borrow: **4 → 8** for `without_obsidian_git`, **4 → 11** for
+`bom_and_crlf`. The old form could not tell "removed one id" from "re-serialised the whole
+file"; the new one refuses both wrong answers.
+
+**`test_a_list_without_obsidian_git_is_still_handed_back_unrewritten`** → renamed
+**`test_a_list_without_obsidian_git_is_byte_unchanged_during_the_borrow_and_after_it`**.
+
+Its title said *unrewritten*, its docstring said *"the rig rewrites the file anyway"*, and its
+assertion pinned a difference — three statements, no two of which agreed. **A title asserting
+the opposite of its own assertion is the trap that bit WP26/AC3 twice**, so the prose was
+fixed with the assertion rather than after it. The new docstring states what is actually true:
+a write happens and is byte-preserving, and the borrow is real for reasons that are *not* a
+byte difference. Assertions inside the borrow: **2 → 11** — the byte equality, its sha256 and
+length, the surviving CRLF/tab/no-final-newline, `obsidian-git` absent, `had_original`,
+`original_sha256`, `enabled_after`, the byte-exact backup and the marker — followed by the
+unchanged post-`KeyboardInterrupt` byte equality and `assert_restored`.
+
+## Step 4 — the same contradiction does NOT exist in the other two sets
+
+Both were **read, not assumed**:
+
+- `blind_set1/WP70/test_tp31_…_blind1.py` — its single `ORIGINAL` **contains** `obsidian-git`
+  (`:53`), so `assert_borrow_is_open`'s `during != ORIGINAL` (`:96`) is the correct pin for
+  the shape it uses. **Unchanged.**
+- `visible/WP70/test_tp31_…_visible.py` — `ORIGINAL` likewise contains `obsidian-git`
+  (`:46`), so `test_the_list_really_was_modified_in_between` (`:121-128`) is correct.
+  **Unchanged.**
+- Swept wider than the order required: the only other WP70 test built on a list without
+  `obsidian-git` is `visible/WP70/test_tp28_…::test_a_vault_without_obsidian_git_enabled_is_a_clean_no_op_removal`,
+  and it already pins the ruling's behaviour (`enabled_list(vault) == without`). **Unchanged.**
+
+## Step 5 — falsification: the corrected assertions do redden
+
+A corrected assertion that cannot fail is worse than the one it replaced. Injection, applied
+to the *no-cut path only*, inside `_enabled_without_disabled` immediately after the splice:
+
+```python
+if not cuts:
+    narrowed = prefix + json.dumps(remaining, indent=2).encode("utf-8")
+```
+
+That is the exact failure the ruling names — a re-serialisation where nothing needed to
+change. It survives the splice's own post-verification (it still parses to `remaining`), so
+it reaches the file.
+
+**Result, console `64037dab`: 2 failed / 18 passed** — and the two are the two corrected
+tests, each reddening at the new `during == original` pin
+(`AssertionError: a borrow with nothing to cut rewrote the owner's bytes`, `b'[\n  "perio…'`
+vs `b'[\r\n\t"per…'`). Nothing else in the file moved, which also shows the pin is *targeted*
+rather than broadly coupled.
+
+Injection reverted; `git diff --name-only tools/obsidian_e2e/provisioning.py` is **empty** —
+the production module is byte-identical to what it was before the falsification, and this
+batch changed **no implementation file at all**.
+
+## Why no §7 licence was required — D-1, cited not invented
+
+**WP70 holds no BUILD_SPEC §7 licence of any class, and none was taken.** None was needed.
+
+Both `tp31` files were **authored by this batch's own unit-test sub-agent**, and every §7
+licence class governs **inherited** tests — a test the batch did not write. That is the
+**D-1 ruling** (`BUILD_SPEC_CanvasV2.md:1851`, with the WP26 precedent it cites), and the
+distinction it draws is **inherited vs. batch-authored** — **not** fixture-vs-assertion.
+Attempt 2 read D-1 as covering fixtures only and therefore escalated an assertion dispute it
+could have resolved; that reading was too narrow, and the escalation was still the right call,
+because an implementer who rewrites blind assertions that disagree with his own implementation
+destroys the point of a blind set. The ruling came from outside the batch, as it should have.
+
+Recorded here as a **note**, deliberately **not** as a §7 licence row — exactly the treatment
+D-1 prescribes for the WP27 `tp05` restatement (`BUILD_SPEC_CanvasV2.md:1862-1873`): a log
+entry confers nothing and must not be cited as a grant.
+
+| | |
+|---|---|
+| File | `workflowArtifacts/canvas-v2/tests/blind_set2/WP70/test_tp31_restore_on_every_exit_path_blind2.py` — **authored by this batch**, in `blind_set2` |
+| Old form | one blanket `during != original` per shape, plus a test whose name (`unrewritten`), docstring (*"the rig rewrites the file anyway"*) and assertion (`!= original`) contradicted each other |
+| New form | shape-aware pins; `during == original` with sha256, length, layout and `enabled_after` for `without_obsidian_git`; removal-only pins for `bom_and_crlf`; prose rewritten to agree with the assertion |
+| Counts | **300 collected / 300 passed** — test count unchanged; assertions 4 → 8, 4 → 11 and 2 → 11 |
+| Strictness | **raised.** `!= original` admitted any rewrite whatsoever, including the re-serialisation `tp29` forbids; the new form admits exactly one behaviour per shape |
+| Falsification | `json.dumps` re-serialisation on the no-cut path reddens both corrected tests and only them (2 of 20) |
+| Why no licence was required | **batch-authored, not inherited** — D-1, and the WP26 precedent D-1 cites |
+
+## Ledger
+
+One row appended to `BlindVerificationLedger.md`: **WP70 / set2 / pytest / B11a**, 300
+collected / 300 pass / 0 fail, **CONFIRMED**, with the reproduce-first evidence, the ruling,
+the falsification and the counts. Tally 58 → 59 rows, CONFIRMED 58 → 59; no existing verdict
+changed.
+
+**Named, not hidden: WP70 `set1` still has no ledger row** although it was executed green
+(345/345/0) in the same run — this task's deliverable was one row, and the gap is carried up
+rather than closed silently.
+
+## Data safety — unchanged, and nothing here approached it
+
+No owner vault was read, written, hashed or opened by this batch. Every fixture is under
+`tmp_path` and the `assert_synthetic` guard in both corrected tests is **untouched** and still
+refuses a path that is, contains or is contained by either owner vault. No `data.json` byte
+and no value derived from one appears in this report. No Obsidian was started, no relay was
+started, no socket was opened, and no process was spawned.
+
+## Still NOT executed — unchanged by this close-out
+
+No propagation between the two vaults has been observed by any means; AC5's positive leg
+remains WP7's to settle, and a green WP70 is still not evidence that propagation was ever
+seen. No bundle was installed, no relay deployed, no `server/` byte changed.
+
+## Carried up — out of this task's scope, not fixed here
+
+- **`ports.BorrowState` still renders the owner's `data.json` bytes** in its generated
+  `repr` (standing escalation from attempt 2, an inherited module outside WP70's boundary).
+- **WP69's `install.py:101,458`** still break the no-`subprocess` property C71 AC4 asserts.
+- **WP70 `set1` has no ledger row** (above).
+- **The outstanding WP27 `tp05` title correction** recorded at `BUILD_SPEC_CanvasV2.md:1877`
+  is still outstanding — the same lying-title class as the one corrected here, at a different
+  file, explicitly assigned to *a* Worker 3 batch and not to this one.
+
+---
+
 # Attempt 2 — Worker 3 Core's independent verification
 
 *Everything below was measured by Core, not reported by the sub-agent. Where the two

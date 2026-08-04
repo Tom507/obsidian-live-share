@@ -43,11 +43,11 @@ here plainly rather than softened. Conversely, **until a `(WP, set)` pair carrie
 row with a non-zero collected count, its blind claim is unverified regardless of what any
 handover says.** Absence of a row is never readable as a pass.
 
-## Tally — 58 rows
+## Tally — 59 rows
 
 | Verdict | Rows |
 |---|---|
-| CONFIRMED | 58 |
+| CONFIRMED | 59 |
 | DIVERGENT | 0 |
 | VACUOUS | 0 |
 | UNRUNNABLE | 0 |
@@ -59,6 +59,12 @@ handover says.** Absence of a row is never readable as a pass.
      did not exist at WP56's sweep is now reproducible there. WP3 set2 remains
      DIVERGENT — WP59 amended and greened the two assertions it was licensed to amend,
      and doing so UNMASKED a third, previously unreachable one. See the WP59 note. -->
+<!-- Updated: B11a (WP70 close-out) added ONE row — WP70 set2, pytest (58 → 59 rows,
+     CONFIRMED 58 → 59). No verdict changed. **WP70 set1 was executed in the same run
+     (345 collected / 345 pass / 0 fail) and deliberately carries NO row**: this batch's
+     deliverable was one row, and inventing a second here would be exactly the silent
+     scope creep the ledger's own coverage rules exist to surface. It is named as an
+     outstanding gap, not passed off as covered — absence of a row is still not a pass. -->
 <!-- Updated: B15 (WP59 re-entry) — Worker 2 extended WP59's licence to the two `edges.bare`
      pins, one per set. Both amended and both sets re-measured GREEN on 2026-08-02:
      set1 56/56/0, set2 45/45/0, counts read verbatim from `_blind_records/*.json`.
@@ -132,6 +138,7 @@ be a debt of *reproducibility*, not of execution — see `ImplementationReport_W
 | WP18 | set2 | vitest | **B13** | 16/16 · 14/14<br/>`Worker3Handover_B3b_DataLossFixes.md` | **14** | 14 | 0 | green | **CONFIRMED** | backfill. Re-run 2026-08-02 under the WP55-repaired runner; 12 files staged, depth 3. Counts read verbatim from `_blind_records/WP18_set2_vitest.json`. Reproduces B3b's claim exactly. |
 | WP63 | set1 | vitest | **B13** | 12/12 · 14/14<br/>`Worker3Handover_B3b_DataLossFixes.md` | **12** | 12 | 0 | green | **CONFIRMED** | backfill. Re-run 2026-08-02 under the WP55-repaired runner; 4 files staged, depth 3. Counts read verbatim from `_blind_records/WP63_set1_vitest.json`. Reproduces B3b's claim exactly. |
 | WP63 | set2 | vitest | **B13** | 12/12 · 14/14<br/>`Worker3Handover_B3b_DataLossFixes.md` | **14** | 14 | 0 | green | **CONFIRMED** | backfill. Re-run 2026-08-02 under the WP55-repaired runner; 4 files staged, depth 3. Counts read verbatim from `_blind_records/WP63_set2_vitest.json`. Reproduces B3b's claim exactly. |
+| WP70 | set2 | pytest | **B11a** | 31 files / 300 collected / 298 pass / **2 fail**, both escalated rather than touched<br/>`ImplementationReport_WP70.md:16` | **300** | 300 | 0 | green | **CONFIRMED** | **Measured 2026-08-04 by B11a, on the tree described here — not a standing fact.** The prior claim was **reproduced first, with nothing edited**: exactly the two named failures, both the `without_obsidian_git` shape of `test_tp31_restore_on_every_exit_path_blind2.py`, both `during != original` (console `24be910b`). A reproduced failure the claim predicted confirms the claim. The Dispatcher then ruled: **a borrow must not change the owner's bytes when the enabled set does not change** — `_enabled_without_disabled` is a textual splice, so with no id to cut the spliced bytes are the original bytes and the (still-performed) write is byte-preserving. The two tests were therefore **contradicting WP70's own safety property**, and one of them carried a title saying `unrewritten` over a docstring saying *"the rig rewrites the file anyway"* over an assertion pinning a difference. Both were corrected shape-aware: for `without_obsidian_git` they now pin `during == original` **plus** sha256, byte length, the surviving CRLFs/tabs/no-final-newline, `record.enabled_after`, `had_original`, the byte-exact backup, the marker and `b"obsidian-git" not in during`; for `bom_and_crlf` they now pin *removal-only* (shorter, BOM/CRLF/no-final-newline preserved) instead of a bare `!=`. **Nothing was deleted, skipped, loosened or retitled downward — the test count is unmoved at 300 and every assertion count rises:** in the parametrised test, 4 → 8 for `without_obsidian_git` and 4 → 11 for `bom_and_crlf`; in the named one, 2 → 11. **No §7 licence was required or taken:** both files are **batch-authored**, and every §7 class governs *inherited* tests — the **D-1 precedent** (WP27 `tp05`), whose distinction is inherited-vs-batch-authored, not fixture-vs-assertion. Logged as a note in `ImplementationReport_WP70.md`, not as a licence row. **Falsified before being recorded:** injecting a `json.dumps(remaining, indent=2)` re-serialisation into the no-cut path of `_enabled_without_disabled` reddens **both** corrected tests at the new `during == original` pin and nothing else (2 failed / 18 passed, console `64037dab`); injection reverted, `git diff tools/obsidian_e2e/provisioning.py` empty. Re-measured **300 / 300 / 0** (console `9f96b52b`), alongside visible 259/259/0 and set1 345/345/0 in the same run. |
 
 ## Pair totals, reconciled against the combined claims
 
@@ -173,6 +180,12 @@ reconciled here against the sum of the two measured rows.
   the rows because **five WP folders still carry no row at all** (see below). Rows cover
   **26 of the 31** folders — 46 rows for the 23 single-framework WPs, plus 12 rows for the
   3 dual-framework ones (WP44/WP46/WP47) = 58.
+- **Added by B11a (2026-08-04):** the **pytest `set2` row for WP70** — one row, 58 → 59. The
+  directory check above is B13's dated measurement and is left as it was taken; against the tree
+  B11a measured, the WP70 folders exist in both blind sets. **WP70 `set1` was executed in the same
+  run — 345 collected / 345 pass / 0 fail — and still carries NO row.** It is named here as an
+  outstanding gap rather than counted as covered: an executed count in an implementation report is
+  not a ledger row, and absence of a row is still not a pass.
 - **The folder count moved again during B13** (27 → 31). `WP20`–`WP23` appeared with the batch
   that authored them. This is now the third consecutive charter to find the filesystem ahead of
   it, which is a property of a live tree, not a defect in any one charter.

@@ -242,7 +242,27 @@ def test_an_exit_stack_callback_that_raises_after_the_borrow_still_restores(
 @pytest.mark.parametrize("shape", sorted(SHAPES))
 def test_the_borrow_is_real_for_every_shape(tmp_path: Path, shape: str) -> None:
     """Without this, every restore assertion in this file would also hold for a context
-    manager that never touched the vault."""
+    manager that never touched the vault.
+
+    **"Real" is not "the bytes moved", and pinning it per shape is stricter than one
+    blanket `during != original` was.** The borrow is evidenced by the marker and the
+    byte-exact backup — the artefacts that make the restore possible — and by the enabled
+    set the record reports. What the *live* file does in between is a separate claim, and
+    it is shape-dependent:
+
+      ├── `absent`               — nothing was captured: no backup, `had_original False`,
+      │                            and no list is conjured into existence
+      ├── `without_obsidian_git` — the enabled set does not change, so the splice has
+      │                            nothing to cut and the live file is byte-IDENTICAL for
+      │                            the whole borrow. A write does happen; it is
+      │                            byte-preserving, which is the point. Requiring a
+      │                            difference here would require a gratuitous
+      │                            re-serialisation — exactly what `tp29` forbids and what
+      │                            would eat the owner's CRLFs and tabs mid-run.
+      └── `bom_and_crlf`         — `obsidian-git` IS in the list, so the live file must
+                                   differ, and it must differ by that removal ALONE: BOM,
+                                   CRLFs and the missing final newline all survive.
+    """
     vault = make_vault(tmp_path, f"vault-real-{shape}", shape)
     original = SHAPES[shape]
 
@@ -255,24 +275,61 @@ def test_the_borrow_is_real_for_every_shape(tmp_path: Path, shape: str) -> None:
             assert record.had_original is True
             assert (vault / constants.COMMUNITY_PLUGINS_BACKUP_REL).read_bytes() == original
             during = (vault / constants.COMMUNITY_PLUGINS_REL).read_bytes()
-            assert during != original
             assert b"obsidian-git" not in during
+            assert b"live-share" in during, "an id the rig does not own was dropped"
+            if b"obsidian-git" in original:
+                # Something to cut: the file must change, and only by the cut.
+                assert during != original
+                assert hashlib.sha256(during).hexdigest() != hashlib.sha256(original).hexdigest()
+                assert len(during) < len(original)
+                assert record.enabled_after == ("live-share",)
+                assert during.startswith(b"\xef\xbb\xbf") == original.startswith(b"\xef\xbb\xbf")
+                assert (b"\r\n" in during) == (b"\r\n" in original)
+                assert during.endswith(b"\n") == original.endswith(b"\n")
+            else:
+                # Nothing to cut: the splice is the identity, so the owner's bytes stand.
+                assert during == original
+                assert hashlib.sha256(during).hexdigest() == hashlib.sha256(original).hexdigest()
+                assert len(during) == len(original)
+                assert record.enabled_after == ("periodic-notes", "live-share")
 
     assert_restored(vault, shape)
 
 
-def test_a_list_without_obsidian_git_is_still_handed_back_unrewritten(tmp_path: Path) -> None:
-    """Nothing to disable is not nothing to restore: the rig rewrites the file anyway, and
-    the owner's CRLFs and tabs are theirs whether or not an id was removed."""
+def test_a_list_without_obsidian_git_is_byte_unchanged_during_the_borrow_and_after_it(
+    tmp_path: Path,
+) -> None:
+    """Nothing to disable is not nothing to restore — but it *is* nothing to rewrite.
+
+    The modify path is a textual splice, never a re-serialisation, so when the enabled set
+    does not change there are no spans to cut and the spliced bytes are the original bytes.
+    A write still happens — the rig does not special-case its way past it — and it is
+    byte-preserving, which is precisely the property the owner's BOM, CRLFs, tabs and
+    missing trailing newline depend on. **The borrow is real here for reasons that are not
+    a byte difference:** the marker exists, the backup is byte-exact, `had_original` is
+    true, `obsidian-git` is absent from the live file, and the restore afterwards still
+    has to be byte-exact and still has to clean the rig's artefacts away.
+    """
     vault = make_vault(tmp_path, "vault-no-git", "without_obsidian_git")
     original = SHAPES["without_obsidian_git"]
+    live = vault / constants.COMMUNITY_PLUGINS_REL
 
     with pytest.raises(KeyboardInterrupt):
-        with borrow(vault):
-            assert (vault / constants.COMMUNITY_PLUGINS_REL).read_bytes() != original
+        with borrow(vault) as record:
+            during = live.read_bytes()
+            assert during == original, "a borrow with nothing to cut rewrote the owner's bytes"
+            assert hashlib.sha256(during).hexdigest() == hashlib.sha256(original).hexdigest()
+            assert len(during) == len(original)
+            assert b"\r\n" in during and b"\t" in during and not during.endswith(b"\n")
+            assert b"obsidian-git" not in during
+            assert record.had_original is True
+            assert record.original_sha256 == hashlib.sha256(original).hexdigest()
+            assert record.enabled_after == ("periodic-notes", "live-share")
+            assert (vault / constants.COMMUNITY_PLUGINS_BACKUP_REL).read_bytes() == original
+            assert (vault / constants.COMMUNITY_PLUGINS_MARKER_REL).is_file()
             raise KeyboardInterrupt
 
-    assert (vault / constants.COMMUNITY_PLUGINS_REL).read_bytes() == original
+    assert live.read_bytes() == original
     assert_restored(vault, "without_obsidian_git")
 
 
