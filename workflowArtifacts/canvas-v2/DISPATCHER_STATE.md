@@ -100,10 +100,19 @@ flipped. The path witness must be the gesture's own report plus file/doc observa
 Verified in the current tree by the Dispatcher, then measured on this host:
 
 ```
-manifest.ts:445   if (!this.settings.sharedFolder) return true;   ← empty ⇒ WHOLE VAULT shared
-main.ts:471       guest role → cleanupStaleFiles()
-main.ts:523-540   trashFile()s every shared local file absent from the host's manifest
+manifest.ts:443   if (!this.settings.sharedFolder) return true;   ← empty ⇒ WHOLE VAULT shared
+main.ts:495       guest role → cleanupStaleFiles()
+main.ts:543-560   trashFile()s every shared local file absent from the host's manifest
 ```
+
+<!-- Citations corrected 2026-08-04: were :445 / :471 / :523-540, drifted by 2, 24 and 20 lines.
+     Found by amendment assessor B, re-measured by the Dispatcher before accepting. The statements
+     were all still true — only the line numbers had moved. Rule 5 applies to citations too: a line
+     number is a measurement, not a name. -->
+
+One thing the corrected read adds, and it matters for amendment Ä15: `main.ts:545` is
+`if (manifest.size === 0) return;`, so an **empty** manifest is already guarded. The trash path needs a
+manifest that is **non-empty but partial** — which is exactly what a *one-sided* fail-closed produces.
 
 **Both vaults have `sharedFolder = ""`** (emptiness checked; the value was never read). So a gate run
 with vault B as guest trashes everything in B that is not in the host's manifest. `trashFile` is
