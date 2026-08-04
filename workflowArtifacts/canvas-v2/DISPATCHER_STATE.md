@@ -91,6 +91,62 @@ trusting a re-run.** First instance of the vacuity class in the new E2E suite, f
    before the session starts**. My test asserted the wrong precondition and went green. **The
    "green test that cannot fail" class, committed by me, in the suite built to escape it.**
 
+### ⭐ P4 CHARTERED — and the dropped keystrokes are NOT a text-merge defect
+
+WP36 `8a44cd3` · WP37 `e9a9cc9` · WP38 `a2bf8b3` · **17 ACs**, each naming its observable and its
+vacuity risk. **No blind sets, no ledger rows** — first charters written under the new workflow.
+
+**The symptom is destroyed view state, not lost merge state — and it is WP37, not WP36, that fixes it.**
+Measured chain:
+
+| | |
+|---|---|
+| `reconcile-plan.ts:25,112-150,166-182` | any **non-geometry** remote difference ⇒ verdict `"structural"` |
+| `main.ts:1268-1275` | `reconcileLiveCanvas` executes that as a full `reloadCanvasData`/`setData` |
+| `main.ts:1212-1217` | the **only** guard is `if (adapter.isBusy()) return;` |
+| `canvas-adapter.ts:572-580` → `:318-334` | `isBusy()` is **drag-only** |
+
+So `setData` rebuilds the view and **discards the live inline editor**, taking every keystroke Obsidian
+has not yet flushed. Neither the `Y.Text` nor any merge appears in that chain. A peer merely *moving* a
+card is geometry-only and safe — which is exactly why the owner sees it *"manchmal"*.
+
+**Consequences:** no capture-side change and no P5 work is required; **WP38 closes no part of the
+symptom** and each charter says so; and `handleLocalModify` is **not** the loss path — the shadow-based
+intent diff already discards stale saves, so naming it would have chartered a repair for a mechanism
+that works. **The concept mis-located this defect, and one measured trace corrected it.**
+
+### ⚠ The previous C36 AC2 *specified* a defect — tenth instance of the class, and it was in the spec
+
+`applyMinimalYTextUpdate` (`utils.ts:65-117`) opens `const oldContent = text.toString()` — a **two-way**
+diff. On the file-driven path the incoming string is the **local file**, which lacks a peer's freshly
+merged characters, so the helper computes them as a **deletion**. Both replicas then converge on the
+truncated text, so **byte-equality, SEC and the fuzzer all stay green while the remote user's text is
+destroyed.** AC2 is now a prohibition; the three-way base already exists (the Surface-Shadow is already
+an operand at `canvas-sync.ts:2811-2818`), and AC3 is restated as a property of *one client's capture*
+rather than of the converged pair.
+
+Three more folded in: the projection must render `Y.Text`→string **explicitly** (`buildCanvasData:918`
+feeds disk, the open view, `canvas.state` **and** the Surface-Shadow — `JSON.stringify`'s implicit
+`toJSON` would make two of the four right *by accident* and hide the other two); `canvas-sync.ts:3025-3027`
+would un-migrate the field on the first capture after conversion; `docValueEquals` must not be widened.
+
+**Migration is safe by an existing guard:** lazy, write-triggered, **one op**
+(`set(V2_FIELD.text, new Y.Text(prev))`), so the key is populated at every observable instant — no Ä4
+shape. `isRichTextValue` (`canvas-ingest-schema.ts:167-174`) already accepts the object form, so a
+`Y.Text` is ingest-**valid** and no refusal can compose into deletion. `"text": ""` stays valid, present
+and renders `""`. No pre-WP36 V2 build exists anywhere — the first and only V2 install was 2026-08-05.
+
+**Carried up:** `CAPTURE_NET` **does not exist** (`canvas-sync.ts:2819` is a bare `doc.transact(fn)`;
+`"capture-net"` at `:1156` is a rejection-signature label), so **C38 AC1 was unsatisfiable as written**;
+Yjs's default `trackedOrigins={null}` would work today *by accident* and silently absorb the next
+untagged transaction; the `text`→`Y.Text` conversion must be **excluded from the undo scope** or undoing
+it destroys peer characters merged since; and **the rig cannot validate WP37/WP38 as built** — none of
+its eleven commands types or invokes an Obsidian command, so each WP owns one additive E2E command
+(W3 revision, per the owner's instruction), with the `simulateEdit` shape explicitly forbidden by AC.
+
+**Scheduling:** WP37 and WP38 both touch `plugin/src/testing/e2e-control.ts` — additive, but not in the
+same batch. **All of P4 touches `main.ts`, as does the data-loss fix and WP79** — serialise them.
+
 ### Autonomous queue (this order)
 
 1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
