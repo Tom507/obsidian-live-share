@@ -126,7 +126,22 @@ One call per class, all three compared as whole responses:
 The oracle is `new Set([...].map(JSON.stringify)).size === 3` over the **whole** responses, not a
 single negative case — the charter warns that a repair answering `{set:true}`/`{set:false}`/
 `{set:false}` has merged two of the three and would go green against a test that only checked "not
-always true". A merged pair reddens here even if every individual expectation still passed.
+always true". A merged pair reddens here even if every individual expectation still passed. Blind
+set 1 attacks the same criterion as an **equivalence partition** over twelve calls with the names
+erased from the response signatures, so a "distinguishable per *name*" fake fails it too; blind set 2
+runs the three calls against a real `createControlServer` on `127.0.0.1:0` and compares status code,
+`Content-Type` and decoded body — i.e. what a driver actually sees on the wire. Mutation-checked: the
+charter's `{true}/{false}/{false}` fake reddens **6** blind tests, and merging inert into applied
+reddens **4**.
+
+**⚠ Precision the criterion deserves — the demonstrated triple is not three *name* classes.** AC3's
+recipe says *"calling `setFlag` with a name in each class"*, and today **no name produces a
+refusal**: WP72's only refusal is triggered by an **argument** (`persist`), and the empty-name 400 is
+a pre-existing malformed-argument error, not a disposition. So what is demonstrated above is
+*existing key* / *unknown key* / *any key + `persist`*. That is defensible — §2 hands name-rejection
+to WP51, and refusing names here would have re-implemented C51 AC3 — but stating it as three name
+classes would overclaim. **The third class becomes name-reachable when WP51 lands**, and that is the
+point at which AC3's recipe is satisfiable to the letter.
 
 ---
 
@@ -177,23 +192,52 @@ nor break the oracle:
 | idempotent | a second `clearFlags()` is `{restored:[], cleared:[]}`, not an error |
 | a host that cannot reverse | structured 400, never a crash |
 
-A key that did **not** exist before an override is `delete`d rather than left as `undefined`, so the
-restored object is shape-identical to the loaded one.
+**⚠ AC2's "a key that did not exist is removed, not left as `undefined`" is satisfied *vacuously*,
+and that is recorded rather than glossed.** The journal was deliberately simplified from
+`Map<string, {existed, prior}>` to `Map<string, unknown>`, because the `existed: false` branch was
+**unreachable through the protocol**: `setFlag` journals only keys that already exist on
+`plugin.settings`, and an unknown name goes to `runtimeFlags` instead. An untestable branch is an
+invitation to a test that cannot fail, so it was removed and the reason written into the code. The
+strongest available observable is pinned instead — unknown names never enter `settings`, and
+`Object.keys(settings)` is identical (same members, same order) before and after a full
+setFlag/clearFlags cycle. **Consequence to carry forward: if WP51 or a later WP ever lets `setFlag`
+create a settings key, `clearFlags` will leave `key: undefined` behind and the journal must regain
+the `existed` flag at that moment.**
 
 ---
 
 ## 6. AC4 — the production bundle, freshly built
 
-Measured on a bundle built in this batch, not on an inherited measurement:
+Measured on a bundle built in this batch, not on an inherited measurement. Re-run at close with the
+hash pinned, because `plugin/main.js` turned out to be an unreliable oracle — see the warning below:
 
 ```
 npm run build   → BUILD_EXIT=0
-main.js         → 759 892 bytes
-__LS_E2E__      = 0        e2eControlPort   = 0
-LIVESHARE_E2E   = 0        e2e-control      = 0
-flagConsumer    = 0        clearFlags       = 0
-settingsOverrides = 0      runtimeFlags     = 0
+main.js         → 759 892 bytes, mtime 15:09:22
+sha256          → 58FDA6F8A9F2534FB4C4D08D4B45AC3C4DB6BFC8BD06B47BA84899E9F23946BC
+__LS_E2E__        = 0      e2eControlPort    = 0
+LIVESHARE_E2E     = 0      e2e-control       = 0
+flagConsumer      = 0      clearFlags        = 0
+settingsOverrides = 0      runtimeFlags      = 0
+canvas.setFlag    = 0      canvas.clearFlags = 0
+buildPluginHost   = 0      sourceMappingURL  = 0
 ```
+
+`sourceMappingURL = 0` is carried deliberately: it is the cheapest positive proof that the bytes
+measured are the **production** bundle and not the ~3.6 MB inline-sourcemap e2e one.
+
+> **⚠ `plugin/main.js` is a shared mutable artefact and is NOT a safe AC4 oracle on its own.** It is
+> untracked, and whichever of `build` / `build:e2e` / `dev` ran last wins — including a build started
+> by a **concurrent batch**. During this batch's blind-set authoring the file was observed as a
+> 3.6 MB **e2e** bundle containing `e2e-control`, `settingsOverrides`, `runtimeFlags` and
+> `canvas.clearFlags`; the sibling batch B10a was building at the time. A report or test that greps
+> it without rebuilding in the same breath is red-or-green **by accident**, which is the vacuity class
+> this run exists to eliminate. The block above was produced by a single command that builds and then
+> immediately hashes and scans, and the hash is recorded so the measurement is checkable rather than
+> merely asserted. WP72's blind set 2 avoids the file entirely: it builds the production bundle **in
+> memory** with esbuild (`write:false`, `__LS_E2E__:"false"`), scans 16 markers, and falsifies itself
+> against the e2e bundle (0/16 vs 16/16). **Recommendation for W4 and for C46's W4-1 counter-check:
+> use the in-memory build, not the file.**
 
 The whole of `src/testing/` still tree-shakes out, and the four symbols WP72 added are absent from
 the production bundle. Per the Dispatcher's 2026-08-04 correction, `__LS_E2E__ = 0` on its own is
@@ -247,9 +291,15 @@ generated-but-unimplemented suite breaks `npm run build` repo-wide).
   That is correct *today* (nothing reads `runtimeFlags`) and is the register WP51 will populate. If
   WP51 introduces a real runtime flag without extending `flagConsumer`, the command will report a
   working flag as inert — annoying, but fail-closed, and never the reverse.
-- **`clearFlags` is not called automatically anywhere.** It is a protocol command; the rig has to
-  issue it in teardown. WP70/WP7 own that sequencing. An override left un-reversed is only dangerous
-  in combination with an unrelated `saveSettings` — which is precisely the pair §5 measures.
+- **⚠ RESIDUAL DESIGN RISK, not an AC violation: the window between `setFlag` and `clearFlags`.**
+  AC1 stops the *command* writing the file, but `setFlag` still mutates `plugin.settings` in place,
+  and **nothing enforces that `clearFlags` is ever called.** Any unrelated `saveSettings()` in that
+  window — the settings tab, an autosave, `onunload` — writes the override into the borrowed
+  `data.json`. AC2's last clause acknowledges exactly this and §5's falsification pair *demonstrates*
+  the sha256 moving when the reversal is skipped, so the risk is measured rather than suspected.
+  **`clearFlags` is a protocol command and the rig has to issue it in teardown; WP70/WP7 own that
+  sequencing.** A gate run that sets a flag and never clears it is a run whose data-safety verdict is
+  one unrelated save away from failing.
 - **Foreign edits observed in the tree, not touched and not fixed:** the sibling batch B10a has
   `workflowArtifacts/canvas-v2/WP70_PinnedDecisions.md` modified and
   `workflowArtifacts/canvas-v2/tests/visible/WP70/` untracked. Reported per the batch contract; not

@@ -154,6 +154,24 @@ blind sets were authored afterwards against the charter. They are therefore an *
 re-derivation of the criteria**, and they did what that is worth — but they are **not** evidence of
 non-overfitting in the way a pre-implementation blind set is, and should not be read as such.
 
+**Mutation-checked, so the blind sets are known to be able to fail:** re-adding `saveSettings` to
+`setFlag` → **9 red**; a journal that recaptures the prior value on every call → **3 red**; merging
+the inert class into applied → **4 red**; the charter's own `{true}/{false}/{false}` fake → **6 red**.
+
+### Findings the blind-set pass produced (all four carried into `ImplementationReport_WP72.md`)
+
+1. **AC3 holds at `routeCommand`, not at `E2EControlHost.setFlag`.** Read literally, AC3 is violated
+   at the host boundary — the method still answers `{set:true}` for an inert name. Sanctioned by the
+   inherited pin and by §2's scope split, and no driver can reach it, but any future *in-process*
+   caller still gets the old lie. **Reconcile when WP51 lands.**
+2. **The "refused" class is reachable only by ARGUMENT, never by NAME.** AC3's recipe says "a name in
+   each class"; today the triple is really *existing key* / *unknown key* / *any key + `persist`*.
+   The report now says so instead of implying three name classes. Name-reachability arrives with
+   WP51's rejection rule.
+3. **The window between `setFlag` and `clearFlags` remains a live hazard**, because nothing enforces
+   that `clearFlags` is called. Measured, not suspected — see the AC2 falsification pair.
+4. **`plugin/main.js` is not a safe AC4 oracle.** See §C3.
+
 ## §C — Foreign edits observed, reported, not touched
 
 Present in the working tree and belonging to the sibling batch **B10a** (WP70):
@@ -165,6 +183,27 @@ Present in the working tree and belonging to the sibling batch **B10a** (WP70):
 
 None was read for content, edited, staged, or "fixed". Reported per the batch contract.
 `tools/obsidian_e2e/`, `constants.py` and both Obsidian vaults were not touched by this batch at all.
+
+## §C3 — ⚠ Cross-batch hazard found: `plugin/main.js` is not a safe bundle oracle
+
+`plugin/main.js` is **untracked and shared**, and whichever of `build` / `build:e2e` / `dev` ran last
+wins — **including a build started by a concurrent batch.** During this batch's blind-set authoring
+the file was observed as a **3.6 MB e2e bundle** containing `e2e-control`, `settingsOverrides`,
+`runtimeFlags` and `canvas.clearFlags`, while B10a was building. Any AC4-style check, in a test or in
+a report, that greps that file without rebuilding in the same breath is **red-or-green by accident** —
+the vacuity class this run exists to eliminate, arriving through a shared artefact rather than
+through an assertion.
+
+This batch's AC4 evidence was therefore re-established at close by a single command that builds, then
+immediately hashes and scans, with the hash recorded so the measurement is checkable:
+`759 892 B`, sha256 `58FDA6F8…46BC`, twelve markers all `0`, `sourceMappingURL = 0` (the cheapest
+positive proof it is the production bundle and not the e2e one).
+
+**This bears directly on the Dispatcher's open item W4-1** (the C46 production-bundle counter-check,
+already once recorded on the strength of a check that could not fail). WP72's blind set 2 shows the
+robust form: build the production bundle **in memory** with esbuild (`write:false`,
+`__LS_E2E__:"false"`), scan the markers there, and falsify against the e2e bundle — measured **0/16
+vs 16/16**. **Recommendation: W4-1 is discharged against an in-memory build, never against the file.**
 
 ## §C2 — Commits, both repositories
 
