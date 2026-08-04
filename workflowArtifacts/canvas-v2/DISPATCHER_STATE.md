@@ -241,6 +241,24 @@ Then, in this order — **the gate's own required order, each entry blocking for
 **Off the critical path, parallelisable:** **WP77** once B11b returns (it touches `ports.py`, which the
 gate uses, so it must not land mid-run), and **WP78** (the `runner` default — must land **before WP71**).
 
+### Concept Amendment Set A — assessed, RECORDED, NOT SCHEDULED
+
+Owner's direction 2026-08-04: *"note this down and continue the old WPs first."* Full disposition →
+**`AMENDMENT_DISPOSITION.md`** (evidence: `_amendment_feasibility_A_datamodel.md` `3e4bf3d`,
+`_amendment_feasibility_B_infra_gate.md` `6031ea1`). Headlines that affect **this** queue:
+
+- **≈half the set is already true** — six amendments are satisfied by code that landed after CONCEPT_V2.
+  Anything transcribed **future tense** gets chartered twice; Ä10 would re-charter WP21.
+- **Ä9(3) + Ä9(4) + Ä15b are one defect, already chartered as WP68.** **Ruling: WP68 does NOT block WP7**
+  (both gate peers are ours, so the inbound arm is unreachable during the gate) **but it does block
+  release and outranks P3/P4/P5** — a peer-reachable write into `.obsidian/**` of an **Electron** process
+  is a code-execution surface. **Moved ahead of the phase work, kept behind WP7.** 1 WP.
+- **Ä14 is not adopted as written** — it narrows phase-reopening from a severity class to a list authored
+  by the closer, and names no reopen-risk for P2 or P6. Does not disturb the standing ruling.
+- **Four unowned findings carried up**, of which the heaviest is **I8 atomicity not in force on the live
+  capture path** (geometry still merges as independent `x`/`y` LWW keys — the defect WP9/WP10 exist to
+  make unrepresentable; owner WP39, unbuilt). See `AMENDMENT_DISPOSITION.md` §Carried up.
+
 **Small debts, cheap for whichever batch is next in the file — do not lose them:**
 
 - **WP70's `blind_set1` has no ledger row** though B11a measured it green (345/345/0). B11a's deliverable
