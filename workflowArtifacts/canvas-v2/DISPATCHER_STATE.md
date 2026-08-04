@@ -137,12 +137,61 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 
 ## Immediate queue (in order)
 
-**IN FLIGHT — batch B11 (dispatched 2026-08-04, two workers, the parallelism cap):**
+**IN FLIGHT (2026-08-04, two workers, the parallelism cap):**
 
 | | Worker | Scope |
 |---|---|---|
-| **B11a** | W3 | WP70 close-out — correct `tp31` per the confirmed ruling, falsify the correction, re-run all three sets, ledger row |
+| ~~**B11a**~~ | W3 | ✅ **WP70 DONE** — `13184a0`. tp31 corrected shape-aware, strictness **up** (assertions inside the borrow 4→8, 4→11, 2→11); reddened under an injected `json.dumps` re-serialisation; visible 259/259, blind1 345/345, blind2 300/300, 0 failed. No §7 licence taken (D-1). |
 | **B11b** | W2 | charter **WP77** — the `ports.BorrowState` credential-`repr` leak + BUILD_SPEC §9 row + header 76 → 77 |
+| **B12** | W3 | **WP50** — run matrix bound to real hosts (owns the driver file; goes first) |
+
+### ⚠ RULING — WP69 downgraded C45 AC4 from a structural guarantee to a convention, and C71 AC4 is now unsatisfiable as written
+
+Raised by B11a, **verified by the Dispatcher against the current tree** rather than accepted:
+
+| | |
+|---|---|
+| `install.py:101` | `import subprocess` |
+| `install.py:458` | `completed = subprocess.run(argv, cwd=cwd, check=False)` inside `_default_runner` |
+| `install.py:526,539` | `def build_e2e_bundle(plugin_dir, *, runner: Optional[Runner] = None)` → `(runner or _default_runner)(...)` |
+
+**The spawning runner is the *default*.** `build_e2e_bundle(plugin_dir)` with no runner starts npm directly.
+
+**C71 §3 names this exact move as the wrong answer, in its own words:** *"A default-constructed spawn
+backend converts a structural property into a convention."* WP69 did it one module over, and WP69 is
+`DONE`.
+
+**Three findings, kept separate because they have different answers:**
+
+1. **C45 AC4 is NOT violated today.** Every call site of `build_e2e_bundle` passes `runner=` explicitly,
+   and every one of them is a test. Measured, not assumed. So no long-running process is currently
+   started outside `visible-console`.
+2. **But the guarantee C45 AC4 encoded is gone.** Its value was *structural* — the console is injected,
+   therefore no test, dev loop or mistaken import can reach the real `Obsidian.exe` or the owner's live
+   vaults by accident (D16). With a spawning **default**, "nobody spawns accidentally" is now a
+   property of the call sites, i.e. a promise, re-auditable on every future edit. **The first real gate
+   run is exactly the moment someone writes `build_e2e_bundle(plugin_dir)`.**
+3. **C71 AC4 cannot be satisfied as written.** It requires *"grep evidence that no `subprocess` /
+   `Popen` / `os.system` / `os.spawn*` exists under `tools/obsidian_e2e/` after the change"*
+   (charter §6, and AC4 at `:88`/`:109`). That grep returns two hits WP71 did not add and may not
+   remove. C71 §3 `:52` also asserts *"measured 2026-08-04 — no process spawn anywhere in
+   `tools/obsidian_e2e/`"*, which was true of the WP43–49 rig and stopped being true when WP69 landed.
+   **Rule 5 in the flesh: a measurement is not a timeless fact.**
+
+**Ruling — restore the property, do not weaken the criterion.** Amending C71 AC4 to *"no subprocess
+except install.py's"* would weaken a landed acceptance criterion to fit the code, which is the move §7
+exists to make impossible. Instead: **make `runner` a required argument** with no default, and re-export
+the spawning one under an explicit opt-in name. Then "no accidental spawn" is true **by construction**
+again, C71 AC4 becomes satisfiable in an honest form (no spawn *reachable without an explicitly
+caller-supplied runner*, asserted from the AST), and C45 AC4 stands unweakened rather than
+retrospectively reinterpreted.
+
+This is the **same principle as WP70's `Secret` wrapper**, which the run has already accepted once:
+*a type is a guarantee where a call-site audit is only a promise.* A required parameter is the same
+guarantee in argument position.
+
+**Chartered as WP78 — owner: Worker 2, next free slot. BLOCKS WP71**, which is item 6 in the order, so
+there is room. Does **not** block WP50/74/75/76 (different repo, different file).
 
 Then, in this order — **the gate's own required order, each entry blocking for a reason recorded above**:
 
@@ -181,7 +230,18 @@ Then, in this order — **the gate's own required order, each entry blocking for
 7. **WP7 — THE GATE.** The first thing in this entire run that is not headless.
 
 **Off the critical path, parallelisable:** **WP77** once B11b returns (it touches `ports.py`, which the
-gate uses, so it must not land mid-run), and **WP70**'s close-out (B11a).
+gate uses, so it must not land mid-run), and **WP78** (the `runner` default — must land **before WP71**).
+
+**Small debts, cheap for whichever batch is next in the file — do not lose them:**
+
+- **WP70's `blind_set1` has no ledger row** though B11a measured it green (345/345/0). B11a's deliverable
+  was one row, so it named the gap rather than closing it silently — correct behaviour, and the gap is
+  still a gap. One row owed.
+- **`blind_set1/WP27/test_tp05_…:134`** — title says the state vector is *"unchanged"*; the assertion pins
+  a delta of exactly **1**. Same lying-title class B11a just fixed at WP70's tp31, still open here.
+  Title/message text only — no assertion, no count, no matcher. Also recorded at `BUILD_SPEC:1877`.
+- **`blind_set1/WP51/tp7` and `blind_set2/WP51/tp7`** narrate `lan-vault-sync` as an enabled writer.
+  Comment text only; **WP51's own batch owns these**, per the ruling on who may edit a blind file.
 
 **Cross-repo warning for items 1–4:** all four edit `tools/MCPserver/liveshare_e2e_mcp_server.py`, which
 lives in the **AgenticWorkspace repo**, outside this branch and outside §7's commit accounting. Each must
@@ -334,6 +394,37 @@ was carried up rather than fixed. **Needs an owner.** The fix shape is already p
 wrapper that is unrenderable **by type** — redacting `__repr__`/`__str__`/`__format__`, refused
 `__bytes__`/`__iter__`/`__contains__`, `reveal()` as sole accessor, and a `__deepcopy__` returning the
 wrapper so `asdict()` cannot unwrap it. *A type is a guarantee where a call-site audit is only a promise.*
+
+### ⚠⚠ CONFIRMED LIVE DEFECT — I11's protection expires with the session (found 2026-08-04, amendment assessor A; **verified by the Dispatcher**, not accepted on report)
+
+**The withhold protects the user's file only within the session in which the refusal happened.
+Across a restart it does not hold, and the record is deleted.**
+
+Verified at the cited lines:
+
+- `files/canvas-sync.ts:1313-1321` — `SeedRefusalLedger`'s **own docstring** says it: *"It is also per
+  SESSION … reset whenever the path's doc is re-seeded (`reset()`) and starts empty whenever the owning
+  persistence instance is rebuilt."*
+- `files/canvas-sync.ts:1842` — `seedRefusalLedgers` is an in-memory `Map` on the `CanvasSync` instance.
+- `files/canvas-persistence.ts:476-485` — `coldOpen()`: `if (docNonEmpty) { … }` → *"Doc wins. **Never
+  read the file.**"* → `migrateRecordBearingDoc()` → `await this.flush()`.
+
+**The cascade, on a longer time axis than E2:** session 1, a guest seeds and one record is refused →
+the withhold correctly preserves it in the `.canvas`. Session 2 is a **cold open**: the doc arrives
+**non-empty from the relay/sidecar**, so `docNonEmpty` is true, the file is **never read**, the refused
+record is not in the doc, and `flush()` projects the doc over the file. **The record is gone** — deleted
+as a consequence of a refusal, which is I11 verbatim.
+
+The host is **accidentally** safe (it re-seeds on every subscribe). "Accidentally" is the operative
+word: nothing pins it, so it is one refactor from being unsafe too.
+
+**This reframes Ä3.** Assessor A recommends rejecting Ä3's pass-through clause (it repeals C17 AC3, which
+WP63's charter considered and rejected in writing) — and that is probably right. But Ä3's *diagnosis* of
+the withhold is corroborated by a **fourth** failure the amendment did not name and A found
+independently: the withhold does not survive a restart. So "keep the withhold, reject pass-through"
+is **not** a complete answer; the withhold needs durability regardless of which side of Ä3 wins.
+
+**Severity: P0-class, product, live.** Unowned. Must not be folded into a gate WP.
 
 ### Dispatcher rulings on the WP76 pass
 
