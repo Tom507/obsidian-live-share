@@ -146,15 +146,46 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 
 Then, in this order — **the gate's own required order, each entry blocking for a reason recorded above**:
 
-1. **WP74** (matrix driver `_open`/`_wait_both` seams) + **WP75** (signal fidelity, vault distinctness) —
-   both chartered; both edit `liveshare_e2e_mcp_server.py` in the **AgenticWorkspace repo**, so both must
-   record two commit hashes. Sequencing WP75 → WP76 only because they share two files.
-2. **WP76** (the gate must run the capture path) — orthogonal to WP75, not ranked below it.
-3. **WP77** once B11b returns — off the critical path, but it touches `ports.py`, which the gate uses.
-4. **WP71** — agent-mediated gate execution procedure. The rig is plan-only **by design**; C45 AC4
+> ### ⚠ CORRECTED 2026-08-04, before B12 was dispatched — I had WP50 in the wrong place
+>
+> I recorded the gate order as *WP74 → WP75 → WP76 → WP71 → WP50/51 → WP7*, i.e. with **WP50 near the
+> end**. That is backwards, and **C74 §2 says so in its own dependency note**, which I had not read when
+> I wrote the order:
+>
+> > *"Landing WP74 against the pre-WP50 driver would put the repair in a file WP50 then restructures."*
+>
+> Measured rather than recalled: **WP50 modifies `_wait_both` `:134`, `assert_converged` `:280` and
+> `run_matrix` `:402`** — the same three functions WP74, WP75 and WP76 all edit. WP50 **owns** that file;
+> the other three supply mechanisms C50's **AC1 and AC5** name and never had. And WP50's own
+> `Depends on` is **WP47, WP48, WP49 — all DONE**, so nothing was ever holding it back but my ordering.
+>
+> Running my order would have had three work packages repair a file the fourth then restructures:
+> a guaranteed textual conflict in `run_matrix`, and worse, repairs re-derived inside code that is
+> being rewritten underneath them. **Corrected order: WP50 first.**
+>
+> Caught by reading the charters to prep the next batch rather than by anything going wrong — which is
+> the only reason it cost nothing. It is the same failure as rule 6: I ordered from recall, and the
+> dependency was written down.
+
+1. **WP50** — run matrix bound to real hosts. **Owns `liveshare_e2e_mcp_server.py`**; everything below
+   edits the file it restructures, so it goes first. Ready now (WP47/48/49 all done).
+2. **WP74** (the never-opened canvas and the timed-out wait) — extends C73's machinery, does not revisit it.
+3. **WP75** (signal fidelity: `applied` a constant on the real host; the driver cannot tell two vaults
+   from one). Sequenced after WP74 only because they share two files.
+4. **WP76** (the gate must run the path the fix lives on) — **orthogonal to WP75, not ranked below it.**
+   Each independently voids WP7; the sequencing is file-contention, not priority.
+5. **WP51** — stale-view scenario surface. **Depends on WP76** (one-definer rule: C76 defines the
+   unconditional open+gesture primitive, C51 composes it).
+6. **WP71** — agent-mediated gate execution procedure. The rig is plan-only **by design**; C45 AC4
    forbids a spawn backend, so the launch is an agent's job and WP71 is what makes it reproducible.
-5. **WP50 / WP51** — run matrix on real hosts · stale-view scenario surface. WP51 depends on WP76.
-6. **WP7 — THE GATE.** The first thing in this entire run that is not headless.
+7. **WP7 — THE GATE.** The first thing in this entire run that is not headless.
+
+**Off the critical path, parallelisable:** **WP77** once B11b returns (it touches `ports.py`, which the
+gate uses, so it must not land mid-run), and **WP70**'s close-out (B11a).
+
+**Cross-repo warning for items 1–4:** all four edit `tools/MCPserver/liveshare_e2e_mcp_server.py`, which
+lives in the **AgenticWorkspace repo**, outside this branch and outside §7's commit accounting. Each must
+declare the cross-repo edit and record **both** commit hashes.
 7. **WP66** hollow-fixture suite-wide sweep — *needs a quiet tree*
 8. **WP65** ledger provenance + intermittent register — *touches `_run_blind.py`*
 9. **WP68** file-op rename sidecar boundary (charter ready, `SPEC_COMPLETE`) + the **WP27 blind1 tp05
@@ -326,7 +357,11 @@ wrapper so `asdict()` cannot unwrap it. *A type is a guarantee where a call-site
    on** — `src/testing` tree-shakes out). Both rewritten as positive identification.
 2. **I told Worker 2 the fix lives on `captureLocal`.** It lives on `handleLocalModify`; `captureLocal`'s
    path is switched off by default. Caught by the sweep, not by me.
-3. **I committed while a sibling batch had staged work** — `git commit` commits the whole **shared
+3. **I ordered the gate's own work packages from recall, and the dependency was written down.**
+   I put WP50 *last* among the driver WPs when it **owns the file the other three edit** and its own
+   charter's dependency note says landing them first puts the repair in a file WP50 restructures.
+   Cost nothing only because I read the charters before dispatching rather than after. Rule 6 again.
+4. **I committed while a sibling batch had staged work** — `git commit` commits the whole **shared
    index**, so explicit `git add` is not protection. `b8a541e` swept in 94 of B10a's files.
    **Fix adopted: `git commit -o <paths>`, or verify `git diff --cached` immediately before committing.**
    Nothing was lost; WP70's implementation is mislabelled under a WP74 message and history was **not**
