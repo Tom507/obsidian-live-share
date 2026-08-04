@@ -2,7 +2,7 @@
 
 <!-- Updated: chartered because the two facts that make the real-Obsidian gate mean anything — that the two vaults share a surface containing the scratch canvas, and that a relay exists at all — were owned by no work package; WP44 provisions one key and WP7 says "a local relay" without anyone starting one 2026-08-02 -->
 <!-- Updated: the second sync engine corrected from lan-vault-sync (installed, NOT enabled) to obsidian-git and its disposition made a precondition; the canvas.setFlag borrow-clobber entered as a risk and split out as WP72; the agent-mediated run entered against AC4's ordering. AC1–AC5 unchanged verbatim 2026-08-04 -->
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `RISKY`
 **WP:** WP70
 **Phase:** P0 (PHASE T3 group)
 **task_mode:** `standard`
