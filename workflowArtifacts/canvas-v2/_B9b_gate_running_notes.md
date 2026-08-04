@@ -243,6 +243,99 @@ borrow settings, create a scratch canvas or run a readiness handshake.
 
 ---
 
+## M13 — WP69 CLOSED. Measured by Worker 3 Core, not claimed by the coder.
+
+| AC | Verdict | Evidence |
+|---|---|---|
+| AC1 one-shot `e2e` mode, existing branches unchanged | **PASS** | see below |
+| AC2 production bundle byte-identical | **PASS** | `58fda6f8…46bc` == `58fda6f8…46bc` |
+| AC3 e2e bundle verified capable before install | **PASS** | exit 0, terminates, markers 1/1/2 |
+| AC4 install exactly reversible | **PASS** | live cycle on **both real vaults** |
+
+**AC1 — how "still watch" was proved without ever awaiting it.** `npm run dev` was started with
+a hard 45 s timeout and *required to time out*. A one-shot mode would have exited; watch does not.
+The timeout expiring **is** the assertion. The process was then killed — the rig started it, so
+D15 does not apply. Structurally, the esbuild **option object was not edited at all**: `e2e` and
+the watch branch evaluate the same `prod ? … : …` expressions, so "identical in every field" is a
+property of the code rather than a claim to re-check.
+
+**AC2 — the abort criterion, measured three times.**
+
+| when | sha256 | size |
+|---|---|---|
+| before, quiet tree @ `fcb2295` | `58fda6f8…46bc` | 759 892 |
+| before, re-taken @ `6b20c17` | `58fda6f8…46bc` | 759 892 |
+| **after the config change** | **`58fda6f8…46bc`** | 759 892 |
+| after, re-run *following* an e2e build | `58fda6f8…46bc` | 759 892 |
+
+Zero `__LS_E2E__` and zero of all three markers in the production bundle. The fourth row is the
+one that also rules out cross-contamination between the modes. Bundle-affecting changes vs. the
+before-commit were exactly `plugin/esbuild.config.mjs` + `plugin/package.json` — no `plugin/src/**`.
+
+**⚠ Finding worth propagating: `__LS_E2E__` occurs ZERO times in *both* bundles.** esbuild's
+`define` substitutes the identifier at compile time, so the *name* never survives into either
+output. AC2's "zero occurrences of `__LS_E2E__`" is therefore **necessary but not
+distinguishing** — it is equally true of the E2E bundle. What actually separates the two builds is
+the marker triple: production 0/0/0, e2e **1/1/2**. Any future check that relies on the
+`__LS_E2E__` count alone to prove a bundle is *not* instrumented is vacuous.
+
+**AC3 —** `npm run build:e2e` → `node esbuild.config.mjs e2e`, run from `plugin/`. Exit 0,
+terminates, nothing killed. 3 601 280 B vs production's 759 892 B; the **+2 841 388 B is the
+inline sourcemap plus the retained `src/testing/` tree — expected, not corruption.**
+
+**AC4 — the live cycle, which no fixture could have proved.** Run against the owner's two real
+vaults: real paths (vault B's contains spaces), the owner's four `*.bak` files present in the same
+directory, and the real 626 711-byte production bundle as the displaced thing.
+
+| check | vault A | vault B |
+|---|---|---|
+| e2e bundle really installed (markers + byte-equal to source) | ✅ | ✅ |
+| restored to production `93bdc5f4…9d9c`, 626 711 B | ✅ | ✅ |
+| **whole plugin dir byte-identical to pre-install** | ✅ | ✅ |
+| `data.json` vs `T3_PREFLIGHT` baseline | **MATCH** | **MATCH** |
+| owner's four `*.bak` untouched | ✅ | ✅ |
+| rig artefacts (`main.js.e2e-original`, `.e2e-install.json`) removed | ✅ | ✅ |
+
+**Both vaults are deliberately left on their production bundle.** The charter §4 assigns the
+single *persistent* live installation to WP7's gate run, and WP7 is not running this round;
+leaving an instrumented 3.6 MB dev build in the owner's live working vaults with no gate running
+is an unforced risk. (It would not have listened — `e2eControlPort` is absent in both vaults, so
+`resolvePort` returns `null` and the control server never binds — but the owner can open Obsidian
+at any moment.) Re-installing at gate time is one call.
+
+**Test sets, executed, non-zero collected (rule 9):**
+
+| set | files | collected | passed | failed |
+|---|---|---|---|---|
+| visible | 11 | **68** | 68 | 0 |
+| blind_set1 | 11 | **94** | 94 | 0 |
+| blind_set2 | 11 | **117** | 117 | 0 |
+
+Full plugin suite **1833 / 1833 / 0 failed / 299 files** — *exactly* the batch baseline, so no
+test-count drift (an abort criterion). No test deleted, weakened, retitled, skipped or amended.
+
+**The graduated retry did its job, and this is the part worth keeping.** Attempt 1 passed all 68
+visible tests and **failed the blind sets** (1 of 94, 3 of 117). Attempt 2 was told only *"not
+robust enough, generalize"*, with no indication of which tests failed or what they checked — and
+found the real defect on its own: WP69's marker records **two** fingerprints of the displaced
+bundle (`originalSha256`, `originalSize`) but attempt 1 validated only one, and `installedSha256`
+was written, reported, and never checked against anything.
+
+> **A fingerprint that nothing verifies is worse than an absent one — it reads as corroboration.**
+
+Attempt 2 also closed an unattributed-backup leak that would have left a vault refusing every
+later run as `INSTALL_CONFLICT` after a failed install *in which nothing was installed*. Attempt 3
+was a one-key move in `package.json` (the added script must be **appended**, not inserted, so the
+six pre-existing names stay a contiguous prefix).
+
+**Open, carried forward:** charter §6 also asks for a standalone `tools/test_<name>.py` script for
+the install module. It was not created in any of the three attempts. The 11-file visible suite
+asserts strictly more than such a script would, so this is a **documentation-shaped gap, not a
+coverage gap** — but the charter line is undischarged and is recorded as such rather than quietly
+dropped.
+
+---
+
 ## M11 — ⚠ I broke `npm run build` repo-wide, and the mechanism generalises
 
 **Self-inflicted, caught by the AC2 re-measurement, reverted.** Recorded because the mechanism
