@@ -197,6 +197,34 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 - **Teardown grey area:** if the owner has Obsidian open on either vault, the rig's launches become
   windows in a process it did not start (D14/D15). WP48 owns teardown of **rig-started** processes only;
   window-level teardown inside a foreign process is undefined. Unresolved.
+### ⚠ `plugin/main.js` is NOT a safe bundle oracle (B10b, 2026-08-04)
+
+It is **untracked, shared, and last-build-wins — including a concurrent batch's build.** B10b observed
+it mid-batch as a **3.6 MB e2e bundle** while B10a was building. Consequences:
+
+- **W4-1 must be discharged against an in-memory esbuild, never against the file.** B10b's blind set 2
+  does exactly this (0/16 vs 16/16). W4-1 has already once been recorded on a check that could not fail
+  (the `__LS_E2E__` count); discharging it against a file another batch can overwrite would be the
+  second time.
+- **WP69's byte-identity result still stands** — its measurements were taken before B10a existed and
+  re-taken four times consistently with no concurrent builder — but **the method must not be reused
+  while any other batch can run a build.** Treat "the tree is quiet" as including "nobody else is
+  building".
+
+### ⚠ Same vacuity class, one seam over — NOT yet chartered
+
+WP73 fixed `_run_case` discarding `applied`. **`_open` and `_wait_both` still discard their results**,
+so a case run against a canvas that was **never opened**, or one that "settled" only because the wait
+**timed out**, is still recordable. Out of WP73's scope by charter. **Must be closed before the gate
+run, or the gate can pass without ever opening the document it claims to test.**
+
+### Process deviation to weigh (B10b, disclosed unprompted)
+
+WP72/WP73's blind sets were authored **after** implementation. They are an independent re-derivation of
+the criteria and were mutation-checked (9/3/4/6 red under four different fakes), but they are **not
+evidence of non-overfitting** the way a pre-implementation set is. Recorded because the distinction is
+real and the batch volunteered it rather than letting it pass.
+
 ### ⚠ `__LS_E2E__` is NOT a distinguishing marker — my pre-flight was wrong
 
 `__LS_E2E__` occurs **zero times in the e2e bundle too**: esbuild's `define` substitutes the identifier
