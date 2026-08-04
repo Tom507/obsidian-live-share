@@ -34,6 +34,49 @@ export interface FileEntry {
   guid?: string;
 }
 
+/**
+ * D2 — the ATTESTATION that turns "the manifest does not list it" from an
+ * inference into a fact.
+ *
+ * Before this existed the manifest was a bare `path -> entry` map with no
+ * provenance whatsoever, so a guest holding one could not distinguish
+ *
+ *     "a live host published this set and your file is not in it"   (a fact)
+ *
+ * from
+ *
+ *     "this is whatever the relay replayed at me and nobody has said
+ *      anything since"                                              (an absence)
+ *
+ * and it treated both as a licence to `trashFile`. That is I11 at the top
+ * level: absence of information translated into a destructive action. The two
+ * cases are now structurally different values, not the same value read
+ * charitably.
+ *
+ * Written ONLY by {@link ManifestManager.publishManifest}, which only the host
+ * calls, and written inside the same Yjs transaction as the entries it
+ * describes — so a peer can never observe a published entry set without the
+ * attestation that vouches for it, nor an attestation ahead of its entries.
+ */
+export interface ManifestPublication {
+  /** The publisher's `userId` — i.e. who claims to be the host. */
+  hostId: string;
+  /**
+   * Monotonic publication counter. The FRESHNESS signal, and deliberately not a
+   * timestamp: freshness has to survive two peers whose clocks disagree, and a
+   * counter compared against a baseline taken at connect time answers exactly
+   * the question that matters — "did a publication happen AFTER I connected?" —
+   * without trusting anybody's clock.
+   */
+  seq: number;
+  /** Publisher wall clock. DIAGNOSTICS ONLY. Never gate anything on this. */
+  publishedAt: number;
+}
+
+/** The Yjs map holding {@link ManifestPublication}, beside the `files` map. */
+const META_MAP = "meta";
+const PUBLICATION_KEY = "publication";
+
 async function hashBuffer(buf: ArrayBuffer): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", buf);
   return Array.from(new Uint8Array(hash))
@@ -56,6 +99,17 @@ export class ManifestManager {
   private manifest: Y.Map<FileEntry> | null = null;
   private observer: ((events: Y.YMapEvent<FileEntry>) => void) | null = null;
 
+  /** D2 — the attestation map, and the baseline against which it is judged. */
+  private meta: Y.Map<ManifestPublication> | null = null;
+  private metaObserver: ((events: Y.YMapEvent<ManifestPublication>) => void) | null = null;
+  /**
+   * The publication `seq` observed at the moment `connect()` finished waiting
+   * for the relay's replay. Everything at or below this number is state that
+   * was ALREADY THERE when we arrived — it says nothing about whether a host is
+   * alive now, which is precisely the confusion that destroyed files.
+   */
+  private seqAtConnect = 0;
+
   private exclusionManager: ExclusionManager | null = null;
 
   constructor(
@@ -67,6 +121,15 @@ export class ManifestManager {
     this.exclusionManager = manager;
   }
 
+  /**
+   * The same identity `main.ts` sends as `join-request.userId` and the same one
+   * `session.ts` registers as the room's `hostUserId`. Spelled once here so the
+   * attestation's `hostId` is comparable to both without a second convention.
+   */
+  private get localUserId(): string {
+    return this.settings.githubUserId || this.settings.clientId || "";
+  }
+
   updateSettings(settings: LiveShareSettings) {
     this.settings = settings;
   }
@@ -76,7 +139,51 @@ export class ManifestManager {
     this.docHandle = syncManager.getDoc("__manifest__");
     if (!this.docHandle) return;
     this.manifest = this.docHandle.doc.getMap("files");
+    this.meta = this.docHandle.doc.getMap<ManifestPublication>(META_MAP);
     await syncManager.waitForSync("__manifest__");
+    // D2 — take the freshness baseline AFTER the replay has landed, so the
+    // relay's persisted state can never be mistaken for a live host speaking.
+    this.seqAtConnect = this.getPublication()?.seq ?? 0;
+  }
+
+  /** D2 — the attestation currently in the doc, or `null` if nobody ever published. */
+  getPublication(): ManifestPublication | null {
+    const raw = this.meta?.get(PUBLICATION_KEY);
+    if (!raw || typeof raw !== "object") return null;
+    if (typeof raw.seq !== "number" || !Number.isFinite(raw.seq)) return null;
+    if (typeof raw.hostId !== "string") return null;
+    return raw;
+  }
+
+  /**
+   * D2 — POSITIVE EVIDENCE that a live host published during THIS session.
+   *
+   * True only when the attestation's `seq` has advanced past the value that was
+   * already in the doc when we connected. A stale manifest replayed from relay
+   * persistence, a session with no host at all, and a host that has not yet
+   * published all answer `false` — they are all "I don't know", and "I don't
+   * know" must never delete.
+   *
+   * `excludeUserId` lets the caller refuse to be its own witness: a peer must
+   * not accept its own publication as proof that somebody else is alive.
+   */
+  hasFreshPublication(excludeUserId?: string): boolean {
+    const pub = this.getPublication();
+    if (!pub) return false;
+    if (pub.seq <= this.seqAtConnect) return false;
+    if (excludeUserId && pub.hostId === excludeUserId) return false;
+    return true;
+  }
+
+  /** D2 — fires whenever the attestation changes, i.e. whenever a host publishes. */
+  setPublicationChangeHandler(callback: (publication: ManifestPublication) => void): void {
+    if (!this.meta) return;
+    if (this.metaObserver) this.meta.unobserve(this.metaObserver);
+    this.metaObserver = () => {
+      const pub = this.getPublication();
+      if (pub) callback(pub);
+    };
+    this.meta.observe(this.metaObserver);
   }
 
   async publishManifest(options?: { purge?: boolean }): Promise<void> {
@@ -140,6 +247,19 @@ export class ManifestManager {
         // every peer that resolves this path through the manifest.
         this.manifest?.set(filePath, carryGuid(fileEntry, existing));
       }
+      // D2 — the attestation rides the SAME transaction as the entry set it
+      // describes. Not a separate write: a peer must never be able to observe a
+      // purged entry set without the statement that vouches for it (it would
+      // read as "the host says these files are gone" when the purge had not
+      // been vouched for), nor an attestation whose entries have not landed yet
+      // (it would licence deletion against a manifest that is still arriving).
+      // One transaction makes both orderings unrepresentable.
+      const previous = this.getPublication();
+      this.meta?.set(PUBLICATION_KEY, {
+        hostId: this.localUserId,
+        seq: (previous?.seq ?? 0) + 1,
+        publishedAt: Date.now(),
+      });
     });
   }
 
@@ -454,11 +574,20 @@ export class ManifestManager {
       this.manifest.unobserve(this.observer);
       this.observer = null;
     }
+    if (this.metaObserver && this.meta) {
+      this.meta.unobserve(this.metaObserver);
+      this.metaObserver = null;
+    }
     if (this.syncManager) {
       this.syncManager.releaseDoc("__manifest__");
     }
     this.docHandle = null;
     this.manifest = null;
+    this.meta = null;
+    // D2 — a session that has ended has no live host by construction. Resetting
+    // the baseline to 0 would make the NEXT connect's replayed state look fresh
+    // if `connect()` ever failed to re-baseline; leaving it high cannot cause a
+    // false "fresh", only a false "stale", which is the safe direction.
     this.syncManager = null;
   }
 

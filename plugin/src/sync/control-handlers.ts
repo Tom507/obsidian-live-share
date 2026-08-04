@@ -112,7 +112,22 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
   }
 
   channel.on("presence-update", (msg) => {
+    // D2 — a guest may only delete against a manifest a live host published
+    // DURING ITS SESSION, so somebody has to publish once the guest is listening.
+    // A guest that joins a long-running session would otherwise hold only the
+    // relay's replayed manifest, never obtain the evidence, and never clean up —
+    // safe, but permanently useless. The arrival of a peer we have not seen
+    // before is exactly the moment the host learns there is a new consumer.
+    //
+    // Computed here rather than inside PresenceManager because the newness test
+    // must happen BEFORE `handlePresenceUpdate` inserts the user.
+    const isNewPeer = !!msg.userId && !plugin.remoteUsers.has(msg.userId);
     plugin.presenceManager?.handlePresenceUpdate(msg);
+    if (isNewPeer && plugin.settings.role === "host") {
+      void plugin.manifestManager.publishManifest({ purge: true }).catch((err) => {
+        plugin.logger.error("manifest", "republish for new peer failed", err);
+      });
+    }
   });
 
   channel.on("presence-leave", (msg) => {
@@ -141,6 +156,44 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
   });
 
   channel.on("join-response", (msg) => {
+    // ---------------------------------------------------------------- D1 ----
+    // ROOT CAUSE OF THE 2026-08-05 DATA LOSS, and the reason a session could end
+    // up with NO host at all.
+    //
+    // The server is authoritative about who hosts a room, and it tells every
+    // client its verdict in `join-response.isHost`. This handler used to apply
+    // that verdict in ONE DIRECTION ONLY: `isHost === false` demoted a local
+    // host to guest, but `isHost === true` did nothing whatsoever to a local
+    // guest. Every disagreement between server and client therefore moved
+    // monotonically towards "guest", and never back. A role could be lost but
+    // never regained.
+    //
+    // How that turns into destruction, measured on this host:
+    //
+    //   1. The host's Obsidian is closed. `control-handler.ts:568-591` sees the
+    //      host's socket close with peers still in the room, auto-elects the
+    //      remaining guest, and REWRITES `room.hostUserId` to that guest's id.
+    //   2. The elected guest is being shut down at the same moment (one process
+    //      serves both vaults), so the `host-transfer-complete` that would have
+    //      promoted it is never processed and never persisted. The server now
+    //      believes the guest is host; the guest's `data.json` still says guest.
+    //   3. On relaunch the original host no longer matches `room.hostUserId`,
+    //      is told `isHost: false`, and demotes — correctly, by its own lights.
+    //      The elected guest is told `isHost: true` and, before this fix,
+    //      IGNORED IT.
+    //   4. Result: two guests, zero hosts, nobody publishing a manifest — and a
+    //      guest that reads "not in the manifest" as "deleted". Vault B lost
+    //      `hello.md` and `second.canvas` this way.
+    //
+    // The fix is to make the reconciliation symmetric. `isHost === true` is a
+    // POSITIVE ASSERTION from the authority that already enforces the
+    // single-host invariant (`determineHostStatus` demotes every other client
+    // before answering), so adopting it cannot create a second host — while
+    // refusing to adopt it demonstrably creates a session with none.
+    if (msg.isHost === true && plugin.settings.role === "guest") {
+      void plugin.promoteToHost();
+      return;
+    }
     if (msg.isHost === false && plugin.settings.role === "host") {
       void plugin.demoteToGuest();
       return;
@@ -250,20 +303,11 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     ).open();
   });
 
+  // D1 — routed through the SAME promotion as the `join-response` verdict.
+  // These were two hand-rolled copies of "become the host"; keeping one of them
+  // is how the server-verdict direction came to be missing in the first place.
   channel.on("host-transfer-complete", () => {
-    plugin.settings.role = "host";
-    plugin.settings.permission = "read-write";
-    void plugin
-      .saveSettings()
-      .then(() => plugin.backgroundSync.startAll("host"))
-      .then(() => plugin.manifestManager.publishManifest({ purge: true }))
-      .then(() => {
-        plugin.presenceManager?.broadcastPresence();
-        plugin.updateStatusBar();
-        plugin.refreshPresenceView();
-        new Notice("Live Share: you are now the host");
-        plugin.logger.log("session", "became host via transfer");
-      });
+    void plugin.promoteToHost("host transfer accepted");
   });
 
   channel.on("host-transfer-decline", (msg) => {

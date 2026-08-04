@@ -1,5 +1,27 @@
 export type SessionRole = "host" | "guest" | null;
 
+/**
+ * D2 — the answer `cleanupStaleFiles` returns instead of `void`.
+ *
+ * The old method returned nothing, so "I deleted three files", "there was
+ * nothing to delete" and "I had no business deciding" were the same
+ * observation: silence. A destructive operation that cannot report which of
+ * those happened cannot be tested and cannot be audited — the data loss was
+ * invisible in the logs until the files were noticed missing. Every outcome now
+ * has a name and a stated reason.
+ */
+export interface StaleReconcileDecision {
+  /** `true` only when the evidence gate opened and the reconcile actually ran. */
+  ran: boolean;
+  /** Why it ran, or which piece of evidence was missing. Always populated. */
+  reason: string;
+  /** Shared local files the published manifest did not mention. */
+  candidates: number;
+  /** Vault-relative paths actually sent to the trash. Empty on a refusal. */
+  trashed: string[];
+}
+
+
 export type Permission = "read-write" | "read-only";
 
 export interface LiveShareSettings {

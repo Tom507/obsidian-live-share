@@ -60,7 +60,11 @@ import { registerControlHandlers } from "./sync/control-handlers";
 import { ControlChannel } from "./sync/control-ws";
 import { E2ECrypto } from "./sync/crypto";
 import { SyncManager } from "./sync/sync";
-import { DEFAULT_SETTINGS, type LiveShareSettings } from "./types";
+import {
+  DEFAULT_SETTINGS,
+  type LiveShareSettings,
+  type StaleReconcileDecision,
+} from "./types";
 
 import { AuditLogModal } from "./ui/audit-modal";
 
@@ -178,6 +182,26 @@ export default class LiveSharePlugin extends Plugin {
   private unmutePathEvents = (path: string) => this.fileOpsManager.unmutePathEvents(path);
 
   private registerManifestChangeHandler() {
+    // D2 — the retry that keeps the evidence gate from becoming a permanent
+    // "no". `cleanupStaleFiles` refuses whenever no live host has published
+    // this session, which at resume/join time is the NORMAL state: the guest
+    // is usually up before the host has republished. Without this the refusal
+    // would be final and stale files would never be cleaned, which would make
+    // the safe answer also the useless one. Here the decision is simply re-asked
+    // every time a host publishes — the exact event that creates the evidence.
+    this.manifestManager.setPublicationChangeHandler(() => {
+      if (this.settings.role !== "guest") return;
+      this.manifestHandlerQueue = this.manifestHandlerQueue
+        .then(async () => {
+          const decision = await this.cleanupStaleFiles();
+          if (decision.trashed.length > 0) {
+            this.notify(`Live Share: removed ${decision.trashed.length} file(s) not on the host`);
+          }
+        })
+        .catch((err) => {
+          this.logger.error("manifest", "stale reconcile failed", err);
+        });
+    });
     this.manifestManager.setManifestChangeHandler((added, removed, updated) => {
       this.manifestHandlerQueue = this.manifestHandlerQueue
         .then(async () => {
@@ -492,6 +516,12 @@ export default class LiveSharePlugin extends Plugin {
         await this.backgroundSync.startAll("host");
         this.registerManifestChangeHandler();
       } else {
+        // D2 — the observer is armed BEFORE the first reconcile attempt, not
+        // after. On this path the attempt below is expected to refuse (the host
+        // has almost certainly not republished yet), so the retry has to already
+        // be listening or the host's publication would arrive with nothing
+        // watching for it and the legitimate cleanup would be lost.
+        this.registerManifestChangeHandler();
         await this.cleanupStaleFiles();
         await this.manifestManager.syncFromManifest(
           this.mutePathEvents,
@@ -499,7 +529,6 @@ export default class LiveSharePlugin extends Plugin {
           this.requestBinaryFile,
         );
         await this.backgroundSync.startAll("guest");
-        this.registerManifestChangeHandler();
       }
       this.onActiveFileChange();
     } catch {
@@ -540,23 +569,121 @@ export default class LiveSharePlugin extends Plugin {
     });
   }
 
-  private async cleanupStaleFiles() {
+  /**
+   * D2/D3 — reconcile local shared files against the host's manifest, and the
+   * one place in this plugin that deletes a user's file on the strength of
+   * something NOT being present.
+   *
+   * ## What went wrong
+   *
+   * This method used to read
+   *
+   * ```ts
+   * const manifest = this.manifestManager.getEntries();
+   * if (manifest.size === 0) return;                 // D3
+   * // ... trashFile() every shared local file not in `manifest`
+   * ```
+   *
+   * and on 2026-08-05 it destroyed `hello.md` and `second.canvas` from a real
+   * vault. The chain: both peers came back from a restart believing they were
+   * guests (D1), so **nobody published a manifest**; the relay replayed the last
+   * persisted one; it was non-empty, so the `size === 0` guard (D3) let it
+   * through; and every shared file the stale manifest happened not to mention
+   * was trashed to the Recycle Bin.
+   *
+   * The defect is not the guard being too narrow. It is that the code asked the
+   * wrong question. "Is the manifest empty?" is a question about a data
+   * structure. The question that had to be asked is about the WORLD:
+   *
+   *     has a live host, during this session, told me this file is gone?
+   *
+   * "The manifest does not list it" answers that question only if somebody
+   * published the manifest. Otherwise it means "nobody told me" — and nobody
+   * told me is not permission to delete. This is I11 one level up: an absence of
+   * information translated into a destructive action.
+   *
+   * ## The rule now
+   *
+   * Deletion requires POSITIVE EVIDENCE, expressed as two independent
+   * conditions that must BOTH hold, each of which fails closed on its own:
+   *
+   *  1. `hasFreshPublication()` — the manifest carries an attestation whose
+   *     `seq` advanced past the value present when we connected, i.e. a host
+   *     actually published while we were online. Replayed persistence, a
+   *     hostless session, and a host that has not published yet all fail this.
+   *  2. a peer currently present in the session claims to be host. The
+   *     attestation says somebody spoke; this says somebody is still there.
+   *
+   * Neither condition is a heuristic that can be tuned. Both are statements
+   * about whether an assertion was made, and by whom.
+   *
+   * Everything else — no host, stale manifest, unconfirmed connection, a
+   * manifest never published this session — returns a REFUSAL. A refusal is not
+   * a failure: it is the correct answer to "I don't know", and it leaves every
+   * byte where it was (I11 REFUSAL NEVER DESTROYS).
+   *
+   * Callers must not treat a refusal as final. The decision is retried from the
+   * publication observer ({@link registerManifestChangeHandler}), so the
+   * legitimate cleanup still happens — the moment the evidence arrives, and not
+   * one instant before.
+   */
+  public async cleanupStaleFiles(): Promise<StaleReconcileDecision> {
+    const refuse = (reason: string): StaleReconcileDecision => {
+      this.logger.log("manifest", `stale reconcile refused: ${reason}`);
+      return { ran: false, reason, candidates: 0, trashed: [] };
+    };
+
+    if (this.settings.role === "host") {
+      return refuse("this peer is the host; the host is the source of the manifest, not a consumer");
+    }
+    // Condition 1 — somebody published while we were online.
+    if (!this.manifestManager.hasFreshPublication(this.userId)) {
+      const pub = this.manifestManager.getPublication();
+      return refuse(
+        pub
+          ? `no manifest publication observed this session (last attestation seq=${pub.seq} ` +
+              "predates this connection, so it proves only that a host once existed)"
+          : "no host has ever published a manifest for this room",
+      );
+    }
+    // Condition 2 — that somebody is still here.
+    const liveHost = Array.from(this.remoteUsers.values()).find((user) => user.isHost);
+    if (!liveHost) {
+      return refuse("a manifest was published but no peer in this session claims to be host");
+    }
+
     const manifest = this.manifestManager.getEntries();
-    if (manifest.size === 0) return;
+    // Retained as a third, redundant floor. It is NOT the gate — an empty
+    // manifest from a live, freshly-publishing host is a legitimate "the shared
+    // folder is empty", but the cost of being wrong here is the whole shared
+    // tree, so this one stays paranoid.
+    if (manifest.size === 0) {
+      return refuse("the freshly published manifest is empty; refusing to empty the shared folder");
+    }
+
     const manifestPaths = new Set(manifest.keys());
     const localFiles = this.app.vault
       .getFiles()
       .filter((file) => this.manifestManager.isSharedPath(file.path));
-    for (const file of localFiles) {
-      if (!manifestPaths.has(toCanonicalPath(normalizePath(file.path)))) {
-        this.fileOpsManager.mutePathEvents(file.path);
-        try {
-          await this.app.fileManager.trashFile(file);
-        } finally {
-          setTimeout(() => this.fileOpsManager.unmutePathEvents(file.path), VAULT_EVENT_SETTLE_MS);
-        }
+    const stale = localFiles.filter(
+      (file) => !manifestPaths.has(toCanonicalPath(normalizePath(file.path))),
+    );
+
+    const trashed: string[] = [];
+    for (const file of stale) {
+      this.fileOpsManager.mutePathEvents(file.path);
+      try {
+        await this.app.fileManager.trashFile(file);
+        trashed.push(file.path);
+      } finally {
+        setTimeout(() => this.fileOpsManager.unmutePathEvents(file.path), VAULT_EVENT_SETTLE_MS);
       }
     }
+    const reason = `host ${liveHost.userId} published a manifest of ${manifest.size} entry/entries this session`;
+    if (trashed.length > 0) {
+      this.logger.log("manifest", `stale reconcile trashed ${trashed.length} file(s): ${reason}`);
+    }
+    return { ran: true, reason, candidates: stale.length, trashed };
   }
 
   cleanupSession() {
@@ -648,6 +775,8 @@ export default class LiveSharePlugin extends Plugin {
         try {
           await this.connectSync();
           await this.manifestManager.connect(this.syncManager);
+          // D2 — armed before the first attempt; see `resumeSession`.
+          this.registerManifestChangeHandler();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,
@@ -655,7 +784,6 @@ export default class LiveSharePlugin extends Plugin {
             this.requestBinaryFile,
           );
           await this.backgroundSync.startAll("guest");
-          this.registerManifestChangeHandler();
           this.onActiveFileChange();
           this.logger.log("session", `joined, room=${this.settings.roomId}`);
           this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
@@ -681,6 +809,8 @@ export default class LiveSharePlugin extends Plugin {
         try {
           await this.connectSync();
           await this.manifestManager.connect(this.syncManager);
+          // D2 — armed before the first attempt; see `resumeSession`.
+          this.registerManifestChangeHandler();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,
@@ -688,7 +818,6 @@ export default class LiveSharePlugin extends Plugin {
             this.requestBinaryFile,
           );
           await this.backgroundSync.startAll("guest");
-          this.registerManifestChangeHandler();
           this.onActiveFileChange();
           this.logger.log("session", `joined via link, room=${this.settings.roomId}`);
           this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
@@ -1794,6 +1923,56 @@ export default class LiveSharePlugin extends Plugin {
     }
   }
 
+  /**
+   * D1 — accept the server's ruling that THIS peer is the host.
+   *
+   * The counterpart {@link demoteToGuest} has always existed; this direction did
+   * not, and its absence is why a session could converge to zero hosts (see the
+   * long note on the `join-response` handler in `sync/control-handlers.ts`).
+   *
+   * Idempotent, because the server re-states its verdict on every reconnect and
+   * a promotion must not republish the manifest once per reconnect storm.
+   *
+   * The `purge: true` republish is inherited from the existing host-transfer
+   * path and is deliberate: the semantics of this product are that the host's
+   * disk is the truth. It does carry a known hazard — a peer promoted before it
+   * finished syncing publishes a manifest that omits files it simply has not
+   * received yet — but that hazard predates this change, is identical on the
+   * `host-transfer-complete` path, and is now bounded on the consuming side,
+   * where `cleanupStaleFiles` at least requires the assertion to come from a
+   * live host rather than from nobody. Recorded as unfixed, not as absent.
+   */
+  async promoteToHost(reason = "server designated this peer as the room host"): Promise<void> {
+    if (this.settings.role === "host") return;
+    this.logger.log("session", `promoted to host - ${reason}`);
+    this.settings.role = "host";
+    this.settings.permission = "read-write";
+    await this.saveSettings();
+    await this.backgroundSync.startAll("host");
+    await this.manifestManager.publishManifest({ purge: true });
+    this.presenceManager?.broadcastPresence();
+    this.updateStatusBar();
+    this.refreshPresenceView();
+    this.onActiveFileChange();
+    this.notify("Live Share: you are now the host");
+  }
+
+  /**
+   * D1/D2 — accept the server's ruling that somebody else is host.
+   *
+   * The `cleanupStaleFiles()` call that used to sit in the middle of this method
+   * is DELIBERATELY GONE, and it must not come back. A peer arriving here has,
+   * by construction, just been told it is not the host — which means the only
+   * manifest it holds is one it published itself, as the host it no longer is.
+   * Reconciling local files against that manifest is a peer deleting files on
+   * the authority of a claim it has just been stripped of. In the 2026-08-05
+   * incident this was one of the two live trash paths.
+   *
+   * Nothing is lost by removing it: the new host will publish, the publication
+   * observer will fire, and `cleanupStaleFiles` will then run with the evidence
+   * it needs. Later and correct beats immediate and wrong when the operation is
+   * irreversible from the user's point of view.
+   */
   async demoteToGuest() {
     this.logger.log("session", "demoted from host - another host exists");
     this.settings.role = "guest";
@@ -1802,7 +1981,6 @@ export default class LiveSharePlugin extends Plugin {
     }
     await this.saveSettings();
     await this.backgroundSync.startAll("guest");
-    await this.cleanupStaleFiles();
     await this.manifestManager.syncFromManifest(
       this.mutePathEvents,
       this.unmutePathEvents,

@@ -27,6 +27,25 @@ import { createServer } from "node:http";
 import * as Y from "yjs";
 import { setCanvasBindingInstrument } from "../canvas/canvas-binding";
 
+/**
+ * D2 — structural mirror of `StaleReconcileDecision` in `../types`.
+ *
+ * Deliberately NOT imported. `../types` is not on the frozen import allow-list
+ * this module is held to (WP49 AC4 / WP72 AC4), and widening that list to admit
+ * a convenience import would spend a guard that exists for a reason. Nothing is
+ * lost by mirroring: `maybeStartE2EControlServer` passes the real
+ * `LiveSharePlugin` into `buildPluginHost(plugin: E2EPluginLike)`, so the real
+ * `cleanupStaleFiles` return type is structurally checked against this shape by
+ * the compiler at that call site. If the two ever diverge, `tsc` fails — the
+ * duplication is verified, not hoped for.
+ */
+interface StaleReconcileDecision {
+  ran: boolean;
+  reason: string;
+  candidates: number;
+  trashed: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Protocol types (mirror BUILD_SPEC §6.1). WP5 targets these shapes directly.
 // ---------------------------------------------------------------------------
@@ -311,6 +330,22 @@ export interface E2EControlHost {
   // the pre-WP49 tests stay valid. `buildPluginHost` always provides it, and
   // `routeCommand` turns an absent method into a structured 400 rather than a crash.
   canvasFile?(path: string): Promise<CanvasFileResult>;
+  // --- D2 data-loss chain --------------------------------------------------
+  // The instrument the data-loss reproduction is driven with. `reconcileStale`
+  // calls the REAL `LiveSharePlugin.cleanupStaleFiles()` — the same method
+  // `resumeSession` calls, not a copy and not a simulation — and returns its
+  // decision verbatim. That is the whole point: a rig command that re-implements
+  // the logic it is testing proves only that the rig agrees with itself, which
+  // is the `canvas.simulateEdit` mistake this project already paid for once.
+  manifestInfo?(): {
+    size: number;
+    paths: string[];
+    publication: { hostId: string; seq: number; publishedAt: number } | null;
+    freshPublication: boolean;
+    hostPeers: string[];
+  };
+  reconcileStale?(): Promise<StaleReconcileDecision>;
+  publishManifest?(): Promise<{ published: boolean; reason?: string }>;
 }
 
 /**
@@ -517,6 +552,25 @@ export async function routeCommand(
         }
         return ok(await host.canvasFile(path));
       }
+      // --- D2 data-loss chain ------------------------------------------------
+      case "manifest.info": {
+        if (typeof host.manifestInfo !== "function") {
+          throw new Error("manifest.info unavailable on this host");
+        }
+        return ok(host.manifestInfo());
+      }
+      case "session.reconcileStale": {
+        if (typeof host.reconcileStale !== "function") {
+          throw new Error("session.reconcileStale unavailable on this host");
+        }
+        return ok(await host.reconcileStale());
+      }
+      case "manifest.publish": {
+        if (typeof host.publishManifest !== "function") {
+          throw new Error("manifest.publish unavailable on this host");
+        }
+        return ok(await host.publishManifest());
+      }
       default:
         return badRequest(`unknown cmd: ${cmd}`);
     }
@@ -695,9 +749,22 @@ export interface E2EPluginLike {
     clientId?: string;
     roomId?: string;
     role?: string | null;
+    githubUserId?: string;
   };
   muxConnected?: boolean;
   controlConnected?: boolean;
+  // --- D2 data-loss chain ---------------------------------------------------
+  // All optional, like every capability above: a fake host in an existing unit
+  // test must stay valid, and `buildPluginHost` guards each access so a host
+  // without them answers a structured 400 rather than crashing.
+  manifestManager?: {
+    getEntries(): Map<string, unknown>;
+    getPublication(): { hostId: string; seq: number; publishedAt: number } | null;
+    hasFreshPublication(excludeUserId?: string): boolean;
+    publishManifest(options?: { purge?: boolean }): Promise<void>;
+  };
+  remoteUsers?: Map<string, { userId: string; isHost?: boolean }>;
+  cleanupStaleFiles?: () => Promise<StaleReconcileDecision>;
   saveSettings?: () => Promise<void> | void;
   // --- WP46 identity sources (all optional; every one degrades, none is guessed) ---
   /** Obsidian's `App`. `appId` is the stable per-vault identity; the adapter knows the path. */
@@ -955,6 +1022,47 @@ export function buildPluginHost(
         pluginBuild: resolvePluginBuild(plugin),
         canvasSurface: resolveCanvasSurface(plugin),
       };
+    },
+
+    // --- D2 data-loss chain ------------------------------------------------
+    // Read-only. Reports the three facts the deletion decision turns on, so a
+    // scenario can assert its PRECONDITION (the file really is absent from the
+    // manifest) instead of assuming it and passing vacuously.
+    manifestInfo() {
+      const mm = plugin.manifestManager;
+      if (!mm) throw new Error("manifest.info unavailable: no manifest manager on this host");
+      const entries = mm.getEntries();
+      const ownId = plugin.settings.githubUserId || plugin.settings.clientId || "";
+      return {
+        size: entries.size,
+        paths: Array.from(entries.keys()),
+        publication: mm.getPublication(),
+        freshPublication: mm.hasFreshPublication(ownId),
+        hostPeers: Array.from(plugin.remoteUsers?.values() ?? [])
+          .filter((user) => user.isHost)
+          .map((user) => user.userId),
+      };
+    },
+
+    // The real method, invoked. Not a re-implementation of its rules.
+    reconcileStale() {
+      if (typeof plugin.cleanupStaleFiles !== "function") {
+        throw new Error("session.reconcileStale unavailable: no reconcile on this host");
+      }
+      return plugin.cleanupStaleFiles();
+    },
+
+    // Lets a scenario ask a host to attest NOW, so the positive case (a live
+    // host's assertion still deletes) can be driven deterministically instead of
+    // waiting on whatever the session happens to do.
+    async publishManifest() {
+      if (plugin.settings.role !== "host") {
+        return { published: false, reason: "this peer is not the host" };
+      }
+      const mm = plugin.manifestManager;
+      if (!mm) return { published: false, reason: "no manifest manager on this host" };
+      await mm.publishManifest({ purge: true });
+      return { published: true };
     },
 
     async canvasOpen(path) {
