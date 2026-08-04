@@ -1,7 +1,7 @@
 # Task Charter — WP51: Stale-view scenario surface
 
 <!-- Updated: amended against the measured T3 pre-flight (2026-08-02) — the stale install claim corrected, the dev-build hang entered as a constraint, and the build/install step named as WP69; ACs unchanged 2026-08-02 -->
-**Charter Status:** `SPEC_COMPLETE`
+**Charter Status:** `TESTS_ADDED`
 **WP:** WP51
 **Phase:** P0 (PHASE T3 group)
 **task_mode:** `standard`
@@ -144,13 +144,148 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+All visible tests run under Vitest 4.0.18 from `plugin/`. None opens a socket, launches
+Obsidian, touches a vault, installs a bundle or invokes `npm run dev`. There is no wall-clock
+sleep, no new `setTimeout` wait and no new timing constant anywhere in the set — the whole
+surface is synchronous over in-memory doubles, and every file-level oracle is byte equality
+(V2's echo breaker), never a window. No test asserts on a log string.
+
+They are staged by copying them into `plugin/src/__tests__/wp51/` (hence the
+`../../testing/e2e-control` import depth); the staged copies are already in place and are
+currently red. Run with `npx vitest run src/__tests__/wp51` from `plugin/`.
+
+> **Staging note:** the artifact filenames already end in `.test.ts`, which matches the default
+> vitest `include`, so staging is a plain copy — no rename.
+
+> **Baseline measured before these files were added:** the full suite excluding
+> `src/__tests__/wp51/**` is **299 files / 1833 tests, 0 failures**. No existing test is
+> deleted, weakened, retitled, skipped or amended by this WP, which holds no BUILD_SPEC §7
+> licence of any class. TC4 and TC5 in particular are written so that
+> `e2e-control.test.ts` ("setFlag writes a known setting and stashes unknown flags…"),
+> `wp46/test_probe_side_effect_free_visible.test.ts` (`debugFlag`) and
+> `blind_set1/WP46` (`verboseLog`) all stay green — see the acceptance rule below.
+
+> **Data safety.** No test opens `H:\Developement\_NeuralAngels\ObsidianOrga`,
+> `...\ObsidianOrga - Kopie` or anything under `%APPDATA%\obsidian\`. There is no filesystem
+> access at all except the READ-ONLY source reads TC9 performs inside `plugin/src/`.
+
+> **CRDT assertion hygiene (T3 contract §10).** Where more than one peer writes, each writes its
+> OWN record and the writes are ordered, so every asserted value has a single author with a
+> causal predecessor chain. No value produced by two concurrent same-key writes is asserted.
+
+### Required implementation surface (pinned by these tests)
+
+New exports from `plugin/src/testing/e2e-control.ts` — the **only** file WP51 touches
+(`SharedOwnershipContract_B9b_Gate.md` §2):
+
+- `STALE_VIEW_FLAG = "canvas.staleView"` — the one runtime flag name this WP registers.
+- `STALE_VIEW_MODES = ["live", "delayed", "unavailable"]` + `type StaleViewMode`.
+  `delayed` and `unavailable` are the two WP6 chaos seams (C6 AC1 / C6 AC2) reused verbatim,
+  not reinvented: they differ in what LEAVING does — `delayed` replays the withheld updates
+  (the pass was late), `unavailable` drops them (the surface was gone).
+- `RUNTIME_FLAG_READERS: Readonly<Record<string, string>>` — AC3's registry, mapping each
+  accepted flag name to **the code path that reads it**. Plus `isKnownRuntimeFlag(name)`.
+- `CanvasSaveChannelLike` — `{ path(): string | null; requestSave(): Promise<string> | string }`.
+  `requestSave` is Obsidian's OWN save of the open canvas view and resolves to the exact bytes
+  the instance handed to Obsidian's writer. It takes no argument, so the rig has no channel
+  through which to supply bytes. Injected via `E2EPluginLike.canvasSaveChannel?(path)`,
+  mirroring WP47's `scratchAdapter`; the production path resolves the open canvas leaf.
+- `CanvasSaveResult` — `{ saved, sha256Before, sha256After, size, byInstance }`.
+  `byInstance` is byte equality between what the instance handed over and what is on disk
+  afterwards; it is **not** "the digest moved". An absent file is `sha256: ""` (WP49's contract).
+- `E2EPluginLike.canvasSync` gains the loosely-typed `setOnRemoteCanvasUpdate` /
+  `onRemoteCanvasUpdate` members the real `CanvasSync` already has, so the gate installs itself
+  over the handler `main.ts:846` registered. `main.ts` and every `plugin/src/canvas/**` module
+  stay byte-identical (TC9).
+- `E2EControlHost` gains **optional** `knownFlags?()`, `flags?()` and `canvasSave?(path)`.
+  Optional is load-bearing: the hand-rolled fake hosts in the existing suites do not implement
+  them and must keep routing exactly as before.
+
+Commands added to T3 contract §6.1 (existing `POST /command` envelope, no new endpoint, no new
+dependency):
+
+| cmd | args | result |
+|---|---|---|
+| `canvas.flags` | — | `{flags: Record<string, unknown>, staleView: StaleViewMode, withheld: number}` |
+| `canvas.save` | `path` | `{saved, sha256Before, sha256After, size, byInstance}` |
+
+`canvas.setFlag` keeps its pinned `{set}` result and gains an acceptance rule **at the command
+boundary only**:
+
+1. name in `RUNTIME_FLAG_READERS` → applied to the named runtime path (value validated against
+   `STALE_VIEW_MODES`);
+2. else name is an OWN property of `plugin.settings` → the pre-WP51 settings branch, unchanged;
+3. else → **400**, and nothing is stored.
+
+The direct host method `host.setFlag(...)` keeps its pre-WP51 behaviour, because
+`e2e-control.test.ts:253` pins it and WP51 may not amend it. The rig only ever reaches the
+surface through `routeCommand`, so AC3's "rejected at the command boundary" is fully served.
+
+### TC1 — Entering the stale state stops the view being advanced by remote changes
+- Verifies AC: 1
+- Test file: tests/visible/WP51/test_tp1_stale_gate_withholds_view_visible.test.ts
+- What it checks: a remote delta reaches the view-apply handler while live and stops reaching it once `canvas.setFlag(canvas.staleView, "delayed")` is issued, while `canvas.state` still reports the peer's value — the doc advances, the view does not; entering twice never double-forwards; and a gate with no plugin-installed handler behind it refuses instead of silently swallowing updates.
+- Test data channel: in-memory `Y.Doc` + a `CanvasSync` double that owns the `main.ts:846` handler
+
+### TC2 — Leaving returns to normal, and the two WP6 seams differ
+- Verifies AC: 1, 4
+- Test file: tests/visible/WP51/test_tp2_leave_replays_or_drops_visible.test.ts
+- What it checks: leaving `delayed` replays every withheld update in arrival order; leaving `unavailable` drops them and then goes live; the same input produces different outcomes for the two modes; every mode can be entered and left; a value outside `STALE_VIEW_MODES` is a 400.
+- Test data channel: deterministic generator (three node-geometry frames, no timers)
+
+### TC3 — The current state is observable through the protocol
+- Verifies AC: 1
+- Test file: tests/visible/WP51/test_tp3_stale_state_observable_visible.test.ts
+- What it checks: `canvas.flags` reports the mode in force and a withheld counter that moves with the traffic and resets on leaving, does not move while live, takes no args, covers every registered flag, and is a structured 400 on a host without the read-back.
+- Test data channel: fixture (hand-driven deliveries)
+
+### TC4 — A flag no code path consults is refused at the command boundary
+- Verifies AC: 3
+- Test file: tests/visible/WP51/test_tp4_unknown_flag_rejected_visible.test.ts
+- What it checks: seven unconsulted names (including the realistic typo `canvasStale`) each give 400; nothing is stored where the protocol can see it and settings are untouched; the two accepted classes — a registered runtime flag and a real settings key — still work; `isKnownRuntimeFlag` agrees with the registry; and a pre-WP51 fake host that declares no flag set keeps the legacy pass-through.
+- Test data channel: fixture (name table)
+
+### TC5 — An accepted flag is actually READ by the path it names
+- Verifies AC: 3
+- Test file: tests/visible/WP51/test_tp5_flag_actually_read_visible.test.ts
+- What it checks: no flag is ever read back as an oracle. For every entry in `RUNTIME_FLAG_READERS`, two instances differing only in the flag command produce different observable outcomes at the production seam; setting the flag to its default changes nothing (so the difference is the value, not the command); the effect is reversible in both directions; and a flag set on one instance does not leak to another. This is the test that fails against an implementation whose flag is stored but never consulted.
+- Test data channel: deterministic generator (registry-parameterised differential)
+
+### TC6 — The instance performs the save; the rig never writes the file
+- Verifies AC: 2
+- Test file: tests/visible/WP51/test_tp6_instance_saves_rig_never_writes_visible.test.ts
+- What it checks: `canvas.save` invokes the instance's own save channel, the bytes that land are the bytes the instance produced, and no writable adapter is reached at all — the WP47 scratch adapter and every mutator on `app.vault.adapter` are spies that stay untouched; a driver-supplied `content` argument cannot reach disk; the save reflects the view now, not a cached answer.
+- Test data channel: in-memory vault (Map) + `vi.fn()` adapter spies
+
+### TC7 — A foreign writer is never credited to the instance
+- Verifies AC: 2
+- Test file: tests/visible/WP51/test_tp7_foreign_writer_not_credited_visible.test.ts
+- What it checks: `lan-vault-sync` landing after the instance's save gives `byInstance:false` even though the digest moved (the case a "the file changed" oracle would pass); a save coalesced away gives `byInstance:false`; an idempotent re-save with an unmoved digest is honestly `true`; attribution is byte equality, not shape equality — two serialisations that `JSON.parse` equal do not match; an absent pre-save file is `""`, never the digest of empty.
+- Test data channel: fixture (two byte-level serialisations of the same board)
+
+### TC8 — The full scenario: an Obsidian save on a deliberately stale view
+- Verifies AC: 1, 2
+- Test file: tests/visible/WP51/test_tp8_stale_save_writes_view_bytes_visible.test.ts
+- What it checks: the command sequence WP7 AC2's third demonstration needs — enter stale, let a peer move a node, save, read the file back — puts the STALE view's bytes on disk while `canvas.state` already holds the peer's value, so a doc-level oracle would have called that run converged (D17); leaving catches the view up and the next save agrees with the doc; the file moves exactly twice, both times through the instance; `unavailable` produces a stale save no replay repairs.
+- Test data channel: in-memory `Y.Doc` + a view that only the view-apply handler advances
+
+### TC9 — No test-only branch is added to any production canvas module
+- Verifies AC: 4
+- Test file: tests/visible/WP51/test_tp9_no_test_branch_in_canvas_modules_visible.test.ts
+- What it checks: a structural assertion over `plugin/src/canvas/**`, `plugin/src/files/canvas-sync.ts` and `plugin/src/main.ts` — none of them mentions any WP51 token, none imports from `testing/`, every e2e mention inside a canvas module is a comment rather than a code line, and `main.ts`'s e2e code lines equal the pinned pre-existing WP4 bootstrap set exactly (an added `if (this.e2eStaleView) return;` shows up as a new entry). A POSITIVE CONTROL first asserts the surface really does exist in `testing/e2e-control.ts`, so the file cannot pass on a tree where WP51 was never implemented.
+- Test data channel: fixture (read-only source reads under `plugin/src/`)
 
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
 
-*Empty at handover.*
+*Empty — no AC of this WP is `INTEGRATION_SCOPE`.*
+
+All four criteria are decided under the `plugin/` vitest gate at the control-server seam, which
+is what charter §2 already records ("an installed bundle is not needed to reach `DONE`"). AC2's
+save is exercised through the instance's own save channel with an in-memory vault; exercising
+the same command sequence against a real Obsidian instance is **WP7's run**, not an integration
+target owned here.
 
 ---
 
