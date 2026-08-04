@@ -423,6 +423,22 @@ check that could not fail. It must be re-established against the marker triple o
   discretionary call. `autoSaveInterval`/`autoPushInterval` are `0`, so nothing is pushed, but the
   boot-time pull alone is disqualifying. **Standing lesson: "installed" is not "enabled" — read
   `community-plugins.json`, not the directory listing.**
+- **⚠ WARNING OWED TO WP51's IMPLEMENTOR — two blind `tp7` files still cite the wrong engine.**
+  A 2026-08-04 sweep confirmed the `lan-vault-sync` correction reached all four charters it had
+  propagated into (WP50, WP51, WP70, WP7). Two residues were found and **one is still open**:
+  - `TaskCharter_WP69` §risks — **corrected in place** (WP69 was already closed when the sweep ran,
+    which is why it was missed the first time).
+  - `tests/visible/WP51/test_tp7_foreign_writer_not_credited_visible.test.ts` — **corrected in place**,
+    comment only. It had justified itself with *"`lan-vault-sync` is enabled in both target vaults
+    (measured 2026-08-02)"* — a **false measurement cited as evidence** inside a test, which is rule 6's
+    failure mode in its purest form.
+  - **STILL OPEN:** `blind_set1/WP51/tp7` and `blind_set2/WP51/tp7` narrate the same scenario with the
+    same dead plugin. **Deliberately not touched by the Dispatcher** — I have just ruled on who may edit
+    a blind file, and the answer was "not whoever happens to be passing". WP51's batch owns these, under
+    the D-1 note (batch-authored ⇒ no §7 licence), and the edit is **comment text only**.
+  - The test class itself is *strengthened*, not weakened, by the correction: `obsidian-git` is an
+    enabled foreign writer that fires at launch, which is a better instance of the class than a plugin
+    that cannot run. The mitigation (WP70's borrow) does not retire the class.
 - **⚠ The T3 rig cannot launch Obsidian.** `lifecycle.py`'s only console backend is `PlanOnlyConsole`
   and there is no `subprocess`/`Popen` anywhere in `tools/obsidian_e2e/`. WP43–49 built a **plan-only**
   rig. **The gate run is therefore agent-mediated** — an agent launches both instances via

@@ -1,10 +1,16 @@
 // WP51 / C51 AC2 — the oracle must tell "the instance saved" apart from "some
 // other writer saved".
 //
-// This is not hypothetical: `lan-vault-sync` is enabled in both target vaults
-// alongside `obsidian-git` (charter §5, measured 2026-08-02). A `canvas.save`
-// whose oracle is "the file changed" credits the instance for a foreign write
-// and produces a green demonstration of a save that never happened.
+// This is not hypothetical — but the engine named here was originally the wrong
+// one. CORRECTED 2026-08-04: `lan-vault-sync` is installed in both vaults and
+// **not enabled**, so it cannot write anything. The enabled foreign writer is
+// `obsidian-git`, with `autoPullOnBoot: true` over dirty work trees with
+// `origin` remotes — a stronger case for this test, not a weaker one, because it
+// fires at launch, before a gesture is even made. (The rig disables it for the
+// duration of a gate run under WP70's reversible borrow; this test covers the
+// class, and the class outlives that one mitigation.) A `canvas.save` whose
+// oracle is "the file changed" credits the instance for a foreign write and
+// produces a green demonstration of a save that never happened.
 //
 // The discrimination is byte equality — V2's own echo breaker — between what the
 // instance handed to Obsidian's writer and what is on disk afterwards. No
