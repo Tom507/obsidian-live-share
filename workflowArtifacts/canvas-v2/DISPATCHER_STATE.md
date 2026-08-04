@@ -151,8 +151,28 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 | | Worker | Scope |
 |---|---|---|
 | ~~**B11a**~~ | W3 | ✅ **WP70 DONE** — `13184a0`. tp31 corrected shape-aware, strictness **up** (assertions inside the borrow 4→8, 4→11, 2→11); reddened under an injected `json.dumps` re-serialisation; visible 259/259, blind1 345/345, blind2 300/300, 0 failed. No §7 licence taken (D-1). |
-| **B11b** | W2 | charter **WP77** — the `ports.BorrowState` credential-`repr` leak + BUILD_SPEC §9 row + header 76 → 77 |
-| **B12** | W3 | **WP50** — run matrix bound to real hosts (owns the driver file; goes first) |
+| ~~**B11b**~~ | W2 | ✅ **WP77 chartered** — `f4846c2`. `SPEC_COMPLETE`, 5 ACs, BUILD_SPEC header 76 → **77**, §9 row landed. **Died before reporting; the work had already landed.** |
+| ~~**B12**~~ | W3 | ❌ **DIED, nothing landed.** No commit in either repo, no report, no tests. Re-dispatched as **B13**. |
+| **B13** | W3 | **WP50** — retry. Briefed to commit at each AC boundary, since B12's death cost everything. |
+| **B14** | W2 | charter **WP78** — `install.py`'s spawning `runner` default (blocks WP71) |
+
+### Rule 13 — an agent can land its work and die before reporting. Check the tree before re-dispatching.
+
+Both B11b and B12 stopped writing ~3 hours before anyone noticed, and neither sent a completion
+notification, so both *looked* identically dead. They were not in the same state: **B11b had already
+committed a complete WP77 charter**; B12 had committed nothing. Re-running B11b would have duplicated
+landed spec work and produced a second WP77 — a WP number collision in the register the header is
+re-derived from.
+
+**Procedure, before re-dispatching any silent agent:** `git log` **both** repos, look for the WP's
+deliverables by name, and only then decide between *resume*, *re-dispatch* and *nothing to do*.
+Silence is not evidence of failure — it is evidence of silence.
+
+Two supporting facts, both cheap and both worth keeping:
+- **The task registry is authoritative.** A `TaskOutput` on a dead id returns *"No task found"* — a
+  cleaner signal than transcript mtimes, which I have previously misread in both directions.
+- **Brief long W3 batches to commit at every AC boundary**, not once at the end. B12 died somewhere in
+  the middle of WP50 and left nothing recoverable; the cost of a mid-batch death should be one AC.
 
 ### ⚠ RULING — WP69 downgraded C45 AC4 from a structural guarantee to a convention, and C71 AC4 is now unsatisfiable as written
 
