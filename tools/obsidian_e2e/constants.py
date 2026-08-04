@@ -332,3 +332,156 @@ RIG_KIND_REAL_OBSIDIAN = "real-obsidian"
 # ---------------------------------------------------------------------------
 
 OBSIDIAN_OPEN_URI_TEMPLATE = "obsidian://open?vault={vault}"
+
+# ---------------------------------------------------------------------------
+# §10 — WP70: the local relay, the provisioned gate settings, and the
+#       `obsidian-git` precondition borrow.
+#
+# Owned by WP70 (`WP70_PinnedDecisions.md`, `T3_SharedContract.md` §10b). **Appended,
+# never inserted into another block**: §4.1 and every WP43–WP49 block above keeps its
+# text *and* its position, not one line moved, renamed or re-indented.
+#
+# Hard-won rule 10 in its sharpest form — every value below is spelled **here and
+# nowhere else**. `relay.py` and `provisioning.py` import them; neither re-declares one,
+# neither spells the port digits in a default argument, a docstring example or a URL.
+# ---------------------------------------------------------------------------
+
+# --- the relay ---------------------------------------------------------------
+#: A third port band, disjoint from the headless-mock pair (39421/39422) and from the
+#: real-control pair (39431/39432), one decade above the latter so a transposed digit
+#: lands on nothing at all.
+RELAY_PORT = 39441
+RELAY_HOST = "127.0.0.1"  # what the RIG probes; the server itself binds all interfaces
+RELAY_BASE_URL = f"http://{RELAY_HOST}:{RELAY_PORT}"
+RELAY_HEALTH_PATH = "/healthz"
+RELAY_ROOMS_PATH = "/rooms"
+RELAY_ROOM_NAME_PREFIX = "e2e-gate-"  # room name = prefix + run_id
+RELAY_SERVER_DIR_REL = "server"  # repo-relative; the module resolves it
+RELAY_ENTRY_REL = "server/dist/index.js"
+RELAY_BUILD_SCRIPT = "build"  # server/package.json — plain `tsc`, and it TERMINATES
+
+# --- bounded waits (never a sleep as an oracle) ------------------------------
+#: Measured on this host: a connection to a port with nothing listening does **not**
+#: raise ``ConnectionRefusedError`` — it consumes the whole connect timeout and raises
+#: ``TimeoutError``. An oracle written ``except ConnectionRefusedError`` can therefore
+#: never fire here, which is why "stopped" means *a connection no longer completes
+#: within a bounded budget* and why the stopped probe's connect timeout is small: every
+#: negative poll costs it in full.
+RELAY_READY_BUDGET_S = 30.0
+RELAY_READY_POLL_INTERVAL_S = 0.25
+RELAY_READY_CONNECT_TIMEOUT_S = 2.0
+RELAY_STOPPED_BUDGET_S = 15.0
+RELAY_STOPPED_POLL_INTERVAL_S = 0.25
+RELAY_STOPPED_CONNECT_TIMEOUT_S = 0.25
+
+# --- the run-scoped store directory (AC3) ------------------------------------
+#: All three of the relay's LevelDB stores resolve **relative to its process cwd** and
+#: only one of them (``BLOB_STORE_PATH``) has an environment hook at all, so the cwd is
+#: the mechanism: the relay is started *inside* the run-scoped directory below, which is
+#: outside the repository and outside both vaults, and is removed at teardown.
+RELAY_STORE_ROOT_NAME = "obsidian-e2e-relay"  # under tempfile.gettempdir()
+RELAY_STORE_SUBDIRS = ("data/frames", "data/yjs-docs", "data/audit")
+
+# --- the provisioned settings key set (AC1) — pinned ORDER, exhaustive -------
+#: Every member is an existing member of ``LiveShareSettings``; no key is invented. The
+#: order is pinned because the borrow writes absent members in exactly this sequence.
+PROVISIONED_SETTINGS_KEYS = (
+    "e2eControlPort",
+    "serverUrl",
+    "roomId",
+    "token",
+    "role",
+    "permission",
+    "sharedFolder",
+    "excludePatterns",
+    "autoReconnect",
+    "debugLogging",
+)
+
+SETTINGS_ROLE_HOST = "host"
+SETTINGS_ROLE_GUEST = "guest"
+SETTINGS_ROLES = {ROLE_A: SETTINGS_ROLE_HOST, ROLE_B: SETTINGS_ROLE_GUEST}
+SETTINGS_PERMISSION = "read-write"
+
+#: The shared surface is the rig-owned scratch folder **itself**, not a copy of its
+#: spelling: ``isSharedPath`` treats an *empty* ``sharedFolder`` as the whole vault
+#: shared, the host publishes its manifest with ``purge: true``, and the guest trashes
+#: every shared local file absent from that manifest — so a second spelling that drifted
+#: from :data:`SCRATCH_FOLDER` would silently re-open that blast radius.
+SETTINGS_SHARED_FOLDER = SCRATCH_FOLDER
+SETTINGS_EXCLUDE_PATTERNS = ()  # provisioned as an EMPTY list, never absent, never null
+SETTINGS_AUTO_RECONNECT = True
+#: Provisioned ``false`` for the duration and restored: a debug log written to
+#: ``debugLogPath`` inside the vault is a vault write the C47 AC3 fingerprint reports.
+SETTINGS_DEBUG_LOGGING = False
+
+#: Never read, never written, never named in a value position (S4). ``data.json`` holds
+#: live credentials; this set and :data:`PROVISIONED_SETTINGS_KEYS` are disjoint by
+#: construction, which is what makes "neither read nor written" enforceable at all.
+CREDENTIAL_SETTINGS_KEYS = (
+    "encryptionPassphrase",
+    "encryptionSalt",
+    "jwt",
+    "serverPassword",
+)
+
+# --- the obsidian-git precondition borrow ------------------------------------
+#: ``community-plugins.json`` is Obsidian's *enabled* list and is a **different file and
+#: a different borrow** from WP44's ``data.json`` — hence its own namespace and its own
+#: marker, never a second borrow inside the module whose whole invariant is one borrow
+#: over one file. ``lan-vault-sync`` is installed but NOT enabled and cannot run; the
+#: engine that can bring content in by a non-relay path is ``obsidian-git``, whose
+#: ``autoPullOnBoot`` fires at launch.
+DISABLED_PLUGIN_IDS = ("obsidian-git",)
+COMMUNITY_PLUGINS_BACKUP_REL = ".obsidian/community-plugins.json.e2e-original"
+COMMUNITY_PLUGINS_MARKER_REL = ".obsidian/.e2e-community-plugins.json"
+
+#: Like the WP44 and WP69 markers: fingerprints and structure only, never file content.
+COMMUNITY_PLUGINS_MARKER_FIELDS = (
+    "runId",
+    "role",
+    "hadOriginal",
+    "originalSha256",
+    "originalSize",
+    "disabled",
+    "pid",
+    "createdAt",
+)
+
+# --- §10.1 — named failure reasons added by WP70 -----------------------------
+#
+# These are *appended* to :data:`FAILURE_REASONS` below, in one contiguous run after
+# WP69's. The append is written as a rebinding rather than as an edit inside the §7
+# tuple literal for a structural reason: §7 is a WP43 block, and the batch rule is that
+# WP43–WP49 and §4.1 keep their text *and their position*. Extending the tuple here
+# leaves every existing line exactly where it was and still yields one tuple with the
+# new reasons at the end.
+#
+# `RESTART_REQUIRED_OPERATOR` (WP45, existing) is **reused** for AC4's refusal to
+# provision a vault whose plugin is already loaded. No new reason is invented for it.
+
+RELAY_PORT_OCCUPIED = "RELAY_PORT_OCCUPIED"  # WP70 AC3 — never adopt, never kill
+RELAY_BUILD_FAILED = "RELAY_BUILD_FAILED"  # WP70 AC3
+RELAY_READINESS_TIMEOUT = "RELAY_READINESS_TIMEOUT"  # WP70 AC3 — names the condition
+RELAY_NOT_STOPPED = "RELAY_NOT_STOPPED"  # WP70 AC3 — an orphaned listener fails the run
+ROOM_MINT_FAILED = "ROOM_MINT_FAILED"  # WP70 AC3/AC4
+GATE_ORDER_VIOLATION = "GATE_ORDER_VIOLATION"  # WP70 AC4
+SHARED_SURFACE_NOT_ESTABLISHED = "SHARED_SURFACE_NOT_ESTABLISHED"  # WP70 AC2
+PROPAGATION_EVIDENCE_UNAVAILABLE = "PROPAGATION_EVIDENCE_UNAVAILABLE"  # WP70 AC5
+NEGATIVE_CONTROL_LEAKED = "NEGATIVE_CONTROL_LEAKED"  # WP70 AC5 — a FAILED run
+COMMUNITY_PLUGINS_CONFLICT = "COMMUNITY_PLUGINS_CONFLICT"  # WP70 precondition
+COMMUNITY_PLUGINS_RESTORE_MISMATCH = "COMMUNITY_PLUGINS_RESTORE_MISMATCH"  # WP70 precondition
+
+FAILURE_REASONS = FAILURE_REASONS + (
+    RELAY_PORT_OCCUPIED,  # WP70 AC3
+    RELAY_BUILD_FAILED,  # WP70 AC3
+    RELAY_READINESS_TIMEOUT,  # WP70 AC3
+    RELAY_NOT_STOPPED,  # WP70 AC3
+    ROOM_MINT_FAILED,  # WP70 AC3
+    GATE_ORDER_VIOLATION,  # WP70 AC4
+    SHARED_SURFACE_NOT_ESTABLISHED,  # WP70 AC2
+    PROPAGATION_EVIDENCE_UNAVAILABLE,  # WP70 AC5
+    NEGATIVE_CONTROL_LEAKED,  # WP70 AC5
+    COMMUNITY_PLUGINS_CONFLICT,  # WP70 AC4 (precondition)
+    COMMUNITY_PLUGINS_RESTORE_MISMATCH,  # WP70 AC4 (precondition)
+)

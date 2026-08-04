@@ -23,11 +23,21 @@
 |---|---|
 | `data.json` sha256, `ObsidianOrga` | `c2c4db2dc8eeb2fd183d0adea62ca6338d1a8e16a0acf2d092a54a1ca18e4162` — **matches** the `T3_PREFLIGHT.md` baseline |
 | `data.json` sha256, `ObsidianOrga - Kopie` | `070e3f3abe81a57f02e590e8d957438c56b828da11944dc9d0b0b6f30fa9030f` — **matches** |
-| `community-plugins.json`, both vaults | byte-identical, `["obsidian-git", "live-share"]` |
+| `community-plugins.json` sha256, **both** vaults | `42932112c59b49e0efce14ba9d5f82543688bb45c25eb1118bd1e4915d571611`, 36 bytes — byte-identical, `["obsidian-git", "live-share"]` |
+| `obsidian-git` `autoPullOnBoot`, both vaults | **`true`** — re-verified against the current tree (rule 12), not recalled from the pre-flight |
+| `obsidian-git` `autoSaveInterval` / `autoPushInterval` | `0` / `0` in both — nothing is pushed; the **boot-time pull alone** is what disqualifies it |
+| both vaults are real git work trees (`.git` present) | **yes** |
 | plugin dir listing, both vaults | `data.json · main.js · main.js.0.5.9.bak · main.js.bak · manifest.json · manifest.json.bak · styles.css · styles.css.bak` — **no rig artefact left by WP69** |
 
-Both hashes matching at batch start is the precondition that makes the post-run comparison
-mean anything. They are re-measured at handover.
+Both `data.json` hashes matching at batch start is the precondition that makes the post-run
+comparison mean anything. They are re-measured at handover.
+
+The `community-plugins.json` hash is the **independent restore baseline for the
+`obsidian-git` borrow**, and it plays the same role the `T3_PREFLIGHT.md` hashes play for
+`data.json`: the rig restores from its own backup, and this value — taken before the rig
+touched anything — is the separate check on whether that restore actually worked. **A run
+whose restore is not independently verified is a failed run.** Both vaults carry the same
+36 bytes, which is correct and must **not** be "converged" away by writing one file to both.
 
 ---
 
@@ -138,9 +148,26 @@ untouched — not one line moved, renamed or re-indented.
 |---|---|
 | `tools/obsidian_e2e/constants.py` | **modify** — append a `§10 — WP70` block only |
 | `tools/obsidian_e2e/ports.py` | **modify** — the modify path only, via **one** added keyword argument |
+
 | `tools/obsidian_e2e/relay.py` | **create** |
 | `tools/obsidian_e2e/provisioning.py` | **create** — see §4 |
 | `workflowArtifacts/canvas-v2/T3_SharedContract.md` | **modify** — §3, §4, §7, new §10b; **correct §10a** |
+
+### `ports.py` — the untouchable half, fingerprinted at the baseline
+
+AC1 says *"the marker's pinned field set is unchanged, and the restore path is not modified
+at all"*. That is checkable rather than promised. Measured at `abcab9a`, whole file
+`e8d626c893ff7112808c5e06dd9d7693ff457a4de462856fe3d64f61ae9ce763`, 35 871 bytes:
+
+| function | sha256 (first 32) | bytes | may WP70 change it? |
+|---|---|---|---|
+| `restore_port` | `59c113a335b372d656b8cc0e936641fe` | 4 302 | **NO** — must be byte-identical at handover |
+| `_load_marker` | `5ac26e4bbcb4e02a879d8ee82b0504b5` | 1 692 | **NO** |
+| `_marker_blob` | `2ed4b8c2c9bf83c0525b42d6c8ab892a` | 881 | **NO** — the pinned field set lives here |
+| `_with_port` | `1856dc8ad52f06c9d34e86f32044a76d` | 2 057 | **yes** — this is the one generalised splice |
+
+Re-measure all four at handover. Three unchanged and one changed is what "one generalisation,
+reached through one added keyword argument" looks like as a measurement.
 
 **Out of bounds, absolutely:** `server/**` (§7 abort criterion outside WP41),
 `plugin/src/**` — *including* `plugin/src/testing/e2e-control.ts`, which is **B10b/WP72's**;

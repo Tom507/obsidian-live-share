@@ -401,18 +401,33 @@ def _top_level_members(text: str, open_index: int) -> tuple[list, int]:
     raise _MalformedSettings("unterminated object")
 
 
-def _with_port(original: Optional[bytes], port: int) -> bytes:
-    """Return ``original`` with the control-port member set to ``port``.
+def _with_port(original: Optional[bytes], members: Mapping[str, object]) -> bytes:
+    """Return ``original`` with every member of ``members`` set to its given value.
 
-    ``None`` (the owner had no settings file) yields a minimal fresh document. Otherwise the
-    member is spliced in textually: an existing value is replaced in place, a new member is
-    inserted directly after the opening brace, reusing whatever whitespace already follows
-    it so the file keeps its own indentation and line endings. Every byte outside the
-    spliced span is carried over unchanged.
+    This is **the one generalisation WP70 makes to this module** (WP70 AC1): the splice
+    that wrote a single member writes an ordered member set. Everything else about it is
+    unchanged, and the single-member case reduces exactly — ``json.dumps(39431)`` is
+    ``"39431"``, the same literal ``str(int(port))`` produced — so provisioning the port
+    alone still emits byte-identical output to the pre-change implementation. That is a
+    property to be *measured*, not asserted: the byte-identity test compares this against
+    a frozen copy of the pre-change function rather than against this function itself.
+
+    ``None`` (the owner had no settings file) yields a minimal fresh document. Otherwise
+    each member is spliced in textually: an existing value is replaced in place, and every
+    member the file does not already carry is inserted directly after the opening brace —
+    in the caller's order, reusing whatever whitespace already follows the brace so the
+    file keeps its own indentation and line endings. Every byte outside the spliced spans
+    is carried over unchanged, which is what lets the owner's key order, CRLF endings,
+    BOM, tabs, number formatting and unicode escaping survive ten members exactly as they
+    survived one.
+
+    Values are emitted with :func:`json.dumps`, so ``[]``, ``true``, ``false`` and strings
+    all serialise correctly; no member is special-cased and no falsy member is skipped.
     """
-    key = constants.SETTINGS_PORT_KEY
+    if not members:
+        raise ValueError("the member set must not be empty")
     if original is None:
-        return json.dumps({key: port}, indent=2).encode("utf-8") + b"\n"
+        return json.dumps(dict(members), indent=2).encode("utf-8") + b"\n"
 
     try:
         text = original.decode("utf-8")
@@ -426,24 +441,41 @@ def _with_port(original: Optional[bytes], port: int) -> bytes:
         raise _MalformedSettings("settings file is not a JSON object")
     open_index = index
 
-    members, _close_index = _top_level_members(text, open_index)
-    literal = str(int(port))
+    present, _close_index = _top_level_members(text, open_index)
+    spans: dict = {}
+    for member_key, value_start, value_end in present:
+        # First occurrence wins, exactly as the single-member splice's `break` did.
+        spans.setdefault(member_key, (value_start, value_end))
 
-    for member_key, value_start, value_end in members:
-        if member_key == key:
-            spliced = text[:value_start] + literal + text[value_end:]
-            break
-    else:
+    replacements = []
+    insertions = []
+    for key, value in members.items():
+        literal = json.dumps(value)
+        span = spans.get(key)
+        if span is None:
+            insertions.append((key, literal))
+        else:
+            replacements.append((span[0], span[1], literal))
+
+    # Descending by position, so each edit leaves every not-yet-applied span's indices
+    # valid. The insertion point sits before all of them and is therefore applied last.
+    spliced = text
+    for value_start, value_end, literal in sorted(replacements, reverse=True):
+        spliced = spliced[:value_start] + literal + spliced[value_end:]
+
+    if insertions:
         lead_start = open_index + 1
         lead_end = lead_start
         while lead_end < len(text) and text[lead_end] in _JSON_WS:
             lead_end += 1
         lead_ws = text[lead_start:lead_end]
         separator = ": " if lead_ws else ":"
-        member = f'{lead_ws}"{key}"{separator}{literal}'
-        if members:
+        member = ",".join(
+            f'{lead_ws}"{key}"{separator}{literal}' for key, literal in insertions
+        )
+        if present:
             member += ","
-        spliced = text[:lead_start] + member + text[lead_start:]
+        spliced = spliced[:lead_start] + member + spliced[lead_start:]
 
     return spliced.encode("utf-8")
 
@@ -600,6 +632,7 @@ def provision_port(
     port: Optional[int] = None,
     *,
     run_id: Optional[str] = None,
+    members: Optional[Mapping[str, object]] = None,
 ) -> ProvisionRecord:
     """Provision ``role``'s control port into ``vault_path``'s plugin settings file.
 
@@ -620,6 +653,16 @@ def provision_port(
 
     ``port`` defaults to the pinned port for ``role``. Passing the vault explicitly is the
     only way to name a target: this function has no default vault.
+
+    **``members`` is WP70's one added argument** (WP70 AC1). It is an *ordered* mapping of
+    settings key → value, and it generalises what this one borrow writes from a single
+    member to a member set. It changes nothing else: the same capture, the same backup
+    namespace, the same marker with the same pinned field set, and the same restore path,
+    which does not consult it at all. Omitting it provisions exactly the control port and
+    produces byte-identical output to the pre-change implementation. There is still
+    **one** borrow per vault per run; a caller that finds itself wanting a second capture,
+    a second backup file or a ``data.json`` write from outside this module has found a
+    design error, not a missing feature.
     """
     vault = _vault(vault_path)
     resolved_port = default_port_for_role(role) if port is None else int(port)
@@ -627,6 +670,13 @@ def provision_port(
         raise ValueError(f"unknown role {role!r}; expected one of {constants.ROLES!r}")
     if resolved_port <= 0:
         raise ValueError(f"control port must be a positive integer, got {resolved_port!r}")
+
+    if members is None:
+        resolved_members: Mapping[str, object] = {constants.SETTINGS_PORT_KEY: resolved_port}
+    else:
+        resolved_members = dict(members)
+        if not resolved_members:
+            raise ValueError("members must name at least one settings key")
 
     plugin_dir = _plugin_dir(vault)
     if not plugin_dir.is_dir():
@@ -642,7 +692,7 @@ def provision_port(
     marker_path = _marker_path(vault)
 
     try:
-        provisioned = _with_port(state.original_bytes, resolved_port)
+        provisioned = _with_port(state.original_bytes, resolved_members)
     except _MalformedSettings as err:
         # No content in the message: only the path and the structural complaint (S4).
         raise ProvisionConflict(
@@ -846,13 +896,17 @@ def provisioned_port(
     port: Optional[int] = None,
     *,
     run_id: Optional[str] = None,
+    members: Optional[Mapping[str, object]] = None,
 ):
     """Context manager: provision on entry, restore on **every** exit path.
 
     Yields the :class:`ProvisionRecord`. Teardown runs on normal exit, on an exception and
     — via an ``atexit`` guard — on an interpreter shutdown that skips the ``finally``.
+
+    ``members`` is WP70's added argument, threaded straight through to
+    :func:`provision_port`; the restore path is unaffected by it.
     """
-    return _ProvisionedPort(vault_path, role, port, run_id=run_id)
+    return _ProvisionedPort(vault_path, role, port, run_id=run_id, members=members)
 
 
 class _ProvisionedPort:
@@ -863,17 +917,25 @@ class _ProvisionedPort:
         port: Optional[int],
         *,
         run_id: Optional[str],
+        members: Optional[Mapping[str, object]] = None,
     ) -> None:
         self._vault = _vault(vault_path)
         self._role = role
         self._port = port
         self._run_id = run_id
+        self._members = members
         self._guard: Optional[_BorrowGuard] = None
 
     def __enter__(self) -> ProvisionRecord:
         import atexit
 
-        record = provision_port(self._vault, self._role, self._port, run_id=self._run_id)
+        record = provision_port(
+            self._vault,
+            self._role,
+            self._port,
+            run_id=self._run_id,
+            members=self._members,
+        )
         self._guard = _BorrowGuard(self._vault)
         atexit.register(self._guard)
         return record
@@ -897,12 +959,17 @@ def provision_pair(
     ports: Optional[Mapping[str, int]] = None,
     *,
     run_id: Optional[str] = None,
+    members: Optional[Mapping[str, Mapping[str, object]]] = None,
 ) -> dict:
     """Provision both roles, and roll back cleanly if the second one fails.
 
     ``vault_paths`` maps role → vault path (both roles required). ``ports`` overrides the
     pinned pair per role. A partial provisioning is never left behind: if role b aborts,
     role a is restored before the abort propagates.
+
+    ``members`` is WP70's added argument in its pair form — role → member set, since the
+    two roles are provisioned with *different* values (one host, one guest) out of the
+    *same* room. It is threaded through unchanged; the restore path ignores it.
     """
     missing = [role for role in constants.ROLES if role not in vault_paths]
     if missing:
@@ -913,8 +980,9 @@ def provision_pair(
     try:
         for role in constants.ROLES:
             port = None if ports is None else ports.get(role)
+            role_members = None if members is None else members.get(role)
             records[role] = provision_port(
-                vault_paths[role], role, port, run_id=identity
+                vault_paths[role], role, port, run_id=identity, members=role_members
             )
     except BaseException:
         for role in reversed(list(records)):
