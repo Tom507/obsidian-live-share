@@ -55,7 +55,13 @@ export const DEFAULT_SETTINGS: LiveShareSettings = {
   clientId: "",
   notificationsEnabled: true,
   debugLogging: false,
-  debugLogPath: "live-share-debug.md",
+  // Inside the config directory, NOT the vault root. At the root Obsidian indexes
+  // it as an ordinary note — it joins the graph, search and Quick Switcher, and it
+  // grows without bound, which Obsidian reports as slow indexing. `.obsidian/` is
+  // not indexed, and `ExclusionManager` already prepends `${configDir}/**`, so this
+  // location is also excluded from sharing by the rule that already exists rather
+  // than by a second one added here.
+  debugLogPath: ".obsidian/live-share-debug.md",
   autoReconnect: true,
   excludePatterns: [],
   readOnlyPatterns: [],
