@@ -197,9 +197,28 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 - **Teardown grey area:** if the owner has Obsidian open on either vault, the rig's launches become
   windows in a process it did not start (D14/D15). WP48 owns teardown of **rig-started** processes only;
   window-level teardown inside a foreign process is undefined. Unresolved.
-- **`lan-vault-sync` may sync `.obsidian/plugins/**` between two vaults that are literal copies** — it
-  could mirror the E2E install into vault B, or revert the restore. Raises the stakes on the C50 AC5
-  disposition.
+- **⚠ CORRECTED — the `lan-vault-sync` disposition was aimed at the wrong plugin (my error).**
+  `community-plugins.json` is the *enabled* list; it is byte-identical in both vaults and contains only
+  `obsidian-git` and `live-share`. **`lan-vault-sync` is installed but NOT enabled.** The false claim
+  propagated from `T3_PREFLIGHT.md` into this file and **four charters**, which W2 must now correct.
+  **The real hazard is `obsidian-git`: `autoPullOnBoot: true` in both vaults, on real git working trees
+  with `origin` remotes, already dirty (13 and 14 entries), firing at exactly the moment the gate
+  launches Obsidian.** Ruling: **disabled in both vaults for the run and restored afterwards**, not a
+  discretionary call. `autoSaveInterval`/`autoPushInterval` are `0`, so nothing is pushed, but the
+  boot-time pull alone is disqualifying. **Standing lesson: "installed" is not "enabled" — read
+  `community-plugins.json`, not the directory listing.**
+- **⚠ The T3 rig cannot launch Obsidian.** `lifecycle.py`'s only console backend is `PlanOnlyConsole`
+  and there is no `subprocess`/`Popen` anywhere in `tools/obsidian_e2e/`. WP43–49 built a **plan-only**
+  rig. **The gate run is therefore agent-mediated** — an agent launches both instances via
+  `visible-console` and drives the control endpoints. Nobody has exercised the launch path because
+  there is no launch path. Charter language implying the entrypoint runs the gate end-to-end is wrong.
+- **`canvas.setFlag` can destroy WP70's settings borrow** — for any name matching an existing settings
+  key it calls `plugin.saveSettings()`, rewriting `data.json` from the live in-memory copy. Its
+  `runtimeFlags` map is read by nothing in `plugin/src`, and it returns `{set:true}` for any name
+  (the inert-map vacuity WP51 AC3 targets, plus a borrow-clobber no charter names).
+- **Live vacuity in the matrix driver:** `_run_case` discards `applied` at all six call sites, so an
+  unapplied gesture leaves both snapshots equal and the case records **pass** — exactly what C50 AC3
+  forbids. Seventh instance of the class, and it is in the gate's own driver.
 - **`_B4_P2_running_notes.md:56` quotes the licensed-amendment list without WP64.** Harmless for B4
   (no WP in that batch is on either list) but it is a stale recall of a §7 list.
 - **Hollow-fixture class** — WP66. Literal grep is a *screen, not an oracle*: `text: ""` is valid,

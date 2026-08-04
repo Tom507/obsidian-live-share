@@ -38,10 +38,36 @@ Recorded only so a later agent does not read it as rig damage it caused.
 - The T3 infra is **already correct** on this point — `tools/obsidian_e2e/constants.py:84` pins
   `PLUGIN_ID = "live-share"` with that exact warning in a comment. No fix needed; verified, not assumed.
 
-Other plugins present in both vaults (**must survive the run untouched**): `lan-vault-sync`, `obsidian-git`.
-`lan-vault-sync` is a second sync engine — if it is enabled during the gate it can move files underneath
-the test and produce a failure that has nothing to do with Canvas V2. **WP50 must decide explicitly**
-whether it is disabled for the run, and if so, restore it afterwards.
+Other plugins **installed** in both vaults (must survive the run untouched): `lan-vault-sync`, `obsidian-git`.
+
+> ### ⚠ CORRECTION (2026-08-04) — this section was wrong, and it was wrong in the dangerous direction
+>
+> The original text named **`lan-vault-sync`** as the second sync engine to disposition. **That is false.**
+> `community-plugins.json` is Obsidian's *enabled* list, it is byte-identical in both vaults, and it
+> contains exactly `obsidian-git` and `live-share`. **`lan-vault-sync` is installed but NOT enabled and
+> cannot run.** The error propagated from here into `DISPATCHER_STATE.md` and four charters.
+>
+> **The engine that IS enabled and was never dispositioned is `obsidian-git`** — and it is a worse hazard
+> than the one I named. Measured in both vaults:
+>
+> | | vault A | vault B |
+> |---|---|---|
+> | `autoPullOnBoot` | **true** | **true** |
+> | working tree | **13 dirty entries** | **14 dirty entries** |
+> | `origin` remote | configured | configured |
+>
+> Both vaults are **real git working trees with remotes**, already dirty, set to **pull automatically at
+> launch** — which is precisely the moment the gate starts Obsidian. An auto-pull onto a dirty tree can
+> merge, conflict, or check out over local state, and it does so *before* any Canvas V2 code runs. A
+> failure caused this way would look like a sync bug and would not be one.
+>
+> **Ruling: `obsidian-git` is disabled in both vaults for the duration of the gate run and restored
+> afterwards, and the disposition is recorded.** This is not the discretionary call the original text
+> described. `autoSaveInterval` and `autoPushInterval` are both `0`, so nothing is pushed — but the
+> boot-time pull alone is disqualifying.
+>
+> Standing lesson: **"installed" is not "enabled".** Read `community-plugins.json`, not the plugins
+> directory listing. I read the directory and reported it as the enabled set.
 
 ---
 
@@ -125,6 +151,22 @@ this table is the independent check on whether that actually worked.
 
 Canvas-relevant settings keys that exist and that the gate will care about (names only):
 `useCanvasBinding`, `showCanvasPresence`, `showCanvasCursors`, `sharedFolder`, `roomId`, `serverUrl`.
+
+---
+
+## ⚠ The rig cannot launch Obsidian (measured 2026-08-04)
+
+`tools/obsidian_e2e/lifecycle.py` exposes **`PlanOnlyConsole` as its only console backend**, and there is
+**no `subprocess`, `Popen` or any other process-spawn anywhere in `tools/obsidian_e2e/`**. WP43–WP49 are
+recorded as "infra done", and they are — but what was built is a **plan-only** rig. It can compute what
+should happen; it cannot start Obsidian.
+
+**Consequence: the gate run is necessarily agent-mediated, not a single `run_python` that returns a
+verdict.** An agent launches both Obsidian instances through `visible-console`, then drives the control
+endpoints. Any charter language implying the entrypoint runs the gate end-to-end is wrong and must be
+corrected before WP7 is attempted. This does not invalidate the rig — the planning, port, readiness,
+scratch and teardown modules are all still the right pieces — but it does mean **nobody has ever
+exercised the launch path, because there is no launch path.**
 
 ---
 
