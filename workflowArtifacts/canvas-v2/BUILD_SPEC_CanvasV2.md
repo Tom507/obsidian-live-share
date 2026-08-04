@@ -7,7 +7,8 @@
 > Artifact root for this initiative: `workflowArtifacts/canvas-v2/`.
 
 <!-- Updated: T3 real two-instance Obsidian orchestration chartered (WP43–WP54); the Teil-14 live gate is no longer satisfiable only in principle 2026-08-01 -->
-**Status:** SPEC_COMPLETE · **Work packages:** 54 (WP1–WP54) · **Phases:** P0–P6 + Teil-14 test rig (incl. **T3**, WP43–WP54)
+<!-- Updated: 2026-08-04 — this line read "54 (WP1–WP54)" while §7's Definition of Done and §9's amendment chain both landed on 76. Stale by 22 in the first line a reader sees, which is exactly the recall-not-re-read pattern rule 6 names. Found by the CONCEPT_V2 drift analysis. §7 and §9 remain authoritative; this line is a summary of them and must be re-derived, never edited independently. -->
+**Status:** SPEC_COMPLETE · **Work packages:** **76** (WP1–WP76) · **Phases:** P0–P6 + Teil-14 test rig (incl. **T3**, WP43–WP54, extended by WP69–WP76)
 **worker4_mode:** `full`
 
 ---
