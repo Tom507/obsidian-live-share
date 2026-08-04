@@ -2,7 +2,12 @@
 
 > **Purpose:** resumable orchestration state. If the Dispatcher's context is compacted or lost,
 > this file plus the BUILD_SPEC and the handovers are sufficient to continue the run.
-> **Last updated:** 2026-08-02, during batch B4 (phase P2), after the Worker 2 WP68 charter + §7 audit.
+> **Last updated:** 2026-08-04, dispatching batch **B11** (WP70 close-out + the WP77 charter),
+> after the development report landed at `eb82767`.
+>
+> **Read `DEVELOPMENT_REPORT_CanvasV2.md` alongside this file.** It carries the drift from CONCEPT_V2,
+> the defect inventory, and nine proposed concept amendments. Its §0 marks which of its sections are
+> independently verified and which are the Dispatcher's own account — §2 is the one to distrust.
 
 ---
 
@@ -132,17 +137,37 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 
 ## Immediate queue (in order)
 
-1. **B4 returns** (P2) → commit → then:
-2. **B9b — WP50, WP51, WP7** → the real two-vault Obsidian gate.
-   **Recommended next after P2**, ahead of P3/P4: every green so far is headless.
-   **Read `T3_PREFLIGHT.md` before writing these charters** — it contains a build blocker.
-3. **WP66** hollow-fixture suite-wide sweep — *held: needs a quiet tree*
-4. **WP65** ledger provenance + intermittent register — *held: touches `_run_blind.py`*
-5. **WP68** file-op rename sidecar boundary (charter ready, `SPEC_COMPLETE`)
-6. **B5** P3 (WP31–35) · **B6** P4 (WP36–38)
-7. **B7** P5 (WP39–40 + WP52–54) — promotion gated on WP54's `CaptureTriggerLedger.md`
-8. **W4** integration & system testing (`worker4_mode = full`)
-9. KC routing agents + `consolidate_memory(liveshareCollab)` + final report
+**IN FLIGHT — batch B11 (dispatched 2026-08-04, two workers, the parallelism cap):**
+
+| | Worker | Scope |
+|---|---|---|
+| **B11a** | W3 | WP70 close-out — correct `tp31` per the confirmed ruling, falsify the correction, re-run all three sets, ledger row |
+| **B11b** | W2 | charter **WP77** — the `ports.BorrowState` credential-`repr` leak + BUILD_SPEC §9 row + header 76 → 77 |
+
+Then, in this order — **the gate's own required order, each entry blocking for a reason recorded above**:
+
+1. **WP74** (matrix driver `_open`/`_wait_both` seams) + **WP75** (signal fidelity, vault distinctness) —
+   both chartered; both edit `liveshare_e2e_mcp_server.py` in the **AgenticWorkspace repo**, so both must
+   record two commit hashes. Sequencing WP75 → WP76 only because they share two files.
+2. **WP76** (the gate must run the capture path) — orthogonal to WP75, not ranked below it.
+3. **WP77** once B11b returns — off the critical path, but it touches `ports.py`, which the gate uses.
+4. **WP71** — agent-mediated gate execution procedure. The rig is plan-only **by design**; C45 AC4
+   forbids a spawn backend, so the launch is an agent's job and WP71 is what makes it reproducible.
+5. **WP50 / WP51** — run matrix on real hosts · stale-view scenario surface. WP51 depends on WP76.
+6. **WP7 — THE GATE.** The first thing in this entire run that is not headless.
+7. **WP66** hollow-fixture suite-wide sweep — *needs a quiet tree*
+8. **WP65** ledger provenance + intermittent register — *touches `_run_blind.py`*
+9. **WP68** file-op rename sidecar boundary (charter ready, `SPEC_COMPLETE`) + the **WP27 blind1 tp05
+   title correction** (title says the state vector is "unchanged"; the assertion pins a delta of 1)
+10. **B5** P3 (WP31–35) · **B6** P4 (WP36–38)
+11. **B7** P5 (WP39–40 + WP52–54) — promotion gated on WP54's `CaptureTriggerLedger.md`
+12. **W4** integration & system testing (`worker4_mode = full`); **re-establish W4-1** against an
+    in-memory esbuild, never against `plugin/main.js` (untracked, shared, last-build-wins)
+13. KC routing agents + `consolidate_memory(liveshareCollab)` + final report
+
+**Standing caveat on this ordering:** items 7–11 are a *quarter of the redesign* sitting behind the gate.
+That is deliberate — every green above them is headless, and the development report's ruling is that P0–P2
+**reopen** if the gate surfaces a P0/P1 defect. Building P3–P5 first would multiply what has to reopen.
 
 ---
 
@@ -253,7 +278,23 @@ So `tp31` pins a behaviour that **contradicts its own WP's safety property**. Di
   testing something subtler. If it does, correct and log it; if it does not, it is a real defect and the
   implementation changes instead.
 
-**2. ⚠ CREDENTIAL LEAK, unowned — `ports.BorrowState`.**
+> **✅ CONFIRMED by the Dispatcher, 2026-08-04 — with a nuance the ruling did not anticipate.**
+> Traced in the current tree: `_enabled_without_disabled` builds `cuts` only for ids in
+> `DISABLED_PLUGIN_IDS`; with none present `spliced == text`, so `narrowed == original`.
+> `disable_community_plugins` then calls `_atomic_write_bytes(path, narrowed)` **unconditionally** when
+> `had_original`. **So the borrow does NOT skip the write — it performs a byte-preserving one.** That is
+> a stronger position than the ruling assumed, and it is exactly what the textual-splice design buys.
+>
+> The two contradicting assertions are `test_the_borrow_is_real_for_every_shape`'s `during != original`
+> (fails only on the `without_obsidian_git` shape) and
+> `test_a_list_without_obsidian_git_is_still_handed_back_unrewritten`'s `read_bytes() != original`.
+> **That second test's name says "unrewritten" while its docstring says "the rig rewrites the file
+> anyway" and its assertion pins a difference** — three-way disagreement inside one test, and the same
+> title-vs-assertion trap that bit WP26/AC3 twice. Dispatched as **B11a**; correction must *strengthen*
+> (pin `during == original` for that shape while keeping marker/backup/`had_original` intact) and must
+> redden under a `json.dumps` re-serialisation injected into the no-cut path.
+
+**2. ⚠ CREDENTIAL LEAK, ~~unowned~~ → chartered as WP77 (B11b, 2026-08-04) — `ports.BorrowState`.**
 
 It is a **dataclass holding `data.json` bytes**, so its generated `__repr__` renders **live credentials**
 (`encryptionPassphrase`, `encryptionSalt`, `jwt`, `serverPassword`, `token`). Same defect class as the
