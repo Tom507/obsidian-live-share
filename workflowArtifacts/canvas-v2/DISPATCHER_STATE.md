@@ -197,6 +197,29 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 - **Teardown grey area:** if the owner has Obsidian open on either vault, the rig's launches become
   windows in a process it did not start (D14/D15). WP48 owns teardown of **rig-started** processes only;
   window-level teardown inside a foreign process is undefined. Unresolved.
+### Dispatcher rulings, 2026-08-04 (from the Worker 2 correction pass)
+
+- **`community-plugins.json` — WP69 vs. the `obsidian-git` precondition is NOT a conflict.**
+  WP69 AC4 forbids **WP69** from writing that file, and that stands: WP69 is install-only and must not
+  change the enabled set. Disabling `obsidian-git` is **environment preparation for a run**, not part of
+  installing a bundle. **Owner: WP70**, which already owns the reversible-borrow pattern — same
+  discipline as its `data.json` borrow: capture, modify, restore, and verify the restore independently.
+  This also discharges "the disable/restore has no owner": it is **mechanised in WP70**, not an operator
+  step. A run whose restore is not verified is a failed run.
+- **`liveshare_e2e_mcp_server.py` lives in the AgenticWorkspace repo** —
+  `h:\My Code\AgenticWorkspace\tools\MCPserver\liveshare_e2e_mcp_server.py`, confirmed present. It is
+  correctly placed (it is a workspace MCP server, not plugin source) and **does not move**. Consequence:
+  **WP50's and WP73's changes land in a second repository**, outside this branch and outside §7's
+  commit/abort accounting. Both WPs must declare the cross-repo edit explicitly and record **both**
+  commit hashes in their implementation reports. §7's accounting is extended to say so. The line numbers
+  C50 cites (`:134`, `:280`, `:402`) are **correct** against that file — only the repo was wrong.
+- **`_run_case` is worse than reported: eleven sites, not six.** Six was the *case* count. Five of the
+  missed sites are **setup** gestures, and `delete-node-edge`'s `node_gone` predicate is satisfied by the
+  node **never having been created** — so an unapplied setup makes that case's own oracle *vacuously
+  true* rather than merely unprotected. `initial-sync` has no content predicate at all, so `converged`
+  is its entire verdict. **A repair scoped to "six" would have left the worst cases open.** Rule 12
+  (verify against the current tree) caught this.
+
 - **⚠ CORRECTED — the `lan-vault-sync` disposition was aimed at the wrong plugin (my error).**
   `community-plugins.json` is the *enabled* list; it is byte-identical in both vaults and contains only
   `obsidian-git` and `live-share`. **`lan-vault-sync` is installed but NOT enabled.** The false claim
@@ -225,7 +248,9 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
   `remoteRecord(...)` takes accept-then-quarantine. Scope by measurement, not by the suspected list.
 - **WP7 / T3 gate never executed.** Both vaults carry production builds (zero `__LS_E2E__`
   occurrences) and cannot host the control server — WP50/WP51 must install a dev build.
-- **`lan-vault-sync` is enabled in both vaults** — a second sync engine that can move files under the
+- ~~**`lan-vault-sync` is enabled in both vaults**~~ — **FALSE, superseded by the correction above.**
+  It is installed but not enabled. Kept struck rather than deleted so the propagation path stays
+  visible. Original text follows: a second sync engine that can move files under the
   test and produce a failure unrelated to Canvas V2. WP50 must decide explicitly: disable and restore,
   or accept as noise.
 - **`wp5/latency.test.ts` RTT flake** — owned by WP65, accepted with a falsifiable threshold

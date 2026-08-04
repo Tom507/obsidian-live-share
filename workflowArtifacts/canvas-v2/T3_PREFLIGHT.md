@@ -187,7 +187,10 @@ exercised the launch path, because there is no launch path.**
 ## Open questions for WP50/WP51 (not answered here)
 
 1. One-shot dev build — which option above (recommend 1, chartered with its own AC).
-2. `lan-vault-sync` — disabled for the run and restored, or left live and accepted as noise?
+2. ~~`lan-vault-sync` — disabled for the run and restored, or left live and accepted as noise?~~
+   **Void — wrong plugin, and no longer a question.** `lan-vault-sync` is **not enabled**. The engine
+   that is enabled is **`obsidian-git` with `autoPullOnBoot: true`**, and it is **ruled disabled for the
+   run and restored afterwards** — a precondition, not a disposition. See the correction block above.
 3. Do both vaults currently point at the **same** `roomId` / `serverUrl`? Not inspected — values are
    adjacent to secrets in the same file, so the rig should read them itself rather than a human echoing them.
 4. Relay: reuse the deployed NeuralAngels relay, or a local one? User has authorised deploying to
