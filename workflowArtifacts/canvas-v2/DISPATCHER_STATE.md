@@ -2,12 +2,101 @@
 
 > **Purpose:** resumable orchestration state. If the Dispatcher's context is compacted or lost,
 > this file plus the BUILD_SPEC and the handovers are sufficient to continue the run.
-> **Last updated:** 2026-08-04, dispatching batch **B11** (WP70 close-out + the WP77 charter),
-> after the development report landed at `eb82767`.
+> **Last updated:** 2026-08-05 — **the plugin ran in real Obsidian for the first time.**
+> See *FIRST REAL RUN* below; it supersedes every "all greens are headless" statement in this file.
 >
 > **Read `DEVELOPMENT_REPORT_CanvasV2.md` alongside this file.** It carries the drift from CONCEPT_V2,
 > the defect inventory, and nine proposed concept amendments. Its §0 marks which of its sections are
 > independently verified and which are the Dispatcher's own account — §2 is the one to distrust.
+
+---
+
+## ⭐ FIRST REAL RUN — 2026-08-05, two vaults, real Obsidian, live relay
+
+**Owner's direction:** *"get the product to an actual in-Obsidian running state with minimal effort."*
+Deliberately **NOT** WP7. This was a manual, human-observed smoke test — the entire gate chain
+(WP50 → 74 → 75 → 76 → 71 → 7) exists to make an **automated verdict** trustworthy, and a person
+watching a card move does not need one. **WP7 remains unrun and is still owed.**
+
+### What was done — all reversible, all verified
+
+| Step | Detail |
+|---|---|
+| Bundle | `plugin/main.js` **759 892 B** (production-style, current tree) installed into both vaults; the 0.6.1 bundle (626 711 B) backed up |
+| `sharedFolder` | `""` → **`_liveshare-test`** in both — **the safety step.** Empty meant whole-vault shared ⇒ guest `cleanupStaleFiles` trashes |
+| `obsidian-git` | **disabled in both** (`autoPullOnBoot: true` on dirty trees with remotes) |
+| Backups | namespace **`.pre-v2-smoke`**, deliberately NOT the owner's `.bak` files |
+| Scripts | `H:\tmp\liveshare_smoke_setup.py` (`--restore` undoes everything, verifies each digest) · `H:\tmp\liveshare_launch_vaults.py` |
+
+**Integrity check that came free:** the pre-change `data.json` digests were `c2c4db2dc8eeb2fd…` (A) and
+`070e3f3abe81a57f…` (B) — **byte-identical to the T3_PREFLIGHT baseline** taken days earlier. Nothing had
+touched the owner's credential files in the interim. The pre-flight's restore baseline did its job.
+
+### Measured results
+
+| | |
+|---|---|
+| Relay | **live and already deployed** — `https://liveshare.neuralangels.de/healthz` → 200, ~19 d uptime. **No relay work was needed at all.** |
+| Session | A = **host**, B = **guest**, `roomId` set in both, established through the plugin's own UI (`log-in` → `start-session` → `copy-invite` → `join-session`) |
+| Relay under load | `sessions: 1, documents: 2, clients: 2` — both peers connected |
+| `sharedFolder` | **survived the plugin's own `saveSettings`** — the `canvas.setFlag` clobber class (WP72) did not fire here |
+| **Text-file sync** | ✅ **WORKS.** `hello.md` created in A reached B in **< 10 s** |
+| **V2 serializer ran** | ✅ vault A rewrote `smoke.canvas` **508 B → 298 B** — `serializeCanvas`'s canonical projection, tab-indented, sorted by `(ord, id)`. **First execution of V2 code outside a test.** |
+| Sidecar | `.obsidian/liveshare/state` created in A on first canvas subscribe |
+| Canvas state | owner's report: *"ziemlich zuverlässig"* — P0/P1 hold up in the real editor |
+
+### Two gaps observed, both matching **unbuilt** phases — neither a regression
+
+- **No cursors / no "who is editing which card."** `types.ts:65` `useCanvasBinding: false`; the renderer
+  is `CanvasBinding`, constructed only when that flag is ON (`main.ts:137`, gated `main.ts:1436`).
+  `showCanvasCursors`/`showCanvasPresence` are both `true` and simply have nothing attached.
+  **Owner: P5 (WP39/WP40).** Presence is not broken; it is not wired.
+- **Typing drops characters.** `canvas-registers.ts:150` states it outright: the field *"will widen when
+  **P4** moves it to a nested `Y.Text`"*. Card text is today a **whole-string LWW register**, captured via
+  `handleLocalModify` off Obsidian's debounced `requestSave`. Two writers between saves ⇒ lost keystrokes.
+  **Owner: P4 (WP36–38).**
+
+### ⚠ NEW — a canvas that exists only on the host never reaches a guest
+
+`.canvas` **is** in `TEXT_EXTENSIONS`, but a named predicate in `utils.ts` (docstring at `:230-275`)
+excludes it from the raw-text sync path — correctly, and for a stated reason: without it a shared canvas
+also gets a raw `Y.Text` of the same bytes, *"whose character-level merge destroys edge endpoints."*
+`CanvasSync` owns `.canvas` and materialises it **on subscribe**, i.e. when opened.
+
+**Consequence, observed live:** vault B never received `smoke.canvas`. `hello.md` took the text path and
+arrived; the canvas is not on that path, and a guest cannot open a file it does not have. The run
+proceeded only because the Dispatcher copied the file into B by hand.
+
+**Not yet classified as a defect.** It may be intended (canvas sharing presupposes both sides holding the
+file) or a genuine distribution gap. **Nobody owns the question.** It needs one of: a materialise-on-
+manifest path for `.canvas`, or an explicit concept statement that canvases are not distributed.
+**Do not charter until it is decided which.**
+
+### ⚠ SUSPECTED, UNVERIFIED — `isSharedPath` prefix match
+
+`manifest.ts:443-449` builds `folder` as `normalizePath(sharedFolder + "/")`, then tests
+`path.startsWith(folder)`. **Obsidian's `normalizePath` strips trailing slashes**, so `folder` is
+`"_liveshare-test"` — and `"_liveshare-testing/secret.md".startsWith("_liveshare-test")` is **true**.
+A sibling folder whose name merely *extends* the shared folder's would be treated as shared.
+
+**Inferred from `normalizePath`'s documented behaviour, NOT measured** — the trailing-slash intent in the
+source suggests the author expected it to survive. Cheap to settle with one test. If it holds it is a
+confidentiality bug, and it is adjacent to Ä15's fail-closed argument. **Verify before chartering (rule 12).**
+
+### Environment left MODIFIED — must be restored
+
+`obsidian-git` is **still disabled** in both vaults and the V2 bundle is **still installed**.
+Undo: `python H:\tmp\liveshare_smoke_setup.py --restore` (refuses while Obsidian runs; verifies each
+restore digest). Also seeded by the Dispatcher and disposable: `_liveshare-test/hello.md`,
+`_liveshare-test/smoke.canvas` in both vaults.
+
+### ⚠ `plugin/manifest.json` is a broken symlink — blocks any clean packaging
+
+Git mode **120000**, target `/home/mewski/Projects/obsidian-live-share/manifest.json` — a path on the
+original author's Linux machine. On Windows it checks out as a 55-byte text file containing that path,
+so **the repo cannot produce an installable plugin folder.** Worked around by installing only `main.js`
+and leaving each vault's own 0.6.1 manifest in place (the version string is cosmetically wrong). Must be
+replaced with a real manifest before any release or any WP7 install. **No owner.**
 
 ---
 
@@ -59,7 +148,7 @@
 | PHASE VI — verification integrity | WP55–WP58, WP62, WP64, WP67 | ✅ done |
 | Open | WP59 ✅ · WP65 ⬜ · WP66 ⬜ · **WP68 ⬜ (chartered 2026-08-02)** | see queue |
 
-**Chartered total: 76 WPs.** Implemented: WP1–30, 41–49, 55–64, 67, 69, 72, 73.
+**Chartered total: 78 WPs.** Implemented: WP1–30, 41–49, 55–64, 67, 69, **70**, 72, 73. Chartered-not-built: WP51, 65, 66, 68, 71, 74, 75, 76, 77, 78 + P3/P4/P5.
 
 ### THE GATE — required order, and why each one blocks
 
@@ -153,8 +242,33 @@ and a before-bundle built while B4 is mid-write voids the comparison in both dir
 | ~~**B11a**~~ | W3 | ✅ **WP70 DONE** — `13184a0`. tp31 corrected shape-aware, strictness **up** (assertions inside the borrow 4→8, 4→11, 2→11); reddened under an injected `json.dumps` re-serialisation; visible 259/259, blind1 345/345, blind2 300/300, 0 failed. No §7 licence taken (D-1). |
 | ~~**B11b**~~ | W2 | ✅ **WP77 chartered** — `f4846c2`. `SPEC_COMPLETE`, 5 ACs, BUILD_SPEC header 76 → **77**, §9 row landed. **Died before reporting; the work had already landed.** |
 | ~~**B12**~~ | W3 | ❌ **DIED, nothing landed.** No commit in either repo, no report, no tests. Re-dispatched as **B13**. |
-| **B13** | W3 | **WP50** — retry. Briefed to commit at each AC boundary, since B12's death cost everything. |
-| **B14** | W2 | charter **WP78** — `install.py`'s spawning `runner` default (blocks WP71) |
+| ~~**B13**~~ | W3 | ⏹ **STOPPED BY THE DISPATCHER**, nothing landed. WP50 makes the *automated* matrix trustworthy and is squarely off the "get it running" path the owner redirected to. WP50 is **still owed**, unchanged, and still goes first among the driver WPs. |
+| ~~**B14**~~ | W2 | ✅ **WP78 chartered** — `98d624e` (charter) + `3f1b2d5` (BUILD_SPEC §9 row, header 77 → **78**, §7 DoD count, **C71 AC4 amendment**, three other stale-claim sites, WP71 charter). 4 ACs. |
+
+**Chartered total is now 78.** WP77 and WP78 are both chartered and **both unbuilt**.
+
+### WP78's measured result — worth keeping, it is better news than the escalation implied
+
+By AST, not grep: **42** optional-injectable-with-default parameter sites across 11 modules; **15**
+substitute a default reaching a real external effect; **exactly 1 starts a process**
+(`install.py:539` → `_default_runner` → `subprocess.run`). `build_e2e_bundle`'s call census is **22 sites,
+0 bare, 22 passing `runner=` as a keyword, 0 non-test callers** — so the first bare call is still in the
+future, and removing the default is **source-identical** at every existing site.
+
+**WP69 is NOT reopened and no §7 licence is taken:** none of C69's four ACs mentions `runner`, its default
+or `subprocess`. The C71 amendment landed as a **strengthening** — the original asserted absence of five
+spellings in a *text search* (defeated by rename, alias, `importlib`, `getattr`); the amended form asserts
+a *reachability property of the parsed package*. **No tree that failed the original passes the amended
+form.** The weakening variant is recorded as REFUSED.
+
+> ### ⚠ SCHEDULING HAZARD — WP77 and WP78 both modify `install.py`
+> Disjoint regions (`BundleState:252-264` vs `_default_runner` / `build_e2e_bundle` / `__all__`), but
+> **they must not be in flight in the same batch.** Recorded in C78 §2; the scheduling is the Dispatcher's.
+
+**Carried up by WP78, unowned:** `relay.py:701` `LocalRelay(room_minter=None)` — the only optional default
+performing a *write-shaped* network op (`POST /rooms`, creates server state); not a spawn (**S18**).
+`tools/obsidian_e2e/__init__.py`'s `__all__` omits **`install`, `provisioning`, `relay`** — three landed
+modules, so the package's self-description is two WPs stale (**S19**).
 
 ### Rule 13 — an agent can land its work and die before reporting. Check the tree before re-dispatching.
 
@@ -745,4 +859,22 @@ the batch baseline, to be fixed without weakening the assertion before the batch
   body is an idempotent re-run, anything else throws, and the refusal cancels the adoption so nothing
   is lost rather than one copy traded for another. I11-conformant; keep it that way.
 
-**Not yet true:** nothing has been exercised in real Obsidian. All greens are headless.
+- **The plugin has now run in real Obsidian** (2026-08-05, see *FIRST REAL RUN* at the top). Two vaults,
+  a live relay, a real session. Text-file sync works end to end; the V2 canonical serializer executed on
+  the owner's disk; canvas state was reported reliable by the owner in live use. **The two visible gaps —
+  no presence, dropped keystrokes — are both unbuilt phases (P5, P4), not regressions**, and each was
+  confirmed against the source rather than guessed.
+
+> **⚠ Read this before quoting the line above as a pass.**
+>
+> That run was a **manual, human-observed smoke test**, not WP7 and not a gate. It had **no** oracle
+> beyond a person watching, no matrix, no discrimination variant, no convergence measurement over an
+> intent trace, and it exercised **one** scenario. It establishes that the product *works at all in the
+> real editor* — which nothing before it did, and which the development report explicitly said was
+> unestablished. It establishes **nothing** about the correctness properties P0/P1 were built to
+> guarantee.
+>
+> **Still owed, unchanged:** WP50 → WP74 → WP75 → WP76 → WP51 → WP71 → **WP7**. The reason the gate chain
+> exists is that a green a person eyeballed once is exactly the evidence class this run spent its length
+> learning to distrust. The smoke test is a floor, not a ceiling — and the honest statement of status is
+> now *"it runs, and it is verified to the limit of headless testing plus one observed session."*
