@@ -268,6 +268,68 @@ unowned. **S19** `tools/obsidian_e2e/__init__.py`'s `__all__` still omits `insta
 un-run** — deliberately, because a build would race the live WP79 agent and overwrite `plugin/main.js`;
 **Worker 4 must re-run it once `plugin/src/**` is quiet.**
 
+### ✅ WP79 DONE (`43f78ba`) — the guest now receives canvases. 0/3 → 3/3, measured live.
+
+All 5 ACs met. **RED** (unmodified tree): the guest's manifest listed all three canvases and it received
+**0/3** — `11 passed, 4 failed`. **GREEN** (corrected bundle, same scenario): **3/3**, content intact, the
+guest's already-diverged canvas untouched at `before=381B after=381B` — `18 passed, 0 failed, 0 skipped`.
+Production receipt from the guest's own log: `CANVAS MIRROR: role=guest considered=6 published=0
+materialised=3 skipped(local-file)=3 failed=0`, with three `owner=CanvasPersistence attached
+(coldOpen=doc-wins)`. Host arm: `published=6 materialised=0`, **zero writes**.
+
+Final: unit **1976/1976** (306 files, +111 new) · canvas E2E **19/19 unchanged** · WP79 E2E **18/0/0** ·
+data-loss E2E 12 passed (1 skipped on the host lottery) · `npm run build` PASS.
+
+**S22 confirmed and worse than recorded — and the obvious repair would have been harmful.** The loop had
+**never iterated once**, in any session, for either role. What S22 did not say: it drove
+`subscribeCanvasWithHandover`, so *reviving* it — the natural reading of "the loop never runs, so make it
+run" — would have **mass-installed the R10 raw-text fallback across an entire folder**, which is the
+double-CRDT that destroys edge endpoints. It was **removed, not moved.** A dead code path is not
+automatically a path that should be alive.
+
+### ⚠ RULING — the amended inherited assertion in `canvas-single-writer.test.ts` stands. No §7 licence.
+
+WP6 AC8 counted handover-helper call sites as **2**; WP79 changed it to **1**, because **one of the two
+sites *was* the dead loop.** My ruling:
+
+- **This is not a weakening, it is a strengthening.** The assertion's purpose is *"there is exactly one
+  sanctioned handover seam"*. Going from 2 to 1 means **fewer** seams, not a looser check.
+- **A count is a measurement of the tree, not a timeless fact** — rule 5, applied to an assertion instead
+  of a ledger row. Deleting provably dead code changes the count as a matter of fact; refusing to update
+  it would pin a number that describes a tree that no longer exists.
+- **The load-bearing assertion is untouched and still passes** — `no direct canvasSync.subscribe in
+  main.ts`. WP79 forwards `CanvasSync` as one injected object specifically to keep it true.
+- The charter forbade both amending it *and* using the helper in the pass; with the dead loop gone those
+  cannot both hold at 2. The batch escalated rather than choosing silently, which was correct.
+
+Recorded as an amendment with its reason written into the test file. **No §7 class is engaged.**
+
+### ⚠ S25 (NEW, unowned) — a FIFTH unguarded door onto `.canvas`, and it explains the `[07]` flakiness
+
+`FileOpsManager.onFileCreate` (`file-ops.ts:375-405`) pushes **raw file content** over the control channel
+for **every role**, with **no `skipsAutoTextSync` guard**. Measured live, under 3 seconds.
+
+Two consequences, both important:
+
+1. **Scenario `[07]` was never flaky in the ordinary sense — it was measuring this door instead of the
+   mirror.** That is why it went PASS, PASS, FAIL, PASS with no correlation to the bundle. A test whose
+   subject is not what its name says is the same class as a test that cannot fail.
+2. **`skipsAutoTextSync`'s docstring claims its consumer list is "exhaustive in both directions". It is
+   not.** That docstring has been treated as an authoritative map by several work packages in this run.
+   **Do not trust it as one.** The claim itself now needs an owner.
+
+### More carried up, none owned
+
+- **S26** — the debug logger **stops silently mid-session** while `debugLogging: true`: two consecutive
+  8-second windows, zero bytes, both vaults, while awareness pulses were certainly firing; it then
+  resumed on its own. Independently reproduced by a second batch. Chartered as **WP81** (B20).
+- **S27** — **the relay's host election is a coin flip, not an alternation**: measured B→A→B→A→B across
+  five restarts. Non-destructive since the data-loss fix, but **every restart-based E2E scenario is a
+  lottery** — WP79's suite needed up to four attempts and the data-loss suite skips a scenario on it.
+  Any future E2E design must not depend on which vault ends up host. `server/**`, out of scope.
+- **S21 was NOT widened** by WP79 — confirmed live (`published=6 materialised=0`, zero writes) and by a
+  headless assertion. The host arm's `publish` verdict is a subscribe and nothing else.
+
 ### Autonomous queue (this order)
 
 1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
