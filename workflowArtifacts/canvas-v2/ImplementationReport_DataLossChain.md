@@ -15,7 +15,7 @@
 | **Fixed** | D1, D2, D3 — plus one regression this batch introduced and then caught. |
 | **Unit tests** | 1865/1865 pass (304 files), 9 new, mutation-checked |
 | **E2E — data loss** | 12 passed, 0 failed, 0 skipped |
-| **E2E — canvas suite** | scenario [06] regression introduced by this batch, **found and fixed**; verified back to PASS |
+| **E2E — canvas suite** | **19/19** on the corrected build. A [06] regression introduced by this batch was found and fixed (§5). |
 | **Suite idempotency** | fixed in both suites; the fix immediately exposed a vacuous pass (§7) |
 
 ---
@@ -289,8 +289,8 @@ commit's bundle was built and installed on the same two instances:
 | bundle | scenario [06] |
 |---|---|
 | `6380e28~1` (pre-fix) | **PASS** — 19/19 overall |
-| first fix attempt | **FAIL** — 17/19 overall |
-| corrected fix | **PASS** — [06] 3/3 |
+| first fix attempt | **FAIL** — 17/19 overall, twice (`-014843`, `-015034`) |
+| corrected fix | **PASS** — [06] 3/3, and **19/19 overall** on the final run `-020454` |
 
 **It was mine.** The retry and the file-level manifest handler are two different concerns
 with two different ordering requirements: the retry must be armed early, the manifest
@@ -343,14 +343,15 @@ Two runs back to back, `-014843` and `-015034`, produced identical results on th
 artefacts — the property that was missing.
 
 **It immediately exposed a vacuous pass.** Scenario [07] (WP79, canvas distribution to a
-guest) had been passing. With the sweep removing the leftover `second-*.canvas` from vault
-B, it now fails — which is the honest state, since WP79 is chartered precisely because that
-path does not exist. The dispatcher had already suspected this scenario of asserting the
-wrong precondition; the sweep settles it. **[07] is flaky rather than deterministic** (it
-passed on the pre-fix probe run and failed on the corrected-build run under the same
-conditions), consistent with it depending on whether the guest happens to have the canvas
-subscribed. Its mechanism — `background-sync.ts:97` / `coldOpen` — is untouched by this
-batch.
+guest) had been passing. The dispatcher already suspected it of asserting the wrong
+precondition, and with the sweep removing the leftover `second-*.canvas` from vault B the
+suspicion is confirmed: **[07] is flaky, not deterministic.** Across four runs on three
+different bundles it went PASS, PASS, FAIL, PASS, with no correlation to the bundle —
+consistent with it depending on whether the guest happens to have the canvas subscribed at
+that moment. Its mechanism (`background-sync.ts:97` / `coldOpen`) is untouched by this
+batch. **It must not be trusted as a WP79 gate in either direction until it is made
+deterministic**: a scenario that flips without a code change is not measuring the thing it
+names, and a *passing* [07] would wrongly suggest WP79 is already fixed.
 
 ---
 
