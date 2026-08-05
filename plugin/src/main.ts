@@ -19,13 +19,20 @@ import {
   shadowToCanvasRecords,
 } from "./canvas/canvas-shadow";
 import { isCanvasPath } from "./canvas/canvas-epoch";
+// WP38 (C38) — TYPE-only. The decision, the origins and the manager all live in
+// that module; this file holds calls into it.
+import type { CanvasUndoOutcome, CanvasUndoReport } from "./canvas/canvas-undo";
 import type { ImportAvailability } from "./canvas/canvas-import-command";
 import { canvasIds, planReconcile } from "./canvas/reconcile-plan";
 import {
   CANVAS_EDIT_DRAIN_DELAY_MS,
+  type CanvasWriteHoldQueue,
   type EditingDeferralQueue,
   classifyBusyGate,
+  createCanvasWriteHoldQueue,
   createEditingDeferralQueue,
+  planCanvasDiskWrite,
+  planCanvasDrain,
   planEditingDeferral,
 } from "./canvas/canvas-editing-deferral";
 import { DebugLogger } from "./debug-logger";
@@ -33,6 +40,7 @@ import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
 import {
   type CanvasPersistence,
+  type PersistenceIO,
   attachCanvasPersistence,
   createVaultPersistenceIO,
 } from "./files/canvas-persistence";
@@ -181,6 +189,14 @@ export default class LiveSharePlugin extends Plugin {
   // `canvas/canvas-editing-deferral.ts`. Drained at blur, at view close and at
   // teardown, so nothing it holds can outlive the adapter that produced it.
   private canvasDeferrals: EditingDeferralQueue = createEditingDeferralQueue();
+  // WP87 (C87) — the SECOND route's queue, on exactly the `canvasDeferrals`
+  // precedent above. The reconcile pass is not the only thing that can rebuild an
+  // open canvas: Obsidian reloads the view from an EXTERNAL disk write too
+  // (measured — the inherited claim below that it never does is false), and that
+  // reload is a full REBUILD, so no substitution can make it harmless. Released
+  // by the SAME three drains as `canvasDeferrals`, so a held write can no more
+  // outlive its surface than a held record can.
+  private canvasWriteHolds: CanvasWriteHoldQueue = createCanvasWriteHoldQueue();
   // WP5 (C5 AC1): the hand-over half of the reconcile receipt — which record ids
   // the last CONFIRMED apply actually put on each surface, plus whether that view
   // is open at all. This is the only per-path canvas structure `main.ts` still
@@ -2065,6 +2081,30 @@ export default class LiveSharePlugin extends Plugin {
           logger: this.logger,
         }).then((owned) => {
           if (owned) void this.attachCanvasWriter(rawPath);
+          // ── WP87 — RE-RUN THE PASS ONCE THE SUBSCRIBE HAS RESOLVED ────────
+          //
+          // MEASURED, and it is why WP37's protection did not exist at all on a
+          // guest. `subscribe()` adds to `subscribedPaths` SYNCHRONOUSLY but
+          // only creates the doc handle after its first await, and
+          // `mountCanvasPresence` bails on `if (!handle) return null;`. So the
+          // pass that opens a canvas leaf reaches the mount BEFORE the handle
+          // exists, returns null, and — because `syncCanvasPresences` only runs
+          // on `layout-change` / `active-leaf-change` — NEVER RETRIES. The leaf
+          // then has a disk writer and no CanvasAdapter for the life of the
+          // session, which means `reconcileLiveCanvas` returns at its first line
+          // and `getEditingNodeId()` cannot be asked by anything.
+          //
+          // Measured on the live rig (`H:\tmp\liveshare_wp87_adapter_probe.py`,
+          // 3/3 rounds): guest `hasAdapter=false` with `hasWriter=true` and
+          // `leafOpen=true`, and not one `reconcile <path>:` line in a 15 s
+          // window; host `hasAdapter=true` every time, because the host's
+          // canvases are already subscribed by WP79's mirror when the leaf opens
+          // and the race therefore cannot be lost there.
+          //
+          // Wiring, not logic: it re-runs the SAME pass, which re-asks every
+          // question it already asks. It cannot recurse — the lazy-subscribe
+          // branch it re-enters is gated on `!isSubscribed`, which is now true.
+          this.syncCanvasPresences();
         });
       }
       const subscribed = rawPath ? this.canvasSync.isSubscribed(rawPath) : false;
@@ -2157,6 +2197,75 @@ export default class LiveSharePlugin extends Plugin {
    * degrade, never break), and this runs inside a `checkCallback` on every
    * palette keystroke.
    */
+  // --- WP38 (C38) — undo wiring. THREE members, all of them plumbing. --------
+  //
+  // Every decision is `canvas/canvas-undo.ts`'s: what is undoable, what the
+  // scope is, where one step ends, and what happens at the `text` -> `Y.Text`
+  // conversion boundary. What lives here is the path resolution (reusing the
+  // ONE existing "canvas in context" definer below rather than writing a
+  // second) and the hand-off to the registry `CanvasSync` holds.
+  //
+  // Deliberately NOT here: any test of whether a step exists, any stack
+  // arithmetic, any origin, any scope. "Register a command" is wiring;
+  // "decide whether this step is undoable" is not, and putting the second in
+  // this file is a §7 abort criterion.
+
+  /** The undo state of the canvas in context. Moves nothing. */
+  canvasUndoReport(rawPath?: string | null): CanvasUndoReport {
+    const registry = this.canvasSync?.getUndoRegistry();
+    const path = rawPath ?? this.activeCanvasPathForImport();
+    if (!registry) {
+      return {
+        available: false,
+        path,
+        reason: "canvas sync is not running",
+        undoDepth: 0,
+        redoDepth: 0,
+        trackedOrigins: [],
+        captureTimeoutMs: 0,
+        scope: [],
+        managers: 0,
+      };
+    }
+    return registry.report(path === null ? null : toCanonicalPath(normalizePath(path)));
+  }
+
+  /** Invoke undo/redo on the canvas in context and return what was MEASURED. */
+  runCanvasUndo(kind: "undo" | "redo"): CanvasUndoOutcome {
+    const registry = this.canvasSync?.getUndoRegistry();
+    const raw = this.activeCanvasPathForImport();
+    const path = raw === null ? null : toCanonicalPath(normalizePath(raw));
+    if (!registry) {
+      return {
+        seq: 0,
+        path,
+        available: false,
+        reason: "canvas sync is not running",
+        kind,
+        popped: false,
+        changed: false,
+        undoDepthBefore: 0,
+        undoDepthAfter: 0,
+        redoDepthBefore: 0,
+        redoDepthAfter: 0,
+      };
+    }
+    return kind === "undo" ? registry.undo(path) : registry.redo(path);
+  }
+
+  /** The mechanism's own receipt for the LAST undo/redo invocation, carrying
+   * its own sequence number. Read-only; it moves nothing. */
+  canvasUndoLastOutcome(): CanvasUndoOutcome | null {
+    return this.canvasSync?.getUndoRegistry().lastOutcome() ?? null;
+  }
+
+  /** The command's availability. `true` means "there is a canvas in context
+   * whose undo history this client owns" — NOT "there is a step", which is the
+   * question the invocation answers and must be free to answer with "no". */
+  canvasUndoAvailable(): boolean {
+    return this.canvasUndoReport().available;
+  }
+
   activeCanvasPathForImport(): string | null {
     try {
       const rawPath = this.app.workspace.getActiveFile()?.path;
@@ -2457,7 +2566,17 @@ export default class LiveSharePlugin extends Plugin {
       // sitting in the queue.
       const summary = advanceFromReceipt(
         shadow,
-        buildApplyReceipt({ path: canonical, desired: surfaceData, plan, reloaded, nodeOutcomes }),
+        buildApplyReceipt({
+          path: canonical,
+          // WP87: the receipt is built from `receiptData`, which is `surfaceData`
+          // except for a SUBSTITUTED record — there it keeps the shadow's own
+          // previous value, so the shadow is never advanced to the user's
+          // unflushed editor text and their next save is still read as intent.
+          desired: deferral.receiptData,
+          plan,
+          reloaded,
+          nodeOutcomes,
+        }),
       );
       this.surfaceState.noteHandover(canonical, summary.handed);
     } finally {
@@ -2483,17 +2602,103 @@ export default class LiveSharePlugin extends Plugin {
    * snapshot would put the view back to an intermediate state. The queued
    * snapshot is the fallback for the case where the subscription is already gone.
    */
-  private drainCanvasDeferrals(path: string, why: string): void {
+  private drainCanvasDeferrals(path: string, why: string, attempt = 0): void {
     const canonical = toCanonicalPath(normalizePath(path));
     const drained = this.canvasDeferrals.drain(canonical);
-    if (!drained) return;
+    if (!drained) {
+      // Nothing was withheld from the VIEW, so there is nothing a disk write
+      // could destroy: release it. The two queues fill independently — the
+      // writer flushes on every doc change, the reconcile only on a difference —
+      // and a held write stranded here would sit on the file until the next
+      // editing session, which is the permanently stale file this repair is not
+      // allowed to introduce.
+      void this.releaseHeldCanvasWrite(canonical, why);
+      return;
+    }
+    // ── WP87 — MAY THIS DRAIN RUN YET? ──────────────────────────────────────
+    //
+    // Wiring and a verdict read. The two facts per record are MEASUREMENTS —
+    // the card's own fields and the shadow's — and `planCanvasDrain` decides.
+    // A blur commits the editor into the node model and THEN saves; the capture
+    // runs on that save. A drain that arrives first overwrites the card, and the
+    // save that follows then carries the peer's value instead of the user's.
+    const adapter = this.canvasAdapters.get(canonical);
+    const shadow = this.canvasSync?.getSurfaceShadow();
+    const lastApplied = shadow ? shadowToCanvasRecords(shadow, canonical) : null;
+    const drainVerdict = planCanvasDrain({
+      records: drained.records.map((record) => ({
+        id: record.id,
+        surface: adapter?.getNodeFields?.(record.id) ?? null,
+        lastApplied:
+          lastApplied?.nodes.find((node) => node && node.id === record.id) ?? null,
+      })),
+      attempt,
+    });
+    if (drainVerdict.mode === "retry") {
+      // Put it back exactly as it was and ask again later. The disk write stays
+      // held for the same reason: releasing it would rebuild the view from the
+      // peer's bytes and destroy the very characters this is waiting for.
+      this.canvasDeferrals.note(canonical, drained.records, drained.data);
+      this.logger.debug(
+        "canvas",
+        `reconcile ${canonical}: drain HELD — ${drainVerdict.reason} (${why})`,
+      );
+      setTimeout(
+        () => this.drainCanvasDeferrals(canonical, why, attempt + 1),
+        CANVAS_EDIT_DRAIN_DELAY_MS,
+      );
+      return;
+    }
+    void this.releaseHeldCanvasWrite(canonical, why);
     this.logger.debug(
       "canvas",
       `reconcile ${canonical}: draining ${drained.records.length} deferred record(s) ` +
-        `from ${drained.passes} withheld pass(es) (${why})`,
+        `from ${drained.passes} withheld pass(es) (${why})` +
+        (drainVerdict.uncapturedIds.length > 0 ? ` [${drainVerdict.reason}]` : ""),
     );
     const fresh = this.canvasSync?.getCanvasSnapshot(canonical) ?? drained.data;
     this.reconcileLiveCanvas(canonical, fresh);
+  }
+
+  /**
+   * WP87 (C87 AC3/AC5) — put the withheld `.canvas` bytes on disk.
+   *
+   * WIRING ONLY, and every step of it mirrors what `CanvasPersistence.writeSnapshot`
+   * does around its own write, because the withheld content never reached that
+   * method's post-write half:
+   *   ├── the echo mute, so our write is not read back as a local modify;
+   *   ├── `noteExternalDiskWrite`, which advances the byte echo-breaker; and
+   *   └── `flush()` afterwards, because the doc may have moved on during the
+   *       hold and the writer's own redundant-write skip would otherwise never
+   *       re-emit it.
+   *
+   * The disk write is DELAYED here, never dropped: the three exits that release
+   * it are the three WP37 already has (blur, view close, teardown), and the
+   * blur exit fires for a watchdog-released editor too — so a focus flag
+   * Obsidian never closed still converges the file rather than stranding it.
+   */
+  private async releaseHeldCanvasWrite(canonical: string, why: string): Promise<void> {
+    const held = this.canvasWriteHolds.release(canonical);
+    if (!held) return;
+    this.logger.debug(
+      "canvas",
+      `CANVAS WRITE RELEASED: ${canonical} after ${held.holds} withheld flush(es) (${why})`,
+    );
+    this.fileOpsManager.mutePathEvents(held.diskPath);
+    try {
+      await this.app.vault.adapter.write(held.diskPath, held.content);
+      this.canvasSync?.noteExternalDiskWrite(canonical, held.content);
+    } catch (err) {
+      this.logger.warn(
+        "canvas",
+        `CANVAS WRITE RELEASED: ${canonical} write FAILED (${String(err)})`,
+      );
+    } finally {
+      setTimeout(() => this.fileOpsManager.unmutePathEvents(held.diskPath), VAULT_EVENT_SETTLE_MS);
+    }
+    // The doc may have advanced during the hold; the writer's own flush is the
+    // one thing that knows the current projection.
+    await this.canvasWriters.get(canonical)?.flush();
   }
 
   /**
@@ -2587,16 +2792,81 @@ export default class LiveSharePlugin extends Plugin {
     return this.canvasWriters.has(canonical) || this.canvasWriterAttaching.has(canonical);
   }
 
+  /**
+   * WP87 (C87 AC1) — the attribution READ. Wiring only: every field is fetched
+   * from the object that owns it (`CanvasAdapter.describeEditingSignal`, the
+   * deferral queue, the writer maps). No conditional over canvas state, no
+   * verdict, no second predicate — this file holds none of those, and this
+   * method decides nothing.
+   *
+   * It deliberately does NOT call `adapter.getEditingNodeId()` / `isBusy()`:
+   * both run the staleness sweep, which can release the editing flag and fire
+   * the blur subscribers — i.e. the measurement would trigger WP37's drain,
+   * which is one of the four routes AC1 has to tell apart.
+   */
+  canvasEditingSignal(rawPath: string): Record<string, unknown> {
+    const canonical = toCanonicalPath(normalizePath(rawPath));
+    const adapter = this.canvasAdapters.get(canonical);
+    return {
+      path: canonical,
+      hasAdapter: adapter !== undefined,
+      adapterAvailable: adapter?.isAvailable() ?? false,
+      signal: adapter?.describeEditingSignal?.() ?? null,
+      liveNodeIds: adapter ? [...adapter.getLiveNodeIds()].sort() : [],
+      hasWriter: this.canvasWriters.has(canonical),
+      writerAttaching: this.canvasWriterAttaching.has(canonical),
+      queuedRecords: this.canvasDeferrals.pending(canonical),
+      queuedIds: this.canvasDeferrals.pendingIds(canonical),
+      withheldPasses: this.canvasDeferrals.passes(canonical),
+      queuedPaths: this.canvasDeferrals.paths(),
+    };
+  }
+
   private async attachCanvasWriter(rawPath: string): Promise<void> {
     const canonical = toCanonicalPath(normalizePath(rawPath));
     if (this.hasCanvasWriter(canonical)) return;
     const handle = this.canvasSync?.getCanvasDocHandle(rawPath);
     if (!handle) return;
     this.canvasWriterAttaching.add(canonical);
-    const io = createVaultPersistenceIO(this.app.vault.adapter, this.fileOpsManager, {
+    const baseIo = createVaultPersistenceIO(this.app.vault.adapter, this.fileOpsManager, {
       isPathSafe: (diskPath) => isPathSafe(diskPath),
       ensureFolder: (parentDir) => ensureFolder(this.app.vault, parentDir),
     });
+    // ── WP87 (C87 AC1/AC3) — THE SECOND CONSULTATION ────────────────────────
+    //
+    // WIRING AND A VERDICT READ, exactly like the WP85 attach consultation
+    // above it: the two facts are MEASUREMENTS taken from the object that owns
+    // them, the verdict is `canvas/canvas-editing-deferral.ts`'s
+    // `planCanvasDiskWrite`, and this file executes it. There is no conditional
+    // over canvas state here and no second editing predicate — the editing
+    // question is asked of `adapter.getEditingNodeId()`, the SAME definer the
+    // reconcile pass consults.
+    //
+    // The decoration sits on the injected `PersistenceIO` rather than inside
+    // `CanvasPersistence`, which stays byte-unchanged: WP85's declared boundary
+    // is not re-opened, the writer is never detached, never stopped and never
+    // reconfigured, and the observer/debounce/queue all keep running exactly as
+    // they did. Only the moment the bytes land moves — and only while an inline
+    // editor is open on THIS path.
+    const io: PersistenceIO = {
+      ...baseIo,
+      write: async (diskPath, content) => {
+        const adapter = this.canvasAdapters.get(canonical);
+        const decision = planCanvasDiskWrite({
+          editingNodeId: adapter?.getEditingNodeId?.() ?? null,
+          surfaceReadable: adapter !== undefined && adapter.isAvailable(),
+        });
+        if (decision.mode === "withhold") {
+          const holds = this.canvasWriteHolds.hold(canonical, diskPath, content);
+          this.logger.debug(
+            "canvas",
+            `CANVAS WRITE HELD: ${canonical} ${decision.reason} (holds=${holds})`,
+          );
+          return;
+        }
+        await baseIo.write(diskPath, content);
+      },
+    };
     try {
       const { persistence, coldOpen } = await attachCanvasPersistence(
         handle.doc,
@@ -2663,7 +2933,24 @@ export default class LiveSharePlugin extends Plugin {
       // if not, exactly which member is missing (the root-cause the user needs).
       const available = adapter.isAvailable();
       // Initial-sync fix: a canvas opened AFTER the CRDT already synced shows the
-      // stale on-disk file (Obsidian never reloads a canvas from an external write).
+      // stale on-disk file.
+      //
+      // ⚠ WP87 — THE CLAIM THAT USED TO STAND HERE IS FALSE, and it is corrected
+      // rather than deleted because several work packages read it as a map. It
+      // said: *"Obsidian never reloads a canvas from an external write."* It was
+      // written for the cold-open case, before WP85 made an open leaf carry a
+      // live disk writer, and it had never been tested with an inline editor
+      // open. MEASURED, on both vaults, on an UNSHARED board with no plugin path
+      // involved at all: an external write to the `.canvas` while a card's
+      // editor is open DOES reload the view, and the unflushed characters are
+      // destroyed with it. The reload is also a full REBUILD, not `setData`'s
+      // node-reuse — a write that changed only ANOTHER card's text still
+      // destroyed the edited card's editor. That is C87 AC1's attribution (route
+      // R-C) and the reason for the write hold in `attachCanvasWriter`.
+      //
+      // What survives of the original sentence is the part this line depends on:
+      // a freshly-opened view does not snap to shared truth on its own, because
+      // the DOC is the authority and the file it was loaded from may be stale.
       // Force one authoritative full reconcile now so the freshly-opened view snaps
       // to shared truth — nodes at the right coords AND edges connected — instead of
       // waiting for the next remote delta to nudge it. No-op when the shared doc is
@@ -2798,7 +3085,16 @@ export default class LiveSharePlugin extends Plugin {
     for (const path of this.canvasDeferrals.paths()) {
       this.drainCanvasDeferrals(path, "canvas teardown");
     }
+    // WP87 — the same exit for the DISK half. Iterated separately because the
+    // two queues do not fill together: a path can hold a write with nothing
+    // queued for the view, and a teardown that only walked `canvasDeferrals`
+    // would leave that path's file stale for good. Released BEFORE the writers
+    // are destroyed below, so `flush()` still has a writer to run on.
+    for (const path of this.canvasWriteHolds.paths()) {
+      void this.releaseHeldCanvasWrite(path, "canvas teardown");
+    }
     this.canvasDeferrals.clearAll();
+    this.canvasWriteHolds.clearAll();
     for (const presence of this.canvasPresences.values()) {
       try {
         presence.destroy();

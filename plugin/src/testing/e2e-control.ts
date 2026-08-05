@@ -351,6 +351,42 @@ export interface CanvasFileAdapterLike {
 // this shape at that call site. If the two ever diverge, `tsc` fails.
 // (Single definer: `testing/canvas-node-editor.ts`.)
 
+// --- WP38 (C38 AC6) — structural mirrors of the undo registry's two readings -
+//
+// Same reason, same guarantee as every mirror above: the allow-list this module
+// is held to is frozen and is respected rather than amended. The one thing this
+// file reaches in the undo module is the COMMAND IDS, and it reaches them
+// through a DYNAMIC call so that no specifier is introduced — an id spelt by
+// hand here would silently stop matching the registered command, and the
+// empty-stack answer would look identical to a command that does not exist.
+// (Single definer: `canvas/canvas-undo.ts`.)
+
+export interface CanvasUndoReportShape {
+  available: boolean;
+  path: string | null;
+  reason: string | null;
+  undoDepth: number;
+  redoDepth: number;
+  trackedOrigins: string[];
+  captureTimeoutMs: number;
+  scope: string[];
+  managers: number;
+}
+
+export interface CanvasUndoOutcomeShape {
+  seq: number;
+  path: string | null;
+  available: boolean;
+  reason: string | null;
+  kind: "undo" | "redo";
+  popped: boolean;
+  changed: boolean;
+  undoDepthBefore: number;
+  undoDepthAfter: number;
+  redoDepthBefore: number;
+  redoDepthAfter: number;
+}
+
 export interface CanvasNodeEditRequest {
   path: string;
   nodeId: string;
@@ -486,6 +522,18 @@ export interface E2EControlHost {
    * Read-only, and it carries shapes, lengths and counts — never the text.
    */
   textShape?(path: string): unknown;
+  /**
+   * WP87 (C87 AC1) — the editing signal + deferral queue + writer state for one
+   * canvas path, read without moving any of them. Optional on the interface for
+   * the same reason as every capability above.
+   */
+  canvasEditingSignal?(path: string): unknown;
+  /**
+   * WP38 (C38 AC6) — invoke the REGISTERED undo/redo command on a live
+   * instance and report what was measured around it. Optional on the interface
+   * for the same reason as every capability above.
+   */
+  canvasUndo?(req: { redo?: boolean }): Promise<unknown>;
   reconcileStale?(): Promise<StaleReconcileDecision>;
   // --- WP80 -----------------------------------------------------------------
   // `publishManifest` used to return the hardcoded `{ published: true }` — the
@@ -959,6 +1007,54 @@ export async function routeCommand(
         }
         return ok(host.textShape(requireString(args, "path")));
       }
+      // --- WP87 (C87 AC1) — THE ATTRIBUTION READER, ADDITIVE and READ-ONLY ---
+      //
+      // ONE case, one optional host method, on the `canvas.textShape` /
+      // `canvas.file` precedent. No command above changes shape or behaviour and
+      // `canvas.simulateEdit` is neither extended, repaired nor called.
+      //
+      // Why the rig needs it at all: AC1 must record what the editing signal
+      // answers ON THE PEER WHOSE EDITOR IS BEING DESTROYED, at that instant. No
+      // existing command can say — `canvas.typeInNode` reports Obsidian's
+      // `node.isEditing`, not this plugin's `getEditingNodeId()`, and those are
+      // exactly the two that route R-B says disagree. This reports the plugin's
+      // side WITHOUT sweeping it (see `describeEditingSignal`), so the reader
+      // cannot manufacture the blur it is looking for.
+      case "canvas.editingSignal": {
+        if (typeof host.canvasEditingSignal !== "function") {
+          throw new Error("canvas.editingSignal unavailable on this host");
+        }
+        return ok(host.canvasEditingSignal(requireString(args, "path")));
+      }
+      // --- WP38 (C38 AC6) — THE UNDO INSTRUMENT, ADDITIVE --------------------
+      //
+      // ONE case and one optional host method, on the `canvas.textShape` /
+      // `canvas.editingSignal` precedent. Nothing above changes shape or
+      // behaviour, and `canvas.simulateEdit` is neither extended, repaired nor
+      // called from here.
+      //
+      // It takes NO path. The registered command decides for itself which
+      // canvas is in context, and a path argument would let this instrument
+      // report the depths of a manager the command never touched — a reading
+      // that looks like an answer and is about a different board.
+      //
+      // What it returns is a DIFFERENCE between two readings taken from the
+      // production undo registry, around a real `executeCommandById`. There is
+      // no success field in it that is not arithmetic over those two readings,
+      // which is the whole point: `canvas.simulateEdit` returns a hardcoded
+      // `applied: true` and that class has produced multiple false greens in
+      // this run. The empty-stack call is the discriminator — it is the one
+      // invocation whose honest answer is "nothing happened", and a literal
+      // cannot produce it.
+      case "canvas.undo": {
+        if (typeof host.canvasUndo !== "function") {
+          throw new Error("canvas.undo unavailable on this host");
+        }
+        if (args.redo !== undefined && typeof args.redo !== "boolean") {
+          throw new Error("invalid arg: 'redo' must be a boolean when present");
+        }
+        return ok(await host.canvasUndo({ redo: args.redo === true }));
+      }
       default:
         return badRequest(`unknown cmd: ${cmd}`);
     }
@@ -1178,6 +1274,25 @@ export interface E2EPluginLike {
   linkReport?: () => Record<string, unknown>;
   e2eBreakLink?: (link: "control" | "mux", shape: "close" | "silence") => Record<string, unknown>;
   e2eRestoreLink?: (link: "control" | "mux") => Record<string, unknown>;
+  /**
+   * WP87 (C87 AC1) — the attribution read, invoked on the plugin that owns the
+   * adapter, the deferral queue and the writer maps. Optional so every
+   * hand-rolled fake plugin in the existing tests stays structurally valid.
+   */
+  canvasEditingSignal?: (path: string) => Record<string, unknown>;
+  /**
+   * WP38 (C38 AC6) — the undo registry's own read and its own receipt, both
+   * invoked on the plugin that owns them. Optional so every hand-rolled fake
+   * plugin in the existing tests stays structurally valid.
+   *
+   * Typed against the structural mirrors below for the same reason
+   * `StaleReconcileDecision` is: this module's static allow-list is frozen and
+   * may not be widened. `buildPluginHost` receives the real `LiveSharePlugin`,
+   * so `tsc` checks the real return types against these shapes at that call
+   * site — divergence is a compile error, not silent drift.
+   */
+  canvasUndoReport?: (path?: string | null) => CanvasUndoReportShape;
+  canvasUndoLastOutcome?: () => CanvasUndoOutcomeShape | null;
   /** WP88 (AC3/AC4) — the PRODUCTION re-arm and the severance, both invoked. */
   rearmSharing?: () => Promise<Record<string, unknown>>;
   severanceReport?: () => Record<string, unknown>;
@@ -1193,6 +1308,13 @@ export interface E2EPluginLike {
      * resolver (`resolveCanvasEditorDeps`) and every access is validated.
      */
     workspace?: unknown;
+    /**
+     * WP38 (AC6) — Obsidian's command registry. Held as `unknown` for the same
+     * reason `workspace` is: typing it would make the real `LiveSharePlugin`
+     * stop satisfying this interface. Narrowed through one guarded resolver
+     * (`resolveCommandRegistry`) and every access is validated.
+     */
+    commands?: unknown;
     vault?: {
       getName?(): string;
       /** WP37 (AC6) — resolve a `.canvas` path to a file so a leaf can open it. */
@@ -1423,6 +1545,54 @@ async function openCanvasLeaf(plugin: E2EPluginLike, path: string): Promise<bool
 /** `document` when there is a DOM (the Electron renderer), else `null`. */
 function resolveDocument(): Document | null {
   return typeof document === "undefined" ? null : document;
+}
+
+/**
+ * WP38 (C38 AC6) — Obsidian's command registry, narrowed once and validated.
+ * `null` means "this host has no command registry", which is a refusal the
+ * instrument reports rather than a condition it works around.
+ */
+function resolveCommandRegistry(plugin: E2EPluginLike): {
+  executeCommandById(id: string): boolean;
+  ids(): string[];
+} | null {
+  const raw = plugin.app?.commands as
+    | {
+        executeCommandById?: (id: string) => boolean;
+        listCommands?: () => Array<{ id?: unknown }>;
+        commands?: Record<string, unknown>;
+      }
+    | undefined;
+  if (!raw || typeof raw.executeCommandById !== "function") return null;
+  const execute = raw.executeCommandById.bind(raw);
+  return {
+    executeCommandById: (id) => execute(id) === true,
+    ids: () => {
+      // Two sources, because Obsidian's registry is private and untyped (I5 —
+      // degrade, never break). `listCommands()` reports what is CURRENTLY
+      // available (it consults `checkCallback`), so it can legitimately be
+      // empty for a disabled command; `commands` is the raw registration map
+      // and is the one that answers "was it registered at all".
+      const out: string[] = [];
+      try {
+        if (raw.commands && typeof raw.commands === "object") {
+          for (const id of Object.keys(raw.commands)) out.push(id);
+        }
+      } catch {
+        /* private surface — a failure to enumerate is not a failure to invoke */
+      }
+      try {
+        if (out.length === 0 && typeof raw.listCommands === "function") {
+          for (const c of raw.listCommands() ?? []) {
+            if (typeof c?.id === "string") out.push(c.id);
+          }
+        }
+      } catch {
+        /* as above */
+      }
+      return out;
+    },
+  };
 }
 
 /**
@@ -1720,12 +1890,111 @@ export function buildPluginHost(
         return { available: false, path, subscribed: false, fields: [], receipts: [] };
       }
       const shape = cs.getTextShape(path);
+      // (see below for WP87's reader — it is wired next to this one)
       // Scoped to THIS path. The ring is per-client, so an unscoped read would
       // report another board's captures and turn a per-field count into a
       // session count — a witness that cannot answer the question it was asked.
       const receipts =
         typeof cs.getTextWriteReceipts === "function" ? cs.getTextWriteReceipts(path) : [];
       return { available: true, ...(shape ?? { path, subscribed: false, fields: [] }), receipts };
+    },
+
+    // WP87 (C87 AC1). Reads through the plugin, which owns the adapter, the
+    // deferral queue and the writer maps; this file holds no copy of any of
+    // them, so the instrument and the mechanism cannot drift apart.
+    canvasEditingSignal(path) {
+      if (typeof plugin.canvasEditingSignal !== "function") {
+        return { available: false, path };
+      }
+      return { available: true, ...(plugin.canvasEditingSignal(path) as object) };
+    },
+
+    // --- WP38 (C38 AC6) — the undo instrument -----------------------------
+    //
+    // It INVOKES the registered Obsidian command. It does not reach the
+    // `Y.Doc`, does not construct a `Y.UndoManager`, does not touch a stack and
+    // does not decide anything: note what is NOT in this method — no
+    // `getCanvasDocHandle`, no `doc.transact`, no `UndoManager`, no vault
+    // write. It cannot undo anything even by accident, which is the structural
+    // half of the criterion.
+    //
+    // The command IDS are read from the module that registers them, through a
+    // DYNAMIC call that introduces no specifier — see the mirrors above. The
+    // full id is then MEASURED against the registry rather than assembled from
+    // a guessed manifest id, and it is reported, so a run can see which command
+    // was actually invoked.
+    //
+    // Every number below is a reading of the production registry taken either
+    // side of that invocation. `popped` is their difference. There is no
+    // constant in the response that says something happened.
+    async canvasUndo(req) {
+      const mod = await import("../canvas/canvas-undo");
+      const kind = req.redo === true ? "redo" : "undo";
+      const suffix = req.redo === true ? mod.CANVAS_REDO_COMMAND_ID : mod.CANVAS_UNDO_COMMAND_ID;
+      const registry = resolveCommandRegistry(plugin);
+      const read = (): CanvasUndoReportShape | null =>
+        typeof plugin.canvasUndoReport === "function" ? plugin.canvasUndoReport() : null;
+
+      if (registry === null) {
+        return {
+          ok: false,
+          kind,
+          reason: "no command registry on this host",
+          commandId: null,
+          invoked: false,
+          report: read(),
+        };
+      }
+      const ids = registry.ids();
+      const commandId = ids.find((id) => id === suffix || id.endsWith(`:${suffix}`)) ?? null;
+      if (commandId === null) {
+        return {
+          ok: false,
+          kind,
+          reason: `no registered command matching '${suffix}' (${ids.length} registered)`,
+          commandId: null,
+          invoked: false,
+          report: read(),
+        };
+      }
+
+      const before = read();
+      const invoked = registry.executeCommandById(commandId);
+      const after = read();
+      const outcome =
+        typeof plugin.canvasUndoLastOutcome === "function" ? plugin.canvasUndoLastOutcome() : null;
+
+      const undoDepthBefore = before?.undoDepth ?? 0;
+      const undoDepthAfter = after?.undoDepth ?? 0;
+      const redoDepthBefore = before?.redoDepth ?? 0;
+      const redoDepthAfter = after?.redoDepth ?? 0;
+      const depthBefore = kind === "undo" ? undoDepthBefore : redoDepthBefore;
+      const depthAfter = kind === "undo" ? undoDepthAfter : redoDepthAfter;
+
+      return {
+        ok: true,
+        kind,
+        reason: before?.reason ?? null,
+        available: before?.available === true,
+        commandId,
+        invoked,
+        path: after?.path ?? before?.path ?? null,
+        undoDepthBefore,
+        undoDepthAfter,
+        redoDepthBefore,
+        redoDepthAfter,
+        // The measured answer to "was a step actually popped?".
+        popped: depthAfter < depthBefore,
+        trackedOrigins: before?.trackedOrigins ?? [],
+        captureTimeoutMs: before?.captureTimeoutMs ?? 0,
+        scope: before?.scope ?? [],
+        managers: before?.managers ?? 0,
+        // The mechanism's OWN receipt, carrying its own sequence number so a
+        // stale reading cannot masquerade as a fresh one. A second, independent
+        // witness for the same invocation — if `popped` and `outcome.popped`
+        // ever disagree, one of the two is lying and the run can see it.
+        outcome,
+      };
     },
 
     bindingCounters(_path) {

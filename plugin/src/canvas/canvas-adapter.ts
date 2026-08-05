@@ -52,6 +52,37 @@ export interface CanvasViewport {
   scale?: number;
 }
 
+/**
+ * WP87 (C87 AC1) — what the editing signal HOLDS and what its probe SEES, taken
+ * without moving either. Diagnostics only; no decision reads it.
+ */
+export interface EditingSignalReport {
+  /** The raw internal flag, un-swept. `null` = nothing is flagged as editing. */
+  flag: string | null;
+  /**
+   * `probeEditingNode().available` — is there any readable answer at all? When
+   * this is `false` the caller must NOT read `probeNodeId === null` as "nothing
+   * is being edited" (I11: absence of evidence is not evidence).
+   */
+  probeAvailable: boolean;
+  /** `probeEditingNode().nodeId` — the id the probe reports right now, or null. */
+  probeNodeId: string | null;
+  /** Did the PRIMARY probe (Obsidian's own `node.isEditing`) answer at all? */
+  isEditingSeen: boolean;
+  /** Ids of live nodes whose `isEditing === true`, as Obsidian reports them. */
+  isEditingIds: string[];
+  /** Age of the last editing-related signal, in ms. Compare with EDIT_WATCHDOG_MS. */
+  idleMs: number;
+  /** The inactivity budget this adapter is measuring `idleMs` against. */
+  watchdogMs: number;
+  /** Is the WP37 editing poll armed (i.e. an editing session is considered open)? */
+  pollArmed: boolean;
+  /** Number of blur subscribers currently registered. */
+  editingEndListeners: number;
+  /** Is the flagged node still in the live node map? (the POSITIVE liveness arm) */
+  flaggedNodeLive: boolean | null;
+}
+
 export interface CanvasAdapter {
   /** True only when the private Canvas API surface we rely on is present. */
   isAvailable(): boolean;
@@ -130,6 +161,22 @@ export interface CanvasAdapter {
    * Optional for the same reason as the members above.
    */
   noteEditingFocus?(nodeId: string | null): void;
+  /**
+   * WP87 (C87 AC1) — the editing signal's own facts, READ WITHOUT MOVING IT.
+   *
+   * NOT a second predicate (rule 10) and not consulted by any decision: it takes
+   * no verdict, and nothing in `plugin/src` calls it outside the read-only E2E
+   * reader. It exists because AC1 has to record what `getEditingNodeId()` would
+   * answer on a peer AT THE MOMENT ITS EDITOR IS DESTROYED — and
+   * `getEditingNodeId()` cannot be used for that: it runs the staleness sweep,
+   * which may RELEASE the flag and FIRE THE BLUR SUBSCRIBERS, i.e. the
+   * instrument would itself trigger one of the four routes it is measuring.
+   *
+   * So this reports the inputs instead of the answer: the raw flag, what the
+   * probe sees right now, and how long the inactivity budget has run. The
+   * verdict is reconstructed by the reader, never manufactured here.
+   */
+  describeEditingSignal?(): EditingSignalReport;
   /**
    * Reposition/resize a LIVE node to match synced geometry. Never touches a node
    * the local user is actively dragging. Returns the outcome for diagnostics.
@@ -1035,6 +1082,49 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
 
     noteEditingFocus(nodeId: string | null): void {
       noteEditingFocus(nodeId);
+    },
+
+    // ---- WP87 (C87 AC1) — the attribution instrument ------------------------
+    //
+    // READ-ONLY AND NON-MUTATING, and both halves matter. It does not call
+    // `editingActive()` / `getEditingNodeId()`, because those SWEEP: a sweep can
+    // release the flag and fire the blur subscribers, and the blur subscriber is
+    // WP37's drain — i.e. reading the instrument would trigger route R-D while
+    // measuring for it. It does not call `ensureEditingPatch()` either, so it
+    // cannot install a listener that was not already there.
+    //
+    // It is NOT a second editing predicate (rule 10): it returns no verdict, and
+    // no production decision consults it. `probeEditingNode()` is the SAME probe
+    // the real predicate uses — invoked, not re-implemented.
+    describeEditingSignal(): EditingSignalReport {
+      const probe = probeEditingNode();
+      const isEditingIds: string[] = [];
+      let isEditingSeen = false;
+      if (canvas?.nodes instanceof Map) {
+        for (const [id, node] of canvas.nodes) {
+          const flag = (node as { isEditing?: unknown } | undefined)?.isEditing;
+          if (typeof flag !== "boolean") continue;
+          isEditingSeen = true;
+          if (flag === true && typeof id === "string" && id.length > 0) isEditingIds.push(id);
+        }
+      }
+      return {
+        flag: editingNodeId,
+        probeAvailable: probe.available,
+        probeNodeId: probe.nodeId,
+        isEditingSeen,
+        isEditingIds,
+        idleMs: now() - lastEditSignalAt,
+        watchdogMs: EDIT_WATCHDOG_MS,
+        pollArmed: editingPoll !== null,
+        editingEndListeners: editingEndListeners.size,
+        flaggedNodeLive:
+          editingNodeId === null
+            ? null
+            : canvas?.nodes instanceof Map
+              ? canvas.nodes.has(editingNodeId)
+              : null,
+      };
     },
 
     applyNodeGeometry(

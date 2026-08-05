@@ -128,6 +128,33 @@ export interface EditingDeferralDecision {
   editingNodeId: string | null;
   /** What to hand to the surface. Identical (by reference) to `desired` unless something was held. */
   surfaceData: CanvasRecords;
+  /**
+   * WP87 — what the APPLY RECEIPT is built from, which is NOT always what the
+   * surface was handed.
+   *
+   * MEASURED, run 114152, and it is the reason the second typist emitted ZERO
+   * text captures even after the view was protected. `buildApplyReceipt` marks
+   * every record of a reloaded STRUCTURAL pass `"applied"` — `nodeOutcomes` is
+   * consulted only in the geometry branch (`canvas-shadow.ts:816-819`) — so the
+   * substituted record advanced the Surface-Shadow to WHAT THE SURFACE HELD,
+   * and what the surface held was the user's UNFLUSHED EDITOR TEXT. The next
+   * local save then diffed against a shadow that already contained it:
+   *
+   *     SHADOW STALE: …canvas 1 field(s) not pushed: node/c1.text
+   *     local modify …: +0 ~0 -0 node(s)
+   *
+   * The user's own characters were classified as a stale save and dropped. C37
+   * AC4 says in so many words that a deferred record's shadow fields are not
+   * advanced; that held for the geometry branch and silently did not for the
+   * structural one.
+   *
+   * So the receipt keeps the SHADOW's own previous record for a substituted
+   * card: advancing a field to the value it already holds is a no-op, the
+   * record stays in the receipt (so `exhaustive` still means what it means, and
+   * nothing is marked absent), and the local edit stays visible to the next
+   * capture as the intent it is.
+   */
+  receiptData: CanvasRecords;
   /** Record ids withheld from the surface this pass. */
   heldNodeIds: string[];
   /** What to queue. Empty when nothing differed for the held record. */
@@ -170,6 +197,7 @@ function proceed(input: EditingDeferralInput, reason: string): EditingDeferralDe
     mode: "proceed",
     editingNodeId: input.editingNodeId ?? null,
     surfaceData: input.desired,
+    receiptData: input.desired,
     heldNodeIds: [],
     deferred: [],
     reason,
@@ -253,15 +281,267 @@ export function planEditingDeferral(input: EditingDeferralInput): EditingDeferra
   const nodes = input.desired.nodes.map((record) =>
     record && record.id === editingNodeId ? { ...surfaceRecord } : record,
   );
+  // WP87 — the RECEIPT keeps the SHADOW's own previous record for the held card,
+  // so the shadow is not advanced to the unflushed editor text. `shadowRecord`
+  // is null only before this client has ever confirmed an apply for that card,
+  // and there is then nothing to preserve.
+  const shadowRecord = input.lastApplied ? findById(input.lastApplied.nodes, editingNodeId) : null;
+  const receiptNodes = shadowRecord
+    ? input.desired.nodes.map((record) =>
+        record && record.id === editingNodeId ? { ...shadowRecord } : record,
+      )
+    : nodes;
   return {
     mode: "substitute",
     editingNodeId,
     surfaceData: { nodes, edges: input.desired.edges },
+    receiptData: { nodes: receiptNodes, edges: input.desired.edges },
     heldNodeIds: [editingNodeId],
     deferred: [{ kind: "node", id: editingNodeId, fields: { ...desiredRecord } }],
     reason:
       `deferred (inline editor on '${editingNodeId}'); ` +
       `${nodes.length - 1} other record(s) applied`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// WP87 (C87) — THE SECOND ROUTE ONTO THE SAME SURFACE.
+//
+// WP37 protected the live canvas from ONE route: the reconcile pass. WP87
+// measured, live, that there is a second, and that the first was never enough:
+//
+//   S1 (RED, run 110411) — the reconcile ran, `planEditingDeferral` returned
+//     `substitute`, the log carries `deferred (inline editor on 'c1'); 1 other
+//     record(s) applied`, and the queue held exactly 1 record. The substitution
+//     did its job. 222 ms later `CANVAS WRITER: … owner=CanvasPersistence`
+//     landed, and the editor was destroyed anyway.
+//   S2 (RED, same run) — the victim had NO reconcile line at all, for the whole
+//     window. The `CANVAS WRITER:` line was the ONLY receipt, and the editor was
+//     destroyed at the same +2.5 s.
+//
+// So the destroyer is the DISK WRITE under an open leaf — the writer WP85 made
+// live — and an inherited comment in `main.ts` said this could not happen:
+// *"Obsidian never reloads a canvas from an external write."* Measured on both
+// vaults, on an UNSHARED board with no plugin path involved at all: it does, and
+// the open editor's unflushed characters are destroyed with it.
+//
+// AND THE RELOAD IS A REBUILD, NOT A REUSE. `setData` reuses cards, which is why
+// WP37's per-record substitution works. Obsidian's EXTERNAL-CHANGE reload does
+// not: a write that changed ONLY THE OTHER CARD's text destroyed the edited
+// card's editor, on both vaults. Measured (`H:\tmp\liveshare_wp87_reload_probe.py`).
+// That is what rules out the elegant repair — projecting the surface's own value
+// for the edited card would still rebuild the view — and leaves exactly one:
+// while an inline editor is open, the bytes must not change.
+//
+// WHAT THIS IS NOT. It is not "stop writing the file" (that is WP85's defect
+// rebuilt) and it is not a second editing predicate (rule 10). It is the SAME
+// question, asked by the second consumer: the caller measures `getEditingNodeId()`
+// from the one definer and hands it here, and the hold is released by the SAME
+// three drains WP37 already built — blur, view close, teardown.
+// ---------------------------------------------------------------------------
+
+/** What the single doc→disk writer may do with THIS flush. */
+export type CanvasDiskWriteMode = "write" | "withhold";
+
+export interface CanvasDiskWriteDecision {
+  mode: CanvasDiskWriteMode;
+  editingNodeId: string | null;
+  /** Why, in one line, for the debug log. Never an oracle — state is the oracle. */
+  reason: string;
+}
+
+/**
+ * Decide whether this flush may change the `.canvas` bytes right now.
+ *
+ * Total, and the default direction is WRITE. That is deliberate and it is the
+ * opposite of `planEditingDeferral`'s: withholding a VIEW apply costs stale
+ * pixels for a moment, but withholding a DISK write with nothing to release it
+ * would leave the file permanently stale — WP85's defect wearing this fix's
+ * clothes. So only a POSITIVELY IDENTIFIED editing session withholds, and every
+ * unknown ("this path has no live surface to ask", "the signal answered null")
+ * writes. The hold is bounded by the same `EDIT_WATCHDOG_MS` release that bounds
+ * the view deferral, and drained by the same three exits.
+ */
+export function planCanvasDiskWrite(input: {
+  /** `adapter.getEditingNodeId()` — measured, from the ONE definer. */
+  editingNodeId: string | null;
+  /** Is there a live surface for this path at all (an adapter to ask)? */
+  surfaceReadable: boolean;
+}): CanvasDiskWriteDecision {
+  if (input.surfaceReadable !== true) {
+    return {
+      mode: "write",
+      editingNodeId: null,
+      reason: "no live surface for this path — nothing an external write could destroy",
+    };
+  }
+  const editingNodeId = input.editingNodeId ?? null;
+  if (editingNodeId === null) {
+    return { mode: "write", editingNodeId: null, reason: "no inline editor is focused" };
+  }
+  return {
+    mode: "withhold",
+    editingNodeId,
+    reason: `withheld (inline editor on '${editingNodeId}')`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// WP87 — WHEN THE DRAIN MAY RUN.
+//
+// MEASURED, run 113405, vault B's own log, and it is the defect the view repair
+// UNCOVERED rather than caused:
+//
+//   09:34:59.238  reconcile … [deferred (inline editor on 'c1'); 1 other applied]
+//   09:34:59.454  CANVAS WRITE HELD: … withheld (inline editor on 'c1')
+//   09:35:01.146  local modify …: +0 ~0 -0 node(s)      ← Obsidian's periodic
+//                 SHADOW STALE: … node/c1.text            save; the typed text
+//                                                         is in the EDITOR, not
+//                                                         in the node model, so
+//                                                         nothing is captured
+//   09:35:14.961  CANVAS WRITE RELEASED …
+//   09:35:14.963  reconcile …: structural reload ok      ← the drain, applying
+//                                                         the peer's value OVER
+//                                                         the just-committed
+//                                                         local text
+//
+// The blur commits the editor into the node model and THEN saves; the capture
+// runs on that save. The drain arrives first and overwrites the card, so the
+// save that follows carries the peer's value and the local characters are gone —
+// with WP37's own drain as the mechanism, exactly as `CANVAS_EDIT_DRAIN_DELAY_MS`
+// was written to prevent. A fixed delay cannot decide it, because the thing it
+// is waiting for is an EVENT (the capture), not an interval.
+//
+// So the drain asks a question it can actually answer: DOES THE SURFACE STILL
+// HOLD SOMETHING THE SHADOW HAS NOT CONFIRMED? If it does, the local text has
+// not been captured yet and applying over it would destroy it — so the pass is
+// re-queued and retried. When the capture lands, the shadow advances to the
+// value the surface holds, the two agree, and the drain proceeds. Bounded by
+// construction: a fixed number of attempts, after which it applies anyway,
+// because a queue that never drains is a permanently stale view.
+// ---------------------------------------------------------------------------
+
+/** How many times a drain may wait for the local capture before applying anyway. */
+export const CANVAS_DRAIN_MAX_ATTEMPTS = 4;
+
+export type CanvasDrainMode = "apply" | "retry";
+
+export interface CanvasDrainDecision {
+  mode: CanvasDrainMode;
+  /** Ids whose surface value the shadow has not confirmed. */
+  uncapturedIds: string[];
+  reason: string;
+}
+
+/**
+ * May this drain put the withheld records on the surface yet?
+ *
+ * Pure. `surface` is `adapter.getNodeFields(id)` — a MEASUREMENT of the card —
+ * and `lastApplied` is the shadow's record for it. It reuses
+ * {@link sameRecordFields}, the same comparison `planEditingDeferral` makes, so
+ * the two halves of the mechanism can never disagree about what "unchanged"
+ * means.
+ */
+export function planCanvasDrain(input: {
+  records: ReadonlyArray<{
+    id: string;
+    surface: Record<string, unknown> | null;
+    lastApplied: Record<string, unknown> | null;
+  }>;
+  attempt: number;
+  maxAttempts?: number;
+}): CanvasDrainDecision {
+  const max = input.maxAttempts ?? CANVAS_DRAIN_MAX_ATTEMPTS;
+  const uncaptured: string[] = [];
+  for (const record of input.records) {
+    // No readable surface, or nothing the shadow ever confirmed, is NOT evidence
+    // of an uncaptured edit — and here the safe direction is to apply, because
+    // withholding a drain forever is the stale view this must not introduce.
+    if (!record.surface || !record.lastApplied) continue;
+    if (!sameRecordFields(record.surface, record.lastApplied)) uncaptured.push(record.id);
+  }
+  if (uncaptured.length === 0) {
+    return { mode: "apply", uncapturedIds: [], reason: "the surface holds nothing uncaptured" };
+  }
+  if (input.attempt + 1 >= max) {
+    return {
+      mode: "apply",
+      uncapturedIds: uncaptured,
+      reason:
+        `applying after ${input.attempt + 1} attempt(s): the local capture never landed for ` +
+        `${uncaptured.join(", ")} — a queue that never drains is a permanently stale view`,
+    };
+  }
+  return {
+    mode: "retry",
+    uncapturedIds: uncaptured,
+    reason:
+      `waiting for the local capture of ${uncaptured.join(", ")} ` +
+      `(attempt ${input.attempt + 1}/${max})`,
+  };
+}
+
+/** One `.canvas` write that has not been allowed to reach disk yet. */
+export interface HeldCanvasWrite {
+  path: string;
+  diskPath: string;
+  content: string;
+  /** How many flushes were folded into this one. Diagnostics; proves coalescing. */
+  holds: number;
+}
+
+/**
+ * A per-path hold for the disk write, COALESCING by construction: one entry per
+ * path, and a later flush REPLACES the earlier content rather than appending.
+ * The writer re-serialises the whole doc on every flush, so the newest content
+ * is always the complete one and there is no growth term to cap.
+ */
+export interface CanvasWriteHoldQueue {
+  hold(path: string, diskPath: string, content: string): number;
+  pending(path: string): boolean;
+  holds(path: string): number;
+  paths(): string[];
+  /** Take and CLEAR `path`'s held write. `null` when nothing is held. */
+  release(path: string): HeldCanvasWrite | null;
+  clear(path: string): void;
+  clearAll(): void;
+}
+
+export function createCanvasWriteHoldQueue(): CanvasWriteHoldQueue {
+  const byPath = new Map<string, HeldCanvasWrite>();
+  return {
+    hold(path, diskPath, content) {
+      const existing = byPath.get(path);
+      const entry: HeldCanvasWrite = {
+        path,
+        diskPath,
+        content,
+        holds: (existing?.holds ?? 0) + 1,
+      };
+      byPath.set(path, entry);
+      return entry.holds;
+    },
+    pending(path) {
+      return byPath.has(path);
+    },
+    holds(path) {
+      return byPath.get(path)?.holds ?? 0;
+    },
+    paths() {
+      return [...byPath.keys()].sort();
+    },
+    release(path) {
+      const entry = byPath.get(path);
+      if (!entry) return null;
+      byPath.delete(path);
+      return entry;
+    },
+    clear(path) {
+      byPath.delete(path);
+    },
+    clearAll() {
+      byPath.clear();
+    },
   };
 }
 
@@ -281,6 +561,7 @@ function hold(
     mode: "hold",
     editingNodeId,
     surfaceData: input.desired,
+    receiptData: input.desired,
     heldNodeIds: deferred.map((entry) => entry.id),
     deferred,
     reason: `held (inline editor on '${editingNodeId}'): ${why}`,
