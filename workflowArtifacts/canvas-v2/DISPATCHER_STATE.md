@@ -824,7 +824,15 @@ replaced with a real manifest before any release or any WP7 install. **No owner.
 | PHASE VI — verification integrity | WP55–WP58, WP62, WP64, WP67 | ✅ done |
 | Open | WP59 ✅ · WP65 ⬜ · WP66 ⬜ · **WP68 ⬜ (chartered 2026-08-02)** | see queue |
 
-**Chartered total: 78 WPs.** Implemented: WP1–30, 41–49, 55–64, 67, 69, **70**, 72, 73. Chartered-not-built: WP51, 65, 66, 68, 71, 74, 75, 76, 77, 78 + P3/P4/P5.
+**Chartered total: 87 live** (WP1–83, WP85–88; WP84 withdrawn). **Implemented: 67.**
+Implemented adds, since this line was last right: **WP36, 37, 38, 77, 78, 79, 80, 81, 82, 83, 85, 86, 87, 88.**
+**P4 IS COMPLETE.** Still unbuilt: **P3 (WP31–35)**, most of **P5**, and the gate chain
+**WP50 → 74 → 75 → 76 → 51 → 71 → WP7**.
+
+<!-- Corrected 2026-08-05 by the B40 report audit. This line read `78 chartered / P4 queued`
+     while P4 was complete and nine more WPs had landed. A count in an append-only file is a
+     measurement with a timestamp, not a fact — rule 5, broken by the Dispatcher in the file
+     that states it. Re-derive from BUILD_SPEC §7/§9; never edit this independently. -->
 
 ### THE GATE — required order, and why each one blocks
 
@@ -2203,3 +2211,61 @@ confusing number in this file, including at least one I attributed to a product 
 AC4b's file-system oracles pass while **its own receipt disagrees**; present in the BEFORE run, so
 pre-existing. And **21 conversions in five suites are unvalidated live** (they `taskkill` Obsidian or
 break links, and siblings were measurably live) — **stated as a gap, not dressed up.**
+
+---
+
+## 📕 DEVELOPMENT REPORT II — `ffc6345`, and it audited ME
+
+`DEVELOPMENT_REPORT_CanvasV2_II.md`, 759 lines, §0 provenance table marking **§7 as the section to
+distrust**. **Read it before this file** — this file is append-only and long; that report is the
+consolidated, self-verified account.
+
+**It found three things, and the first is a filing error of mine with a live consequence.**
+
+### 1. I filed a behavioural gate as "a stale comment"
+
+I recorded `canvas-sync.ts:3785-3789` as still asserting the premise WP87 falsified. **That file does not
+contain it** — `grep -F "external write"` → **0 hits**, with the same pattern matching known-present
+lines elsewhere, and `git diff` against WP87's own handover commit is **empty**. **The citation was wrong
+when written, not drifted.**
+
+**And the residue is four times larger:** `:2028`, `:2265`, `:2798-2799`, `:3863` — and **`:3863` is the
+stated justification for a LIVE BRANCH**: `if (viewOpen === false) { advanceShadowFromContent(...) }`.
+**The Surface-Shadow is deliberately not advanced while the view is open, on a premise measured false.**
+The shadow is the operand of the capture diff — the mechanism the entire P0 repair rests on. Chartered as
+**WP89 (B42)**, with the audit's caveat respected: whether the branch is *still* correct is **traced, not
+measured**, and AC1 must settle it before anything is repaired.
+
+### 2. The signal register collided again — THREE times, after the rule that declared it fixed
+
+`S50`, `S56` and `S57` each name **two different things**; `S58` and `S60` were never allocated at all.
+I wrote the rule (S42+ Dispatcher-allocated) and then let batches keep allocating. **Consequence, stated
+by the audit: the open-items list cannot be treated as an audit.** It is a set of leads.
+
+### 3. I11's protection expires with the session — P0-class, live, and unowned through FOURTEEN work packages
+
+Verified: `canvas-sync.ts:1458` still documents the ledger as **per-SESSION**; `canvas-persistence.ts:478`
+still reads *"Doc wins. Never read the file."*; and `grep -lF "SeedRefusalLedger"` over **all 87 charters**
+returns **three, all DONE**. **Nothing owns it.** It is the oldest open P0 in this file, and I chartered
+fourteen other things past it. Chartered as **WP90 (B42)**.
+
+### Numbers in THIS file that were stale or wrong
+
+| claim | correct |
+|---|---|
+| `Chartered total: 78 WPs` | **87 live** (WP1–83, 85–88) — corrected above |
+| `Implemented: WP1–30, 41–49, …` | **67 implemented**; omitted WP36/37/38/77–83/85–88 |
+| `P4 — WP36–38 ⬜ queued` | **P4 IS COMPLETE** |
+| `1687 tests / 283 files` | **2471 / 347 / 0 failed**, re-measured at `5947d63` |
+| canvas `19/19` | **never a product measurement** (S45) |
+| canvas `13/18` | same artefact, **and I mis-attributed it to WP82's latch** |
+| canvas `21/21` | correct as the first product figure — **but five checks are schedule-dependent** |
+| `S39 explicitly NOT repaired` | **superseded** — WP88 repaired both halves |
+| WP38 baseline `2383` | **2398**; the 15-test gap is `server/node_modules` missing in a worktree |
+
+**The audit's own closing judgement, which I accept:** the run has correctly recorded that its instruments
+contained the defect they were built to find — **and has not applied that lesson to its own bookkeeping.**
+Rule 5 (*a line number is a measurement*) is stated, agreed, and broken repeatedly: `main.ts` by 2/24/20
+lines, `log-view.ts:71`→`:72`, `canvas-sync.ts:2819`→`:3019`, and now a citation into a file that never
+contained it. **The countermeasure that has worked is citing by symbol with a rule-15 pattern. The one
+that has not worked is remembering to re-measure.**
