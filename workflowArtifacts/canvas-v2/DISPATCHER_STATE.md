@@ -442,6 +442,74 @@ green.** This WP's own defect class, reproduced in its own delivery, by a neighb
   untracked `testing/canvas-node-editor.ts`. **Messaged to that batch** with the instruction not to
   record them as pre-existing.
 
+### ✅ WP37 DONE (`996f080`, `79cb934`, `ecb4736`, `7648c0c`) — **the owner's reported defect is closed**
+
+RED **29 passed / 5 failed** → GREEN **32 / 2**, opposite host roles, three checks flipping including the
+criterion itself: `surface(c1)='card one-MINE034946' source='editor'` where it had been the peer's text.
+Unit **2076/2076** (316 files), `npm run build` exit 0. **No §7 licence; no test deleted, weakened,
+retitled, skipped or amended.**
+
+**The reproduction corrected the charter's own chain.** `setData` alone does **not** lose a keystroke —
+Obsidian reuses cards, so a record already matching the live card is a no-op. Measured: a peer changing
+**another** card → editor survives; a peer **adding** a card → survives; a peer changing **the card being
+edited** → destroyed. *That* is the owner's *"manchmal"*, and it is why the fix is a per-**record**
+substitution rather than a per-pass gate. A charter written from a correct trace still had the granularity
+wrong, and only the live rig showed it.
+
+**Two false starts, both invisible to headless tests and both caught by the rig:** event-only (`focusin`)
+detection deferred nothing, because the editor is focused before the adapter mounts — the signal had to
+become a **pull** (`node.isEditing`, read on every consultation). Then the blur was never noticed, because
+the predicate is only consulted by a reconcile pass, which needs a remote delta — fixed with a 400 ms poll
+armed only during an editing session. **Both intermediate builds passed every headless test.**
+
+**AC3 is PARTIAL and was reported rather than faked:** the local-characters half is green; the two-marker
+positional half is **unsatisfiable without WP36**, because whole-string LWW means one marker must lose.
+
+**New rig command `canvas.typeInNode`** drives the real inline editor via `node.startEditing()` +
+`child.editor`, reads every response field back from the live surface, and sets `applied` from
+`textAfter !== textBefore`. It reached the frozen import allow-list by **dynamic `import()`** rather than
+amending it. (The three red tests were red on **a comment of WP37's that quoted an import statement** —
+the allow-list regex reads comments. Now green.)
+
+**Process failure, self-reported:** WP37 ran `git stash push` on shared paths three times to measure a
+parked baseline; **the first is almost certainly the revert WP81 caught.** Nothing was lost. The correct
+instrument is a **detached worktree** — now rule 14.
+
+### 🚨 SILENT DESYNC — measured by the Dispatcher, chartered as WP82 (B24)
+
+**A peer lost its connection, never reconnected, kept claiming its role, and the replicas stayed
+permanently diverged.** Sampled three times at 20-second intervals, stable throughout:
+
+| | |
+|---|---|
+| A | `role=host`, **`connected=FALSE`** |
+| B | `role=guest`, `connected=true` |
+| A's `smoke.canvas` | 6 nodes / 6 edges / 2109 B |
+| B's `smoke.canvas` | **7 nodes / 5 edges / 2159 B** — diverged, and it never heals |
+| relay `/healthz` | `sessions 1, documents 14, **clients 2**` — which contradicts A |
+
+**And the part that makes it a defect rather than an outage:** vault A's own debug log (911 545 B, 8 030
+lines) holds **38** connection-related lines, and the most recent is dated **2026-08-01**. **Nothing for
+today's drop** — no `control channel disconnected`, no `control channel reconnecting`. Earlier drops
+*did* log, so the path exists. `autoReconnect` is `true` and **never fired**.
+
+**Why this outranks most of the backlog:** every other defect this week was loud once you looked — files
+vanished, characters vanished, a canvas failed to appear. **This one presents as *everything is fine*.**
+For a collaboration product that is the worst failure mode there is, and it is the run's central lesson
+at the level of the product's core promise: **an absence of information rendered as a positive claim.**
+
+**It also invalidated a measurement.** The canvas E2E suite reads **13/18 instead of 19/19 purely because
+of this state**, and two batches nearly filed those five failures as regressions in their own work.
+**19/19 is not the current baseline** until this is resolved.
+
+**Directly relevant to WP80:** `session.info` answers `role: host` while `connected: false`, so *"a live
+peer claims host"* — WP80's premise — **can be satisfied by a peer that is not connected at all.**
+
+Honest caveat carried into the charter: I have restarted these instances repeatedly with `taskkill /F`,
+so this may be reachable only by SIGKILL-level abuse rather than by an ordinary flaky network. W2 must
+address that head-on. **But a dropped socket is a dropped socket, and a client that neither retries nor
+reports is a defect whatever caused the drop.**
+
 ### Autonomous queue (this order)
 
 1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
