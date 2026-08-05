@@ -270,7 +270,26 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+*Filled by Worker 3. **No blind sets and no ledger rows** — discontinued by the 2026-08-05
+workflow change (`DISPATCHER_STATE.md`, AUTONOMOUS MODE). AC4's three named injections are
+ordinary tests in this suite; the property is a reachability fact about a parsed module, not
+something observable in an editor.*
+
+All under `workflowArtifacts/canvas-v2/tests/visible/WP78/`. **40 tests, 479 executed
+assertions over all 175 assert sites, 0 failed.**
+
+| file | AC | cases |
+|---|---|---|
+| `_spawn_oracle.py` | — | the parse-only oracle deciding (a)–(d), with `assert_found(...)` as a **built-in** positive control. Reusable by WP71. |
+| `_prerepair.py` | — | the "before" harness: a **byte copy** of the package at `d9390ba` from git's object store, blob sha re-derived per file. Parsed, never imported. |
+| `test_ac1_runner_required_no_substitution_visible.py` | AC1 | T1 parsed signature (keyword-only, no default, annotation not `Optional`) · T2 body holds exactly one use of `runner`, as the callee, no `or`/`IfExp`/`is None`/rebinding · T3 no module-level `DEFAULT_RUNNER`, no `functools.partial`, only the `Runner` type alias · T4 opt-in symbol public, exported, documented, defaults nothing, referenced nowhere · T5 `_default_runner` does not survive · T6 bare call is a `TypeError` **naming `runner`** · T7/T7b explicit runner still builds, `BuildResult` field-for-field WP69's, and the refusal paths still refuse · T8 the spawn was gated, **not deleted** |
+| `test_ac2_no_spawn_reachable_visible.py` | AC2 | T1a the enumerated, attributed, **pinned-at-2** spawn census over all 11 modules · T2b defaults-nothing / substituted-nowhere / referenced-nowhere · T3c the parsed signature · T4d every repository call site supplies `runner`, with the one bare-call-under-assertion admitted **structurally** · T4e control proving that exemption is not a blanket · T5 ×7 grep-defeating spellings all caught · T5b innocent module produces zero hits · T6 no module-scope `subprocess` binding anywhere |
+| `test_ac3_wp69_guarantees_unchanged_visible.py` | AC3 | T1 build command · T2 oracle = exit status **and** all three markers, each half vetoing alone, existence/mtime never consulted · T3 non-integer status refused at both levels · T4 failed build leaves the bundle byte-untouched · T5 install/restore neither calls the build nor reads `runner` (structural, with control) · T6 install→restore byte-exact round trip · T7 **git-measured**: no WP69 test file changed since the baseline, 22 call sites intact · T8 `__all__` gained exactly one name |
+| `test_ac4_falsification_visible.py` | AC4 | baseline (repaired tree green on every criterion) · byte-copy verification · **(i)** pre-repair byte copy reddens AC1/AC2(a)/(b)/(c) · **(i′)** targeted reintroduction, AC2(a) stays green · **(ii)** second spawn in `scratch.py` reddens AC2(a) **naming module and line**, neighbours stay green · **(ii′)** the same via `importlib.import_module` · **(iii)** rename reddens the **positive control** · **(iii′)** the vacuity reproduced: the naive check passes on the renamed tree because it found *nothing* · **(iii″)** an empty parse also reddens the control |
+
+**Gate:** `visible-console` `run_python` on the absolute path `H:\tmp\wp78_gate.py`
+(console `70397fdc`, exit 0). Headless throughout — no Obsidian, no npm build, no socket, no
+vault.
 
 ---
 
@@ -280,19 +299,49 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ---
 
-## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
+## 8. Autonomous Execution Plan (filled by Worker 3, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** re-measured against the tree at `d9390ba` (line numbers had
+  moved under WP77): `install.py:544` `def build_e2e_bundle(plugin_dir, *, runner:
+  Optional[Runner] = None)`, `:557` `(runner or _default_runner)(...)`, `_default_runner` at
+  `:462` with `subprocess.run` at `:476` and `import subprocess` at module scope `:101`.
+  Package spawn census **2**. Call sites **22**, all `runner=` keyword, all tests, **0** bare,
+  **0** non-test — every one of the charter's §3 measurements confirmed independently. C69's
+  four ACs re-read in full: **none** mentions `runner`, its default or `subprocess`, so the
+  §7 disposition holds and no licence is taken.
+- **Approach:** remove the default; rename `_default_runner` → `spawning_subprocess_runner`
+  and export it; **move `import subprocess` into that function** so the package binds it at
+  module scope nowhere and C71 AC4's *"every reference occurs inside the one named opt-in
+  runner"* is literally true rather than needing a gloss (the charter's own hard constraint
+  says both *"remain, inside one named opt-in function"*); build a parse-only oracle with the
+  positive control **inside** it; falsify with the pre-repair byte copy plus targeted
+  injections.
+- **Judgement calls made autonomously, each recorded in the report:** (1) the function-local
+  import, above; (2) the one bare call inside `pytest.raises(TypeError)` is admitted
+  **structurally** rather than by allowlist, with its own control; (3) the `plugin/` npm gate
+  was **not** run — batch instruction plus a live agent in `plugin/src/**` — with the
+  unchanged input offered as evidence instead (S22).
+- **Fallback path if all attempts fail:** not needed; attempt 1 succeeded.
 
 ---
 
-## 9. Handover Summary (filled by Coder Sub-Agent on completion)
+## 9. Handover Summary (filled by Worker 3 on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs. `build_e2e_bundle(plugin_dir)` is a `TypeError` at the
+  call; `spawning_subprocess_runner` is public, exported, and the default value of nothing;
+  the package's **2** spawn primitives are both inside it and `subprocess` is bound at module
+  scope nowhere; the property is decided by an AST walk with a positive control that
+  injection (iii) is shown to redden. WP69's build, oracle, install and byte-exact restore are
+  behaviourally untouched: **279/279** WP69 tests pass, identical to the pre-change baseline,
+  and the 22 call sites are git-measured byte-unchanged. `T3_SharedContract.md` §9a pins the
+  symbol for WP71/WP7 as a pure insertion (**zero** deletion lines in that diff).
+- **What remains open:** nothing in scope. Carried up: **S18** (`relay.py:701`
+  `LocalRelay(room_minter=None)` → `POST /rooms`, the only write-shaped default; not a spawn,
+  no owner), **S19** (`__init__.py`'s `__all__` still omits `install`, `provisioning`,
+  `relay`), **S17**, and two new: **S21** (the parameter-default scanner has no live control
+  in this package — all 42 injectable sites default to `None`) and **S22** (the `plugin/` npm
+  gate deliberately not run; Worker 4 may re-run it once `plugin/src/**` is quiet).
+- **Final status:** `DONE`, risk_flag `NONE`. Commits `303292b`, `4cb472a`, `d5b4e06`.
 
 ---
 
