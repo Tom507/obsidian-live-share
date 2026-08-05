@@ -459,6 +459,20 @@ export interface E2EControlHost {
    */
   promoteToHost?(): Promise<{ role: string | null; publish: ManifestPublishDecision | null }>;
   demoteToGuest?(): Promise<{ role: string | null }>;
+  /**
+   * WP81 AC1 — DEFERRED BY WP81, LANDED HERE.
+   *
+   * WP81 was barred from editing this file because WP37 owned it that batch, so
+   * its one additive `routeCommand` case was written out in
+   * `ImplementationReport_WP81.md` §7 and left unlanded. WP80 touches this file,
+   * so it lands it — the body is WP81's, unchanged in substance, on the same
+   * optional-host-method precedent as `canvasFile`.
+   *
+   * Returns the sink's OWN state ("is the log working, and where is it?"),
+   * never an echo of settings, and carries no `data.json` value but the resolved
+   * log path.
+   */
+  sinkState?(): unknown;
 }
 
 /**
@@ -703,6 +717,13 @@ export async function routeCommand(
         }
         return ok(await host.demoteToGuest());
       }
+      // --- WP81 AC1, deferred by WP81 and landed by WP80 ---------------------
+      case "plugin.sinkState": {
+        if (typeof host.sinkState !== "function") {
+          throw new Error("plugin.sinkState unavailable on this host");
+        }
+        return ok(host.sinkState());
+      }
       // --- WP37 (C37 AC6) — the typing instrument ---------------------------
       //
       // ADDITIVE. A new `case` and a new optional host method, on the
@@ -936,6 +957,8 @@ export interface E2EPluginLike {
   /** WP80 — the real role transitions, for AC3/AC4. */
   promoteToHost?: (reason?: string) => Promise<void>;
   demoteToGuest?: () => Promise<void>;
+  /** WP81 AC1 — the debug sink's own state, read from the logger, not from settings. */
+  logger?: { getSinkState?: () => unknown };
   saveSettings?: () => Promise<void> | void;
   // --- WP46 identity sources (all optional; every one degrades, none is guessed) ---
   /** Obsidian's `App`. `appId` is the stable per-vault identity; the adapter knows the path. */
@@ -1351,6 +1374,17 @@ export function buildPluginHost(
       }
       await plugin.demoteToGuest();
       return { role: plugin.settings.role ?? null };
+    },
+
+    // WP81 AC1 (deferred by WP81, landed by WP80). The logger's own accessor,
+    // invoked — not a re-derivation of the sink's state from settings, which is
+    // precisely the confusion the sink state exists to end.
+    sinkState() {
+      const logger = plugin.logger;
+      if (!logger || typeof logger.getSinkState !== "function") {
+        throw new Error("plugin.sinkState unavailable: no debug logger on this host");
+      }
+      return logger.getSinkState();
     },
 
     // --- WP37 (C37 AC6) — the typing instrument ----------------------------
