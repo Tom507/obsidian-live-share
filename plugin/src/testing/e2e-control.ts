@@ -281,6 +281,64 @@ export interface CanvasFileAdapterLike {
   read?(path: string): Promise<string>;
 }
 
+// --- WP37 (C37 AC6) — structural mirror of the typing instrument's contract --
+//
+// Deliberately NOT imported, for exactly the reason `StaleReconcileDecision`
+// above is not: WP49 AC4 / WP72 AC4 froze this module's static import allow-list
+// to five specifiers, and spending that guard to save a type declaration would
+// weaken a landed acceptance criterion to fit new code. WP37 holds no §7 licence
+// of any class, so the allow-list is respected rather than amended.
+//
+// NOTE for whoever edits this file next: those three tests scan this SOURCE with a
+// plain regex, so a comment that merely *quotes* an import statement counts as an
+// import. Do not write one here.
+//
+// Nothing is lost by mirroring. `buildPluginHost` reaches the real driver through
+// a DYNAMIC `import()` — which introduces no bare specifier and no new
+// dependency — and hands its result back through these declarations, so the
+// compiler structurally checks the real `driveCanvasNodeEdit` return type against
+// this shape at that call site. If the two ever diverge, `tsc` fails.
+// (Single definer: `testing/canvas-node-editor.ts`.)
+
+export interface CanvasNodeEditRequest {
+  path: string;
+  nodeId: string;
+  text?: string;
+  blur?: boolean;
+  open?: boolean;
+}
+
+export interface CanvasNodeEditResult {
+  ok: boolean;
+  error?: string;
+  reason?: string;
+  path: string;
+  nodeId: string;
+  canvasOpen: boolean;
+  opened: boolean;
+  nodeFound: boolean;
+  liveNodeIds: string[];
+  editingStarted: boolean;
+  editingReported: boolean | null;
+  surface: string;
+  focusTaken: boolean;
+  textBefore: string | null;
+  textAfter: string | null;
+  /** `"editor" | "dom" | "model" | "none"` — which surface the text was read from. */
+  textSource: string;
+  /** MEASURED by comparing two reads of the live surface — never a literal. */
+  applied: boolean;
+  inserted: string;
+  blurred: boolean;
+  probe: {
+    hasStartEditing: boolean;
+    hasNodeEl: boolean;
+    hasChild: boolean;
+    editorMembers: string[];
+    contenteditableFound: boolean;
+  };
+}
+
 export interface E2EControlHost {
   sessionInfo(): {
     clientId: string;
@@ -344,6 +402,17 @@ export interface E2EControlHost {
     freshPublication: boolean;
     hostPeers: string[];
   };
+  // --- WP37 (C37 AC6) — the typing instrument -------------------------------
+  // Optional on the *interface*, exactly like `canvasFile` / `clearFlags` above,
+  // so every hand-rolled fake host in the existing tests stays valid and
+  // `routeCommand` turns an absent method into a structured 400 rather than a
+  // crash. ADDITIVE ONLY: no command above changes shape or behaviour.
+  //
+  // It is deliberately NOT `simulateEdit`'s shape. `simulateEdit` writes the
+  // `Y.Doc` and returns a hardcoded `applied: true`; this one writes neither the
+  // doc nor the file, and every field of its result — `applied` included — is
+  // read back from the live editing surface after the attempt.
+  typeInNode?(req: CanvasNodeEditRequest): Promise<CanvasNodeEditResult>;
   reconcileStale?(): Promise<StaleReconcileDecision>;
   publishManifest?(): Promise<{ published: boolean; reason?: string }>;
 }
@@ -571,6 +640,40 @@ export async function routeCommand(
         }
         return ok(await host.publishManifest());
       }
+      // --- WP37 (C37 AC6) — the typing instrument ---------------------------
+      //
+      // ADDITIVE. A new `case` and a new optional host method, on the
+      // `canvas.file` / `canvas.clearFlags` precedent. No command above changes
+      // shape or behaviour, and `canvas.simulateEdit` is neither extended,
+      // repaired nor called from here.
+      //
+      // The response is `ok:true` for "the instrument ran and here is what it
+      // measured" — including a run in which nothing was applied, which the
+      // caller reads off `applied` / `focusTaken` / `textAfter`. The two
+      // conditions the caller can create on purpose (the node does not exist,
+      // the canvas is not open) come back as `ok:true` with `result.ok === false`
+      // and a named `error`, so a scenario can assert the FAILURE SHAPE rather
+      // than an HTTP code. That is deliberate: a structured failure the driver
+      // can read is worth more than a 400 it has to parse out of a string.
+      case "canvas.typeInNode": {
+        if (typeof host.typeInNode !== "function") {
+          throw new Error("canvas.typeInNode unavailable on this host");
+        }
+        const path = requireString(args, "path");
+        const nodeId = requireString(args, "nodeId");
+        if (args.text !== undefined && typeof args.text !== "string") {
+          throw new Error("invalid arg: 'text' must be a string when present");
+        }
+        return ok(
+          await host.typeInNode({
+            path,
+            nodeId,
+            text: args.text as string | undefined,
+            blur: args.blur === true,
+            open: args.open === true,
+          }),
+        );
+      }
       default:
         return badRequest(`unknown cmd: ${cmd}`);
     }
@@ -770,8 +873,17 @@ export interface E2EPluginLike {
   /** Obsidian's `App`. `appId` is the stable per-vault identity; the adapter knows the path. */
   app?: {
     appId?: string;
+    /**
+     * WP37 (AC6) — Obsidian's `Workspace`. Held as `unknown` for the same reason
+     * `vault.adapter` below is: typing it would make the real `LiveSharePlugin`
+     * stop satisfying this interface. It is narrowed through one guarded
+     * resolver (`resolveCanvasEditorDeps`) and every access is validated.
+     */
+    workspace?: unknown;
     vault?: {
       getName?(): string;
+      /** WP37 (AC6) — resolve a `.canvas` path to a file so a leaf can open it. */
+      getAbstractFileByPath?(path: string): unknown;
       /**
        * Obsidian's `DataAdapter`. `getBasePath()` exists on the desktop
        * `FileSystemAdapter` but is NOT on the public `DataAdapter` type, so typing it
@@ -946,6 +1058,56 @@ async function readCanvasBytes(
   throw new Error("file adapter exposes no reader");
 }
 
+// --- WP37 (C37 AC6) — resolving the typing instrument's world ---------------
+//
+// Every member below is READ from Obsidian's own runtime and validated before
+// use. Nothing here writes: no vault write, no adapter write, no `Y.Doc`
+// transaction, no `requestSave`. The only mutation this whole path can cause is
+// the one a keystroke causes — characters in an open editor.
+
+/** Views of the canvas leaves Obsidian currently has open, in workspace order. */
+function resolveCanvasViews(plugin: E2EPluginLike): Array<{ canvas?: unknown; file?: { path?: unknown } }> {
+  const workspace = plugin.app?.workspace as
+    | { getLeavesOfType?: (t: string) => unknown[] }
+    | undefined;
+  if (!workspace || typeof workspace.getLeavesOfType !== "function") return [];
+  let leaves: unknown[];
+  try {
+    leaves = workspace.getLeavesOfType("canvas") ?? [];
+  } catch {
+    return [];
+  }
+  const views: Array<{ canvas?: unknown; file?: { path?: unknown } }> = [];
+  for (const leaf of Array.isArray(leaves) ? leaves : []) {
+    const view = (leaf as { view?: unknown } | null)?.view;
+    if (view && typeof view === "object") {
+      views.push(view as { canvas?: unknown; file?: { path?: unknown } });
+    }
+  }
+  return views;
+}
+
+/** Open `path` in a workspace leaf. Returns whether a leaf was actually opened. */
+async function openCanvasLeaf(plugin: E2EPluginLike, path: string): Promise<boolean> {
+  const workspace = plugin.app?.workspace as
+    | { getLeaf?: (newLeaf?: boolean) => unknown }
+    | undefined;
+  const vault = plugin.app?.vault;
+  if (!workspace || typeof workspace.getLeaf !== "function") return false;
+  if (!vault || typeof vault.getAbstractFileByPath !== "function") return false;
+  const file = vault.getAbstractFileByPath(path);
+  if (!file) return false;
+  const leaf = workspace.getLeaf(false) as { openFile?: (f: unknown) => Promise<void> } | null;
+  if (!leaf || typeof leaf.openFile !== "function") return false;
+  await leaf.openFile(file);
+  return true;
+}
+
+/** `document` when there is a DOM (the Electron renderer), else `null`. */
+function resolveDocument(): Document | null {
+  return typeof document === "undefined" ? null : document;
+}
+
 /**
  * Build the concrete host over a live plugin. `emit` and `bump` feed the SSE
  * channel + quiescence tracking from binding instrumentation.
@@ -1063,6 +1225,31 @@ export function buildPluginHost(
       if (!mm) return { published: false, reason: "no manifest manager on this host" };
       await mm.publishManifest({ purge: true });
       return { published: true };
+    },
+
+    // --- WP37 (C37 AC6) — the typing instrument ----------------------------
+    //
+    // The driver lives in `testing/canvas-node-editor.ts` and is reached through
+    // a DYNAMIC import: a static one would add a sixth specifier to the
+    // allow-list WP49/WP72 froze, and WP37 may not amend a landed assertion.
+    // `import()` adds no specifier and no dependency, and the compiler still
+    // checks the driver's real return type against the `CanvasNodeEditResult`
+    // declared above at this very call site.
+    //
+    // NOTE what is NOT here: no `getCanvasDocHandle`, no `doc.transact`, no
+    // vault write, no `requestSave`. This method cannot reach the doc or the
+    // file even by accident, which is the structural half of AC6.
+    async typeInNode(req) {
+      const mod = await import("./canvas-node-editor");
+      return mod.driveCanvasNodeEdit(
+        {
+          canvasViews: () => resolveCanvasViews(plugin),
+          openCanvas: (path) => openCanvasLeaf(plugin, path),
+          document: () => resolveDocument(),
+          wait: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+        },
+        req,
+      );
     },
 
     async canvasOpen(path) {
