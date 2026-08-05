@@ -214,6 +214,55 @@ The Dispatcher's account is that `[07]` was measuring this door rather than the 
 
 *⚠ **Blind sets are discontinued for new work** (owner's instruction, 2026-08-05): no `blind_set1`, no `blind_set2`, no falsification-injection requirement and no `BlindVerificationLedger` row is owed by this WP. Validation is W4 against two live Obsidian instances, with headless tests carrying the rows a live instance cannot honestly produce. E2E-plugin defects found while validating go back to **W3 as a revision**.*
 
+### Live evidence — the primary oracle for AC1 and AC4
+
+`H:\tmp\liveshare_wp83_e2e.py` (idempotent, self-sweeping, `wp83-<RUN>-*` namespaced, never calls
+`canvas.simulateEdit`, never reads `data.json`). Two supporting rig scripts:
+`H:\tmp\liveshare_wp83_relaunch.py` (restarts until both peers report `connected: true`, without
+which a peer's file ops go to the `OfflineQueue` and the measurement cannot fail) and
+`H:\tmp\liveshare_wp83_install_verified.py` (copy + install + sha256 read-back out of both vaults).
+
+| scenario | what it proves | RED (`052209`) | GREEN (`053931`) |
+|---|---|---|---|
+| `[P0]` | both peers live **before** anything is created; distinct vaults; same room; roles recorded as **resumed as** | PASS ×5 | PASS ×5 |
+| `[P1]` guest→host | the raw-bytes door is the only route in this direction, so arrival **is** the door — with an ordinary `.md` created in the same second as the positive control | canvas crossed in **1.0 s**, byte-identical 338 B/338 B; control arrived | canvas absent after **45 s**; control arrived |
+| `[P2]` host→guest | file existence is **not** the oracle; the owner of the write is | `materialised=0`, `skipped(local-file)` 8→9, **0** `CANVAS WRITER … attached` lines, bytes identical | `materialised=1`, `CANVAS WRITER: … owner=CanvasPersistence attached (coldOpen=doc-wins)`, guest 169 B vs host 338 B |
+| `[P2]` host arm | S21 not widened | `materialised=0` | `materialised=0` |
+| **totals** | | **10 pass / 4 fail** | **13 pass / 0 fail / 0 skip** |
+
+Roles were **opposite** between the two runs (RED: A guest / B host · GREEN: A host / B guest), so
+S37's host lottery is a role-symmetry control here rather than a confound.
+
+### Headless test cases — the rows a live instance cannot honestly produce
+
+| file | tests | AC |
+|---|---|---|
+| `plugin/src/__tests__/v2/wp83/test_wp83_tp01_no_raw_canvas_content_push_visible.test.ts` | 6 | AC1 |
+| `plugin/src/__tests__/v2/wp83/test_wp83_tp02_callsite_coherence_visible.test.ts` | 12 | AC2 |
+| `plugin/src/__tests__/v2/wp83/test_wp83_tp03_content_emission_census_visible.test.ts` | 14 | AC3 |
+| `plugin/src/__tests__/v2/wp83/wp83-source-derivation.ts` | — (shared helper) | AC2 + AC3 |
+
+Measured in a detached worktree at `b874d39`: **RED 12 failed / 20 passed (32)** → on the fix
+**32 passed (32)**.
+
+TP01 — `.canvas` emits nothing · an ordinary `.md` in the same folder still emits `create`
+(positive control) · the refusal happens **before** the file is read · a **sidecar** path emits
+nothing (so the guard is the whole shared predicate, not a private `.canvas` test) · folder creates
+still propagate, including a folder named `x.canvas` · `onFileDelete` / `onFileRename` byte-identical.
+
+TP02 — every production call site of the predicate appears in the delimited call-site block at
+**module AND function** granularity · every function named in the block is a real call site (no
+stale row) · `setActiveFile` and `onFileCreate` pinned by name · the derivation reddens on a
+synthetic uncovered module and returns zero for a module that names the predicate only in comments ·
+block B's *"exhaustive in both directions"* sentence is still present, still attached to
+`isSidecarPath`, and is **not** inside the call-site block.
+
+TP03 — census of **16 distinct** emission keys pinned with `toEqual` plus the raw occurrence count
+pinned as **17** · unguarded residue pinned as **7 named functions**, each with a written reason,
+coverage decided structurally by fixpoint rather than by an allowlist · positive control that every
+seam name is still a real declaration in `file-ops.ts` · the private-`.canvas`-speller census
+(`canvas-mirror.ts`, `vault-events.ts`, `utils.ts`) pinned so a fourth copy reddens by name.
+
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
@@ -224,17 +273,41 @@ The Dispatcher's account is that `[07]` was measuring this door rather than the 
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** confirmed live on the unmodified `b874d39` bundle. A `.canvas`
+  written into the shared folder crossed the file-op channel **byte-for-byte in 1.0 s, in both
+  directions**, while an ordinary `.md` created in the same second proved the channel was up. On the
+  host→guest run the mirror pass then answered `skip-local-file` — correctly — so the guest held the
+  file with `materialised=0` and **no writer attached**. That is `[07]`'s confound, measured.
+- **Approach:** one `if (skipsAutoTextSync(wirePath)) return;` in `onFileCreate`, placed after the
+  folder branch and before the read, taking the **shared predicate imported from `utils.ts`**. The
+  contract comment's block A demoted to a tree claim, delimited so a test can read it, gaining the
+  stale `setActiveFile` row and WP83's own; block B byte-unchanged. Two derivations added: a
+  function-granularity call-site coherence check and a structural content-emission census with a
+  named, reasoned residue.
+- **Fallback path if all attempts fail:** not needed — attempt 1.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs, each with RED→GREEN evidence.
+  AC1 live RED 10/4 → GREEN 13/0/0 with the positive control passing in both runs and the roles
+  opposite between them; AC1 headless RED→GREEN. AC2 corrected in exactly the three chartered ways,
+  block B and `test_tp09` byte-unchanged (proven by the diff hunk ranges), and the charter's specific
+  RED — `background-sync.ts::setActiveFile` — measured under the most generous reading of the old
+  comment, which was **green at module granularity**, confirming the named vacuity. AC3 pinned as a
+  16-key census plus a 7-member reasoned residue, with the seam names asserted against the module so
+  the detector cannot go quietly empty. AC4's guest receipt quoted verbatim with `materialised=1`
+  and the host arm at `materialised=0`.
+  Gates: `npm run build` exit 0 (isolated worktree **and** shared repo), `npm test` **2151/2151, 0
+  failed** (321 files) in both. The two `w4-canvas-integrity` consult-array assertions are **green
+  and untouched — no escalation**.
+- **What remains open:** nothing in scope. Carried up, unowned: **S46** (`plugin/main.js` is a
+  contended artefact — an install can silently ship a sibling's bundle, measured), **S47** (a peer
+  with `connected: false` sends no file op at all, so any absence measured on it is a green that
+  cannot fail), **S48** (C83 AC1's sidecar row was an assumption stated as a measurement — the row
+  was RED too). S43 confirmed, unchanged, and now pinned by name in AC3's residue.
+- **Final status:** `DONE`.
 
 ---
 
