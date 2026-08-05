@@ -1695,3 +1695,43 @@ raises WP82's priority: until it lands, absence-based greens across the whole su
 **S48** — C83 AC1's sidecar row was *"emits nothing, as it must have already"* — an **assumption stated
 as a measurement**. It did not; nothing was guarded at that seam at all, so the row was RED too.
 Unreachable in practice, no defect follows — but the phrasing is the tell.
+
+### ✅ WP86 DONE (`1494319`, `affff5f`) — producer 5 reproduced, and the trace was wrong in the worse direction
+
+**It destroyed a shared folder AND the file inside it, on BOTH vaults** (`folder present=False`,
+`keeper.md present=False`, host and guest). The severity was not overstated.
+
+**But the traced mechanism was wrong, and correcting it removes the escape hatch.** `updateFile` `await`s
+`hashContent` **between** the parent-directory `delete` and the file `set`, which **ends the implicit
+Yjs transaction**. So producer 5 is **two `Y.Map` events, not one** — measured from the production
+route's own disposition on both vaults (`removed:[folder], added:[], renames:[]`). Therefore
+`added.length>0 && removed.length>0` is never true for it, **the rename arm is unreachable**, the
+folder-into-itself throw **cannot occur**, and `trashFile(TFolder)` was not one of two possible outcomes
+— **it was the only one.** The precondition the charter thought would decide between the branches turned
+out not to matter at all. Carried up as **S50**; the fix is producing-side, unowned.
+
+Unit **2157/2157** in an isolated worktree (baseline 2136 — **+21, nothing moved**); the shared tree's 13
+failures were **proven** to be WP36's uncommitted work by those two rows, not assumed. Live RED **31/7/0**
+→ shipped **38/0/4**, and **the 4 skips are honest**: two scenarios cannot enter the route on a shipped
+bundle because WP80's gate refuses the truncated purge, and the suite records that with its reason
+instead of passing vacuously.
+
+**AC4b reported an uncomfortable truth rather than a green:** the rename observable held (old gone, new
+present, hash identical) — but it arrived over the **file-op route, not R2** (`renames: []` in both runs).
+**R2's positive branch was never exercised live**, and the report says so.
+
+### ⚠ S53 — a green that cannot fail, INSIDE the test written to prevent it
+
+WP86's census deriver first returned an **empty** answer, because a **type literal in a signature**
+(`options?: { skipText?: boolean }`) was parsed as the function body. **Both "every derived site is
+pinned" assertions passed on that empty set.** Caught only by the *reverse* assertion — that the deriver
+finds a site known to exist.
+
+Eleventh instance of the class, and the first that is **recursive**: the vacuity was in the anti-vacuity
+instrument. *An enumeration that returns nothing satisfies "all of them are pinned" perfectly.*
+Fixed and pinned as `tp01g`.
+
+**S51** — with WP82's latch, **the op route is silently dead for a whole session**: a host delete never
+arrived and a host rename arrived as a **copy**. WP86 then leaves a *stale* file rather than destroying
+one — its named residue, now measured. **S52** — an empty folder published mid-session is never
+materialised on a guest. Both unowned.
