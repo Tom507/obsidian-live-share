@@ -1915,3 +1915,55 @@ PARTIAL **against that named limit** and WP87 is still complete.
 are **indistinguishable**; same class as WP81's swallowed `.catch`. And `abortSession`'s **three
 non-connectivity callers** destroy the same six keys on a start/join failure — not WP88's subject, but
 nobody has decided it.
+
+### ✅ TEXT ORACLE MIGRATION DONE (`214ff91`, `3744063`) — ruling UPHELD, two of its premises WRONG
+
+13 assertions re-oracled, **9 tests added, 0 deleted / skipped / retitled**. Suite **2331 (13 red) →
+2340 / 2340 / 0**, 334 files, measured 10:11.
+
+**The proof that the replacement is stronger, quantified:** on the pre-WP36 build the new oracles report
+**204 violations**, of which **111** carry the sentence *"TWO AUTHORS … ONE OF THEM LOST"*; on this tree,
+**0**. And in that same RED band there are **zero `sec` / `bytes` / `schema` violations** — so **the loss
+is provably invisible to every convergence family.** That is this project's central thesis, measured
+rather than argued. Sample: `"surfaQce s1"` where replica 2's `Z` was destroyed; now `"surfaQceZ s1"`.
+
+**Two of my ruling's premises were wrong, and the batch found both:**
+
+1. **"The value is correct in every case" is FALSE in 2 of 13.** WP36 had read vitest's **truncated
+   `YText{…}` display and never rendered it**, so two of the "correct strings" were not correct
+   (`"betgamma"` not `"gamma"`; `"peer two"` not `"contested"`). One of those also revealed that
+   `setShadowRebaseEnabled(false)` **no longer disarms the text path** — WP36 closed that leak through a
+   second, independent mechanism and nobody noticed.
+2. **The fuzzer cascade was fixable at source** — `buildSurface` built every replica's save from the
+   *global* trace, re-authoring peers' edits as local intent. **Fixed in the harness input, not absorbed
+   into the oracle.** Absorbing it would have been the easy, wrong move.
+
+**One clause could NOT be made strictly stronger, and the batch said so** rather than claiming victory:
+`[lww]`'s value check for a diverged text slot moved from *"my whole string is the doc"* to *"my
+contribution is in my doc"*, which is weaker **in isolation**. The strength moved to `[text-merge]`'s
+survival clause, and **the pair is strictly stronger** — measured as 111 executed losses the old pair
+passed. That is the honest form of the answer I asked for.
+
+### 🚨 A NEW DEFECT CLASS — a representation change turns a check into one that cannot fire
+
+WP36's string → `Y.Text` change **silently disabled two equality checks, and neither went red**:
+
+- **`staleObsidianSave`'s W1 stale-push discriminant** went blind for `text`/`label` — **a `Y.Text` is
+  never `Object.is` a string.**
+- **`WriteAdmission.landed` stored a live `Y.Text` reference**, so `[lww]` **stopped measuring admission
+  and started measuring convergence** — a different property, silently substituted.
+
+**This class needs no bad test and no bad code.** A correct check plus a legitimate representation change
+equals a check that stops discriminating — **and the suite stays green, so nothing signals it.** It is
+the run's central failure mode arriving through a door nobody was watching.
+
+The finding batch's own words: *"Worth a sweep; **I do not believe it is limited to these two.**"*
+Dispatched as **B35**, with a derived candidate set and a **positive control that the deriver finds both
+known members** — because WP86's census deriver returned an empty set and both "every site is pinned"
+assertions passed on it.
+
+**Also carried up:** `npm run build` **is not a safe gate command in a shared tree** — it overwrote the
+shared gitignored `plugin/main.js` with a *production* bundle, and the bundle now on disk is **a mixture
+of two batches' uncommitted work**. And the honest canvas-E2E baseline that the S45 fix unblocked is
+**still unmeasured** — deliberately not run by this batch, since no product behaviour changed and running
+it would have re-contended for `plugin/main.js`.
