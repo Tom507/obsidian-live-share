@@ -7,6 +7,7 @@ import * as Y from "yjs";
 import type { LiveShareSettings } from "../types";
 import { normalizePath, toWsUrl } from "../utils";
 import type { E2ECrypto } from "./crypto";
+import { LINK_READY_STATE, type LinkLifecycleEvent, type LinkSnapshot } from "./link-state";
 import type { CheckpointTriggerReason, ReplayEndReason } from "./mux-protocol";
 import {
   MUX_AWARENESS,
@@ -150,8 +151,115 @@ export class SyncManager {
   private peerCounts = new Map<string, number>();
   private updatesSinceCheckpoint = new Map<string, number>();
 
+  // --- WP82 (AC2/AC3/AC4/AC5) ------------------------------------------------
+  // Before WP82 `main.ts:975` was the ONLY `"connection"` log site in the whole
+  // plugin and it narrated the control channel only. `SyncManager` held a logger
+  // and used it for exactly one metric. The mux link was invisible: if the sync
+  // socket died, the status bar still read `hosting`.
+  private lifecycleCallback: ((event: LinkLifecycleEvent) => void) | null = null;
+  private lastChangeAt: number | null = null;
+  private retryChainEnded = false;
+  /** Set only by the E2E break seam. See {@link breakLink}. */
+  private silenced = false;
+  /** `true` while a pong deadline is force-closing this socket (AC4 discriminator). */
+  private forcedClose = false;
+
   constructor(settings: LiveShareSettings) {
     this.settings = settings;
+  }
+
+  /**
+   * WP82 (AC4) — the mux link narrates its own lifecycle, as the control link
+   * already did. Wiring only: this class emits facts, the caller decides what to
+   * log and what to announce.
+   */
+  onLifecycle(callback: (event: LinkLifecycleEvent) => void): void {
+    this.lifecycleCallback = callback;
+  }
+
+  private emitLifecycle(event: LinkLifecycleEvent): void {
+    this.lastChangeAt = Date.now();
+    this.lifecycleCallback?.(event);
+  }
+
+  /**
+   * WP82 (AC2) — the mux link's own facts, every one READ AT CALL TIME. The
+   * `readyState` comes from the socket object, never from `isConnected`.
+   */
+  getLinkSnapshot(believedConnected: boolean): LinkSnapshot {
+    return {
+      link: "mux",
+      hasSocket: this.ws !== null,
+      readyState: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
+      believedConnected,
+      reconnectAttempts: this.reconnectAttempts,
+      maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+      retryChainEnded: this.retryChainEnded,
+      lastChangeAt: this.lastChangeAt,
+      silenced: this.silenced,
+    };
+  }
+
+  /**
+   * WP82 (AC3) — THE BREAK SEAM for the mux link. E2E ONLY, and its only call
+   * site outside tests is inside `plugin/src/testing/`, which the production
+   * build dead-code-eliminates via `__LS_E2E__`. Reachable from no UI, command,
+   * setting or message handler. See `ControlChannel.breakLink` for the two
+   * shapes and why they are not interchangeable.
+   */
+  breakLink(shape: "close" | "silence"): {
+    link: "mux";
+    shape: "close" | "silence";
+    hadSocket: boolean;
+    readyStateBefore: number;
+    readyStateAfter: number;
+    silenced: boolean;
+  } {
+    const hadSocket = this.ws !== null;
+    const readyStateBefore = this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState;
+    if (shape === "silence") {
+      this.silenced = true;
+    } else if (this.ws) {
+      this.ws.close();
+    }
+    return {
+      link: "mux",
+      shape,
+      hadSocket,
+      readyStateBefore,
+      readyStateAfter: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
+      silenced: this.silenced,
+    };
+  }
+
+  /** WP82 (AC3) — the restore half. Required; its effect is asserted, not assumed. */
+  restoreLink(): {
+    link: "mux";
+    wasSilenced: boolean;
+    wasChainEnded: boolean;
+    reconnectStarted: boolean;
+    readyStateAfter: number;
+  } {
+    const wasSilenced = this.silenced;
+    const wasChainEnded = this.retryChainEnded || !this.shouldConnect;
+    this.silenced = false;
+    let reconnectStarted = false;
+    if (!this.isDestroyed && (this.retryChainEnded || !this.shouldConnect)) {
+      this.retryChainEnded = false;
+      this.shouldConnect = true;
+      this.reconnectAttempts = 0;
+      if (this.ws === null) {
+        this.openWebSocket();
+        reconnectStarted = true;
+      }
+    }
+    return {
+      link: "mux",
+      wasSilenced,
+      wasChainEnded,
+      reconnectStarted,
+      readyStateAfter: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
+    };
   }
 
   setE2E(e2e: E2ECrypto | null): void {
@@ -349,8 +457,29 @@ export class SyncManager {
   }
 
   private openWebSocket(): void {
-    if (this.isDestroyed) return;
-    if (!this.settings.roomId || !this.settings.serverUrl) return;
+    // WP82 / S38 — both of these early `return`s used to abandon a scheduled
+    // reconnect with no callback, no state change and no log. They still
+    // return; they no longer do it silently.
+    if (this.isDestroyed) {
+      this.emitLifecycle({
+        kind: "abandoned",
+        link: "mux",
+        at: "openWebSocket",
+        reason: "manager destroyed",
+      });
+      return;
+    }
+    if (!this.settings.roomId || !this.settings.serverUrl) {
+      this.emitLifecycle({
+        kind: "abandoned",
+        link: "mux",
+        at: "openWebSocket",
+        // Names the KEYS that were empty. Never their values — the mux URL
+        // carries `token`, `jwt` and `password` as query parameters.
+        reason: !this.settings.roomId ? "settings.roomId is empty" : "settings.serverUrl is empty",
+      });
+      return;
+    }
 
     const wsUrl = toWsUrl(this.settings.serverUrl);
     const params = new URLSearchParams({ token: this.settings.token });
@@ -360,7 +489,27 @@ export class SyncManager {
     if (userId) params.set("userId", userId);
 
     const url = `${wsUrl}/ws-mux/${encodeURIComponent(this.settings.roomId)}?${params.toString()}`;
-    const ws = new WebSocket(url);
+    // WP82 / S38 — `new WebSocket(url)` was unguarded here too, so a synchronous
+    // throw inside a reconnect timer terminated the chain permanently and
+    // invisibly. The policy is unchanged; the exit is now observable.
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch (err) {
+      this.ws = null;
+      this.shouldConnect = false;
+      this.retryChainEnded = true;
+      this.emitLifecycle({
+        kind: "gave-up",
+        link: "mux",
+        attempts: this.reconnectAttempts,
+        max: MAX_RECONNECT_ATTEMPTS,
+        cause: "socket-construction-threw",
+        detail: err instanceof Error ? err.name : "unknown",
+      });
+      this.onMaxReconnectCallback?.();
+      return;
+    }
     ws.binaryType = "arraybuffer";
     this.ws = ws;
 
@@ -369,6 +518,8 @@ export class SyncManager {
       this.hasEverConnected = true;
       this.isConnected = true;
       this.reconnectAttempts = 0;
+      this.retryChainEnded = false;
+      this.emitLifecycle({ kind: "open", link: "mux", reconnect: isReconnect });
       for (const filePath of this.docs.keys()) {
         this.synced.set(filePath, false);
         this.sendSubscribe(filePath);
@@ -394,6 +545,10 @@ export class SyncManager {
     };
 
     ws.onmessage = (event) => {
+      // WP82 (AC3) — inbound half of the `silence` shape: the socket stays OPEN
+      // and the frames are dropped before anything sees them, so only this
+      // peer's own pong deadline can end the outage.
+      if (this.silenced) return;
       const data = new Uint8Array(event.data as ArrayBuffer);
       this.handleMessage(data);
     };
@@ -402,6 +557,9 @@ export class SyncManager {
       this.ws = null;
       this.isConnected = false;
       this.stopHeartbeat();
+      const forced = this.forcedClose;
+      this.forcedClose = false;
+      this.emitLifecycle({ kind: "close", link: "mux", forced });
       this.onConnectionChangeCallback?.(false);
       for (const filePath of this.docs.keys()) {
         // WP42: the socket died mid-batch — hand what did arrive to the doc
@@ -421,19 +579,50 @@ export class SyncManager {
   }
 
   private scheduleReconnect(): void {
-    if (this.isDestroyed) return;
+    if (this.isDestroyed) {
+      this.emitLifecycle({
+        kind: "abandoned",
+        link: "mux",
+        at: "scheduleReconnect",
+        reason: "manager destroyed",
+      });
+      return;
+    }
+    // Not a silent exit: a retry is already scheduled, so the chain is alive.
     if (this.reconnectTimer) return;
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       this.shouldConnect = false;
+      this.retryChainEnded = true;
+      this.emitLifecycle({
+        kind: "gave-up",
+        link: "mux",
+        attempts: this.reconnectAttempts,
+        max: MAX_RECONNECT_ATTEMPTS,
+        cause: "exhausted",
+      });
       this.onMaxReconnectCallback?.();
       return;
     }
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
     this.reconnectAttempts++;
+    this.emitLifecycle({
+      kind: "retry",
+      link: "mux",
+      attempt: this.reconnectAttempts,
+      max: MAX_RECONNECT_ATTEMPTS,
+      delayMs: delay,
+    });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.shouldConnect) {
         this.openWebSocket();
+      } else {
+        this.emitLifecycle({
+          kind: "abandoned",
+          link: "mux",
+          at: "reconnectTimer",
+          reason: "shouldConnect went false while the retry was pending",
+        });
       }
     }, delay);
   }
@@ -604,11 +793,17 @@ export class SyncManager {
       if (this.ws?.readyState !== WebSocket.OPEN) return;
       // A pong deadline is already pending — the previous ping went unanswered.
       if (this.pongTimer) return;
-      this.ws.send(encodeMuxMessage("", MUX_PING));
+      // WP82 (AC3) — under `silence` the ping is suppressed on the wire but the
+      // deadline is still armed, which is what makes the half-dead shape end by
+      // the watchdog and not by a FIN.
+      if (!this.silenced) this.ws.send(encodeMuxMessage("", MUX_PING));
       this.pongTimer = setTimeout(() => {
         this.pongTimer = null;
         // No pong within the deadline: the socket is half-dead. Force-close so
         // the existing reconnect/backoff logic takes over.
+        // WP82 (AC4) — marked as WATCHDOG-FORCED, which is the discriminator
+        // between the two break shapes in the narration.
+        this.forcedClose = true;
         this.ws?.close();
       }, PONG_TIMEOUT_MS);
     }, HEARTBEAT_INTERVAL_MS);
@@ -842,6 +1037,9 @@ export class SyncManager {
   }
 
   private sendMux(docId: string, msgType: number, payload?: Uint8Array): void {
+    // WP82 (AC3) — outbound half of the `silence` shape. One gate, at the one
+    // place every mux frame passes through.
+    if (this.silenced) return;
     if (!this.e2e?.enabled || !payload || payload.length === 0) {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(encodeMuxMessage(docId, msgType, payload));
@@ -865,6 +1063,9 @@ export class SyncManager {
   }
 
   private async sendEncryptedSync(docId: string, payload: Uint8Array): Promise<void> {
+    // WP82 (AC3) — re-checked after the `await` in the queue: the suppression
+    // can have been applied in the gap between enqueue and send.
+    if (this.silenced) return;
     if (!this.e2e || this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       const syncType = payload[0];
@@ -882,6 +1083,8 @@ export class SyncManager {
   }
 
   private async sendEncryptedAwareness(docId: string, payload: Uint8Array): Promise<void> {
+    // WP82 (AC3) — see `sendEncryptedSync`.
+    if (this.silenced) return;
     if (!this.e2e || this.ws?.readyState !== WebSocket.OPEN) return;
     try {
       const encrypted = await this.e2e.encrypt(payload);

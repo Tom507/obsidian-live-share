@@ -6,6 +6,7 @@ import type {
 } from "../types";
 import { toWsUrl } from "../utils";
 import type { E2ECrypto } from "./crypto";
+import { LINK_READY_STATE, type LinkLifecycleEvent, type LinkSnapshot } from "./link-state";
 
 export type { ControlMessage, ControlMessageType };
 
@@ -41,9 +42,133 @@ export class ControlChannel {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // --- WP82 ----------------------------------------------------------------
+  private lifecycleCallback: ((event: LinkLifecycleEvent) => void) | null = null;
+  private lastChangeAt: number | null = null;
+  private retryChainEnded = false;
+  /** Set only by the E2E break seam. See {@link breakLink}. */
+  private silenced = false;
+  /** `true` while a pong deadline is force-closing this socket (AC4 discriminator). */
+  private forcedClose = false;
+
   constructor(settings: LiveShareSettings, e2e?: E2ECrypto) {
     this.settings = settings;
     this.e2e = e2e ?? null;
+  }
+
+  /**
+   * WP82 (AC4/AC5) — narration. Wiring only: this class emits the facts, the
+   * caller decides what to log and what to announce. Before WP82 the control
+   * channel narrated exactly four transitions through `onStateChange` and every
+   * exit from its retry chain was silent.
+   */
+  onLifecycle(callback: (event: LinkLifecycleEvent) => void): void {
+    this.lifecycleCallback = callback;
+  }
+
+  private emit(event: LinkLifecycleEvent): void {
+    this.lastChangeAt = Date.now();
+    this.lifecycleCallback?.(event);
+  }
+
+  /**
+   * WP82 (AC2) — the link's own facts, every one READ AT CALL TIME. The
+   * `readyState` comes from the socket object, never from `everConnected` or
+   * from any belief this class holds; that distinction is the whole WP.
+   */
+  getLinkSnapshot(believedConnected: boolean): LinkSnapshot {
+    return {
+      link: "control",
+      hasSocket: this.ws !== null,
+      readyState: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
+      believedConnected,
+      reconnectAttempts: this.reconnectAttempts,
+      maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+      retryChainEnded: this.retryChainEnded,
+      lastChangeAt: this.lastChangeAt,
+      silenced: this.silenced,
+    };
+  }
+
+  /**
+   * WP82 (AC3) — THE BREAK SEAM. E2E ONLY.
+   *
+   * Its only call site outside tests is inside `plugin/src/testing/`, which the
+   * production build dead-code-eliminates via `__LS_E2E__`. It is reachable
+   * from no UI, no command, no setting and no message handler: nothing in
+   * `main.ts`, `ui/`, `commands.ts` or any `channel.on(...)` handler calls it.
+   *
+   * Two shapes, and they are NOT interchangeable:
+   *
+   * - `close`   — a clean FIN from inside the process. Exercises `onclose` →
+   *               `scheduleReconnect`. The relay sees the socket go.
+   * - `silence` — the socket is left OPEN and its traffic is suppressed in both
+   *               directions, so NO `onclose` fires and only the pong deadline
+   *               can end it. This is the flaky-Wi-Fi shape, the one a `close`
+   *               cannot simulate, and the only one that exercises the
+   *               half-dead-socket watchdog at all. The relay sees nothing.
+   *
+   * Returns the socket's `readyState` immediately before and immediately after,
+   * read from the live socket — no field here is a literal.
+   */
+  breakLink(shape: "close" | "silence"): {
+    link: "control";
+    shape: "close" | "silence";
+    hadSocket: boolean;
+    readyStateBefore: number;
+    readyStateAfter: number;
+    silenced: boolean;
+  } {
+    const hadSocket = this.ws !== null;
+    const readyStateBefore = this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState;
+    if (shape === "silence") {
+      this.silenced = true;
+    } else if (this.ws) {
+      this.ws.close();
+    }
+    return {
+      link: "control",
+      shape,
+      hadSocket,
+      readyStateBefore,
+      readyStateAfter: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
+      silenced: this.silenced,
+    };
+  }
+
+  /**
+   * WP82 (AC3) — the restore half, and it is REQUIRED: a scenario that leaves a
+   * link silenced has corrupted every scenario after it. Lifts the suppression
+   * and re-arms a retry chain that has ended, WITHOUT touching `everConnected`
+   * (resetting it is S39, which routes a network outage to `auth-required`).
+   */
+  restoreLink(): {
+    link: "control";
+    wasSilenced: boolean;
+    wasChainEnded: boolean;
+    reconnectStarted: boolean;
+    readyStateAfter: number;
+  } {
+    const wasSilenced = this.silenced;
+    const wasChainEnded = this.retryChainEnded || !this.shouldConnect;
+    this.silenced = false;
+    let reconnectStarted = false;
+    if (!this.isDestroyed && (this.retryChainEnded || !this.shouldConnect)) {
+      this.retryChainEnded = false;
+      this.shouldConnect = true;
+      this.reconnectAttempts = 0;
+      if (this.ws === null) {
+        this.openWebSocket();
+        reconnectStarted = true;
+      }
+    }
+    return {
+      link: "control",
+      wasSilenced,
+      wasChainEnded,
+      reconnectStarted,
+      readyStateAfter: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
+    };
   }
 
   onStateChange(
@@ -69,23 +194,67 @@ export class ControlChannel {
   }
 
   private openWebSocket(): void {
-    if (this.isDestroyed || !this.shouldConnect) return;
+    // WP82 / S38 — this early `return` used to abandon a scheduled reconnect
+    // with no callback, no state change and no log. It is now observable. It is
+    // still a `return`: making the exit observable is this WP's subject,
+    // changing WHEN the chain gives up is a product decision with no
+    // measurement behind it and is explicitly not made here.
+    if (this.isDestroyed || !this.shouldConnect) {
+      this.emit({
+        kind: "abandoned",
+        link: "control",
+        at: "openWebSocket",
+        reason: this.isDestroyed ? "channel destroyed" : "shouldConnect is false",
+      });
+      return;
+    }
     const wsUrl = toWsUrl(this.settings.serverUrl);
     let url = `${wsUrl}/control/${encodeURIComponent(this.settings.roomId)}?token=${encodeURIComponent(this.settings.token)}`;
     if (this.settings.jwt) url += `&jwt=${encodeURIComponent(this.settings.jwt)}`;
     if (this.settings.serverPassword)
       url += `&password=${encodeURIComponent(this.settings.serverPassword)}`;
 
-    this.ws = new WebSocket(url);
+    // WP82 / S38 — `new WebSocket(url)` was unguarded, so a synchronous throw
+    // inside a reconnect timer terminated the chain permanently AND invisibly.
+    // The throw still ends the chain (the policy is unchanged); what changed is
+    // that it now says so.
+    try {
+      this.ws = new WebSocket(url);
+    } catch (err) {
+      this.ws = null;
+      this.shouldConnect = false;
+      this.retryChainEnded = true;
+      this.emit({
+        kind: "gave-up",
+        link: "control",
+        attempts: this.reconnectAttempts,
+        max: MAX_RECONNECT_ATTEMPTS,
+        cause: "socket-construction-threw",
+        // The message only. No URL, and no fragment of one: the control socket
+        // URL carries `token`, `jwt` and `password` as query parameters.
+        detail: err instanceof Error ? err.name : "unknown",
+      });
+      this.errorCallback?.("connect", err);
+      this.stateChangeCallback?.(this.everConnected ? "disconnected" : "auth-required");
+      return;
+    }
 
+    const wasReconnect = this.everConnected;
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
       this.everConnected = true;
+      this.retryChainEnded = false;
+      this.emit({ kind: "open", link: "control", reconnect: wasReconnect });
       this.stateChangeCallback?.("connected");
       this.startPing();
     };
 
     this.ws.onmessage = (event) => {
+      // WP82 (AC3) — the `silence` shape suppresses traffic in BOTH directions.
+      // Inbound frames are dropped here, before any handler runs, so the peer
+      // is deaf as well as mute and only its own pong deadline can end the
+      // outage. E2E-only: `silenced` is set by nothing but the break seam.
+      if (this.silenced) return;
       try {
         const msg = JSON.parse(
           typeof event.data === "string" ? event.data : "",
@@ -120,6 +289,9 @@ export class ControlChannel {
     this.ws.onclose = () => {
       this.stopPing();
       this.ws = null;
+      const forced = this.forcedClose;
+      this.forcedClose = false;
+      this.emit({ kind: "close", link: "control", forced });
       if (this.isDestroyed) return;
       if (this.shouldConnect) {
         this.stateChangeCallback?.("reconnecting");
@@ -135,18 +307,42 @@ export class ControlChannel {
   private scheduleReconnect(): void {
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       this.shouldConnect = false;
+      this.retryChainEnded = true;
+      this.emit({
+        kind: "gave-up",
+        link: "control",
+        attempts: this.reconnectAttempts,
+        max: MAX_RECONNECT_ATTEMPTS,
+        cause: "exhausted",
+      });
       this.stateChangeCallback?.(this.everConnected ? "disconnected" : "auth-required");
       return;
     }
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
     this.reconnectAttempts++;
+    this.emit({
+      kind: "retry",
+      link: "control",
+      attempt: this.reconnectAttempts,
+      max: MAX_RECONNECT_ATTEMPTS,
+      delayMs: delay,
+    });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.shouldConnect) this.openWebSocket();
+      else
+        this.emit({
+          kind: "abandoned",
+          link: "control",
+          at: "reconnectTimer",
+          reason: "shouldConnect went false while the retry was pending",
+        });
     }, delay);
   }
 
   send(msg: ControlMessage): void {
+    // WP82 (AC3) — outbound half of the `silence` shape.
+    if (this.silenced) return;
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     const encryptable =
       msg.type === "file-op" ||
@@ -206,7 +402,13 @@ export class ControlChannel {
     if (this.ws?.readyState !== WebSocket.OPEN) return;
     this.lastPingTime = Date.now();
     this.awaitingPong = true;
-    this.ws.send(JSON.stringify({ type: "ping", timestamp: this.lastPingTime }));
+    // WP82 (AC3) — under `silence` the ping is suppressed on the wire but the
+    // deadline below is STILL ARMED. That is precisely the flaky-Wi-Fi shape:
+    // the socket stays OPEN, the relay sees nothing change, and the only thing
+    // that can end the outage is this peer's own watchdog.
+    if (!this.silenced) {
+      this.ws.send(JSON.stringify({ type: "ping", timestamp: this.lastPingTime }));
+    }
     // Arm a pong deadline: a half-dead socket (Wi-Fi drop, no FIN) keeps
     // sending into the void, so if no pong arrives in time force a close and
     // let the existing reconnect logic re-establish the channel.
@@ -214,6 +416,11 @@ export class ControlChannel {
     this.pongTimer = setTimeout(() => {
       this.pongTimer = null;
       if (this.awaitingPong && this.ws?.readyState === WebSocket.OPEN) {
+        // WP82 (AC4) — mark the close as WATCHDOG-FORCED so the narration can
+        // distinguish it from a clean FIN. A log line that said only "closed"
+        // would satisfy a naive check while telling the reader nothing about
+        // which mechanism ended the socket.
+        this.forcedClose = true;
         this.ws.close();
       }
     }, PONG_TIMEOUT_MS);
@@ -232,6 +439,10 @@ export class ControlChannel {
   }
 
   private async encryptAndSend(msg: ControlMessage): Promise<void> {
+    // WP82 (AC3) — the encrypted arm of `send` writes to the socket directly,
+    // so the outbound suppression is re-checked here (it is `await`ed, so the
+    // flag can have been set in the gap).
+    if (this.silenced) return;
     if (!this.e2e || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     try {
       if (

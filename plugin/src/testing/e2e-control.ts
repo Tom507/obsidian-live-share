@@ -523,6 +523,33 @@ export interface E2EControlHost {
    * log path.
    */
   sinkState?(): unknown;
+  /**
+   * WP82 (AC2). ADDITIVE, READ-ONLY. Per-link state — socket existence, the
+   * LIVE `readyState` read at call time, the peer's own belief about that link
+   * as a SEPARATE field, reconnect attempts and the ceiling, whether the retry
+   * chain has ended, the last state change, the offline-queue depth and the
+   * definer's verdict.
+   *
+   * Optional on the interface, on the `vaultId` / `canvasFile` precedent, so
+   * roughly two dozen hand-rolled fake hosts carrying `controlConnected` stay
+   * valid and `npm run build` does not break repo-wide.
+   *
+   * Deliberately NOT two more names for `muxConnected` / `controlConnected`:
+   * those are exactly the values the WP82 defect corrupted, and a "per-link
+   * report" derived from them would have reported an OPEN socket as
+   * disconnected — the same defect wearing a new field name.
+   */
+  linkReport?(): unknown;
+  /**
+   * WP82 (AC3). ADDITIVE. Breaks ONE NAMED LINK (`control` | `mux`) in ONE
+   * NAMED SHAPE (`close` | `silence`), and its counterpart puts it back.
+   *
+   * This is emphatically not `canvas.simulateEdit`'s shape: nothing here
+   * returns a hardcoded literal, and the `readyState` before and after are read
+   * from the live socket on both sides of the act.
+   */
+  breakLink?(link: string, shape: string): unknown;
+  restoreLink?(link: string): unknown;
 }
 
 /**
@@ -780,6 +807,47 @@ export async function routeCommand(
           throw new Error("plugin.sinkState unavailable on this host");
         }
         return ok(host.sinkState());
+      }
+      // --- WP82, ADDITIVE ----------------------------------------------------
+      // Three cases and three optional host methods, on the `canvas.file` /
+      // `plugin.sinkState` precedent. No command above changes shape or
+      // behaviour, `session.info`'s legacy quartet is byte-unchanged, and
+      // `canvas.simulateEdit` is neither called, extended nor repaired.
+      case "link.report": {
+        if (typeof host.linkReport !== "function") {
+          throw new Error("link.report unavailable on this host");
+        }
+        return ok(host.linkReport());
+      }
+      // The break. BOTH arguments are validated HERE, at the command boundary,
+      // before the host — and therefore before any socket — is reached, so a
+      // refused call cannot half-break anything (I11 REFUSAL NEVER DESTROYS).
+      // A link that exists in the protocol but has no socket object on this
+      // instance is refused by the host under its own named reason, which is
+      // the third vacuity risk AC3 names by hand.
+      case "link.break": {
+        const link = requireString(args, "link");
+        if (link !== "control" && link !== "mux") {
+          throw new Error(`refused: unknown link '${link}' — expected 'control' or 'mux'`);
+        }
+        const shape = requireString(args, "shape");
+        if (shape !== "close" && shape !== "silence") {
+          throw new Error(`refused: unknown break shape '${shape}' — expected 'close' or 'silence'`);
+        }
+        if (typeof host.breakLink !== "function") {
+          throw new Error("link.break unavailable on this host");
+        }
+        return ok(host.breakLink(link, shape));
+      }
+      case "link.restore": {
+        const link = requireString(args, "link");
+        if (link !== "control" && link !== "mux") {
+          throw new Error(`refused: unknown link '${link}' — expected 'control' or 'mux'`);
+        }
+        if (typeof host.restoreLink !== "function") {
+          throw new Error("link.restore unavailable on this host");
+        }
+        return ok(host.restoreLink(link));
       }
       // --- WP37 (C37 AC6) — the typing instrument ---------------------------
       //
@@ -1043,6 +1111,16 @@ export interface E2EPluginLike {
   demoteToGuest?: () => Promise<void>;
   /** WP81 AC1 — the debug sink's own state, read from the logger, not from settings. */
   logger?: { getSinkState?: () => unknown };
+  /**
+   * WP82 (AC2/AC3) — the real per-link report and the real break seam, invoked.
+   * All three are optional so every hand-rolled fake plugin in the existing
+   * tests stays structurally valid. The definer, the socket reads and the break
+   * itself live in production modules; nothing is re-implemented here, which is
+   * the `canvas.simulateEdit` mistake this project already paid for once.
+   */
+  linkReport?: () => Record<string, unknown>;
+  e2eBreakLink?: (link: "control" | "mux", shape: "close" | "silence") => Record<string, unknown>;
+  e2eRestoreLink?: (link: "control" | "mux") => Record<string, unknown>;
   saveSettings?: () => Promise<void> | void;
   // --- WP46 identity sources (all optional; every one degrades, none is guessed) ---
   /** Obsidian's `App`. `appId` is the stable per-vault identity; the adapter knows the path. */
@@ -1470,6 +1548,37 @@ export function buildPluginHost(
       }
       await plugin.demoteToGuest();
       return { role: plugin.settings.role ?? null };
+    },
+
+    // --- WP82 (AC2/AC3) — the link instruments -----------------------------
+    //
+    // Each one calls the REAL production method and returns its answer
+    // verbatim. Nothing is composed, defaulted or hardcoded here: the
+    // `readyState` values come from the live sockets via
+    // `ControlChannel.getLinkSnapshot` / `SyncManager.getLinkSnapshot`, and the
+    // verdict comes from the one pure definer.
+    linkReport() {
+      if (typeof plugin.linkReport !== "function") {
+        throw new Error("link.report unavailable: no link report on this host");
+      }
+      return plugin.linkReport();
+    },
+
+    // The break seam's only call site outside tests. `testing/` is
+    // dead-code-eliminated from the production bundle by `__LS_E2E__`, so this
+    // is what keeps the seam unreachable in a production build.
+    breakLink(link: string, shape: string) {
+      if (typeof plugin.e2eBreakLink !== "function") {
+        throw new Error("link.break unavailable: no break seam on this host");
+      }
+      return plugin.e2eBreakLink(link as "control" | "mux", shape as "close" | "silence");
+    },
+
+    restoreLink(link: string) {
+      if (typeof plugin.e2eRestoreLink !== "function") {
+        throw new Error("link.restore unavailable: no break seam on this host");
+      }
+      return plugin.e2eRestoreLink(link as "control" | "mux");
     },
 
     // WP81 AC1 (deferred by WP81, landed by WP80). The logger's own accessor,

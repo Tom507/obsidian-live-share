@@ -74,6 +74,23 @@ import { ConnectionStateManager } from "./sync/connection-state";
 import { registerControlHandlers } from "./sync/control-handlers";
 import { ControlChannel } from "./sync/control-ws";
 import { E2ECrypto } from "./sync/crypto";
+import {
+  type AnnouncementState,
+  LINK_READY_STATE,
+  type LinkLifecycleEvent,
+  type LinkName,
+  NO_ANNOUNCEMENT,
+  type PeerLinkFacts,
+  type SharingVerdict,
+  announcementKey,
+  decideSharing,
+  describeLifecycle,
+  isLinkUp,
+  nextAnnouncement,
+  readyStateName,
+  sharingNoticeText,
+  sharingStatusText,
+} from "./sync/link-state";
 import { SyncManager } from "./sync/sync";
 import {
   DEFAULT_SETTINGS,
@@ -188,8 +205,58 @@ export default class LiveSharePlugin extends Plugin {
   private isEndingSession = false;
   private isStartingSession = false;
   private currentScrollListener: (() => void) | null = null;
-  muxConnected = false;
-  controlConnected = false;
+  // --- WP82: connectivity is MEASURED, not latched ---------------------------
+  //
+  // `muxConnected` and `controlConnected` are still assigned exactly where they
+  // always were, and `session.info` still reads them as
+  // `Boolean(muxConnected) && Boolean(controlConnected)` — WP46's pinned quartet
+  // is byte-unchanged. What changed is that the ASSIGNMENT now records a BELIEF
+  // and the READ answers with a MEASUREMENT: the getters below hand the link's
+  // live `readyState` to the one pure definer (`sync/link-state.ts`).
+  //
+  // The two fields used to be latches set on mutually exclusive, role-gated
+  // paths, so a peer promoted from guest to host after its socket opened was
+  // `connected: false` forever while both sockets were open, and a peer demoted
+  // after opening as host was `connected: true` on a role it no longer held.
+  // Both peers were wrong, in opposite directions, from one defect.
+  //
+  // A setter whose value the matching getter may not return is unusual and is
+  // deliberate: the belief is kept (AC2 reports it, and it is what makes the
+  // belief-vs-socket disagreement observable), it is simply no longer the
+  // answer. `muxBelieved` / `controlBelieved` expose it under its own name.
+  private muxBelief = false;
+  private controlBelief = false;
+  private muxBeliefChangedAt: number | null = null;
+  private controlBeliefChangedAt: number | null = null;
+  /** WP82 — once-then-count state for the sharing announcement (AC5/AC6). */
+  private sharingAnnouncement: AnnouncementState = NO_ANNOUNCEMENT;
+
+  get muxConnected(): boolean {
+    return isLinkUp(this.muxLinkSnapshot());
+  }
+  set muxConnected(value: boolean) {
+    if (this.muxBelief !== value) {
+      this.muxBelief = value;
+      this.muxBeliefChangedAt = Date.now();
+    }
+  }
+  get controlConnected(): boolean {
+    return isLinkUp(this.controlLinkSnapshot());
+  }
+  set controlConnected(value: boolean) {
+    if (this.controlBelief !== value) {
+      this.controlBelief = value;
+      this.controlBeliefChangedAt = Date.now();
+    }
+  }
+  /** WP82 (AC2) — the peer's own belief, under its own name. Never the verdict. */
+  get muxBelieved(): boolean {
+    return this.muxBelief;
+  }
+  get controlBelieved(): boolean {
+    return this.controlBelief;
+  }
+
   private manifestHandlerQueue: Promise<void> = Promise.resolve();
   // WP86 (AC6) — what the manifest-change route decided, most recent pass, plus
   // a BOUNDED history. A single "last" slot is not enough to audit this route:
@@ -206,9 +273,224 @@ export default class LiveSharePlugin extends Plugin {
   // `isSubscribed` / `localFileExists` observations.
   private canvasMirrorQueue: Promise<void> = Promise.resolve();
 
+  // --- WP82: the definer, its facts, and its consumers ----------------------
+  //
+  // WIRING AND A READ ONLY. Every decision below is taken by the pure
+  // zero-import module `sync/link-state.ts`; nothing in this file decides what
+  // "connected" means. That separation is the §7 abort criterion this WP was
+  // chartered under, and it is why the same question cannot drift apart again
+  // at N call sites the way `main.ts` and `control-handlers.ts` each answered a
+  // fragment of it before.
+
+  /** Live facts about the control link. `readyState` is read from the socket. */
+  private controlLinkSnapshot() {
+    return (
+      this.controlChannel?.getLinkSnapshot(this.controlBelief) ?? {
+        link: "control" as const,
+        hasSocket: false,
+        readyState: LINK_READY_STATE.ABSENT,
+        believedConnected: this.controlBelief,
+        reconnectAttempts: 0,
+        maxReconnectAttempts: 0,
+        retryChainEnded: false,
+        lastChangeAt: this.controlBeliefChangedAt,
+        silenced: false,
+      }
+    );
+  }
+
+  /** Live facts about the mux link. `readyState` is read from the socket. */
+  private muxLinkSnapshot() {
+    return (
+      this.syncManager?.getLinkSnapshot(this.muxBelief) ?? {
+        link: "mux" as const,
+        hasSocket: false,
+        readyState: LINK_READY_STATE.ABSENT,
+        believedConnected: this.muxBelief,
+        reconnectAttempts: 0,
+        maxReconnectAttempts: 0,
+        retryChainEnded: false,
+        lastChangeAt: this.muxBeliefChangedAt,
+        silenced: false,
+      }
+    );
+  }
+
+  /** The facts the definer decides over. Assembled here, decided there. */
+  private peerLinkFacts(): PeerLinkFacts {
+    return {
+      control: this.controlLinkSnapshot(),
+      mux: this.muxLinkSnapshot(),
+      sessionActive: this.sessionManager?.isActive === true,
+      role: this.settings?.role ?? null,
+      offlineQueueDepth: this.fileOpsManager?.getOfflineState().queueDepth ?? 0,
+      connectionState: this.connectionState?.getState() ?? "disconnected",
+    };
+  }
+
+  /**
+   * WP82 (AC6) — THE call. Consumer 1 of 3 in this file
+   * (`updateOnlineState`, `updateStatusBar`, `linkReport`).
+   */
+  getSharingVerdict(facts: PeerLinkFacts = this.peerLinkFacts()): SharingVerdict {
+    return decideSharing(facts);
+  }
+
+  /**
+   * WP82 (AC2) — the per-link report the rig reads. Every field is read at call
+   * time from the socket or from the definer; not one is a literal, and not one
+   * is an echo of `muxConnected` / `controlConnected` under a second name —
+   * those two ARE the values this defect corrupted, so `believedConnected` is
+   * reported separately from `readyState` precisely so the two can be seen to
+   * disagree.
+   */
+  linkReport(): Record<string, unknown> {
+    const facts = this.peerLinkFacts();
+    const verdict = this.getSharingVerdict(facts);
+    const offline = this.fileOpsManager?.getOfflineState() ?? { online: false, queueDepth: 0 };
+    const describe = (snapshot: PeerLinkFacts["control"] | PeerLinkFacts["mux"]) => ({
+      link: snapshot.link,
+      hasSocket: snapshot.hasSocket,
+      readyState: snapshot.readyState,
+      readyStateName: readyStateName(snapshot.readyState),
+      // The peer's own belief — the pre-WP82 latch — under its own name.
+      believedConnected: snapshot.believedConnected,
+      // `true` when the belief contradicts the socket. THE discriminating field.
+      beliefDisagrees: snapshot.believedConnected !== isLinkUp(snapshot),
+      up: isLinkUp(snapshot),
+      reconnectAttempts: snapshot.reconnectAttempts,
+      maxReconnectAttempts: snapshot.maxReconnectAttempts,
+      retryChainEnded: snapshot.retryChainEnded,
+      lastChangeAt: snapshot.lastChangeAt,
+      silenced: snapshot.silenced,
+    });
+    return {
+      readAt: Date.now(),
+      links: { control: describe(facts.control), mux: describe(facts.mux) },
+      offlineQueueDepth: offline.queueDepth,
+      fileOpsOnline: offline.online,
+      sharing: verdict.sharing,
+      roleBacked: verdict.roleBacked,
+      role: facts.role,
+      sessionActive: facts.sessionActive,
+      connectionState: facts.connectionState,
+      state: verdict.state,
+      healthy: verdict.healthy,
+      downLinks: verdict.downLinks,
+      endedLinks: verdict.endedLinks,
+      desyncedLinks: verdict.desyncedLinks,
+      reason: verdict.reason,
+      // Read back from the LIVE status-bar element, not recomposed.
+      statusBarText: this.statusBarEl?.textContent ?? null,
+    };
+  }
+
+  /**
+   * WP82 (AC3) — the ONLY production-side entry to the break seam, and it is
+   * called from `plugin/src/testing/` alone. `testing/` is dead-code-eliminated
+   * from the production bundle by `__LS_E2E__`, so this method is unreachable
+   * in a production build; it is also reachable from no UI, command, setting or
+   * message handler. A link that has no channel object is a NAMED REFUSAL at
+   * the boundary, before any state is touched (I11 / WP72 precedent).
+   */
+  private breakSeq = 0;
+  e2eBreakLink(link: LinkName, shape: "close" | "silence"): Record<string, unknown> {
+    const before = this.linkReport();
+    let result: Record<string, unknown>;
+    if (link === "control") {
+      if (!this.controlChannel) {
+        throw new Error("refused: no control channel exists on this instance");
+      }
+      result = this.controlChannel.breakLink(shape);
+    } else {
+      if (!this.syncManager) {
+        throw new Error("refused: no mux channel exists on this instance");
+      }
+      result = this.syncManager.breakLink(shape);
+    }
+    this.breakSeq += 1;
+    this.logger?.log("connection", `${link} link broken by e2e seam (shape=${shape})`);
+    return {
+      breakId: this.breakSeq,
+      ...result,
+      readyStateBeforeName: readyStateName(result.readyStateBefore as number),
+      readyStateAfterName: readyStateName(result.readyStateAfter as number),
+      reportBefore: before,
+      reportAfter: this.linkReport(),
+    };
+  }
+
+  /** WP82 (AC3) — the restore half. Required, and its effect is asserted. */
+  e2eRestoreLink(link: LinkName): Record<string, unknown> {
+    let result: Record<string, unknown>;
+    if (link === "control") {
+      if (!this.controlChannel) {
+        throw new Error("refused: no control channel exists on this instance");
+      }
+      result = this.controlChannel.restoreLink();
+    } else {
+      if (!this.syncManager) {
+        throw new Error("refused: no mux channel exists on this instance");
+      }
+      result = this.syncManager.restoreLink();
+    }
+    this.logger?.log("connection", `${link} link restored by e2e seam`);
+    return {
+      ...result,
+      readyStateAfterName: readyStateName(result.readyStateAfter as number),
+      reportAfter: this.linkReport(),
+    };
+  }
+
+  /**
+   * WP82 (AC4/AC5) — narration and the once-then-count announcement. Wiring:
+   * the channels emit facts, `link-state.ts` renders and decides, this method
+   * routes the result to the logger, the toast and the status bar.
+   */
+  private onLinkLifecycle(event: LinkLifecycleEvent): void {
+    const line = describeLifecycle(event);
+    if (event.kind === "gave-up") {
+      this.logger?.error("connection", line);
+    } else if (event.kind === "abandoned") {
+      this.logger?.warn("connection", line);
+    } else {
+      this.logger?.log("connection", line);
+    }
+    this.updateOnlineState();
+    this.updateStatusBar();
+  }
+
+  /**
+   * WP82 (AC5/AC6) — one `Notice` on the transition into an unhealthy state,
+   * subsequent occurrences COUNTED rather than repeated, and a recovery
+   * re-arms. A toast per backoff tick at 300 ms base delay would be a worse
+   * defect than the silence it replaces, so the announcement is bound to the
+   * STATE and never to the retry.
+   */
+  private announceSharingState(verdict: SharingVerdict): void {
+    const key = announcementKey(verdict);
+    const decision = nextAnnouncement(this.sharingAnnouncement, key);
+    this.sharingAnnouncement = decision.state;
+    if (decision.announce) {
+      this.logger?.warn("connection", `not sharing: ${verdict.reason} (announced once)`);
+      new Notice(sharingNoticeText(verdict));
+    } else if (key !== null) {
+      this.logger?.debug(
+        "connection",
+        `not sharing: ${verdict.reason} (occurrence ${decision.count}, not re-announced)`,
+      );
+    } else if (decision.rearmed) {
+      this.logger?.log("connection", "sharing restored — announcement re-armed");
+    }
+  }
+
   updateOnlineState() {
-    const bothUp = this.muxConnected && this.controlConnected;
-    this.fileOpsManager.setOnline(bothUp);
+    // WP82 — consumer 1 of the definer. Was
+    // `this.muxConnected && this.controlConnected`, i.e. the conjunction of two
+    // latches; now the conjunction of two MEASUREMENTS, taken by one definer.
+    // This is the call that decides whether a file op goes on the wire or into
+    // the offline queue.
+    this.fileOpsManager.setOnline(this.getSharingVerdict().sharing);
   }
 
   private requestBinaryFile = (path: string) => {
@@ -1170,6 +1452,11 @@ export default class LiveSharePlugin extends Plugin {
     this.connectionState.transition({ type: "connect" });
     this.muxConnected = false;
     this.controlConnected = false;
+    // WP82 (AC4) — the mux link narrates its own lifecycle. Wired BEFORE
+    // `connect()` so the very first open is narrated too; before this WP the
+    // mux wiring below recorded nothing at all and `main.ts`'s control-channel
+    // callback was the only `"connection"` log site in the entire plugin.
+    this.syncManager.onLifecycle((event) => this.onLinkLifecycle(event));
     this.syncManager.connect();
     this.syncManager.onMaxReconnect(() => {
       this.logger.error("sync", "mux channel exhausted reconnect attempts");
@@ -1179,6 +1466,7 @@ export default class LiveSharePlugin extends Plugin {
     this.syncManager.onConnectionChange((connected) => {
       this.muxConnected = connected;
       this.updateOnlineState();
+      this.updateStatusBar();
     });
 
     if (this.controlChannel) {
@@ -1197,6 +1485,11 @@ export default class LiveSharePlugin extends Plugin {
     this.controlChannel.onError((context, err) => {
       this.logger.error("control-ws", `${context} error`, err);
     });
+    // WP82 (AC4/AC5) — the control link's retry chain, its watchdog-forced
+    // closes and its three previously-silent exits now reach the logger. The
+    // four `onStateChange` transitions it already narrated are UNCHANGED: same
+    // signature, same category, same level, same volume.
+    this.controlChannel.onLifecycle((event) => this.onLinkLifecycle(event));
     this.controlChannel.onStateChange((controlState) => {
       this.logger.log("connection", `control channel ${controlState}`);
       if (controlState === "connected") {
@@ -1208,10 +1501,20 @@ export default class LiveSharePlugin extends Plugin {
           displayName: this.settings.displayName,
           avatarUrl: this.settings.avatarUrl,
         });
-        if (this.settings.role === "host") {
-          this.controlConnected = true;
-          this.updateOnlineState();
-        }
+        // WP82 (AC1) — THE ROLE GATE IS GONE. This callback fires from the
+        // control socket's `onopen`, i.e. at a moment when the socket is
+        // provably usable, and that is a fact about the LINK. Gating it on
+        // `role === "host"` made it one of two mutually exclusive role-gated
+        // sites, and a peer that resumed as guest and was promoted a
+        // millisecond later fell between both and was never marked again for
+        // the life of the session.
+        //
+        // Marking it here is not the "set it unconditionally" mistake: this is
+        // the peer's BELIEF, and `controlConnected` is now derived from the
+        // socket's live `readyState` by the pure definer, so a dead link cannot
+        // report healthy however this belief is set.
+        this.controlConnected = true;
+        this.updateOnlineState();
         this.presenceManager?.broadcastPresence();
         if (this.backgroundSync.isRunning()) {
           this.onActiveFileChange();
@@ -2218,7 +2521,19 @@ export default class LiveSharePlugin extends Plugin {
         const latency = this.controlChannel?.getLatency();
         const latencyStr = latency ? ` ${latency}ms` : "";
         const presentingLabel = this.presenceManager?.getIsPresenting() ? " [presenting]" : "";
-        this.statusBarEl.setText(`Live Share: ${role}${users}${latencyStr}${presentingLabel}`);
+        const healthyText = `Live Share: ${role}${users}${latencyStr}${presentingLabel}`;
+        // --- WP82 (AC6) -----------------------------------------------------
+        // Consumer 2 of the definer. This is the ONE branch that asserts health,
+        // and until now it asserted it from `ConnectionStateManager`, which is
+        // driven exclusively by control-channel transitions and NEVER SEES THE
+        // MUX: if the sync socket died, this still read `Live Share: hosting`.
+        // Vault A read exactly that while `session.info` said `connected:false`
+        // and every file op it performed was going into an undrainable queue.
+        //
+        // The healthy string is returned VERBATIM by `sharingStatusText` when
+        // the verdict is healthy, so nothing changes in the healthy state.
+        const verdict = this.getSharingVerdict();
+        this.statusBarEl.setText(sharingStatusText(verdict, healthyText));
         break;
       }
       case "error":
@@ -2228,6 +2543,9 @@ export default class LiveSharePlugin extends Plugin {
         this.statusBarEl.setText("Live Share: auth needed");
         break;
     }
+    // WP82 (AC5/AC6) — announce once, then count; recovery re-arms. Bound to
+    // the state, never to the retry.
+    this.announceSharingState(this.getSharingVerdict());
   }
 
   private showRibbonMenu(event: MouseEvent): void {

@@ -72,6 +72,21 @@ export class FileOpsManager {
     this.sendQueues.clear();
   }
 
+  /**
+   * WP82 (AC2) — READ-ONLY. How many ops are waiting for a drain, and whether
+   * this manager currently believes it may transmit. Nothing about what the
+   * queue HOLDS changes here, and no cap is introduced: `OfflineQueue`'s
+   * unboundedness is S40, a data-retention decision that is explicitly out of
+   * this WP's scope. Reportable is not the same as repaired.
+   *
+   * This exists because a peer that had latched `connected: false` was routing
+   * every file operation into this queue while its status bar read
+   * `Live Share: hosting`, and nothing in the process could say so.
+   */
+  getOfflineState(): { online: boolean; queueDepth: number } {
+    return { online: this.isOnline, queueDepth: this.offlineQueue.size };
+  }
+
   setOnline(online: boolean): void {
     const wasOffline = !this.isOnline;
     this.isOnline = online;

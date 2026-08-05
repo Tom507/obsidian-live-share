@@ -206,6 +206,37 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     // single-host invariant (`determineHostStatus` demotes every other client
     // before answering), so adopting it cannot create a second host — while
     // refusing to adopt it demonstrably creates a session with none.
+    // ---------------------------------------------------------------- WP82 --
+    // THE LATCH, HOISTED OUT OF THE ROLE BRANCHES.
+    //
+    // This marking used to live at the BOTTOM of this handler, past the
+    // `role !== "guest"` return below, and it was the second of only two sites
+    // in the whole tree that could ever set it. The other one
+    // (`main.ts`, the ControlChannel `connected` callback) was gated on
+    // `role === "host"`. The two were MUTUALLY EXCLUSIVE BY ROLE, and a peer
+    // that resumed as guest and was then promoted by the relay's verdict fell
+    // between both: the host gate was false at socket-open, and the promotion
+    // branch below `return`ed before ever reaching the marking. That peer was
+    // `connected: false` for the life of the session while both of its sockets
+    // were open, every file operation it performed went into an unbounded
+    // `OfflineQueue` that nothing would drain, and its status bar read
+    // `Live Share: hosting`. Measured on a live vault: `resuming as guest` →
+    // `control channel connected` → `promoted to host`, 106 ms, then permanent.
+    //
+    // Receiving a `join-response` AT ALL is proof that this peer's control
+    // socket delivered a frame — a fact about the LINK, which is true under
+    // every ordering of {socket open, join-response, promotion, demotion} and
+    // under every role. So it is marked here, once, before any branch.
+    //
+    // This is NOT the "set the latch unconditionally" mistake the charter names
+    // as the most likely wrong implementation: the marking is a BELIEF, and
+    // `plugin.controlConnected` is no longer that belief. It is now derived by
+    // the pure definer (`sync/link-state.ts`) from the socket's live
+    // `readyState`, so a genuinely dead control link cannot report healthy no
+    // matter what is marked here.
+    plugin.controlConnected = true;
+    plugin.updateOnlineState();
+
     if (msg.isHost === true && plugin.settings.role === "guest") {
       void plugin.promoteToHost();
       return;
@@ -231,8 +262,11 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
         .filter((p) => msg.readOnlyPatterns?.some((pat) => minimatch(p, pat)));
       plugin.explorerIndicators?.update(readOnlyPaths);
     }
-    plugin.controlConnected = true;
-    plugin.updateOnlineState();
+    // WP82 — the marking that used to be here is now HOISTED above the role
+    // branches (see the long note at the top of this handler). Left as a
+    // pointer rather than deleted silently, because "the connected marking
+    // moved" is exactly the kind of change that is invisible in a diff read
+    // bottom-up.
     plugin.presenceManager?.broadcastPresence();
   });
 

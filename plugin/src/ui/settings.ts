@@ -238,7 +238,18 @@ export class LiveShareSettingTab extends PluginSettingTab {
       .addSetting((setting) => {
         setting
           .setName("Auto-reconnect")
-          .setDesc("Automatically rejoin the previous session when Obsidian starts")
+          // WP82 (AC5) — the description states the setting's ACTUAL scope. Its
+          // NAME misled a diagnosis this week into recording "autoReconnect was
+          // true and never fired" as a finding: it is read in exactly one place
+          // outside this settings UI (`main.ts`, the `onLayoutReady` auto-resume
+          // gate), and NEITHER retry loop consults it. Turning it off does not
+          // stop a live session from reconnecting, and turning it on does not
+          // make a dead one retry.
+          .setDesc(
+            "Automatically rejoin the previous session when Obsidian starts. " +
+              "This governs startup only — reconnect attempts during a running " +
+              "session are always made and are not controlled by this setting.",
+          )
           .addToggle((toggle) =>
             toggle.setValue(settings.autoReconnect).onChange(async (value) => {
               settings.autoReconnect = value;
