@@ -21,6 +21,13 @@ import {
 import { isCanvasPath } from "./canvas/canvas-epoch";
 import type { ImportAvailability } from "./canvas/canvas-import-command";
 import { canvasIds, planReconcile } from "./canvas/reconcile-plan";
+import {
+  CANVAS_EDIT_DRAIN_DELAY_MS,
+  type EditingDeferralQueue,
+  classifyBusyGate,
+  createEditingDeferralQueue,
+  planEditingDeferral,
+} from "./canvas/canvas-editing-deferral";
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
@@ -129,6 +136,12 @@ export default class LiveSharePlugin extends Plugin {
   // patch the OPEN canvas view (Obsidian ignores external .canvas writes). Kept in
   // lockstep with canvasPresences (same mount/teardown sites).
   private canvasAdapters = new Map<string, CanvasAdapter>();
+  // WP37 (C37) — the per-record deferral queue for view applies withheld while an
+  // inline editor is focused. Constructed here and INJECTED; every rule about what
+  // goes in, what coalesces and what comes out lives in
+  // `canvas/canvas-editing-deferral.ts`. Drained at blur, at view close and at
+  // teardown, so nothing it holds can outlive the adapter that produced it.
+  private canvasDeferrals: EditingDeferralQueue = createEditingDeferralQueue();
   // WP5 (C5 AC1): the hand-over half of the reconcile receipt — which record ids
   // the last CONFIRMED apply actually put on each surface, plus whether that view
   // is open at all. This is the only per-path canvas structure `main.ts` still
@@ -1245,6 +1258,9 @@ export default class LiveSharePlugin extends Plugin {
     }
     for (const [path, presence] of this.canvasPresences) {
       if (!activePaths.has(path)) {
+        // WP37 (C37 AC5) — the VIEW-CLOSE exit. Drained BEFORE the adapter is
+        // dropped, so the queue never outlives the surface it was held for.
+        this.drainCanvasDeferrals(path, "canvas view closed");
         presence.destroy();
         this.canvasPresences.delete(path);
         this.canvasAdapters.delete(path);
@@ -1401,9 +1417,18 @@ export default class LiveSharePlugin extends Plugin {
     // `setSurfaceShadow(...)` re-points both roles in the same call.
     const shadow = this.canvasSync?.getSurfaceShadow();
     if (!shadow) return; // canvas sync torn down → nothing to reconcile against
-    if (adapter.isBusy()) {
+    // WP37 (C37 AC1/AC2): `isBusy()` now answers `true` for TWO states that want
+    // opposite treatment, so the gate is no longer a raw predicate read. The two
+    // measured facts go into `classifyBusyGate` — pure, tested without Obsidian —
+    // and this file executes the verdict it returns.
+    const gate = classifyBusyGate({
+      busy: adapter.isBusy(),
+      editingNodeId: adapter.getEditingNodeId?.() ?? null,
+    });
+    if (gate === "defer-drag") {
       // Never reconcile mid-drag; the trailing disk write keeps data safe and the
       // next delta (or a manual reload) will catch the view up once idle.
+      // UNCHANGED from HEAD, deliberately: WP37 adds an arm, it does not touch this one.
       this.logger.debug("canvas", `reconcile ${canonical}: deferred (user dragging)`);
       return;
     }
@@ -1435,6 +1460,48 @@ export default class LiveSharePlugin extends Plugin {
       return;
     }
 
+    // WP37 (C37 AC2/AC4/AC5): what this pass may put on the surface while an
+    // inline editor is open. The DECISION — is a record held, what is substituted,
+    // what is queued — is made in `planEditingDeferral`; this file supplies the
+    // measured facts and executes the answer.
+    const deferral = planEditingDeferral({
+      path: canonical,
+      desired: data,
+      lastApplied: shadowToCanvasRecords(shadow, canonical),
+      liveNodeIds,
+      liveEdgeIds,
+      plan,
+      initial: opts?.initial === true,
+      editingNodeId: adapter.getEditingNodeId?.() ?? null,
+      editingSurfaceRecord:
+        adapter.getEditingNodeId && adapter.getNodeFields
+          ? adapter.getNodeFields(adapter.getEditingNodeId() ?? "")
+          : null,
+    });
+    this.canvasDeferrals.note(canonical, deferral.deferred, data);
+    if (deferral.mode === "proceed") {
+      // A `proceed` pass hands FULL shared truth to the surface, so anything
+      // withheld by an earlier pass is about to be on screen. Clearing here is
+      // the second, event-free drain path: it means a queue can never survive a
+      // pass that already superseded it, whatever happened to the blur signal.
+      this.canvasDeferrals.clear(canonical);
+    }
+    if (deferral.mode === "hold") {
+      // Nothing reaches the surface, and — this is the half today's drag gate
+      // never had — nothing is LOST either: the queue is drained at blur, at view
+      // close and at teardown. The disk write is untouched and keeps converging.
+      this.logger.debug(
+        "canvas",
+        `reconcile ${canonical}: ${deferral.reason} ` +
+          `(queued=${this.canvasDeferrals.pending(canonical)})`,
+      );
+      return;
+    }
+    // From here on the surface sees `surfaceData`, which IS `data` unless a record
+    // was substituted. Everything below is HEAD's code with that one substitution.
+    const surfaceData = deferral.surfaceData;
+    const heldNodeIds = new Set(deferral.heldNodeIds);
+
     // Nodes that are an endpoint of some edge. Moving one of these per-node only
     // repositions the card; the live edges keep their OLD routing (fromSide/toSide)
     // → arrows look detached and Obsidian re-saves its own recomputed routing,
@@ -1458,19 +1525,23 @@ export default class LiveSharePlugin extends Plugin {
     let nodeOutcomes: Map<string, ApplyOutcome> | undefined;
     try {
       if (plan === "structural") {
-        reloaded = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
+        reloaded = adapter.reloadCanvasData({
+          nodes: surfaceData.nodes,
+          edges: surfaceData.edges,
+        });
         this.logger.debug(
           "canvas",
           `reconcile ${canonical}: ${opts?.initial ? "initial " : ""}structural reload ` +
             `${reloaded ? "ok" : "unsupported/skipped"} ` +
-            `(nodes ${liveNodeIds.size}->${desiredNodeIds.size}, edges ${liveEdgeIds.size}->${desiredEdgeIds.size})`,
+            `(nodes ${liveNodeIds.size}->${desiredNodeIds.size}, edges ${liveEdgeIds.size}->${desiredEdgeIds.size})` +
+            (heldNodeIds.size > 0 ? ` [${deferral.reason}]` : ""),
         );
       } else {
         let applied = 0;
         let interacting = 0;
         let movedEndpoint = false;
         nodeOutcomes = new Map<string, ApplyOutcome>();
-        for (const n of data.nodes) {
+        for (const n of surfaceData.nodes) {
           if (
             typeof n.id !== "string" ||
             typeof n.x !== "number" ||
@@ -1480,12 +1551,18 @@ export default class LiveSharePlugin extends Plugin {
           ) {
             continue;
           }
-          const outcome = adapter.applyNodeGeometry(n.id, {
-            x: n.x,
-            y: n.y,
-            width: n.width,
-            height: n.height,
-          });
+          // WP37: a HELD record is not handed to the surface at all, and its
+          // outcome is the SAME `"interacting"` a drag-held card already reports
+          // — so the existing receipt seam leaves its shadow fields unadvanced
+          // without WP5 learning that editing exists.
+          const outcome = heldNodeIds.has(n.id)
+            ? "interacting"
+            : adapter.applyNodeGeometry(n.id, {
+                x: n.x,
+                y: n.y,
+                width: n.width,
+                height: n.height,
+              });
           nodeOutcomes.set(n.id, outcome);
           if (outcome === "applied") {
             applied++;
@@ -1496,7 +1573,10 @@ export default class LiveSharePlugin extends Plugin {
         // data. Per-node geometry cannot do that, so reload once. Bounded: only fires
         // when a card WITH edges actually moved (isolated-node moves stay smooth).
         if (movedEndpoint) {
-          reloaded = adapter.reloadCanvasData({ nodes: data.nodes, edges: data.edges });
+          reloaded = adapter.reloadCanvasData({
+            nodes: surfaceData.nodes,
+            edges: surfaceData.edges,
+          });
           this.logger.debug(
             "canvas",
             `reconcile ${canonical}: geometry applied=${applied} deferred(interacting)=${interacting}` +
@@ -1513,14 +1593,51 @@ export default class LiveSharePlugin extends Plugin {
       // shadow advances per FIELD and only for records the surface confirmed, and
       // the very same summary supplies the hand-over half of the seam, so the two
       // can never drift apart.
+      // WP37: the receipt is built from `surfaceData` — WHAT WAS HANDED TO THE
+      // SURFACE — and never from `data`. That is the whole of AC4: a substituted
+      // record advances the shadow to the values the surface really took (its own
+      // previous ones), so the next capture still diffs against something that was
+      // genuinely on screen, and the remote values it did NOT take are the ones
+      // sitting in the queue.
       const summary = advanceFromReceipt(
         shadow,
-        buildApplyReceipt({ path: canonical, desired: data, plan, reloaded, nodeOutcomes }),
+        buildApplyReceipt({ path: canonical, desired: surfaceData, plan, reloaded, nodeOutcomes }),
       );
       this.surfaceState.noteHandover(canonical, summary.handed);
     } finally {
       setTimeout(() => this.fileOpsManager.unmutePathEvents(diskPath), VAULT_EVENT_SETTLE_MS);
     }
+  }
+
+  /**
+   * WP37 (C37 AC5) — the DRAIN. Wiring: take whatever the queue holds for `path`
+   * and re-run one ordinary reconcile pass with it.
+   *
+   * Three call sites, three different exits, one function:
+   *   ├── BLUR       — `adapter.onEditingEnd(...)`, wired at mount
+   *   ├── VIEW CLOSE — the presence-teardown sweep, before the adapter is dropped
+   *   └── TEARDOWN   — `teardownCanvasPresences()`
+   *
+   * The drain always CLEARS, whether or not the re-apply can run: at close and at
+   * teardown there is no surface left to apply to, and a queue that outlived its
+   * adapter would be a leak with a private-API reference in it.
+   *
+   * Fresh shared truth is preferred over the queued snapshot — by the time an
+   * editor is blurred the doc may have moved on again, and re-applying a stale
+   * snapshot would put the view back to an intermediate state. The queued
+   * snapshot is the fallback for the case where the subscription is already gone.
+   */
+  private drainCanvasDeferrals(path: string, why: string): void {
+    const canonical = toCanonicalPath(normalizePath(path));
+    const drained = this.canvasDeferrals.drain(canonical);
+    if (!drained) return;
+    this.logger.debug(
+      "canvas",
+      `reconcile ${canonical}: draining ${drained.records.length} deferred record(s) ` +
+        `from ${drained.passes} withheld pass(es) (${why})`,
+    );
+    const fresh = this.canvasSync?.getCanvasSnapshot(canonical) ?? drained.data;
+    this.reconcileLiveCanvas(canonical, fresh);
   }
 
   /**
@@ -1659,6 +1776,17 @@ export default class LiveSharePlugin extends Plugin {
       });
       // Register for live-view reconciliation (kept in lockstep with the presence).
       this.canvasAdapters.set(toCanonicalPath(normalizePath(rawPath)), adapter);
+      // WP37 (C37 AC5) — the BLUR exit of the deferral. Forwarding only: the
+      // adapter reports that an inline editor ended, and the drain re-runs one
+      // ordinary reconcile pass. Fires for a watchdog-released editor too, so a
+      // focus flag Obsidian never closed still drains rather than stranding the
+      // queue.
+      adapter.onEditingEnd?.(() => {
+        setTimeout(
+          () => this.drainCanvasDeferrals(rawPath, "inline editor blurred"),
+          CANVAS_EDIT_DRAIN_DELAY_MS,
+        );
+      });
       // Diagnostics: report whether the private Canvas API surface is usable and,
       // if not, exactly which member is missing (the root-cause the user needs).
       const available = adapter.isAvailable();
@@ -1792,6 +1920,13 @@ export default class LiveSharePlugin extends Plugin {
   }
 
   private teardownCanvasPresences() {
+    // WP37 (C37 AC5) — the TEARDOWN exit. Every path is drained while its adapter
+    // is still registered, and the queue is then cleared unconditionally: nothing
+    // it holds may survive the surfaces it was held for.
+    for (const path of this.canvasDeferrals.paths()) {
+      this.drainCanvasDeferrals(path, "canvas teardown");
+    }
+    this.canvasDeferrals.clearAll();
     for (const presence of this.canvasPresences.values()) {
       try {
         presence.destroy();

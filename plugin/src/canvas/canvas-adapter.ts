@@ -78,13 +78,58 @@ export interface CanvasAdapter {
   /** Live geometry of a node (canvas coords) or null if the node/coords are absent. */
   getNodeGeometry(nodeId: string): NodeGeometry | null;
   /**
-   * True while the user is actively dragging a node (reconciliation must defer).
-   * INACTIVITY predicate, not a raw flag: true only while the drag flag is set AND a
-   * drag-related signal arrived within the last {@link DRAG_WATCHDOG_MS}. Consulting
-   * it is also what releases a flag that stopped being refreshed, so a `setDragging`
-   * pair that never closes cannot keep reconciliation switched off indefinitely.
+   * True while the user is actively interacting and reconciliation must not
+   * simply overwrite the view. TWO arms, added rather than merged:
+   *
+   *   ├── DRAG — unchanged by WP37. An INACTIVITY predicate, not a raw flag: true
+   *   │   only while the drag flag is set AND a drag-related signal arrived within
+   *   │   the last {@link DRAG_WATCHDOG_MS}. Consulting it is also what releases a
+   *   │   flag that stopped being refreshed, so a `setDragging` pair that never
+   *   │   closes cannot keep reconciliation switched off indefinitely.
+   *   └── EDITING (WP37) — an inline editor is focused inside a card. Same
+   *       inactivity shape, its own budget ({@link EDIT_WATCHDOG_MS}) and its own
+   *       release signature, plus a POSITIVE liveness check: a focus flag whose
+   *       node no longer exists is released immediately rather than after a timeout.
+   *
+   * The two are never folded together. `isDragTarget` and the `DRAG WATCHDOG:`
+   * signature keep their exact previous behaviour.
    */
   isBusy(): boolean;
+  /**
+   * WP37 — the id of the node whose inline editor currently has focus, or `null`.
+   *
+   * OPTIONAL on the interface, on the `canvasFile` / `clearFlags` precedent, so
+   * every hand-rolled adapter double in the existing tests stays valid. Callers
+   * read it as `adapter.getEditingNodeId?.() ?? null`.
+   *
+   * Consulting it sweeps the same staleness release `isBusy()` does, so a caller
+   * can never observe an id the watchdog would have retired.
+   */
+  getEditingNodeId?(): string | null;
+  /**
+   * WP37 — the live card's OWN record, as Obsidian holds it right now.
+   *
+   * This is a MEASUREMENT of the surface, not a recollection of it, and it is what
+   * lets the deferral substitute a record that provably changes nothing. `null`
+   * when the node is absent or the private shape cannot answer. Optional for the
+   * same reason as above.
+   */
+  getNodeFields?(nodeId: string): Record<string, unknown> | null;
+  /**
+   * WP37 — fires when an inline editor loses focus (the BLUR half of the guard).
+   * The callback receives the id that was being edited. Returns unsubscribe.
+   * Optional for the same reason as above.
+   */
+  onEditingEnd?(cb: (nodeId: string) => void): () => void;
+  /**
+   * WP37 — report an editing focus change directly, bypassing the DOM listeners.
+   *
+   * The seam exists because C37 AC1's truth table has to be asserted row by row
+   * without a browser. It is a REPORT and not a decision: it sets exactly the flag
+   * `focusin` sets, and every read still goes through the same staleness release.
+   * Optional for the same reason as the members above.
+   */
+  noteEditingFocus?(nodeId: string | null): void;
   /**
    * Reposition/resize a LIVE node to match synced geometry. Never touches a node
    * the local user is actively dragging. Returns the outcome for diagnostics.
@@ -181,6 +226,12 @@ export function clientToCanvasManual(
 interface CanvasNode {
   id?: string;
   nodeEl?: HTMLElement;
+  /**
+   * WP37 — Obsidian's own "this card's inline editor is open" flag. Present on
+   * the real `CanvasTextNode`; validated defensively before every read, and its
+   * absence is a defined answer ("this shape cannot tell us"), never a guess.
+   */
+  isEditing?: boolean;
   x?: number;
   y?: number;
   width?: number;
@@ -259,6 +310,38 @@ type PatchOutcome = "installed" | "adopted" | "unavailable";
  */
 export const DRAG_WATCHDOG_MS = 5000;
 
+/**
+ * WP37 — INACTIVITY budget for the inline-editing flag, in ms.
+ *
+ * Why it must exist at all: an editing flag that is never cleared — the view is
+ * swapped, the node is deleted under the editor, Obsidian's own focus handling
+ * misses an exit — would freeze reconciliation for the whole life of the view.
+ * **A permanently stale canvas is a worse defect than the one being fixed**, and
+ * it would present as "sync stopped working".
+ *
+ * Why it is far longer than {@link DRAG_WATCHDOG_MS}: 5 s of silence is far
+ * outside anything an in-progress drag produces, but well inside what a person
+ * thinking mid-sentence produces. The budget is measured against the last
+ * EDITING-related signal (focus, key, input, pointer), and releasing a real
+ * editor because its owner paused would destroy exactly the characters this WP
+ * exists to protect. The timeout is therefore a backstop; the primary release is
+ * the POSITIVE liveness check in `editingActive()`, which fires immediately when
+ * the node under the editor is gone.
+ */
+export const EDIT_WATCHDOG_MS = 120_000;
+
+/**
+ * WP37 — how often the adapter re-reads its own editing predicate WHILE an
+ * editing session is open, in ms.
+ *
+ * It exists because the blur has to be noticed even when nothing else happens on
+ * the board: the drain is what puts the withheld remote changes on the surface,
+ * and a drain that only runs when the NEXT remote delta arrives is a stale view
+ * with no bound. The poll is armed on focus and disarmed on release, so it costs
+ * nothing outside an editing session.
+ */
+export const EDIT_POLL_MS = 400;
+
 /** Optional status-console logger (shape matches DebugLogger / CanvasSyncLogger). */
 export interface CanvasAdapterLogger {
   log(category: string, message: string): void;
@@ -268,6 +351,15 @@ export interface CanvasAdapterLogger {
 export interface CanvasAdapterOpts {
   /** Diagnostics sink for the `ADAPTER PATCH:` and `DRAG WATCHDOG:` signatures. */
   logger?: CanvasAdapterLogger;
+  /**
+   * WP37 — injected clock for the EDITING staleness budget, so its release is
+   * asserted by advancing a clock and never by sleeping. Defaults to `Date.now`.
+   *
+   * Deliberately NOT wired into `dragActive()`: the drag watchdog's timing
+   * behaviour is required to be byte-for-byte what it was, so it keeps reading
+   * `Date.now()` directly and this option cannot reach it.
+   */
+  now?: () => number;
 }
 
 /**
@@ -279,6 +371,7 @@ export interface CanvasAdapterOpts {
  */
 export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {}): CanvasAdapter {
   const logger = opts.logger;
+  const now = typeof opts.now === "function" ? opts.now : () => Date.now();
   const canvas = (view as PrivateCanvasView | null | undefined)?.canvas as PrivateCanvas | undefined;
   const hasCanvas = !!canvas && typeof canvas === "object";
 
@@ -297,9 +390,24 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
   // guard so a released flag logs once per drag rather than once per poll (US6 AC5).
   let lastDragSignalAt = 0;
   let watchdogLogged = false;
+  // WP37 — live inline-editing state. `editingNodeId` is the card whose editor
+  // holds focus; `lastEditSignalAt` is the watchdog's reference point; the
+  // one-shot guard mirrors `watchdogLogged` so a released flag warns once per
+  // editing session rather than once per poll.
+  let editingNodeId: string | null = null;
+  let lastEditSignalAt = 0;
+  let editWatchdogLogged = false;
+  let editingPoll: ReturnType<typeof setInterval> | null = null;
+  const editingEndListeners = new Set<(nodeId: string) => void>();
   // Disposers for physical patches / DOM listeners (installed once, lazily).
   const unpatchers: Array<() => void> = [];
-  const patchState = { selection: false, dragging: false, viewport: false, pointer: false };
+  const patchState = {
+    selection: false,
+    dragging: false,
+    viewport: false,
+    pointer: false,
+    editing: false,
+  };
 
   /** Refresh the watchdog: a real drag-related signal reached the adapter. */
   function noteDragSignal(): void {
@@ -339,6 +447,294 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
   function isDragTarget(nodeId: string): boolean {
     dragActive();
     return dragTargetId === nodeId;
+  }
+
+  // ---- WP37: the inline-editing signal ------------------------------------
+  //
+  // Detected in the DOM rather than by patching a per-node method, and that is a
+  // decision, not a shortcut. Canvas nodes are created and destroyed by
+  // `setData`, so a per-node patch would have to be re-installed on every reload
+  // — i.e. exactly at the moment this WP exists to survive — and a node whose
+  // patch was missed would report "not editing" while the user is typing in it.
+  // A `focusin` listener on the canvas WRAPPER catches every editor, including
+  // ones created after this adapter was built, because focus bubbles.
+  //
+  // The discriminator is `isContentEditable` (or an input/textarea): merely
+  // SELECTING a card focuses the card element, which is not an editing session
+  // and must not switch reconciliation off.
+
+  /** Refresh the editing watchdog: a real editing-related signal reached the adapter. */
+  function noteEditSignal(): void {
+    lastEditSignalAt = now();
+  }
+
+  /** Is `target` an element the user can type into? */
+  function isEditableTarget(target: unknown): boolean {
+    if (!target || typeof target !== "object") return false;
+    const el = target as { isContentEditable?: unknown; tagName?: unknown };
+    if (el.isContentEditable === true) return true;
+    const tag = typeof el.tagName === "string" ? el.tagName.toUpperCase() : "";
+    return tag === "INPUT" || tag === "TEXTAREA";
+  }
+
+  /** The canvas node whose element contains `target`, or null. */
+  function nodeIdContaining(target: unknown): string | null {
+    if (!(canvas?.nodes instanceof Map) || !target) return null;
+    for (const [id, node] of canvas.nodes) {
+      const el = node?.nodeEl as { contains?: (n: unknown) => boolean } | undefined;
+      if (!el || typeof el.contains !== "function") continue;
+      try {
+        if (el.contains(target)) return typeof id === "string" ? id : null;
+      } catch {
+        /* a node element that cannot answer is not the one holding focus */
+      }
+    }
+    return null;
+  }
+
+  /**
+   * WP37 — keep the editing flag honest without needing a DOM event.
+   *
+   * MEASURED (run 034401): with the flag detected correctly, the BLUR was still
+   * never noticed, so a held queue was never drained and a card the peer added
+   * stayed off the canvas for good. The reason is that the release only ran when
+   * something consulted the predicate, and the only consumer is a reconcile pass
+   * — which arrives when a REMOTE delta arrives, i.e. exactly never once the
+   * board has gone quiet.
+   *
+   * The DOM listeners were supposed to cover that, and they cannot be relied on:
+   * they are installed on `canvas.wrapperEl`, which the private shape does not
+   * always expose, and the card's editor is not reachable through a
+   * `contenteditable` selector at all on this build.
+   *
+   * So while — and ONLY while — an editing session is open, the adapter polls its
+   * own predicate. It is self-limiting (started on focus, stopped on release and
+   * on destroy), it is the same seam every other consultation uses, and it is
+   * `unref`ed so it can never hold a process open.
+   */
+  function armEditingPoll(): void {
+    if (editingPoll !== null || typeof setInterval !== "function") return;
+    editingPoll = setInterval(() => {
+      if (editingNodeId === null) {
+        disarmEditingPoll();
+        return;
+      }
+      editingActive();
+    }, EDIT_POLL_MS);
+    (editingPoll as unknown as { unref?: () => void }).unref?.();
+  }
+
+  function disarmEditingPoll(): void {
+    if (editingPoll === null) return;
+    clearInterval(editingPoll);
+    editingPoll = null;
+  }
+
+  /** Clear the editing flag and tell every subscriber, exactly once per session. */
+  function releaseEditing(reason: string | null): void {
+    const released = editingNodeId;
+    editingNodeId = null;
+    editWatchdogLogged = false;
+    disarmEditingPoll();
+    if (reason !== null) {
+      logger?.warn(
+        "canvas-adapter",
+        `EDIT WATCHDOG: editing flag released for node=${released ?? "none"} — ${reason}`,
+      );
+    }
+    if (released !== null) {
+      for (const cb of editingEndListeners) {
+        try {
+          cb(released);
+        } catch {
+          /* a subscriber must never break focus handling */
+        }
+      }
+    }
+  }
+
+  /**
+   * PULL the editing state out of the DOM, rather than waiting to be told.
+   *
+   * MEASURED, and it is why this exists: on a live instance the editor is
+   * routinely focused BEFORE this adapter is mounted (a canvas leaf opens and the
+   * user — or the rig — clicks straight into a card, while the plugin's own
+   * layout-change handler has not run yet). An event-only signal misses that
+   * focus and then reports "nothing is being edited" for the whole session, which
+   * is indistinguishable from the defect this WP fixes. Measured on the live rig,
+   * run 033302: the event-only build deferred nothing at all.
+   *
+   * So the flag is a MEASUREMENT taken on every consultation, and the `focusin` /
+   * `focusout` listeners are a fast path on top of it, not the source of truth.
+   *
+   * Returns `available: false` when there is no DOM to read — a headless double,
+   * a private shape without `wrapperEl`. In that case the caller must NOT treat
+   * "no editor found" as "no editor", or the direct `noteEditingFocus` seam would
+   * be overruled by an absence of evidence (I11).
+   */
+  function probeEditingNode(): { available: boolean; nodeId: string | null } {
+    // PRIMARY — Obsidian's own answer. A canvas node carries `isEditing`, which
+    // is exactly "this card's inline editor is open" as the canvas itself
+    // understands it. Measured on the live rig: this is `true` for the whole
+    // editing session, while `nodeEl.querySelector("[contenteditable]")` finds
+    // NOTHING inside the card (run 031340, `contenteditableFound: false`) — so a
+    // DOM-shape discriminator alone reports "nothing is being edited" while the
+    // user is typing, which is indistinguishable from the defect.
+    let sawIsEditing = false;
+    if (canvas?.nodes instanceof Map) {
+      for (const [id, node] of canvas.nodes) {
+        const flag = (node as { isEditing?: unknown } | undefined)?.isEditing;
+        if (typeof flag !== "boolean") continue;
+        sawIsEditing = true;
+        if (flag === true && typeof id === "string" && id.length > 0) {
+          return { available: true, nodeId: id };
+        }
+      }
+    }
+    // FALLBACK — the focused element, for a private shape that does not expose
+    // `isEditing`. Kept because I5 says degrade, never break.
+    const wrapper = canvas?.wrapperEl as { ownerDocument?: unknown } | undefined;
+    const doc = wrapper?.ownerDocument as { activeElement?: unknown } | undefined;
+    if (doc && typeof doc === "object" && "activeElement" in doc) {
+      const active = doc.activeElement;
+      if (isEditableTarget(active)) {
+        const id = nodeIdContaining(active);
+        if (id !== null) return { available: true, nodeId: id };
+      }
+      return { available: true, nodeId: null };
+    }
+    // `sawIsEditing` without a `true` is still an ANSWER: every card reported
+    // "not editing". Without either mechanism there is no answer at all, and the
+    // caller must then not read absence as evidence.
+    return { available: sawIsEditing, nodeId: null };
+  }
+
+  /**
+   * Reconcile the flag with the DOM. Called at the head of `editingActive()`, so
+   * every consultation of the editing arm is a fresh measurement.
+   */
+  function syncEditingFromDom(): void {
+    const probe = probeEditingNode();
+    if (!probe.available) return;
+    if (probe.nodeId !== null) {
+      if (editingNodeId !== null && editingNodeId !== probe.nodeId) releaseEditing(null);
+      if (editingNodeId !== probe.nodeId) editWatchdogLogged = false;
+      editingNodeId = probe.nodeId;
+      noteEditSignal();
+      armEditingPoll();
+      return;
+    }
+    // The DOM is readable and says nothing editable inside a card has focus.
+    // That is EVIDENCE of a blur, not an absence of evidence, so it releases —
+    // and firing the subscribers here is what makes the blur drain work even
+    // when `focusout` was never delivered.
+    if (editingNodeId !== null) releaseEditing(null);
+  }
+
+  /**
+   * Watchdog-aware inline-editing predicate — the single seam `isBusy()` and
+   * `getEditingNodeId()` both consult instead of reading the raw flag.
+   *
+   * TWO releases, and the order is the point:
+   *
+   *   ├── POSITIVE LIVENESS, first and immediate — the card under the editor is
+   *   │   no longer in the live node map. That happens whenever the view is
+   *   │   rebuilt or the node is deleted remotely, and waiting out a timeout for
+   *   │   it would leave reconciliation switched off for a card that is gone.
+   *   └── INACTIVITY, second — no editing-related signal for a whole
+   *       {@link EDIT_WATCHDOG_MS} window. The backstop for an exit path
+   *       Obsidian's private focus handling never told us about.
+   *
+   * Both emit `EDIT WATCHDOG:`, deliberately distinct from `DRAG WATCHDOG:` so
+   * the two can never be confused in a log, and both fire the blur subscribers —
+   * a released editor must drain its queue exactly like a real blur.
+   */
+  function editingActive(): boolean {
+    // Measure first; the listeners are an optimisation, not the oracle.
+    syncEditingFromDom();
+    if (editingNodeId === null) return false;
+    if (canvas?.nodes instanceof Map && !canvas.nodes.has(editingNodeId)) {
+      if (!editWatchdogLogged) editWatchdogLogged = true;
+      releaseEditing(`node '${editingNodeId}' is no longer in the live canvas`);
+      return false;
+    }
+    const idleFor = now() - lastEditSignalAt;
+    if (idleFor < EDIT_WATCHDOG_MS) return true;
+    if (!editWatchdogLogged) editWatchdogLogged = true;
+    releaseEditing(
+      `no editing signal for ${idleFor}ms (limit ${EDIT_WATCHDOG_MS}ms)`,
+    );
+    return false;
+  }
+
+  /**
+   * Install the focus/keystroke listeners, once, lazily — the same discipline
+   * every other patch in this file follows, with its disposer in `unpatchers`.
+   */
+  function ensureEditingPatch(): void {
+    if (patchState.editing) return;
+    patchState.editing = true;
+    const wrapper = canvas?.wrapperEl;
+    if (!wrapper || typeof wrapper.addEventListener !== "function") return;
+
+    const onFocusIn = (e: Event) => {
+      const target = (e as unknown as { target?: unknown }).target;
+      if (!isEditableTarget(target)) return;
+      const id = nodeIdContaining(target);
+      if (id === null) return;
+      noteEditSignal();
+      editWatchdogLogged = false;
+      if (editingNodeId !== null && editingNodeId !== id) {
+        // Focus moved straight from one card's editor to another's: the first
+        // one really did end, and its queue must drain.
+        releaseEditing(null);
+      }
+      editingNodeId = id;
+      armEditingPoll();
+    };
+    const onFocusOut = (e: Event) => {
+      const related = (e as unknown as { relatedTarget?: unknown }).relatedTarget;
+      // Focus moving to another editor inside a card is not an exit; `focusin`
+      // will re-aim the flag. Anything else is a genuine blur.
+      if (isEditableTarget(related) && nodeIdContaining(related) !== null) return;
+      releaseEditing(null);
+    };
+    const onEditSignal = () => {
+      if (editingNodeId !== null) noteEditSignal();
+    };
+
+    wrapper.addEventListener("focusin", onFocusIn, true);
+    wrapper.addEventListener("focusout", onFocusOut, true);
+    wrapper.addEventListener("keydown", onEditSignal, true);
+    wrapper.addEventListener("beforeinput", onEditSignal, true);
+    unpatchers.push(() => {
+      wrapper.removeEventListener("focusin", onFocusIn, true);
+      wrapper.removeEventListener("focusout", onFocusOut, true);
+      wrapper.removeEventListener("keydown", onEditSignal, true);
+      wrapper.removeEventListener("beforeinput", onEditSignal, true);
+    });
+  }
+
+  /**
+   * TEST/PRIVATE SEAM — the two facts the DOM listeners would deliver, delivered
+   * directly. It exists because the truth table in C37 AC1 has to be asserted row
+   * by row without a browser, and because a live instance can be asked to report
+   * its editing state through the same seam it uses in production.
+   *
+   * It is a REPORT, never a decision: it sets the same flag `focusin` sets and
+   * goes through the same `editingActive()` release on every read.
+   */
+  function noteEditingFocus(nodeId: string | null): void {
+    ensureEditingPatch();
+    if (nodeId === null) {
+      releaseEditing(null);
+      return;
+    }
+    noteEditSignal();
+    editWatchdogLogged = false;
+    if (editingNodeId !== null && editingNodeId !== nodeId) releaseEditing(null);
+    editingNodeId = nodeId;
+    armEditingPoll();
   }
 
   function viewport(): CanvasViewport | null {
@@ -573,9 +969,72 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
       // Ensure the dragging patch is live so isDragging reflects reality even if no
       // interaction listener was subscribed yet.
       ensureDraggingPatch();
+      // WP37: and the editing listeners, for the same reason.
+      ensureEditingPatch();
       // Watchdog-aware, never the raw flag (US4 AC9): a drag flag that stopped being
       // refreshed is released here rather than blocking every future reconcile.
-      return dragActive();
+      //
+      // WP37 — the second arm, ADDED beside the first and never merged into it.
+      // Order matters only for the releases: both seams must be swept on every
+      // call, so `||` short-circuiting must not skip the editing sweep. It does
+      // not: `dragActive()` runs first and `editingActive()` runs whenever the
+      // drag arm is false, which is every case in which the editing flag could
+      // be the one holding reconciliation off.
+      const dragging = dragActive();
+      const editing = editingActive();
+      return dragging || editing;
+    },
+
+    // ---- WP37 --------------------------------------------------------------
+
+    getEditingNodeId(): string | null {
+      ensureEditingPatch();
+      // Sweep the release first: a caller must never see an id `isBusy()` would
+      // already have retired, or the deferral would hold a queue for a card that
+      // is not being edited any more.
+      return editingActive() ? editingNodeId : null;
+    },
+
+    getNodeFields(nodeId: string): Record<string, unknown> | null {
+      const node = canvas?.nodes?.get(nodeId) as
+        | (CanvasNode & { getData?: () => unknown; text?: unknown; color?: unknown; type?: unknown })
+        | undefined;
+      if (!node) return null;
+      // Obsidian's own `getData()` is the authoritative read: it returns the
+      // record this card would be serialised as. Preferred over assembling one
+      // from members, because an assembled record can silently omit a field and
+      // a substitution built from it would then DELETE that field from the view.
+      const getData = (node as { getData?: unknown }).getData;
+      if (typeof getData === "function") {
+        try {
+          const data = (getData as () => unknown).call(node);
+          if (data && typeof data === "object" && !Array.isArray(data)) {
+            return { ...(data as Record<string, unknown>) };
+          }
+        } catch {
+          /* fall through to the member read */
+        }
+      }
+      // Fallback: the members this adapter already knows are on the private
+      // shape. Deliberately does NOT invent keys — a caller that gets this
+      // partial record must treat it as partial, which `planEditingDeferral`
+      // does by comparing over the union of both records' keys.
+      const fields: Record<string, unknown> = { id: nodeId };
+      for (const key of ["x", "y", "width", "height", "text", "type", "color"] as const) {
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (value !== undefined) fields[key] = value;
+      }
+      return fields;
+    },
+
+    onEditingEnd(cb: (nodeId: string) => void): () => void {
+      ensureEditingPatch();
+      editingEndListeners.add(cb);
+      return () => editingEndListeners.delete(cb);
+    },
+
+    noteEditingFocus(nodeId: string | null): void {
+      noteEditingFocus(nodeId);
     },
 
     applyNodeGeometry(
@@ -672,18 +1131,30 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
           /* ignore */
         }
       }
+      // WP37 — the TEARDOWN exit of the blur guard. Subscribers are notified
+      // BEFORE the listener sets are cleared, so a queue held for an editor that
+      // is being torn down drains instead of outliving the adapter that produced
+      // it. Silent when nothing was being edited.
+      releaseEditing(null);
+      disarmEditingPoll();
       startListeners.clear();
       endListeners.clear();
       viewportListeners.clear();
+      editingEndListeners.clear();
       held.clear();
       patchState.selection = false;
       patchState.dragging = false;
       patchState.viewport = false;
       patchState.pointer = false;
+      patchState.editing = false;
       // A detached adapter must not keep reporting a drag it can no longer observe.
       isDragging = false;
       dragTargetId = null;
       watchdogLogged = false;
+      // …nor an edit.
+      editingNodeId = null;
+      lastEditSignalAt = 0;
+      editWatchdogLogged = false;
     },
   };
 }
