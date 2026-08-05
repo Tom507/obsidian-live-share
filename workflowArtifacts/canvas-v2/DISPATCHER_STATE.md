@@ -2044,3 +2044,34 @@ path, **the anti-vacuity instrument itself**, the rig, and a criterion's precond
 on member 1 — a seed proposing a *genuinely different* string still flattens, which is a routing question
 for C36's router rather than a blind check, **reachable because of WP85**, pinned by a control test and
 deserving a WP · the honest canvas-E2E baseline **still owes a re-run** with members 1 and 3 on its list.
+
+### ✅ LIVENESS SWEEP DONE (`43d6ddb`, `05ac138`) — the hang class has exactly one twin, and nobody had seen it
+
+**197 waits derived** (TS compiler API + Python `ast` over the plugin, the rig, all 30 `H:\tmp` scripts and
+the workspace driver). **CANNOT COMPLETE: 2, both LIVE, 0 latent, 0 harmless.** The confirmed member
+(`control-ws.ts:278`) and **its twin one file over — `sync.ts:539` `SyncManager.onopen` — derived here,
+reported by no one.** Suite **2398/2398**, `tsc` exit 0.
+
+**The mechanism is the general lesson, and it is a NEW variation — the eighth surface.**
+`onmessage`, `send`, `encryptAndSend` and both pings consult `silenced`. **`onopen` did not — and it is
+the only path that touches the retry chain.** Nothing changed underneath a correct check here: this is a
+**suppression policy applied to four of five paths in a class, and to the fifth only by inspection, in
+the same commit.** *Nothing in the system knows a suppression flag is meant to be exhaustive.* The
+deriver's Stage A2 is now exactly that check.
+
+**A control worth copying everywhere.** The positive control has **two halves and exits 4 if it can show
+neither** — because after this repair, *"the class is empty"* and *"the deriver went blind"* would
+otherwise produce **the same output.** It also exits 3 on an empty input set rather than emitting a
+census. That is the WP86 failure mode made structurally impossible, twice over.
+
+**Adjudicated rather than asserted:** **21 unbounded waits** in the census (13 TS, 8 PY) were each checked
+individually and **all can complete**; **0 of the rig's 49 Python poll loops is unbounded**, so the rig
+can only time out. And **two rules found nothing with controls that make the nothing meaningful** — 0
+orphaned response keys of 11, 0 commands with no router case of 23 — the proof being that the join
+correctly matches `plugin.settings` (S33) as absent.
+
+**S56 — the mirror image of this class, and the largest family in the census: 116 of 197 waits are a bare
+`sleep` standing in for a wait** (86 of them in the `H:\tmp` scripts). **They always complete, and never
+observe the state they stood in for.** Unowned, and it bears on the trustworthiness of every timing-based
+green this run has produced. **S55** — 8 `subprocess.run` calls with **no `timeout=`**, including the E2E
+bundle build itself: a stalled child takes the whole rig with it, silently.
