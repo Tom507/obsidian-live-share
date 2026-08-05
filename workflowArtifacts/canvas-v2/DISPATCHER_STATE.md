@@ -229,10 +229,44 @@ That is rule 4 applied correctly for once, by a worker, unprompted.
 4. **The plugin debug log silently stopped writing at 2026-08-04T23:56** despite `debugLogging: true`,
    and produced nothing for the day's runs. The historical log was **decisive** for D1. *A logger that
    silently stops is the same defect class as a delete that reports nothing.*
-5. `isSharedPath` prefix match still unverified — and it is **adjacent**, since a wider `isSharedPath`
-   widens what may be deleted. (Note: WP79's charter reported this **settled negative** on the grounds
-   that `normalizePath` is the plugin's own; the two reports disagree, so **re-measure before trusting
-   either.**)
+5. ~~`isSharedPath` prefix match still unverified~~ — **SETTLED NEGATIVE by the Dispatcher, 2026-08-05.
+   There is no bug, and the suspicion was mine.** Measured: `manifest.ts:1` imports only
+   `Notice, TFile, TFolder, Vault` from `"obsidian"`; `normalizePath` comes from `"../utils"`
+   (`manifest.ts:6-17`), and `utils.ts:38-40` is `filePath.replace(/\\/g, "/")` — **backslashes only,
+   trailing slashes preserved**. So `folder` really is `"_liveshare-test/"` and
+   `"_liveshare-testing/secret.md".startsWith("_liveshare-test/")` is `false`. WP79's charter was right
+   and the data-loss batch's "still unverified" simply had not been re-measured.
+   **The lesson is in how it was filed, not in the answer:** I recorded it as *suspected, unverified,
+   inferred from `normalizePath`'s documented behaviour and NOT measured*. Had I recorded it as a
+   finding, a WP would have been chartered against a bug that does not exist. **A hedge that names its
+   own evidence class is worth more than a confident wrong claim.**
+
+### ✅ WP78 DONE (`303292b`, `4cb472a`, `d5b4e06`, `1990479`) — and it closed a seam the charter missed
+
+40 tests, **479 executed assertions across all 175 assert sites** (line-traced, so **no dead assertion in
+the suite** — a check the run has wanted for months). WP69 unmoved at **279/279** before and after,
+proven by an empty `git diff --name-only` over its three directories **with a positive control** that the
+directories are not empty.
+
+**The seam the charter did not name:** removing the parameter default alone would still leave
+`install.subprocess.run(...)` reachable by anyone importing the module — a second spawn seam needing no
+runner at all. `import subprocess` is now **function-local to the opt-in runner**, so C71 AC4's *"every
+reference occurs inside the one named opt-in runner"* is **literally** true rather than nearly true.
+
+The spawn census is **2 nodes, pinned**, both inside `spawning_subprocess_runner`; the detector catches
+seven grep-defeating spellings, each with its own test, and yields zero hits on an innocent module.
+Call-site census: **28 sites, 0 unguarded bare** — the single bare call is admitted **structurally**
+(lexically inside `pytest.raises(TypeError)`), never by a filename allowlist, and carries its own control.
+
+**C71 AC4's evidence can now actually be produced**, and the oracle is committed rather than described.
+`T3_SharedContract.md` §9a pins the name `spawning_subprocess_runner` so WP71 cannot invent a second one.
+
+**Carried up:** **S18** `relay.py:701` `LocalRelay(room_minter=None)` — the only optional default doing a
+**write-shaped** network op (`POST /rooms` creates server state rather than observing it); not a spawn,
+unowned. **S19** `tools/obsidian_e2e/__init__.py`'s `__all__` still omits `install`, `provisioning`,
+`relay` — now three WPs stale, and `install` is the module WP78 edits. **The `plugin/` npm gate is
+un-run** — deliberately, because a build would race the live WP79 agent and overwrite `plugin/main.js`;
+**Worker 4 must re-run it once `plugin/src/**` is quiet.**
 
 ### Autonomous queue (this order)
 
