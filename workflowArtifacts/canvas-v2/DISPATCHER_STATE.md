@@ -173,6 +173,67 @@ opposite case happened earlier the same day: two agents looked alive by mtime an
 *"No task found"*. **Neither direction is inferable from file times.** Check the registry, then check the
 tree for landed deliverables, then decide.
 
+### ✅ DATA-LOSS CHAIN FIXED (`6380e28`, `94a09c7`, `d9390ba`) — and D1 was not what I diagnosed
+
+**My diagnosis said "a host demotes itself". The real cause is a MISSING PROMOTION.**
+`control-handlers.ts:143` applied the server's authoritative `join-response.isHost` verdict in **one
+direction only**: `isHost === false` demoted a host; `isHost === true` did **nothing** to a guest. Every
+server/client disagreement therefore moved **monotonically toward guest**, and the fixed point of that
+walk is **a session with zero hosts**.
+
+The disagreement is manufactured by the relay: `server/src/control-handler.ts:568-591` auto-elects a
+survivor and **rewrites `room.hostUserId`** when the host's socket closes with peers still present. One
+Obsidian process serves both vaults, so **both die together** — the elected guest never processes or
+persists its `host-transfer-complete`. On relaunch the original host no longer matches, is told
+`isHost:false` and demotes; the elected guest is told `isHost:true` and ignores it. **No host ⇒ nobody
+publishes ⇒ the relay's replayed manifest is read as the host's current word ⇒ `cleanupStaleFiles`
+trashes everything it omits.**
+
+Pinned by the plugin's own log: `22:51:09.147 resuming as host` → `.271 control channel connected` →
+`.282 demoted` — **11 ms** — with vault B resuming 15 s later, which rules out a first-connect race.
+
+**The repair, in three parts:** the missing guest→host promotion, via one idempotent `promoteToHost`
+(`host-transfer-complete` had a second hand-rolled copy and now routes through it) · a
+**`ManifestPublication` attestation** (`hostId`, monotonic `seq`, `publishedAt`) written **in the same
+transaction as the entries**, so `cleanupStaleFiles` now requires **two independent conditions** — a
+publication that landed *after this peer connected* and *is not its own*, **and** a peer currently
+present claiming host · `manifest.size === 0` demoted from gate to redundant floor. `demoteToGuest` no
+longer reconciles: a peer just stripped of host authority must not delete on that authority.
+
+`cleanupStaleFiles` now returns a **`StaleReconcileDecision`** instead of `void`. Previously *"I deleted
+three files"*, *"there was nothing to delete"* and *"I had no business deciding"* were the same
+observation — silence. **A destructive operation that cannot say which of those happened cannot be
+audited**, which is why the loss was invisible until the files were noticed missing.
+
+**Evidence — RED then GREEN, with a positive control:** a canary file written to vault B was
+**DESTROYED** on the unmodified tree after a restart (both roles `guest`). After the fix, the same
+hostless shape yields `{"ran": false, "reason": "no host has ever published a manifest for this room"}`
+and the file survives. **S2 proves it is not a lobotomy** — with a live host asserting it, the guest copy
+is still deleted. Final: unit **1865/1865**, data-loss E2E **12/12**, canvas E2E **19/19**.
+
+**A regression the batch introduced and caught itself:** arming the retry earlier broke canvas deletion
+reaching the guest (19/19 → 17/19). It did **not** assume "pre-existing" — it built the parent commit's
+bundle on the same two instances to prove the regression was its own, then split the registration.
+That is rule 4 applied correctly for once, by a worker, unprompted.
+
+### Carried up from the data-loss batch — none owned
+
+1. **Host identity is unstable across restarts** — the relay's election swaps host/guest every time.
+   Benign now (one host, no loss) but it churns a full purge-republish per restart. Fix is **server-side**
+   (`control-handler.ts:588`), out of every current WP's scope.
+2. **A peer promoted before initial sync completes publishes a purging manifest** omitting files it has
+   not yet received. Pre-existing, identical on `host-transfer-complete`, now bounded on the consuming
+   side. **Deserves its own WP.**
+3. **Scenario `[07]` is FLAKY, not a WP79 verdict** — PASS, PASS, FAIL, PASS across three bundles with no
+   correlation. **A *passing* [07] would wrongly suggest WP79 is fixed.** Do not gate on it.
+4. **The plugin debug log silently stopped writing at 2026-08-04T23:56** despite `debugLogging: true`,
+   and produced nothing for the day's runs. The historical log was **decisive** for D1. *A logger that
+   silently stops is the same defect class as a delete that reports nothing.*
+5. `isSharedPath` prefix match still unverified — and it is **adjacent**, since a wider `isSharedPath`
+   widens what may be deleted. (Note: WP79's charter reported this **settled negative** on the grounds
+   that `normalizePath` is the plugin's own; the two reports disagree, so **re-measure before trusting
+   either.**)
+
 ### Autonomous queue (this order)
 
 1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
