@@ -33,6 +33,7 @@ import {
   type ImportFromFileResult,
   runImportFromFile,
 } from "./files/canvas-import";
+import { mirrorSharedCanvases } from "./files/canvas-mirror";
 import {
   type CanvasSidecarWiring,
   createVaultSidecarIO,
@@ -168,6 +169,11 @@ export default class LiveSharePlugin extends Plugin {
   muxConnected = false;
   controlConnected = false;
   private manifestHandlerQueue: Promise<void> = Promise.resolve();
+  // WP79: the mirror pass is serialised against itself. It is armed at six
+  // sites, several of which can fire close together (a join whose manifest
+  // changes a moment later), and two concurrent passes would race each other's
+  // `isSubscribed` / `localFileExists` observations.
+  private canvasMirrorQueue: Promise<void> = Promise.resolve();
 
   updateOnlineState() {
     const bothUp = this.muxConnected && this.controlConnected;
@@ -339,6 +345,19 @@ export default class LiveSharePlugin extends Plugin {
               }
             }
           }
+          // WP79 — THE RETRY, and it is not optional wiring.
+          //
+          // The guest's mirror needs a PUBLISHED GUID, and only the host can
+          // mint one (`resolveGuidForSubscribe` refuses to mint on a guest, by
+          // C27). At a simultaneous start the guest's own pass can easily run
+          // before the host's guid lands, and an unresolvable identity is a
+          // skip — correctly, but permanently if nothing re-asks. The guid
+          // arrives as a manifest entry change, so the decision is re-asked on
+          // exactly the event that creates the evidence, in the precedent of
+          // `armStaleReconcileRetry`. Unconditional rather than gated on
+          // `added`/`updated`: a path whose file the guest already has costs one
+          // adapter `exists` and skips.
+          this.armCanvasMirrorPass();
         })
         .catch((err) => {
           this.logger.error("manifest", "handler error", err);
@@ -538,6 +557,8 @@ export default class LiveSharePlugin extends Plugin {
         await this.manifestManager.publishManifest({ purge: true });
         await this.backgroundSync.startAll("host");
         this.registerManifestChangeHandler();
+        // WP79 entry point 2 (rejoin/resume), host arm.
+        this.armCanvasMirrorPass();
       } else {
         // D2 — the RETRY is armed before the first reconcile attempt, because
         // that attempt is expected to refuse (the host has almost certainly not
@@ -553,6 +574,10 @@ export default class LiveSharePlugin extends Plugin {
         );
         await this.backgroundSync.startAll("guest");
         this.registerManifestChangeHandler();
+        // WP79 entry point 2 (rejoin/resume), guest arm. AFTER
+        // `registerManifestChangeHandler`, so no pre-existing call order moves —
+        // the [06] regression of the D2 batch was caused by exactly that.
+        this.armCanvasMirrorPass();
       }
       this.onActiveFileChange();
     } catch {
@@ -771,6 +796,8 @@ export default class LiveSharePlugin extends Plugin {
           await this.manifestManager.publishManifest({ purge: true });
           await this.backgroundSync.startAll("host");
           this.registerManifestChangeHandler();
+          // WP79 entry point 1 (session start, host).
+          this.armCanvasMirrorPass();
           this.onActiveFileChange();
           this.logger.log("session", `started, room=${this.settings.roomId}`);
           this.notify("Live Share: session started, invite copied to clipboard");
@@ -809,6 +836,8 @@ export default class LiveSharePlugin extends Plugin {
           );
           await this.backgroundSync.startAll("guest");
           this.registerManifestChangeHandler();
+          // WP79 entry point 3 (join).
+          this.armCanvasMirrorPass();
           this.onActiveFileChange();
           this.logger.log("session", `joined, room=${this.settings.roomId}`);
           this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
@@ -844,6 +873,8 @@ export default class LiveSharePlugin extends Plugin {
           );
           await this.backgroundSync.startAll("guest");
           this.registerManifestChangeHandler();
+          // WP79 entry point 4 (join via invite link).
+          this.armCanvasMirrorPass();
           this.onActiveFileChange();
           this.logger.log("session", `joined via link, room=${this.settings.roomId}`);
           this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
@@ -1010,27 +1041,27 @@ export default class LiveSharePlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("layout-change", () => this.syncCanvasPresences()));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncCanvasPresences()));
 
-    const entries = this.manifestManager.getEntries();
-    const role = this.settings.role === "host" ? "host" : "guest";
-    for (const [path] of entries) {
-      if (isTextFile(path) && path.endsWith(".canvas")) {
-        // WP6 (US5 AC8/AC9): hand the path over to CanvasSync with
-        // `backgroundSync.unsubscribe` immediately before the subscribe, and
-        // install the announced raw-text fallback if the subscribe FAILS.
-        // WP7 (US5 AC13/AC17): once the path is genuinely canvas-owned — i.e.
-        // after `waitForSync` — attach its single CRDT→disk writer.
-        void subscribeCanvasWithHandover({
-          path,
-          role,
-          backgroundSync: this.backgroundSync,
-          canvasSync: this.canvasSync,
-          logger: this.logger,
-        }).then((owned) => {
-          if (owned) void this.attachCanvasWriter(path);
-        });
-      }
-    }
-
+    // WP79 / S22 — THE MANIFEST-DRIVEN CANVAS LOOP THAT USED TO LIVE HERE IS
+    // GONE, and it is important that it is understood as dead code removal
+    // rather than as a behaviour change.
+    //
+    // It read `this.manifestManager.getEntries()` and subscribed every `.canvas`
+    // it found. `connectSync()` is awaited BEFORE `manifestManager.connect(...)`
+    // at all four session entry points (`resumeSession`, `startSession`,
+    // `joinSession`, `joinWithInvite`), `ManifestManager.connect` is what
+    // assigns `this.manifest`, and `getEntries()` is
+    // `if (!this.manifest) return new Map();`. `cleanupSession()` calls
+    // `manifestManager.destroy()`, which nulls it again, so the state is the
+    // same on every subsequent session. THE LOOP ITERATED ZERO ENTRIES, IN
+    // EVERY SESSION, FOR BOTH ROLES — always, not on a race. It had never run.
+    //
+    // It is removed rather than moved for two reasons. It drove
+    // `subscribeCanvasWithHandover`, whose unowned branch installs the R10
+    // raw-text fallback — over a whole shared folder that would mass-install a
+    // second CRDT for every canvas whose guid does not resolve. And the verdict
+    // belongs in a testable core, not in an `if` inside this file. Its
+    // replacement is `runCanvasMirrorPass()`, armed at the six sites where the
+    // manifest is actually populated.
     this.presenceManager = new PresenceManager({
       getUserId: () => this.userId,
       getDisplayName: () => this.settings.displayName,
@@ -1503,6 +1534,50 @@ export default class LiveSharePlugin extends Plugin {
       return false;
     }
     return true;
+  }
+
+  /**
+   * WP79 — arm the shared-canvas mirror pass. WIRING ONLY.
+   *
+   * Every decision — which paths are considered, what the verdict is per path
+   * and per role, whether anything is written — lives in `files/canvas-mirror.ts`
+   * and `files/canvas-mirror-decision.ts`. This method constructs, injects and
+   * forwards, exactly as `wireCanvasSidecar` does, and holds no conditional over
+   * canvas state.
+   *
+   * NOT AWAITED by its callers. A shared folder with many canvases costs one
+   * `getDoc` + one `waitForSync` + one sidecar attach per canvas the guest
+   * lacks; blocking the join on that would trade one defect for another, so a
+   * slow or failing canvas degrades that canvas alone (I5).
+   *
+   * `localFileExists` goes through the vault ADAPTER, which is the layer the
+   * single writer writes through — not `getAbstractFileByPath`, whose cache does
+   * not yet know a file `CanvasPersistence` created a moment ago.
+   *
+   * `CanvasSync` is forwarded WHOLE rather than as three loose callbacks, so
+   * this file states no canvas operation of its own and WP6 AC8's "no direct
+   * canvas subscribe in `main.ts`" stays true and stays meaningful. The mirror
+   * pass deliberately does not use `subscribeCanvasWithHandover` — see the
+   * header of `files/canvas-mirror.ts`.
+   */
+  private armCanvasMirrorPass(): void {
+    this.canvasMirrorQueue = this.canvasMirrorQueue
+      .then(async () => {
+        const canvasSync = this.canvasSync;
+        if (!canvasSync) return;
+        await mirrorSharedCanvases({
+          role: this.settings.role === "host" ? "host" : "guest",
+          listManifestPaths: () => this.manifestManager.getEntries().keys(),
+          localFileExists: (path) => this.app.vault.adapter.exists(toLocalPath(path)),
+          guidForPath: (path) => this.manifestManager.getCanvasGuid(path),
+          canvasSync,
+          materialise: (path) => this.attachCanvasWriter(path),
+          logger: this.logger,
+        });
+      })
+      .catch((err) => {
+        this.logger.error("canvas-mirror", "mirror pass failed", err);
+      });
   }
 
   /**
@@ -1979,6 +2054,10 @@ export default class LiveSharePlugin extends Plugin {
     this.presenceManager?.broadcastPresence();
     this.updateStatusBar();
     this.refreshPresenceView();
+    // WP79 entry point 5a (reconnect / role change). A peer that has just become
+    // the host is the only client that can give its shared canvases a published
+    // identity, and until it does no guest can resolve them.
+    this.armCanvasMirrorPass();
     this.onActiveFileChange();
     this.notify("Live Share: you are now the host");
   }
@@ -2015,6 +2094,8 @@ export default class LiveSharePlugin extends Plugin {
     this.notify("Live Share: reconnected as guest - another user is host");
     this.updateStatusBar();
     this.refreshPresenceView();
+    // WP79 entry point 5b (reconnect / role change, the demotion arm).
+    this.armCanvasMirrorPass();
     this.onActiveFileChange();
   }
 
@@ -2026,6 +2107,11 @@ export default class LiveSharePlugin extends Plugin {
       this.unmutePathEvents,
       this.requestBinaryFile,
     );
+    // WP79 entry point 6 (reload-from-host). `syncFromManifest` skips `.canvas`
+    // by design, so before this call the user command could not reach a canvas
+    // at all — which is the whole "there is not even an option to share it
+    // afterwards" complaint.
+    this.armCanvasMirrorPass();
     if (syncedCount > 0) this.notify(`Live Share: reloaded ${syncedCount} file(s) from host`);
   }
 

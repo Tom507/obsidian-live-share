@@ -834,8 +834,30 @@ describe("WP6 / US5 AC8+AC9+AC10 — handover ordering and the text fallback", (
     const source = readFileSync(new URL("../main.ts", import.meta.url), "utf8");
 
     // No direct subscribe left anywhere in main.ts...
+    // UNCHANGED, and it is the load-bearing half: `main.ts` still states no
+    // canvas subscribe of its own. WP79's mirror pass subscribes from
+    // `files/canvas-mirror.ts`, which takes `CanvasSync` as one injected object
+    // precisely so this assertion stays true and stays meaningful.
     expect(source).not.toMatch(/canvasSync\??\.subscribe\(/);
-    // ...and both call sites (session start + lazy mid-session) use the helper.
-    expect(source.match(/subscribeCanvasWithHandover\(\{/g)).toHaveLength(2);
+    // ...and the surviving call site (lazy mid-session) uses the helper.
+    //
+    // ── WP79 AMENDMENT, 2026-08-05: 2 -> 1. Read the reason before restoring it.
+    //
+    // The count was 2 because of the manifest-replay loop in `connectSync()`.
+    // That loop was STRUCTURALLY DEAD and had never run once, for either role,
+    // in any session: `connectSync()` is awaited BEFORE
+    // `manifestManager.connect(...)` at all four session entry points, and
+    // `getEntries()` returns an empty map while `this.manifest` is null (S22,
+    // measured against this tree). WP79 removed it — it is not merely dead, it
+    // is a landmine, because the helper it drove installs the R10 raw-text
+    // fallback and running that over a whole shared folder is exactly the
+    // second-CRDT-over-a-canvas-path failure WP6's own predicate exists to
+    // prevent.
+    //
+    // So this number was never counting two live handovers; it was counting one
+    // live handover and one dead one. WP6 AC8's actual claim — every canvas
+    // subscribe WRITTEN IN `main.ts` routes through the helper — is unchanged
+    // and is still asserted, by the line above and by this one together.
+    expect(source.match(/subscribeCanvasWithHandover\(\{/g)).toHaveLength(1);
   });
 });
