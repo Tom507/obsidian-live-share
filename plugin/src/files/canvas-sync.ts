@@ -1564,7 +1564,35 @@ function upsertRecordFields(
       if (verdict.kind === "rejected") typeSignature = verdict.signature;
       continue;
     }
-    if (docValueEquals(record.get(key), value)) continue;
+    const current = record.get(key);
+    // WP36 REPRESENTATION BLINDNESS — `docValueEquals` CANNOT answer this
+    // question for a migrated `text` / `label`, and its silence is a write.
+    //
+    // `docValueEquals` asks "is the doc already holding this exact value?" so
+    // that a restatement is not written again. A `Y.Text` is never `===` a
+    // string and it is no register either, so once the field has migrated the
+    // predicate answers `false` for a BYTE-IDENTICAL restatement — and the
+    // `set` below then replaces the nested type with a plain string. The
+    // record is silently UN-MIGRATED, its CRDT history is discarded, and the
+    // projected `.canvas` is unchanged, so nothing anywhere goes red.
+    //
+    // The seed boundaries are exactly where that restatement arrives: both
+    // `seedRecordsIntoYMaps` (cold open) and `applyCanvasToYMaps` (host seed)
+    // re-seed the path from the local `.canvas`, whose `text` is the RENDERED
+    // string of the very `Y.Text` this write would flatten.
+    //
+    // The comparison is therefore made through the same render the projection
+    // uses. `docValueEquals` itself is deliberately left BYTE-UNCHANGED (C36
+    // §7 clause 4): it is a value predicate shared with the capture path,
+    // where teaching it that a `Y.Text` "equals" a string would make real
+    // edits silently skip. This is a decision about THIS boundary's write.
+    //
+    // NOT CLOSED HERE, and carried up instead: a seed proposing a genuinely
+    // DIFFERENT string over a `Y.Text` still flattens it. That is not a blind
+    // check — the values really do differ — it is a routing question (skip,
+    // merge, or write) that belongs with C36's write router.
+    if (isYText(current) && typeof value === "string" && current.toString() === value) continue;
+    if (docValueEquals(current, value)) continue;
     record.set(key, value);
   }
   return typeSignature;
@@ -2970,9 +2998,21 @@ export class CanvasSync {
     // AC4: the DIVERGENT discards — fields the save re-stated at the shadow's
     // value while the CRDT has genuinely moved on. Read BEFORE the transaction,
     // so the compared value is the one the capture actually classified against.
+    // WP36 REPRESENTATION BLINDNESS — the doc value is read through the same
+    // render the projection uses, because a `Y.Text` is never `!==`-equal to
+    // the string the shadow holds.
+    //
+    // `discard.value` is the SHADOW's value, and the shadow stores the
+    // RENDERED projection (C36 AC4, `buildApplyReceipt` -> `advanceFromReceipt`).
+    // Compared raw, a migrated `text` / `label` is unequal to its own rendered
+    // string, so the "the CRDT has genuinely moved on" test answered TRUE for
+    // every discarded text field whether or not anything had moved — the
+    // `SHADOW STALE:` signature stopped distinguishing a real divergence from
+    // a restatement, on the two fields where a stale push is most destructive.
+    // A diagnostic that fires unconditionally is not a diagnostic.
     const divergent = plan.discarded.filter((discard) => {
       const record = maps[discard.kind].get(discard.id);
-      return record !== undefined && record.get(discard.field) !== discard.value;
+      return record !== undefined && renderDocValue(record.get(discard.field)) !== discard.value;
     });
 
     this.recentLocalEdits.add(path);

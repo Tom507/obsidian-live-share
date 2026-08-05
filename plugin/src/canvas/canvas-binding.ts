@@ -136,7 +136,24 @@ function ymapToRecord(ymap: Y.Map<unknown>): CanvasRecord {
 function writeRecordMinimal(ymap: Y.Map<unknown>, next: CanvasRecord): boolean {
   let changed = false;
   for (const [key, value] of Object.entries(next)) {
-    if (ymap.get(key) !== value) {
+    const current = ymap.get(key);
+    // WP36 REPRESENTATION BLINDNESS — the minimal diff is not minimal for a
+    // migrated `text` / `label`.
+    //
+    // `current !== value` is the whole "is this actually a change?" test, and a
+    // nested `Y.Text` is never `===` the string that renders it. So once the
+    // field has migrated, EVERY capture reports a change for it, emits a Yjs
+    // update for a value nobody altered, and `set`s a plain string over the
+    // nested type — silently un-migrating the record and throwing its merge
+    // history away, while the projected string stays identical.
+    //
+    // The comparison is made through the same render the projection uses. A
+    // genuinely different string is still written, so this only removes the
+    // spurious rewrite, never a real one.
+    if (current instanceof Y.Text && typeof value === "string" && current.toString() === value) {
+      continue;
+    }
+    if (current !== value) {
       ymap.set(key, value);
       changed = true;
     }

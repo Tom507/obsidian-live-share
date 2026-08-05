@@ -220,6 +220,35 @@ function readDocField(
   return { value: raw, shape: "other" };
 }
 
+/**
+ * The `[i7]` family's "did an unmentioned field's value change?" test.
+ *
+ * WP36 REPRESENTATION BLINDNESS — this was
+ *
+ *     now !== value && JSON.stringify(now) !== JSON.stringify(value)
+ *
+ * and the `JSON.stringify` arm is there for a good reason: `encodePos` freezes
+ * a NEW array per call, so a same-pixel register is reference-unequal and
+ * value-equal, and comparing it by reference would have made the family fire on
+ * every restatement.
+ *
+ * But `Y.Text.prototype.toJSON` returns the plain string. So the day `text` /
+ * `label` became a nested type, a `Y.Text("x")` REPLACED BY the plain string
+ * `"x"` — i.e. exactly the un-migration C36 AC1 forbids — began to compare
+ * EQUAL through that arm, and the family stopped being able to see it. The
+ * comparison was right by accident, which is worse than wrong: it looks
+ * deliberate.
+ *
+ * The shape is therefore asked FIRST and separately from the value. Two values
+ * that render the same string but are not the same shape have changed.
+ */
+export function i7FieldValueChanged(before: unknown, now: unknown): boolean {
+  const shapeOf = (v: unknown) => (v instanceof Y.Text ? "ytext" : typeof v);
+  if (shapeOf(before) !== shapeOf(now)) return true;
+  if (now === before) return false;
+  return JSON.stringify(now) !== JSON.stringify(before);
+}
+
 /** What this replica's doc currently renders for a collaborative-text field. */
 function currentTextOf(
   replica: FuzzReplica,
@@ -933,7 +962,7 @@ export function createStandardRegistry(): OpRegistry {
           continue;
         }
         const now = after.get(key);
-        if (now !== value && JSON.stringify(now) !== JSON.stringify(value)) {
+        if (i7FieldValueChanged(value, now)) {
           ctx.replica.fieldRemovals.push({
             replica: ctx.replica.index,
             kind: target.kind,
