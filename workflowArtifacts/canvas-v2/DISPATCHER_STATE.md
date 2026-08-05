@@ -2075,3 +2075,49 @@ correctly matches `plugin.settings` (S33) as absent.
 observe the state they stood in for.** Unowned, and it bears on the trustworthiness of every timing-based
 green this run has produced. **S55** — 8 `subprocess.run` calls with **no `timeout=`**, including the E2E
 bundle build itself: a stalled child takes the whole rig with it, silently.
+
+### ✅ WP87 DONE (`012f896`, `dc1abc0`, `860e2a9`) — **the owner's typing defect is now fully closed**
+
+**C37 AC3 is SATISFIED end to end, both directions:** `A.state='kolla1bo2ration'` and
+`B.state='kolla1bo2ration'` — both markers, typed order, one word, **both peers, both `.canvas` files**.
+WP36's single-span limit **did not fire**, so it is green rather than PARTIAL. Unit **2470/2470**,
+347 files.
+
+**The attribution discipline paid for itself.** The receipt identified **R-C**, on a bundle carrying the
+instrument and **no fix**, before a line of repair was written:
+
+- **R-A was falsified as *sufficient*, not as *present*** — WP37's substitution **ran and was correct**
+  (`[deferred (inline editor on 'c1'); 1 other record(s) applied]`, queue held exactly 1) and the editor
+  was destroyed **222 ms later** anyway. An inference-aimed repair would have "fixed" a working component.
+- **R-B falsified with the actual values** (`flag=c1`, `isEditingIds=['c1']` throughout the window — the
+  signal was **not** null). **R-D falsified with zero lines.**
+- **R-C's own receipt:** the victim had **not one `reconcile <path>:` line in the entire window** and was
+  destroyed at exactly `+2.5 s`, with `CANVAS WRITER: … owner=CanvasPersistence` the only trace.
+
+### 🚨 `main.ts:2376`'s claim is FALSE — and the truth is worse
+
+*"Obsidian never reloads a canvas from an external write"* — **measured false on both vaults, on an
+UNSHARED board, with no plugin path involved at all.** It reloads, and unflushed characters go with it.
+
+**And the reload is a REBUILD, not `setData`'s node reuse** — a write touching only the *other* card
+destroyed the edited card's editor. That is what ruled out the elegant repair and left only *"do not
+change the bytes"*. An untested comment had been load-bearing for the design of two work packages.
+Corrected in place with the measurement beside it; **`canvas-sync.ts:3785-3789` still asserts it —
+unowned.**
+
+**S56 — WP37's protection was structurally inert on guests.** A guest's open canvas **never received a
+`CanvasAdapter`** (3/3, a race with the lazy subscribe, never retried), so the guest's view was never
+reconciled and the editing-aware deferral could not fire there at all. Repaired in one line of wiring;
+**the class — a race that is never retried — is unowned.**
+
+**Two marks of a batch working the way I want.** It **caused a canvas-E2E regression, found it with a
+control run rather than assuming it pre-existing, attributed it, and closed it** (21/21 → 19/21 → 21/21).
+And it disclosed that its commit carries **~11 lines of a sibling's uncommitted work**, inseparable
+without reverting a shared path — rule 14 honoured by reporting rather than by tidying.
+
+**S61, named as the highest-value follow-up:** `getEditingNodeId()` **over-reports an editor on boards
+nobody is typing in** — bounded by a ceiling, not repaired. **It silently widens every deferral in the
+system.** **S57** — a substituted record advanced the Surface-Shadow to the user's *unflushed* editor
+text, so their save was dropped as `SHADOW STALE`; repaired at the receipt, the asymmetry inside
+`canvas-shadow.ts` untouched. **S59** — the P5 binding path reaches the view mutators and consults the
+predicate **zero** times; admitted as `FROZEN-BEHIND-FLAG`, **live the day P5 flips it.**
