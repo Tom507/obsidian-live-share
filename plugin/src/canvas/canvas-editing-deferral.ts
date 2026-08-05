@@ -367,6 +367,9 @@ export function planCanvasDiskWrite(input: {
   editingNodeId: string | null;
   /** Is there a live surface for this path at all (an adapter to ask)? */
   surfaceReadable: boolean;
+  /** How many flushes this path has already withheld. */
+  holds?: number;
+  maxHolds?: number;
 }): CanvasDiskWriteDecision {
   if (input.surfaceReadable !== true) {
     return {
@@ -379,12 +382,46 @@ export function planCanvasDiskWrite(input: {
   if (editingNodeId === null) {
     return { mode: "write", editingNodeId: null, reason: "no inline editor is focused" };
   }
+  // ── THE CEILING, and it is not decoration ────────────────────────────────
+  //
+  // MEASURED, canvas E2E matched pair: control (parent commit) 21/21, this
+  // change 19/21, the two failing rows being `[06] B: node gone` — which reads
+  // the `.canvas` FILE. The editing signal reported an editor on a board nobody
+  // was typing in, so the write was withheld, and the file kept a node the doc
+  // had already deleted. The hold is released by a BLUR, and a session that was
+  // never real never blurs.
+  //
+  // So the hold is bounded on BOTH axes: by the event (the drain) and by a
+  // count. The count is deliberately generous — a real typing session on a busy
+  // board produces a flush per remote delta — and it is a CEILING, not a
+  // policy: crossing it means the signal was wrong, and a stale `.canvas` is
+  // WP85's defect rebuilt.
+  const holds = typeof input.holds === "number" ? input.holds : 0;
+  const max = input.maxHolds ?? CANVAS_MAX_WITHHELD_FLUSHES;
+  if (holds >= max) {
+    return {
+      mode: "write",
+      editingNodeId,
+      reason:
+        `writing anyway: ${holds} flush(es) already withheld for '${editingNodeId}' ` +
+        `(ceiling ${max}) — a permanently stale .canvas is the worse defect`,
+    };
+  }
   return {
     mode: "withhold",
     editingNodeId,
     reason: `withheld (inline editor on '${editingNodeId}')`,
   };
 }
+
+/**
+ * How many consecutive flushes one path may withhold before writing anyway.
+ *
+ * A ceiling, not a policy — see {@link planCanvasDiskWrite}. It exists because
+ * the hold's normal release is an EVENT (a blur), and an editing flag that was
+ * never a real session never produces one.
+ */
+export const CANVAS_MAX_WITHHELD_FLUSHES = 8;
 
 // ---------------------------------------------------------------------------
 // WP87 — WHEN THE DRAIN MAY RUN.

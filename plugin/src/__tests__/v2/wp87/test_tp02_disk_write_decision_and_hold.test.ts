@@ -64,6 +64,28 @@ describe("WP87 — planCanvasDiskWrite: the second consumer of the ONE predicate
     ).toBe("write");
   });
 
+  it("HAS A CEILING: it writes anyway once too many flushes have been withheld", () => {
+    // MEASURED, and it is why the ceiling exists: the canvas E2E matched pair
+    // read 21/21 (control) vs 19/21 (this change), and the two failing rows read
+    // the `.canvas` FILE. The editing signal reported an editor on a board
+    // nobody was typing in; the hold's normal release is a BLUR, and a session
+    // that was never real never blurs. Driven across the ceiling, not read off
+    // the constant.
+    const modes = [0, 1, 7, 8, 9].map(
+      (holds) =>
+        planCanvasDiskWrite({ editingNodeId: "c1", surfaceReadable: true, holds }).mode,
+    );
+    expect(modes).toEqual(["withhold", "withhold", "withhold", "write", "write"]);
+    expect(
+      planCanvasDiskWrite({ editingNodeId: "c1", surfaceReadable: true, holds: 8 }).reason,
+    ).toContain("permanently stale");
+    // The ceiling is honoured as a CEILING: the node is still named, so the
+    // write that crosses it is attributable rather than anonymous.
+    expect(
+      planCanvasDiskWrite({ editingNodeId: "c1", surfaceReadable: true, holds: 8 }).editingNodeId,
+    ).toBe("c1");
+  });
+
   it("is PURE: it takes no clock, no DOM and no adapter — the fact is an argument", () => {
     const before = decide("c1");
     const after = decide("c1");

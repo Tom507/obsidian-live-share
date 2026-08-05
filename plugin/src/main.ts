@@ -2855,6 +2855,7 @@ export default class LiveSharePlugin extends Plugin {
         const decision = planCanvasDiskWrite({
           editingNodeId: adapter?.getEditingNodeId?.() ?? null,
           surfaceReadable: adapter !== undefined && adapter.isAvailable(),
+          holds: this.canvasWriteHolds.holds(canonical),
         });
         if (decision.mode === "withhold") {
           const holds = this.canvasWriteHolds.hold(canonical, diskPath, content);
@@ -2864,6 +2865,12 @@ export default class LiveSharePlugin extends Plugin {
           );
           return;
         }
+        // A `write` verdict supersedes anything still held: this content is
+        // newer, so the held snapshot is stale and re-writing it afterwards
+        // would put an older projection back on disk. Dropping it here is also
+        // the second, EVENT-FREE release path — the file converges at the next
+        // flush after editing ends, whatever happened to the blur signal.
+        this.canvasWriteHolds.clear(canonical);
         await baseIo.write(diskPath, content);
       },
     };
