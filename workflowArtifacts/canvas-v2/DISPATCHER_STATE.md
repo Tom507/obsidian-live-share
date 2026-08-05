@@ -593,6 +593,61 @@ so this may be reachable only by SIGKILL-level abuse rather than by an ordinary 
 address that head-on. **But a dropped socket is a dropped socket, and a client that neither retries nor
 reports is a defect whatever caused the drop.**
 
+### 🔢 SIGNAL REGISTER — COLLIDED. My bookkeeping failure, and it reached agent briefs.
+
+Two batches allocated `S`-numbers independently and **five collided**. I then briefed three agents using
+the ambiguous ones. B25 caught it (its own S42) and had to disambiguate mid-charter.
+
+| # | meaning A (B20 set) | meaning B (WP37/WP79 report set) |
+|---|---|---|
+| **S25** | server-side host-identity churn | `FileOpsManager.onFileCreate` fifth door → **now WP83** |
+| **S28** | read failure in `publishManifest` becomes a deletion → **subsumed by WP80** | `canvas.open` opens no leaf, so no disk writer attaches |
+| **S29** | the falsified logger silence | open canvas does not converge to file → **now WP85** |
+| **S30** | unbounded debug-log growth | canvas E2E reading 13/18 |
+| **S31** | duplicated historical blocks in the logs | a canvas editor is unreachable via a `contenteditable` selector |
+
+**Rules from here:**
+
+- **`S1`–`S41` are ambiguous and MUST be cited with their source document**, never bare. A bare `S28` in a
+  brief is a defect in the brief.
+- **`S42`+ are globally unique and allocated by the Dispatcher only.** B25 allocated S42–S48 correctly
+  under that rule; that block stands.
+- A finding that has become a WP is cited **by WP number**, not by signal.
+
+**A register with duplicate keys is not a register.** This is the same failure as an assertion that
+cannot fail, moved into the bookkeeping: the identifier stopped distinguishing the things it names, and
+nothing detected that until a fourth party tried to use it.
+
+### ✅ WP80 landed (`22fc50b`) · WP83 + WP85 chartered (`c4e4d59`, `6fef2d3`, `1e87b8a`)
+
+**WP84 was NOT chartered — W2 refused it as subsumed by WP80**, and showed the ownership at three levels
+(WP80's charter scopes it three times; `manifest.ts` counts `readFailures` under a comment naming S28;
+`manifest-purge-decision.ts:242-255` returns ADDITIVE for any non-zero count). **Chartering it would have
+spent a work package on something already closed.** The §9 row is recorded as **`withdrawn`** so the
+number cannot be silently re-used — the WP65 lesson applied. Header now reads **84 live (WP1–WP83, WP85)**.
+
+**S29 turned out to be BOTH, and the split is the whole charter:**
+
+- **As I measured it — a RIG ARTEFACT (S45).** `canvas.open` (`e2e-control.ts:1255-1262`) subscribes
+  **directly**, bypassing both sanctioned attach paths, and because the leaf-open attach is gated on
+  `!isSubscribed` (`main.ts:1251`), it **permanently disables the seam that would have attached a
+  writer**. That alone produces every observation. **It invalidates more than one past file-level
+  measurement of mine.**
+- **As a claim — TRUE OF THE PRODUCT, reachable with no rig at all.** WP79's mirror **subscribes** every
+  shared canvas on the host and returns `PUBLISH` without materialising, consuming the opportunity —
+  corroborated by WP79's own landed receipt `role=host published=6 materialised=0`.
+
+**Ruling on C37 AC2: the behaviour is wrong; the criterion is NOT amended.** Its normative content
+(queue instead of drop) is correct and landed; only its justification clause *"which is safe"* rested on
+an unmeasured premise. **A criterion is not wrong because its rationale was unverified** — that
+distinction is worth keeping.
+
+**And a correction to my own brief:** I told W2 that `skipsAutoTextSync`'s *"exhaustive in both
+directions"* claim was false. **It is true** — scoped to the `isSidecarPath` block, 4-for-4, already
+tree-derived by `wp26/test_tp09`. The block that misled this run is **the other one**, unenforced and
+already stale by one row. Ruling: enforce the derivable block, demote the unenforceable claim, and record
+why — *a consumer derivation can never catch a non-consumer.*
+
 ### Autonomous queue (this order)
 
 1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
@@ -1499,3 +1554,59 @@ the batch baseline, to be fixed without weakening the assertion before the batch
 > exists is that a green a person eyeballed once is exactly the evidence class this run spent its length
 > learning to distrust. The smoke test is a floor, not a ceiling — and the honest statement of status is
 > now *"it runs, and it is verified to the limit of headless testing plus one observed session."*
+
+---
+
+## 🚨 S49 — THE PROTECTED PATH WAS NOT THE PATH THAT DESTROYED THE FILE
+
+Found by WP80's own RED run, verified by the Dispatcher at `main.ts:366-370`:
+
+```js
+for (const path of actuallyRemoved) {
+  this.backgroundSync.onFileRemoved(path);
+  const file = this.app.vault.getAbstractFileByPath(toLocalPath(path));
+  if (file) await this.app.fileManager.trashFile(file);
+}
+```
+
+**No role guard. No evidence gate. No completeness check.** A manifest entry disappearing is executed as
+*"trash the user's local file"*, for **every peer, host or guest**.
+
+**Two work packages this week built protection against exactly this outcome — and neither is on this
+path.** WP80's RED run proves it: when the canary was destroyed, `cleanupStaleFiles` reported
+`candidates:0, trashed:[]`, because **the file was already gone.** The run hardened one door thoroughly
+while a second stood open beside it.
+
+The generalisation is the same one this project keeps rediscovering, and it now has a fourth instance:
+**a disappearing manifest entry has at least four causes — a genuine remote delete, a purge by an
+incomplete host, a `readFailure` skip, and a peer that never had the entry — and only the first justifies
+destroying a file.** Absence of information, executed as a destructive assertion.
+
+Chartered as **WP86** (B27), scoped to *every* route from a manifest-entry disappearance to a local
+delete, explicitly **not** to this one loop — because stopping at the first site is how this was missed.
+
+---
+
+## ✅ WP80 DONE (`22fc50b`, `dd91921`)
+
+RED: a **4 MB binary canary destroyed** from the host's vault by a *correct* `promoteToHost`
+(20 passed / 4 failed, decision core disabled at its seam). GREEN: **24 passed / 0 failed / 0 skipped**,
+verdict `additive, purged:false, deleted:[], unaccounted:[canary]`. Unit **2119/2119** (318 files, +43).
+
+**Two positive controls**, because a fix that only forbids is a lobotomy: a complete host still purges
+(`deleted:["…wp80-pos-….bin"]`), and the inherited data-loss suite stays **12/12** including its own
+`guest_copy_present=False`.
+
+**AC4 caught a lobotomy in the first implementation.** It latched the foreign-publication flag on the
+*replayed* attestation, and the positive control went **red live**. Rescoped to D2's own freshness. The
+criterion did exactly the job it was written for — this is what a positive control is *for*.
+
+**AC4 also has two declared deviations rather than a faked green:** the *"non-empty deleted list at each
+of the four sites"* clause is **unsatisfiable at site 3 by construction** — a promoted peer may only purge
+once it accounts for the whole manifest, so there is nothing left to delete, and a non-empty deletion
+there is precisely the outcome the WP prevents. Site 2 needs a UI action and **no rig command was
+invented for it**.
+
+**WP81's deferred `e2e-control.ts` command landed** (`plugin.sinkState`) and was verified live: the log
+grew +1068 bytes and `linesWritten` +8 on the same act. **That retires the DataLossChain report's
+"logger stopped" finding for good** — it is writing on both vaults.
