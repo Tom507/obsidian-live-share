@@ -328,6 +328,16 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 *⚠ **Blind sets are discontinued for new work** (owner's instruction, 2026-08-05): no `blind_set1`, no `blind_set2`, no falsification-injection requirement and no `BlindVerificationLedger` row is owed by this WP. Validation is W4 against two live Obsidian instances, with headless tests carrying the rows a live instance must not be abused to produce. E2E-plugin defects found while validating go back to **W3 as a revision** — and note that for this WP **both** E2E commands are part of the deliverable, so a defect in either is a defect in WP82.*
 
+### Visible Test Cases (filled by Worker 3, B30) — `plugin/src/__tests__/wp82/`, 59 tests, 5 files
+
+| file | AC | what it pins |
+|---|---|---|
+| `test_ac1_connected_marking_is_role_independent_visible.test.ts` | AC1 | The **four role orderings** as four rows at the `registerControlHandlers` seam with a fake channel, plus a structural row. The test models the **pre-WP82** `main.ts` host-only gate faithfully, so only the handler under test can turn row 1 green. **Measured RED at HEAD: 2 failed / 3 passed** — rows 1 and 5 fail, and the three that pass are exactly the non-discriminating ones. |
+| `test_ac2_ac6_definer_visible.test.ts` | AC2, AC5, AC6, AC4 | The pure definer: OPEN-only, `ABSENT` ≠ `CLOSED`, the **anti-latch row** (the defect and its mirror side by side), `silenced` excluded from the verdict, the five states, `roleBacked` as a separate question, the healthy string returned verbatim, once-then-count with the counter values asserted, re-arm, and the distinct lifecycle renderings. |
+| `test_ac3_ac4_ac5_control_link_visible.test.ts` | AC3, AC4, AC5 | `ControlChannel` with fake timers and an injected socket: `close` vs `silence`, the pong watchdog, `restore` (effect asserted, not assumed), chain re-arm, exhaustion announcing once with numbered retries, both S38 silent exits, the socket-construction throw, and a row pinning the four pre-existing state transitions **unchanged**. |
+| `test_ac3_ac4_mux_link_visible.test.ts` | AC3, AC4 | The same for `SyncManager`, whose link narrated nothing before. Includes the paired positive control for the outbound suppression (an unsilenced manager that **does** send). |
+| `test_structural_seam_and_definer_visible.test.ts` | AC1, AC3, AC6, §2, §5 | Definer purity (zero imports, no I/O), **one** `decideSharing(` call site with its three consumers enumerated, both latch sites de-role-gated, the seam unreachable from every UI/command/setting/handler, WP46's quartet byte-unchanged and its test file unmodified, all 21 pre-WP82 commands still routed, and no URL or credential in any lifecycle field. **Every absence row carries a positive control that its own pattern matches a known-present line (rule 15).** |
+
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
@@ -336,22 +346,67 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ---
 
-## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
+## 8. Autonomous Execution Plan (filled by Worker 3, B30)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** verified against the current tree (rule 12, line numbers rebased past
+  WP80/WP86). The two latch sites are at `main.ts:1211-1214` (the `role === "host"` gate inside the
+  ControlChannel `connected` callback) and `control-handlers.ts:234` (past the `role !== "guest"` return at
+  `:217`); the promote/demote branches at `:209-216` return before it. `updateOnlineState` was
+  `main.ts:209-212`. At batch entry **neither** live peer was in the broken state — both read
+  `connected: true` — so the defect had to be **produced on demand** rather than observed.
+- **Approach:** three builds. (1) an **instruments-only** bundle — `link.report` / `link.break` /
+  `link.restore`, the per-link snapshots and the lifecycle narration — with the latch **left unrepaired**,
+  built in a detached worktree so the shared tree was never reverted (rule 14); install it and drive the
+  defect live to RED. (2) the full repair in the shared tree; install and re-run the identical scenario to
+  GREEN. (3) the production build, to prove the seam is dead-code-eliminated. The repair itself: one pure
+  zero-import definer; the two marking sites de-role-gated; `muxConnected`/`controlConnected` turned into
+  measured getters over believed setters, so `session.info`'s pinned expression is byte-unchanged while its
+  operands become measurements.
+- **Fallback path if all attempts fail:** none needed. Three reproduction attempts failed before the fourth
+  succeeded, and each failure was informative rather than wasted: they established that a `close`-only
+  instrument **cannot** reach the state, which is a stronger argument for AC3's two shapes than the charter
+  had.
 
 ---
 
-## 9. Handover Summary (filled by Coder Sub-Agent on completion)
+## 9. Handover Summary (filled by Worker 3, B30)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all six ACs. RED reproduced live and shown to persist
+  (`role: host, connected: false`, both sockets `OPEN`, `fileOpsOnline: false`, status bar
+  `Live Share: hosting (2) 9ms`); GREEN on the same script with **opposite roles** (S37 as a symmetry
+  control). Both off-client positive controls measured and **differing**: `close`+mux moves the relay's
+  `clients` 2→1→2, `silence` moves it not at all across 20 samples and ends by a watchdog-forced close;
+  `close`+control makes the other peer observe `presence-leave`. WP82 visible **59/59**; plugin suite at
+  HEAD+WP82 **2231/0** (2172 + 59, reconciles exactly); `npm run build` PASS; no new lint finding.
+- **What remains open:** **AC5's live exhaustion row was declined, with the reason recorded** — on this
+  build the end of the control retry chain calls `endSession()`, which clears `roomId`/`token`/`role` from
+  `data.json`, so producing it live would log a shared vault out of the session permanently with no
+  in-rig way back. The headless rows carry it. **S39 is explicitly NOT repaired.** **S40** (uncapped
+  queue) is reportable, not repaired. `cleanupStaleFiles`' live-host check was deliberately **not**
+  rewired and is named as WP80's to adopt.
+- **Final status:** **DONE** with one declared deviation. Full evidence in
+  `ImplementationReport_WP82.md`.
 
 ---
 
 ## 10. Risk Notes for Worker 4 (filled by Worker 3 Core)
 
-*Empty at handover.*
+- **risk_flag: NONE.** No attempt was consumed by a failing hidden set (blind sets are discontinued), and
+  no row was left red.
+- **Probe hardest here:** the **`silence` shape's persistence across a reconnect.** `silenced` lives on the
+  channel, not on the socket, so a link silenced and then closed comes back **still silenced**. That is
+  load-bearing for the reproduction and is exactly the property a future edit could remove without any
+  test noticing except the live chain. A `restore` is required after every `silence`; the driver does it in
+  a `finally` and the run's last act re-restores every link on both vaults.
+- **Second:** the status-bar override fires **only** in the `connectionState === "connected"` branch, i.e.
+  precisely where health was being asserted. A break that also drives `connectionState` (a control `close`)
+  shows `"Live Share: reconnecting..."` — not a health claim, so it is correct, but a W4 scenario that
+  reads the German string after a **control** break instead of a **mux** break will not find it. Use a
+  **mux** break for the AC6 read.
+- **Third:** every WP82 scenario is idempotent by construction, but the **environment** is not — the relay's
+  election is a coin flip and the scenario normalises the roles explicitly via `session.demoteToGuest` /
+  `session.promoteToHost` before arming the defect. If a W4 run reports SKIP with
+  *"both peers claim host"*, that is the guard working, not a failure.
+- **Confound to carry into any canvas measurement:** bundles built from the shared tree currently include
+  WP36's uncommitted canvas work. The canvas E2E figure (13/18, both peers `connected: true`) is recorded
+  as a measurement with that confound named, and **is not attributed to WP82 in either direction**.
