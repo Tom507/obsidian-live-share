@@ -396,6 +396,52 @@ two indistinguishable instances are exactly the D14 failure the rig exists to av
 - **S31** — both log files carry **duplicated historical blocks**, an artefact of the file move rather
   than a logger defect. It misleads anyone counting entries — including, plausibly, the two batches above.
 
+### ✅ WP81 DONE (`594453d`, `abe0109`) — and all three cited defects were still there
+
+RED **24 failed / 8 passed** → GREEN **32/32**. The 8 that passed under RED are exactly the
+non-discriminating rows, **including the vacuous one the charter names by hand** — the suite knows which
+of its own rows prove nothing. Unit suite 1976 → **2008**. `npm run build` PASS. No inherited test
+deleted, weakened, skipped or amended; no §7 licence taken.
+
+All three defects verified still present (rule 12), one at a corrected line: `debug-logger.ts:153-156`
+verbatim (`this.buffer = []` **above** `append(...).catch(() => {})`); `log-view.ts` at **`:72`**, not
+`:71`; `ui/settings.ts:306` verbatim **plus the same stale literal again as the placeholder at `:309`**.
+
+**AC1's E2E command is DEFERRED, not skipped** — `e2e-control.ts` belongs to WP37 this batch. The case
+body is written verbatim into `ImplementationReport_WP81.md` for whoever gets the file next.
+
+**The falsified silence was re-confirmed independently:** both vault logs were being appended to *in the
+same second* the check ran, a day after the alleged stop. Nothing in WP81 claims to repair it.
+
+### 🚨 RULE 14 — no batch reverts a shared path. Ever.
+
+**S34, and it is the sharpest process finding of the run.** A sibling batch **reverted
+`plugin/src/main.ts` in the shared tree between WP81's edit and its stage**; `canvas-adapter.ts` went
+clean in the same window. Caught **only** because WP81 read `git status` immediately before committing.
+
+**Had it shipped, WP81 would have had no `Notice` channel at all — while every headless test stayed
+green.** This WP's own defect class, reproduced in its own delivery, by a neighbour.
+
+- **Never `git checkout --`, `git restore`, `git stash` or any revert on a path you did not create in
+  this batch.** Discard by explicit path, and only your own.
+- **Re-read `git status` immediately before every commit.** Not earlier in the turn — a sibling can act
+  in the gap. This is the same lesson as rule 3 (the shared index), one operation over: the *working
+  tree* is shared too, not just the index.
+- A revert leaves **no trace in the reverting batch's own diff**, which is why nothing but a
+  before-commit check can catch it.
+
+### More carried up
+
+- **S30 is worsening** — the debug logs grew **+33 234 B / +28 633 B in a single day** (now 783 194 B /
+  736 647 B). Moving them out of the index fixed the indexing complaint and nothing about the growth.
+  Deliberately **not** quietly folded into WP81. **Needs an owner.**
+- **M3** — `taskkill /F` (which my own install script uses on every reinstall) loses up to 500 ms of
+  buffered log. Named, not repaired, and no criterion claims otherwise.
+- **Three tests are red and they belong to WP37**, not to WP81: `wp49/tp12`, `wp72/tp4`, `t3/wp44/tp12`
+  all assert `e2e-control.ts`'s import allow-list and went red on WP37's uncommitted import of the
+  untracked `testing/canvas-node-editor.ts`. **Messaged to that batch** with the instruction not to
+  record them as pre-existing.
+
 ### Autonomous queue (this order)
 
 1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
