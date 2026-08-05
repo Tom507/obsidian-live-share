@@ -252,10 +252,29 @@ export function isTextFile(path: string): boolean {
  * neither one widens or narrows the other, and the `.canvas` behaviour is
  * exactly what it was before clause 2 existed (WP26 AC4).
  *
- * Every caller that would AUTOMATICALLY install or consume a bare-path
- * `Y.Text` must consult this predicate:
+ * PRODUCTION CALL SITES OF THIS PREDICATE (WP83 AC2). The block below
+ * enumerates every call to `skipsAutoTextSync` in `plugin/src/`, other than this
+ * definition, as `<module>  <function>`. That is a claim about THE TREE, and
+ * WP83 AC2's coherence derivation walks the tree and fails when the two
+ * disagree. The block is delimited by the two `==== ... BLOCK` rules below
+ * because that derivation reads it: the delimiters are load-bearing, not
+ * decoration, and a row moved outside them stops being checked. (The test is
+ * named by ROLE and not by filename, on the same rule as the reasoning further
+ * down: every `.ts` name in this comment is a row of an enumeration block.)
  *
+ * It is deliberately NOT the claim this heading used to make — "every caller
+ * that would AUTOMATICALLY install or consume a bare-path `Y.Text` must consult
+ * this predicate". That was a claim about the world written in the grammar of a
+ * list. No test can hold it, it was quoted by several work packages as an
+ * authoritative map, and it was already one row stale on the day it was quoted:
+ * `background-sync.ts setActiveFile` has been a guarded consumer, with a test
+ * naming it, since WP27 — and the list did not have it.
+ *
+ * ==== CALL-SITE BLOCK — derived from the tree, a test holds it ==============
  *   files/background-sync.ts  startAll  ..... manifest replay
+ *                             setActiveFile . the de-activation flush (WP27
+ *                                             AC4), guarding the bare-path
+ *                                             `getDoc` on the OUTGOING file
  *                             onFileAdded ... vault create
  *                             onFileRenamed . vault rename INTO a .canvas or
  *                                             into the sidecar directory
@@ -265,6 +284,33 @@ export function isTextFile(path: string): boolean {
  *                             guarding the bare-path `getDoc` that would seed
  *                             the whole document into a raw `Y.Text` and
  *                             install a character-level binding over it
+ *   files/file-ops.ts         onFileCreate .. the file-op CONTENT push (WP83
+ *                                             AC1) — see the note below
+ * ==== END CALL-SITE BLOCK ==================================================
+ *
+ * THIS COMMENT IS NOT A DOOR CENSUS, and no enumeration of this predicate's
+ * callers can ever be one. A derivation over CONSUMERS finds only sites that
+ * already consult the predicate; a door is by definition a site that does not.
+ * The block above is a coherence check between the comment and the tree, and it
+ * buys exactly that and nothing more.
+ *
+ * So, explicitly NON-EXHAUSTIVE and not derivable from anything: the mechanisms
+ * OTHER than a bare-path `Y.Text` by which a `.canvas` has been observed to
+ * reach a peer. It exists so the next reader is not misled into treating the
+ * block above as a complete map of the ways a canvas travels:
+ *
+ *   files/file-ops.ts  onFileCreate  the file-op CONTENT channel. The whole file
+ *                                    as `{type:"create", path, content}`,
+ *                                    applied by the receiver with `vault.modify`
+ *                                    / `vault.create` under a path mute — a raw,
+ *                                    unmerged, last-writer-wins overwrite of a
+ *                                    path `CanvasSync` owns, invisible to the
+ *                                    doc. Guarded by this predicate since WP83;
+ *                                    listed here because closing one door is not
+ *                                    evidence that there is no other.
+ *
+ * If you need to know how a `.canvas` can travel, measure the tree. Do not read
+ * this comment and conclude.
  *
  * The predicate is shared rather than copied per module deliberately: four
  * private copies of `path.endsWith(".canvas")` is exactly how this defect class

@@ -10,6 +10,7 @@ import {
   isTextFile,
   normalizeLineEndings,
   normalizePath,
+  skipsAutoTextSync,
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
@@ -380,6 +381,37 @@ export class FileOpsManager {
       this.emitOp({ type: "folder-create", path: wirePath });
       return;
     }
+    // WP83 (C83 AC1) — THE CONTENT PUSH IS REFUSED FOR A PATH `CanvasSync` OWNS.
+    //
+    // Everything below this line reads the whole file and pushes it as
+    // `{type:"create", path, content}` (`sendFileContent`, or `sendChunked` above
+    // CHUNK_SIZE). The receiver applies that with `vault.modify` / `vault.create`
+    // (`applyRemoteOpInner`, the `"create"` case) under a path mute taken
+    // immediately before the apply — so for a `.canvas` the bytes land on the
+    // peer's disk as a RAW, UNMERGED, LAST-WRITER-WINS overwrite of a file
+    // `CanvasSync` owns, and the mute means the resulting vault `modify` never
+    // reaches `handleLocalModify` and the doc is never told. No CRDT, no merge,
+    // no capture. (It installs no second `Y.Text` — this is a different and
+    // sharper defect than the double-CRDT the sidecar clause guards against.)
+    //
+    // It is also what made scenario `[07]` unfalsifiable: the door delivered the
+    // file to the guest before WP79's mirror pass ran, the mirror then correctly
+    // answered `skip-local-file`, and a file-existence assertion could not tell
+    // the two mechanisms apart.
+    //
+    // THE GUARD IS THE SHARED PREDICATE, IMPORTED — never a private
+    // `endsWith(".canvas")`, never a re-spelt sidecar test, never a second
+    // constant. Four private copies of that test is exactly how this defect class
+    // propagated (see `skipsAutoTextSync`'s contract comment in `utils.ts`).
+    //
+    // SCOPE, deliberately narrow: this refuses the CONTENT PUSH and nothing else.
+    // The folder branch above it still runs; `onFileDelete` / `onFileRename` are
+    // untouched (they carry no content); the mute-based loop prevention at the
+    // top of this method is untouched; nothing is deleted, trashed or renamed.
+    // A shared `.canvas` still reaches a peer — through the two routes the design
+    // sanctions, the `CanvasSync` doc and WP79's mirror materialisation, both of
+    // which merge.
+    if (skipsAutoTextSync(wirePath)) return;
     const prev = this.sendQueues.get(localPath) ?? Promise.resolve();
     const binary = !isTextFile(file.path);
     const tfile = file;
