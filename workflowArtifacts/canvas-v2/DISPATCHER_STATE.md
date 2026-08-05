@@ -147,6 +147,32 @@ its eleven commands types or invokes an Obsidian command, so each WP owns one ad
 **Scheduling:** WP37 and WP38 both touch `plugin/src/testing/e2e-control.ts` — additive, but not in the
 same batch. **All of P4 touches `main.ts`, as does the data-loss fix and WP79** — serialise them.
 
+### ✅ WP77 DONE (`20d45ee`, `2ffe771`) — and it confirmed its own charter's central argument
+
+50/50 WP77 tests · full visible suite **643/643** (50 added, 0 pre-existing broken) · plugin
+**1865/1865**, `npm run build` exit 0. Two legacy blind failures are **pre-existing**, reproduced
+identically in a detached worktree at baseline `02aef92`.
+
+**The measurement that matters:** `provisioning._CommunityState` had a **handwritten** `repr` that was
+**clean** — while `dataclasses.asdict()` returned the **raw credential bytes**. The handwritten repair
+was green on the only path it closed. That is precisely why the fix is *by type* (`Secret`,
+`RedactedMapping`, `__deepcopy__` returning the wrapper) and not by call-site audit.
+
+The generated dataclass `repr` was deliberately **kept** — safety comes from the field's type, not from
+a hand-written `repr` that the next field addition would silently outgrow. AC3's enumeration is derived
+**by AST at test time** against a pinned disposition table, so a new record cannot join the class unnoticed.
+
+**Carried up:** `readiness.RawAnswer.body` still leaks on `repr`/`str`/`asdict` — **measured, not
+assumed**, and now the **only remaining member of this defect class in the package**. Unowned. A test
+will fail if anyone changes its shape without deciding about it.
+
+### Rule 13, refined — the task registry is the liveness signal, transcript mtime is NOT
+
+B16a wrote nothing to its transcript for **an hour** while `TaskOutput` reported `status: running`. The
+opposite case happened earlier the same day: two agents looked alive by mtime and the registry answered
+*"No task found"*. **Neither direction is inferable from file times.** Check the registry, then check the
+tree for landed deliverables, then decide.
+
 ### Autonomous queue (this order)
 
 1. **D1 + D2 + D3 — the data-loss chain.** Everything else waits.
