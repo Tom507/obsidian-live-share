@@ -24,7 +24,7 @@ sweep; I do not believe it is limited to these two."*
 | **Positive control** | **PASSES.** The deriver, run against `fc10c5b` (the tree where B32's two were still blind), **finds both**, by name and line. Recorded in §2.3 with the command. |
 | **Repairs** | **4**, each with an **executed RED** on the unrepaired tree and a **CONTROL** proving the repaired check still fires. |
 | **Unit suite** | **2387 / 2387 pass, 341 files, 0 fail** — `npx vitest run` from `plugin/`, **10:42**. Parent `bd6b2da`, clean detached worktree, **10:44**: **2354 / 2354**. |
-| **Typecheck** | `npx tsc -noEmit -skipLibCheck` **exit 0**. `npm run build` deliberately NOT run (§6.5). |
+| **Typecheck** | `npx tsc -noEmit -skipLibCheck` **exit 0**. `npm run build` deliberately NOT run (§6.6). |
 | **§7 licences** | **NONE.** No test deleted, skipped, weakened, retitled or amended. Nothing escalated. |
 
 **The one-line finding:** *WP36 did not only blind two oracles. It blinded the write path's own
@@ -482,7 +482,45 @@ defect today (they all guard record presence or narrow fields), but this is the 
 next, and it is invisible to every `Object.is`-shaped search. Recorded so the next sweep does not have
 to rediscover it.
 
-### 6.5 Process
+### 6.5 A member this derivation CANNOT reach — a criterion that HANGS instead of failing
+
+**Carried up from WP88 via the Dispatcher, and it is the sharpest extension of the class so far.**
+
+`link.break{shape:"silence"}` cannot drive a link to its retry ceiling: a reconnect's `onopen` is
+ungated by `silenced`, so every retry succeeds, resets the chain, and the link oscillates forever.
+C88 AC4 as written was therefore **unsatisfiable** — and the failure mode is the part that matters:
+
+> a criterion waiting on that state does not fail. **It hangs.** It never produces an answer at all.
+
+That is the same class one level up, and arguably worse than everything in §3.1. A check that cannot
+fire at least returns a value somebody can look at. A check whose *precondition* can never be
+produced returns nothing, and a timeout reads as flakiness, infrastructure, or "the rig again".
+
+**This sweep's derivation does not reach it, and it is worth being exact about why rather than
+implying broader coverage than was measured.** The deriver's sinks are *comparison sites*: it asks
+"can this expression's operands still discriminate?". WP88's defect is not about an operand at all —
+it is a **liveness** property of an instrument: *can the state this criterion waits for ever be
+produced?* No amount of type or taint information about a comparison answers that.
+
+What would reach it is a different derivation over a different pair:
+
+| this sweep | what WP88's shape needs |
+|---|---|
+| sink = a comparison | sink = a **wait**: `await`, a poll loop, `waitFor`, a rig command that blocks on a predicate |
+| question = can the operands differ? | question = is there **any path** that sets the awaited predicate true? |
+| evidence = make the check fail | evidence = make the wait **return**, and separately show it can time out |
+
+The two are complementary and the second is unowned. **It deserves a WP**, and its positive control
+is the same trick that made this one trustworthy: point it at `link.break{shape:"silence"}` on the
+tree where AC4 was unsatisfiable and require it to say so.
+
+**One connection worth recording:** the run has now found this class in an oracle (B32 ×2), in a
+product write path (§4.1), in a diagnostic (§4.2), in a latent write path (§4.3), inside the
+anti-vacuity instrument itself (§4.4), in the rig (§6.1), and now in a *criterion's precondition*.
+Seven surfaces. The common factor is never the check — it is that **something changed underneath a
+check that was correct when it was written, and nothing in the system is responsible for noticing.**
+
+### 6.6 Process
 
 - **`npm run build` was NOT run**, per the standing warning: it overwrote the shared, gitignored
   `plugin/main.js` with a production bundle at 09:50 today. `npx tsc -noEmit -skipLibCheck` (exit 0)
@@ -498,6 +536,17 @@ to rediscover it.
   **junction** to the main plugin's, which is what makes a worktree measurable at all here without a
   second `npm ci`.
 - **No shared path was reverted, restored or stashed** at any point.
+- **Self-inflicted, reported rather than tidied away: this batch broke `tsc` repo-wide for about
+  five minutes.** `test_tp01` was created at ~10:33 importing `FlatCanvasData` from
+  `canvas/canvas-canonical`, which does not export it (it lives in `files/canvas-sync`). `tsc`
+  typechecks `src/` **including tests**, so an untracked, unlanded test file breaks `npm run build`
+  for every batch in the shared tree. Corrected at 10:38 and landed at 10:44 (`d0992b6`);
+  `npx tsc -noEmit -skipLibCheck` **exit 0**, re-verified at 10:51. A sibling measured it and
+  attributed it correctly before I noticed it myself.
+  **The general lesson, which is not about this import:** in this repo a test file is not private
+  until it compiles. `npx tsc -noEmit -skipLibCheck` belongs immediately after creating one, not at
+  the end of the batch — the same argument as re-reading `git status` immediately before a commit
+  rather than earlier in the turn.
 
 ---
 
