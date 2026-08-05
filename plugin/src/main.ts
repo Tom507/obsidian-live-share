@@ -47,6 +47,10 @@ import {
   wireCanvasSidecar,
 } from "./files/canvas-sidecar-lifecycle";
 import { CanvasSync } from "./files/canvas-sync";
+import {
+  WRITER_ATTACH_VERDICT,
+  decideCanvasWriterAttach,
+} from "./files/canvas-writer-attach-decision";
 
 import { ExclusionManager } from "./files/exclusion";
 import { FileOpsManager } from "./files/file-ops";
@@ -1740,15 +1744,19 @@ export default class LiveSharePlugin extends Plugin {
     for (const leaf of leaves) {
       const view = leaf.view as { file?: { path?: string }; getViewType?: () => string } | undefined;
       const rawPath = view?.file?.path;
+      // WP85 — the two reads the pass makes about this leaf, taken ONCE and
+      // taken HERE, before anything below can move them. `wasSubscribed` in
+      // particular is read BEFORE the lazy branch on purpose: `subscribe()`
+      // adds to `subscribedPaths` synchronously, so a read taken after it would
+      // make a path this very pass has just claimed look like an
+      // already-subscribed one and drive the writer attach twice for one open.
+      const wasSubscribed = rawPath ? this.canvasSync.isSubscribed(rawPath) : false;
+      const isShared = rawPath ? this.manifestManager.isSharedPath(rawPath) : false;
       // Lazily subscribe a shared canvas the user opened AFTER session start. The
       // session-start loop only subscribes canvases present in the manifest at
       // that moment; without this, opening/creating a canvas mid-session leaves it
       // permanently unsubscribed and no presence overlay ever mounts.
-      if (
-        rawPath &&
-        !this.canvasSync.isSubscribed(rawPath) &&
-        this.manifestManager.isSharedPath(rawPath)
-      ) {
+      if (rawPath && !wasSubscribed && isShared) {
         this.logger.debug("canvas", `lazy-subscribing shared canvas ${rawPath}`);
         const role = this.settings.role === "host" ? "host" : "guest";
         // subscribe() adds to subscribedPaths synchronously (before its first
@@ -1771,6 +1779,35 @@ export default class LiveSharePlugin extends Plugin {
       }
       const subscribed = rawPath ? this.canvasSync.isSubscribed(rawPath) : false;
       this.logger.debug("canvas", `  leaf path=${rawPath ?? "(none)"} subscribed=${subscribed}`);
+      // ── WP85 (C7 / US5 AC13) — THE WRITER-ATTACH CONSULTATION ─────────────
+      //
+      // Its own question, asked for EVERY open canvas leaf on every pass, not a
+      // side effect of the lazy-subscribe branch above. Before WP85 the only
+      // leaf-driven `attachCanvasWriter` call lived inside that branch, so a
+      // path somebody else had already subscribed — WP79's mirror pass
+      // subscribes every shared canvas on the HOST and returns `PUBLISH`
+      // without materialising, because C79 AC4 forbids it to write the host's
+      // file — consumed the one opportunity and stayed WRITERLESS for the life
+      // of the session. The mechanism was never missing; the gate in front of
+      // it was wrong.
+      //
+      // WIRING AND A READ, NO DECISION: the four booleans are measurements, the
+      // verdict is `files/canvas-writer-attach-decision.ts`, and exactly one of
+      // its five answers licenses the call. `attachCanvasWriter`'s own per-path
+      // guard still stands behind this; it is a backstop, never the gate — an
+      // "attach whatever, the helper will sort it out" call would attach for
+      // paths where `getCanvasDocHandle` returns `null` and fail silently, and
+      // it would make ALREADY_ATTACHED unobservable.
+      const attachVerdict = decideCanvasWriterAttach({
+        hasPath: typeof rawPath === "string" && rawPath.length > 0,
+        isShared,
+        isSubscribed: wasSubscribed,
+        hasWriter: rawPath ? this.hasCanvasWriter(rawPath) : false,
+      });
+      if (rawPath && attachVerdict === WRITER_ATTACH_VERDICT.ATTACH) {
+        this.logger.debug("canvas", `  writer attach verdict for ${rawPath}: ${attachVerdict}`);
+        void this.attachCanvasWriter(rawPath);
+      }
       if (!rawPath || !subscribed) continue;
       const canonical = toCanonicalPath(normalizePath(rawPath));
       activePaths.add(canonical);
@@ -2244,9 +2281,25 @@ export default class LiveSharePlugin extends Plugin {
    * `onWritten` feeds every landed write back into `CanvasSync` so its diff
    * baseline and its `isRecentDiskWrite` echo guard stay correct.
    */
+  /**
+   * WP85 — a READ, not a decision: is the single writer already attached for
+   * this path, or is an attach in flight?
+   *
+   * Both maps, not just the first: an attach awaits `attachCanvasPersistence`
+   * (which awaits `coldOpen`), and `syncCanvasPresences` fires on
+   * `layout-change` and `active-leaf-change` often enough to re-enter during
+   * that await. One definition, consulted by `attachCanvasWriter`'s own guard
+   * and by the WP85 consultation, so the two can never disagree about what
+   * "already attached" means.
+   */
+  private hasCanvasWriter(rawPath: string): boolean {
+    const canonical = toCanonicalPath(normalizePath(rawPath));
+    return this.canvasWriters.has(canonical) || this.canvasWriterAttaching.has(canonical);
+  }
+
   private async attachCanvasWriter(rawPath: string): Promise<void> {
     const canonical = toCanonicalPath(normalizePath(rawPath));
-    if (this.canvasWriters.has(canonical) || this.canvasWriterAttaching.has(canonical)) return;
+    if (this.hasCanvasWriter(canonical)) return;
     const handle = this.canvasSync?.getCanvasDocHandle(rawPath);
     if (!handle) return;
     this.canvasWriterAttaching.add(canonical);
