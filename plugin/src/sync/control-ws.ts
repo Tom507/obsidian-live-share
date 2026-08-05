@@ -276,6 +276,35 @@ export class ControlChannel {
 
     const wasReconnect = this.everConnected;
     this.ws.onopen = () => {
+      // WP82 (AC3) — THE MISSING HALF OF THE `silence` SHAPE.
+      //
+      // `onmessage`, `send`, `encryptAndSend` and the ping all consult
+      // `silenced`. This handler did not, and it is the one that winds the
+      // retry chain BACK. Under `silence` the pong deadline force-closed the
+      // socket, `scheduleReconnect` fired, and the next socket opened
+      // successfully — the relay is reachable, it is this peer that is deaf and
+      // mute — so `reconnectAttempts` went to 0 and `retryChainEnded` to false.
+      // The chain oscillated on a ~25 s period and NEVER exhausted.
+      //
+      // The consequence is worse than a check that cannot fire:
+      // `link.break{shape:"silence"}` could not drive this link to its ceiling,
+      // WP88's AC4 as written was unsatisfiable, and a criterion waiting for
+      // that state does not FAIL — it HANGS, and returns no answer at all.
+      //
+      // A socket that opens while the link is silenced carries nothing in
+      // either direction. That is not a recovery and must not be counted as
+      // one: it is announced, closed again, and the chain continues, which is
+      // what makes the ceiling reachable under this shape.
+      if (this.silenced) {
+        this.emit({
+          kind: "abandoned",
+          link: "control",
+          at: "onopen",
+          reason: "link silenced: a socket that carries no traffic is not a recovery",
+        });
+        this.ws?.close();
+        return;
+      }
       this.reconnectAttempts = 0;
       this.everConnected = true;
       this.retryChainEnded = false;

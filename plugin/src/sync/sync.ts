@@ -537,6 +537,28 @@ export class SyncManager {
     this.ws = ws;
 
     ws.onopen = () => {
+      // WP82 (AC3) — the same missing half as `ControlChannel.onopen`, on the
+      // mux. `onmessage`, `sendMux` and the heartbeat consult `silenced`; this
+      // handler did not, and it resets `reconnectAttempts` and
+      // `retryChainEnded`. So `link.break{link:"mux", shape:"silence"}` could
+      // not drive the mux to its ceiling either, and any criterion waiting for
+      // it would HANG rather than fail. Derived by the liveness sweep, not
+      // reported by anyone — the control link's twin, one file over.
+      //
+      // A socket that opens while the mux is silenced carries no frame in
+      // either direction: it is not a reconnect, it must not re-subscribe every
+      // doc, and it must not tell the plugin the mux is up (that is precisely
+      // the latch WP82 removed). Announce, close, let the chain continue.
+      if (this.silenced) {
+        this.emitLifecycle({
+          kind: "abandoned",
+          link: "mux",
+          at: "onopen",
+          reason: "link silenced: a socket that carries no traffic is not a recovery",
+        });
+        ws.close();
+        return;
+      }
       const isReconnect = this.hasEverConnected;
       this.hasEverConnected = true;
       this.isConnected = true;
