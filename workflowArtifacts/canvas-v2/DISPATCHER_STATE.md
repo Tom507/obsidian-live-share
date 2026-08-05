@@ -1828,3 +1828,56 @@ while **nothing executed**. Caught only by hand-checking the installed digest.
 **I hit this myself earlier** and read the correct-looking output as confirmation. **Always pass an
 explicit `session_key`**, and verify the artefact rather than the exit status. A console layer that
 returns the last run's success is a green that cannot fail, one level below the tests.
+
+### ✅ WP36 DONE (`3ebd35c`, `44dabf2`) — character-level merge works, live
+
+All 5 ACs green. **The criterion, measured on two live editors:** `kolla1bo2ration` on **both** peers —
+both markers, in typed order, in the same word. RED **36/23/1** → GREEN **63/11/0**, with **opposite host
+roles** between the runs (S37 symmetry control). AC2's precondition was recorded rather than assumed:
+A's **doc** held the peer's character while A's **file** did not, which is the exact state the old
+two-way diff turned into a deletion.
+
+**AC4 was shown RED with the render removed** — both non-JSON consumers, individually. That is the check
+the charter was most worried about: `JSON.stringify`'s implicit `toJSON` would have made two of the four
+consumers right **by accident**.
+
+### ⚠ RULING — the 13 reddened inherited assertions are SUPERSEDED BY DESIGN. No §7 licence.
+
+Every one is `expected YText{…} to be '<string>'` — a raw doc read narrowed to `typeof === "string"`,
+which `V2Node`'s own docstring **forbids consumers to do**.
+
+- **No `[byte]` family and no convergence family fails.** Convergence is intact; only the semantics moved.
+- The only violated families are **`[lww]`** and **`[intent-trace]`**, both encoding *"text is a
+  whole-string LWW register"* — **the property WP36 was chartered to remove**, and which
+  `standard-ops.ts:552-555` **already labels as pre-WP36**. The codebase anticipated this.
+- **A test encodes a measurement of intended behaviour; when a chartered WP deliberately changes that
+  behaviour, the test must follow.** Rule 5, applied to an assertion.
+
+**Binding condition on the migration: the replacement must be STRICTLY STRONGER.** LWW requires only that
+the replicas agree; character-level merge requires **both edits to survive**. An oracle that merely
+re-asserted convergence would be **weaker** than the one it replaced — a weakening dressed as a
+migration. Dispatched as **B32** with the requirement that each new oracle **fails on the pre-WP36
+behaviour**; *a migration that cannot fail on what it replaced has migrated nothing.*
+
+**WP36 correctly did not do this itself** — a batch rewriting the inherited oracles its own change
+reddened is exactly what the blind-set discipline existed to prevent. B32 is the second pair of eyes and
+is licensed to tell me the ruling is wrong.
+
+### ⚠ WP37 AC3's positional half: satisfiable at WP36's layer, NOT end to end
+
+**Measured, not argued.** At the merge layer: yes (`kolla1bo2ration`). Through two live inline editors:
+**no** — and *not because of the merge*. Attributed by receipt: the second typist's peer emits **zero**
+text captures, because **A's blur-committed value replaces B's live editor ~4 s later**, destroying B's
+characters **in the view, before storage**. Removing the propagation window changes nothing, so it is not
+a drain-delay margin. **This is WP37's defect class one participant over** — WP37 protected the typist
+from a *remote* change; nothing protects them from a *blur commit*. Needs its own WP. **Allocated S54**
+(WP36 and WP85 both reported this as "S50" — the register collided again).
+
+**Self-reported known limit, left as a visible failing check:** a single-span local diff from a stale base
+can re-author one peer character (`kolla1bo22ratio`). No data lost and the replicas agree — but it is **a
+value nobody typed**. Closing it needs a multi-span LCS diff. *Reported rather than hidden, which is the
+right call.*
+
+**S46 fired twice more:** a sibling installed a bundle containing WP36's uncommitted `canvas-sync.ts` but
+**not** its `e2e-control.ts`, silently invalidating a RED baseline. **A digest guard proves *which* build,
+not *whose*** — also grep the installed bytes for a marker unique to your own change.
