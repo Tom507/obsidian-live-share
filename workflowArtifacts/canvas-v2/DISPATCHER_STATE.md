@@ -1735,3 +1735,54 @@ Fixed and pinned as `tp01g`.
 arrived and a host rename arrived as a **copy**. WP86 then leaves a *stale* file rather than destroying
 one — its named residue, now measured. **S52** — an empty folder published mid-session is never
 materialised on a guest. Both unowned.
+
+### ✅ WP82 DONE (`73b7f35`, `95df1c4`) — and it corrected an attribution of mine
+
+**Live RED:** vault B `role=host, connected=FALSE` with the control socket **`readyState=OPEN`**,
+`beliefDisagrees=true`, `fileOpsOnline=FALSE`, and the status bar reading **`Live Share: hosting (2) 9ms`**
+— promoted **9 ms** after socket-open, and **persisting across a full link restore and 90 s**.
+**GREEN:** same script, **opposite roles**, `connected=TRUE`, `beliefDisagrees=false`, `fileOpsOnline=TRUE`.
+
+**The op route recovers**, and the RED counter-example is what gives that meaning: the latched peer sat at
+`fileOpsOnline:false` with **both sockets OPEN** and **no edge that could ever restore it** — S51's dead
+route, now bounded.
+
+**The positive control worked and the two shapes differed, as required:** `close`+mux moved the relay's
+`clients` **2 → 1 → 2**; `silence`+mux moved it **not at all** across 20 one-second samples and ended on
+the peer's own pong deadline; `close`+control made the **other** peer observe `presence-leave` in a
+**~300 ms** window (sampled at 10 Hz — a 1 s poll would have reported a false absence).
+
+**And a better argument than the charter had:** the reproduction is **unreachable with either shape
+alone**. It needs `silence` to suppress the transfer and prevent the host's 350 ms reclaim, *plus*
+`close` to trigger the relay's election.
+
+**AC5's live row was DECLINED with a stated reason, not faked:** forcing the retry ceiling needs an
+unreachable endpoint, and on this build the end of the control chain calls `endSession()`, which clears
+`roomId`/`token`/`role` from `data.json` — **it would log a shared vault out permanently with no in-rig
+way back.** The headless rows carry it.
+
+### ⚠ MY ATTRIBUTION WAS WRONG — 13/18 is NOT the latch
+
+I recorded the canvas suite's 13/18 as a consequence of WP82's latch. **It is not.** WP82 measured it with
+**both peers `connected: true`**, so those five absences are **not vacuous** and the latch does not
+explain them. The figure is additionally **confounded** by a sibling's uncommitted work and is currently
+attributable to **no WP**. **19/19 is neither established nor claimed.**
+
+Handed to WP85 as a live question — with the instruction that establishing it is *not* WP85 would be as
+useful as establishing that it is.
+
+### Rule 15's cousin — a PRESENCE claim needs the same discipline as an absence claim
+
+WP82: `grep -o "link.break"` returned **two false hits** because `.` is a wildcard; caught by re-running
+with `grep -F`. **State which you used.** Rule 15 was written for absences; the same failure runs in both
+directions, and this run has now made both mistakes.
+
+### Carried up from WP82 — unowned
+
+- **The give-up destroys the session.** A ~128 s control outage clears the session credentials and
+  recovery needs a fresh invite. WP82 makes it **observable** and deliberately does not change the
+  policy. **Needs an owner.**
+- **S39 explicitly NOT repaired** — a first-connect outage still surfaces as *"authentication required"*.
+- **WP80 should adopt WP82's `roleBacked` definer** at `cleanupStaleFiles`' live-host check; WP82 defined
+  it and deliberately did not rewire that call site (one definer, no drive-by).
+- **S40** — the `OfflineQueue` is now reportable but still uncapped.
