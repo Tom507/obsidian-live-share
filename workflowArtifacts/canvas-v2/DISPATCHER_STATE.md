@@ -1881,3 +1881,37 @@ right call.*
 **S46 fired twice more:** a sibling installed a bundle containing WP36's uncommitted `canvas-sync.ts` but
 **not** its `e2e-control.ts`, silently invalidating a RED baseline. **A digest guard proves *which* build,
 not *whose*** — also grep the installed bytes for a marker unique to your own change.
+
+### WP87 + WP88 chartered (`386e595`, `2a25592`) — header **87 live**
+
+**WP88's three corrections to what I carried up, all worse than my version:**
+
+1. **Six keys, not three** — `roomId`, `token`, `encryptionPassphrase`, `encryptionSalt`, `role`,
+   `permission`. The invite carries only `r`/`t`, so **for an encrypted room a fresh invite is not
+   sufficient recovery.** (Traced, not measured — both crypto keys are empty on the owner vaults.)
+2. **On a host it is not local.** `session.ts:116-133` issues `DELETE {serverUrl}/rooms/{roomId}`
+   **before** clearing anything. **One peer's Wi-Fi drop destroys the room for everyone, irreversibly
+   from the client.**
+3. **Five routes, not one** — including **E5, a bare `catch` around the whole plugin-load resume with no
+   ceiling at all**, invisible to a text search for `endSession`. My "~128 s" was the *optimistic* case.
+
+**The ruling:** *stop transmitting, say so once, keep the identity, offer a way back.* Losing the
+connection is a fact about the network; losing the session identity is **a fact the client manufactures
+about itself** on local, negative, momentary evidence — the same composition as everything else this
+week, one layer above the file system. **And retention alone was refused as insufficient**: a peer that
+keeps credentials it can never re-arm is WP82's defect rebuilt, so the re-arm is in the same AC.
+
+**WP87's discipline is worth keeping as a rule.** It **deliberately does not name the seam** — that is
+AC1. Four candidate routes are enumerated, each with a *discriminating receipt*, because **three repairs
+in this run were aimed by inference** (WP81, WP86, WP37's granularity) and two of the three were aimed
+wrong. *Attribution by receipt precedes repair.*
+
+WP87 **may not declare C37 AC3 discharged from a layer below** — it removes the only known blocker and
+must run the criterion and report the verdict. If WP36's self-reported single-span limit fires, AC3 stays
+PARTIAL **against that named limit** and WP87 is still complete.
+
+**Carried up, unowned:** `DELETE /rooms`'s failure is swallowed by a `catch` whose body is a comment
+(`session.ts:130-132`) — after a user-initiated end, a host that reached the relay and one that did not
+are **indistinguishable**; same class as WP81's swallowed `.catch`. And `abortSession`'s **three
+non-connectivity callers** destroy the same six keys on a start/join failure — not WP88's subject, but
+nobody has decided it.
