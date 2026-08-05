@@ -232,6 +232,26 @@ Pattern `writeToDisk` over all of `plugin/src/`: 6 live calls in `files/backgrou
 
 *⚠ **Blind sets are discontinued for new work** (owner's instruction, 2026-08-05): no `blind_set1`, no `blind_set2`, no falsification-injection requirement and no `BlindVerificationLedger` row is owed by this WP. Validation is W4 against two live Obsidian instances, with headless tests carrying the rows a live instance cannot honestly produce. E2E-plugin defects found while validating go back to **W3 as a revision** — but note that **`testing/e2e-control.ts` is byte-unchanged by this WP**, so an E2E defect found here is reported and routed, never patched inside this batch.*
 
+**Filled by Worker 3 (B31).**
+
+### Headless test cases
+
+| file | rows | what it pins |
+|---|---|---|
+| `plugin/src/__tests__/v2/wp85/test_tp01_writer_attach_verdict_truth_table.test.ts` | 54 | AC2 first half — the pure verdict, all 16 boolean rows written out, every unknown-input spelling per field, the closed answer set, non-mutation |
+| `plugin/src/__tests__/v2/wp85/test_tp02_sync_canvas_presences_attach_seam.test.ts` | 9 | AC2 second half — the **real** `syncCanvasPresences` driven off `LiveSharePlugin.prototype`; attach calls counted **per path**; the old lazy route still runs exactly once; a second pass adds nothing |
+
+RED against the base tree (`3310947`): `4 failed / 59 passed (63)`. GREEN: `63 passed (63)`.
+
+### Live acceptance artefacts (the criterion; headless carries only what a live instance cannot)
+
+- Driver: `H:\tmp\liveshare_wp85_e2e.py` — `prepare` / `measure --phase <p>` / `cleanup`. It **raises** on
+  the command name `canvas.open`, so AC1's central prohibition is enforced by construction rather than by
+  intention.
+- Results: `H:\tmp\wp85_{red,red2,green,green2}_result.json`.
+- Four phases, both role orders: RED `9/13` (A=host) and `9/13` (B=host); GREEN `13/13` (A=host) and
+  `13/13` (B=host).
+
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
@@ -240,22 +260,57 @@ Pattern `writeToDisk` over all of `plugin/src/`: 6 live calls in `files/backgrou
 
 ---
 
-## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
+## 8. Autonomous Execution Plan (filled by Worker 3, B31)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** on the unrepaired bundle, a shared canvas the host already holds is
+  subscribed by WP79's mirror pass (`CANVAS MIRROR: role=host … published=8 materialised=0`) and the
+  leaf-open attach — the only leaf-driven one — is nested inside a branch gated on `!isSubscribed`. Opening
+  a real leaf on that host therefore attaches **nothing**: measured live, the host's `.canvas` never
+  received a peer's change inside a 30 s budget (`file_len` unchanged at 352 B) while its own doc had
+  converged in 1.0 s, and no `CANVAS WRITER: … attached` line exists for the path.
+- **Approach:** split the fused question. The lazy-subscribe branch keeps `!isSubscribed` and is
+  behaviourally unchanged; a **separate consultation** runs for every open canvas leaf on every pass, over
+  a pure zero-import verdict (`files/canvas-writer-attach-decision.ts`) with a closed set of five answers.
+  `main.ts` hoists two reads (`wasSubscribed`, `isShared`) **before** the lazy branch — because
+  `subscribe()` adds synchronously and a later read would drive the attach twice for one open — and gains
+  one private reader, `hasCanvasWriter(path)`, that `attachCanvasWriter`'s own guard also uses, so the two
+  cannot disagree about what "already attached" means.
+- **Fallback path if all attempts fail:** not needed — attempt 1 met all four ACs. The fallback would have
+  been to report RED with the trace and escalate, never to attach inside the mirror pass (the charter's
+  abort criterion) or to attach for every subscribed path (out of scope, C79 AC4 shape).
 
 ---
 
-## 9. Handover Summary (filled by Coder Sub-Agent on completion)
+## 9. Handover Summary (filled by Worker 3, B31)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all four ACs. AC1 RED→GREEN live in both host/guest role orders, with both
+  preconditions asserted, the 30 s budget recorded, and the `CANVAS WRITER: … owner=CanvasPersistence
+  attached` receipt quoted absent-before / present-after. AC2's exhaustive verdict table and the real-seam
+  rows, shown RED first. AC3's byte-unchanged boundary with a positive control and the re-run writer
+  census (12 write sites, unchanged; one added call, no new definition). AC4 measured with WP37's vacuity
+  guard, which **failed on the unrepaired build and passes on the repaired one**.
+- **What remains open:** nothing in scope. **S47** (a subscribed canvas that is never opened still has no
+  writer) is deliberately unrepaired. **S45** is now measured as the sole cause of the canvas suite's five
+  failures and remains unowned. **S50** — the mirror pass runs its host arm after a demotion, leaving a
+  *guest* with every canvas subscribed and (pre-WP85) writerless — is new, unowned, and repaired in its
+  outcome but not in its cause.
+- **Final status:** **DONE.** `npx vitest run` 330 files / 2294 passed / 0 failed in an isolated worktree
+  (baseline 328 / 2231 / 0). `npm run build` exit 0.
 
 ---
 
 ## 10. Risk Notes for Worker 4 (filled by Worker 3 Core)
 
-*Empty at handover.*
+- **Do not validate this WP through `canvas.open`.** It subscribes without opening a leaf, and WP85's
+  consultation is a decision about an **open leaf**. A validation that uses it will read RED on a correct
+  build. Use `canvas.typeInNode { open: true }` with no text.
+- **The `CANVAS WRITER: <path> owner=CanvasPersistence attached` line is the oracle; the file content is
+  the symptom.** Two other mechanisms can put correct-looking bytes in a `.canvas` (Obsidian's own view
+  save, and WP83's former raw-text door). AC4's RED row is a live demonstration of the first one fooling a
+  file-content assertion.
+- **Search the log with a literal substring, not a regex.** `.` is a wildcard and has produced false hits
+  in this run.
+- **Record the role each instance resumed as.** The election is a coin flip and one arm of every scenario
+  here is role-dependent.
+- **A guest can be writerless too (S50).** A peer that resumed as host and was demoted milliseconds later
+  still runs the host mirror arm. Do not assume "guest ⇒ the lazy route ran".
