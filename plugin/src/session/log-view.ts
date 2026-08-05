@@ -69,7 +69,12 @@ export class LogView extends ItemView {
     }
     select.addEventListener("change", () => {
       this.filterLevel = select.value as LogLevel;
-      this.logger?.setLevel(this.filterLevel);
+      // WP81: the dropdown is a VIEW filter and only filters the view — see
+      // `appendEntry`. It used to push this level into the logger itself, which
+      // gated `DebugLogger.record()` above the file-sink push, so choosing WARN here
+      // stopped INFO and DEBUG lines reaching the debug log for the rest of the
+      // session with nothing saying so. Not persisted, so it healed on the next
+      // reload — exactly the shape of "the log stopped and later came back".
       this.renderAll();
     });
 

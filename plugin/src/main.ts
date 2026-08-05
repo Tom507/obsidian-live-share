@@ -421,6 +421,12 @@ export default class LiveSharePlugin extends Plugin {
       this.app.vault,
       this.settings.debugLogPath,
       this.settings.debugLogging,
+      // WP81 wiring only: the sink's announcement channel must not be the sink
+      // that is failing. The logger decides *whether* and *how often* to
+      // announce; main.ts only supplies the toast.
+      (message: string) => {
+        new Notice(message);
+      },
     );
     // US6: SyncManager measures the awareness keep-alive gap whether or not a logger is
     // attached, but only reports `AWARENESS GAP:` once one is. Attached here, right after

@@ -1,5 +1,17 @@
 import { type App, PluginSettingTab, SettingGroup } from "obsidian";
 import type LiveSharePlugin from "../main";
+import { DEFAULT_SETTINGS } from "../types";
+
+/**
+ * WP81 AC5 — what an emptied "Debug log file" field resolves to.
+ *
+ * Extracted so the relationship can be asserted as a relationship: the fallback
+ * IS `DEFAULT_SETTINGS.debugLogPath`, read at call time, not a second literal
+ * that happens to agree with it today. Perturb the default and this follows.
+ */
+export function resolveDebugLogPath(value: string): string {
+  return value.trim() || DEFAULT_SETTINGS.debugLogPath;
+}
 
 export class LiveShareSettingTab extends PluginSettingTab {
   private plugin: LiveSharePlugin;
@@ -303,10 +315,17 @@ export class LiveShareSettingTab extends PluginSettingTab {
           .setDesc("Path within your vault for the debug log")
           .addText((text) => {
             text.setValue(settings.debugLogPath).onChange(async (value) => {
-              settings.debugLogPath = value.trim() || "live-share-debug.md";
+              // WP81: the fallback IS the default, by reference. It used to be a
+              // second, independent path literal pointing at the vault root, so
+              // clearing this field silently moved the log back there — the
+              // location `7754ac6` moved it out of, and where Obsidian indexes it
+              // into the graph, search and Quick Switcher. Two literals that
+              // agreed on the day they were written is the defect; a reference
+              // cannot diverge from the default again.
+              settings.debugLogPath = resolveDebugLogPath(value);
               await this.plugin.saveSettings();
             });
-            text.inputEl.placeholder = "live-share-debug.md";
+            text.inputEl.placeholder = DEFAULT_SETTINGS.debugLogPath;
           });
       });
 
