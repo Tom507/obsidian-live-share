@@ -1610,3 +1610,40 @@ invented for it**.
 **WP81's deferred `e2e-control.ts` command landed** (`plugin.sinkState`) and was verified live: the log
 grew +1068 bytes and `linesWritten` +8 on the same act. **That retires the DataLossChain report's
 "logger stopped" finding for good** — it is writing on both vaults.
+
+### WP86 chartered (`b92c529`) — the census found TWO more doors in the loop I pointed at
+
+**I pointed at one branch. There are three, and the worst was not the one I found.**
+
+| route | sink | guard |
+|---|---|---|
+| **R1** `actuallyRemoved` loop | `trashFile` `main.ts:369` | **NONE** — no role, no evidence, no completeness, **no `instanceof TFile`** |
+| **R2** rename-pairing branch `:266-347` | `vault.rename` `main.ts:319` | `isPathSafe` only |
+| R3/R4 `cleanupStaleFiles` | `trashFile` `:771` | D2 gate + D3 floor + host refusal |
+| R5 `syncFromManifest` | `vault.modify` `manifest.ts:513` | hash only — out of scope, recorded so it is not re-found |
+
+**R2:** `matchRenamesByHash` pairs **only** on equal content hash. With no pair, `orderedAdded = added`
+and the loop **renames the user's file onto the first arbitrary added key**. Reachable in exactly the
+WP80 shape, because `publishManifest` writes its `set`s and purge `delete`s in **one `doc.transact`** —
+so a single event carrying both is the *normal* shape of a purging publication.
+
+**Producer 5 — the worst, and TRACED not measured.** A parent **directory** entry is retired when the
+folder stops being empty. On a guest that already holds the file, neither rename branch matches, and
+**`main.ts:369` hands a `TFolder` to `trashFile` — the folder and everything in it.** If the guest does
+not hold the file yet: `vault.rename(<folder>, "<folder>/file.md")` — a folder into itself, thrown and
+**swallowed by the `.catch` at `:396-398`**, silently aborting the pass. AC3 requires it reproduced RED
+first; a contradiction is an ESCALATE, not a quiet implementation.
+
+**Ruling: this loop does not need to delete at all.** Verified at both ends — `onFileDelete` fires for
+**every role, before** the manifest is touched, and the receiver trashes at `file-ops.ts:224`; and
+`cleanupStaleFiles` **already refuses outright for hosts** (`:731`), so **R1 contradicts a rule its own
+neighbour holds.** One residue named rather than argued away: a Yjs-delivered deletion whose op was lost
+to the `OfflineQueue` (WP82's cause) — R1 uniquely covers it, and is also where R1 has the least evidence.
+
+**Rule 15 applied properly, by W2, as a positive control:** pattern
+`settings\.role|isHost|hasFreshPublication|remoteUsers|refuse|decide` over the whole handler `:260-399`
+→ **1 hit, and it is a comment**; the same pattern over `cleanupStaleFiles` → **11 hits across 10 lines**.
+That is how an absence is reported.
+
+**WP80's "removeFile is unaffected" claim was verified true at both ends** — a rare case this week of a
+prior report's claim surviving re-measurement intact.
