@@ -2156,3 +2156,50 @@ nothing about *what the running process loaded*. Every install-then-measure in t
 **WP38's `main.ts` / `e2e-control.ts` hunks were swept into WP87's commits** while both were live — the
 exact mirror of what WP36 reported. Nothing lost, whole WP in `HEAD`, **no revert performed** (rule 14
 honoured by disclosure, which is the third time today).
+
+### 🚨 S56 SWEEP DONE (`364d7c3`) — **and it moved a verdict. My 21/21 is schedule-dependent in five checks.**
+
+**91 sleeps, not 86** — the population **grew by 5 in the 75 minutes** between the two measurements,
+because siblings were editing. **49 of 61 in scope stood in for a state the rig already exposes.** Only
+**5** are legitimate margins, all protecting a **negative** assertion (*"no resurrection"*,
+*"destroyed nothing"*) — **a negative cannot be polled for.** So the answer to my question is **no, most
+were not legitimate**: the rig had the answer and never asked.
+
+**The finding, and it lands on the number I celebrated an hour ago:**
+
+| band | verdict | runtime |
+|---|---|---|
+| schedule-preserving (default) | **21/21** | 70.0 s |
+| `LS_S56_FAST=1` | **16/20, 3 timeouts** | **26.8 s** |
+
+In the schedule-preserving band **all nine canvas conditions are observed in 0.0–0.4 s of 3–12 s
+budgets** — **1.4 s of state bought with 61 s of budget.** The product is fast and the polls are right.
+**Five canvas checks are green because of the ~6 s gap BETWEEN scenarios, which no scenario declares.**
+
+**RULING:** **21/21 remains the reported figure, and is now recorded as schedule-dependent in five
+checks. That dependence is a finding to investigate, not a property to preserve.** The fast band ships
+behind a flag as a diagnostic. Dispatched as **B41** with the batch's own hypothesis — *consecutive
+whole-file writes inside `requestSave`'s debounce discarded as stale by the shadow diff* — **labelled as
+a hypothesis and explicitly not adopted**, because three repairs in this run were aimed by inference and
+two were aimed wrong.
+
+**The batch tuned no timeout and redefined no baseline.** Both were correct: the first is discipline, the
+second was not its call. **Every poll's timeout equals the sleep it replaced**, so the window is
+byte-identical and no verdict can move for the conversion's own reasons — which is what makes the moved
+verdict *evidence* rather than noise.
+
+**Proof the conversions can fail:** 45/45 across NEGATIVE, POSITIVE (the control — otherwise a hard-wired
+`False` passes every negative row) and RAISING bands, each timeout **naming its label verbatim**. And
+**no sleep was traded for a hang**: unbounded non-blocking waits **0 before, 0 after**; every new
+`WHILE-POLL` row is `bounded-deadline`.
+
+### ⚠ Two E2E suites against one instance pair DO NOT COMPOSE — silently
+
+Measured: canvas **19/21 vs 21/21**, wp86 **37/1/4 vs 38/0/4**, purely from an overlapping sibling suite.
+**No lock, no lease, no advisory marker on the ports.** This retroactively explains more than one
+confusing number in this file, including at least one I attributed to a product change. **Unowned.**
+
+**Also carried up:** a real rename reports `renames: []` **plus** a `nothing-to-destroy` removal — WP86
+AC4b's file-system oracles pass while **its own receipt disagrees**; present in the BEFORE run, so
+pre-existing. And **21 conversions in five suites are unvalidated live** (they `taskkill` Obsidian or
+break links, and siblings were measurably live) — **stated as a gap, not dressed up.**
