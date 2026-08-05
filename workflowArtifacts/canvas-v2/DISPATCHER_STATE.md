@@ -1647,3 +1647,51 @@ That is how an absence is reported.
 
 **WP80's "removeFile is unaffected" claim was verified true at both ends** — a rare case this week of a
 prior report's claim surviving re-measurement intact.
+
+### ✅ WP83 DONE (`f5d8abd`, `8abd499`) — and `[07]` is green for the first time HONESTLY
+
+Live **13 pass / 0 fail / 0 skip**; full suite **321 files / 2151 passed / 0 failed** (from 318/2119),
+`npm run build` exit 0. **Roles were opposite between the RED and GREEN runs** (A guest→host, B
+host→guest), which turns S37's lottery into a **role-symmetry control** rather than a confound — the
+right way to use an environment you cannot make deterministic.
+
+**Why `[07]` could not fail, measured end to end:** the raw door delivered the file to the guest at
+**+1.0 s**; the mirror then correctly answered `skip-local-file` (`materialised=0`, zero
+`CANVAS WRITER … attached` lines). **Same file, different mechanism, indistinguishable by existence.**
+That is the whole anatomy of a test whose subject is not what its name says.
+
+RED: guest→host `.canvas` crossed in 1.0 s, **byte-identical 338 B/338 B**. GREEN: **absent after 45 s**,
+and host→guest now arrives **169 B** — re-serialised by `CanvasPersistence`, i.e. through the owner.
+**Positive control passed in both runs, both directions, in 0.0 s**: an ordinary `.md` created in the
+same folder in the same second still propagates. Not a lobotomy.
+
+**And the charter's correction to my framing held up:** it is **not** a second `Y.Text`. It was a raw,
+unmerged, LWW overwrite **invisible to the doc**. Different mechanism, same destination.
+
+### ⚠ S46 — my installer could ship a sibling's bundle, silently. FIXED.
+
+Measured 05:37: a batch copied its **4 034 142 B** bundle to `plugin/main.js`; my installer reported
+**`bundle: 4 040 223 bytes`** and shipped **that** — a sibling's, produced in the gap. **Nothing failed
+and nothing warned.** The live run would have been attributed to WP83 while executing someone else's code.
+
+`plugin/main.js` is untracked, shared and last-build-wins — a fact this run recorded **weeks ago** for
+W4-1 and then walked straight into from the other direction.
+
+**Fixed in `H:\tmp\liveshare_e2e_install.py`:** it prints the bundle's sha256, honours
+**`LS_EXPECT_SHA256`** (abort on mismatch), and **reads back what actually landed in each vault** and
+aborts if it differs. *`shutil.copy2` returning no error is not evidence that the installed bytes are the
+bytes you meant to install.*
+
+### ⚠ S47 — an absence measured on a latched peer is a green that cannot fail
+
+`connected = muxConnected && controlConnected` is **exactly** what `updateOnlineState` hands
+`setOnline`, so WP82's latch defect (chartered, **unimplemented**) routes **every file op into the
+`OfflineQueue`**. A peer in that state **sends nothing at all**.
+
+**Consequence for every E2E assertion of the form "X did not arrive": it is vacuous unless both peers
+were `connected: true` at measurement time.** This is now a standing precondition for the rig, and it
+raises WP82's priority: until it lands, absence-based greens across the whole suite are suspect.
+
+**S48** — C83 AC1's sidecar row was *"emits nothing, as it must have already"* — an **assumption stated
+as a measurement**. It did not; nothing was guarded at that seam at all, so the row was RED too.
+Unreachable in practice, no defect follows — but the phrasing is the tell.
