@@ -64,6 +64,39 @@ interface ManifestPublishDecision {
   unaccounted: string[];
 }
 
+/**
+ * WP86 — structural mirror of `ManifestChangeDisposition` in `../types`, for the
+ * same reason and with the same guarantee as the two mirrors above: `../types`
+ * is not on the frozen import allow-list, and `buildPluginHost` receives the
+ * real `LiveSharePlugin`, so `tsc` checks the real
+ * `getLastManifestChangeDisposition` return type against this shape at that call
+ * site.
+ */
+interface ManifestChangeDispositionLike {
+  pass: number;
+  added: string[];
+  removed: string[];
+  updated: string[];
+  removals: { path: string; verdict: string; reason: string }[];
+  renames: { oldPath: string; newPath: string; verdict: string; reason: string }[];
+  renamed: string[];
+  delegated: string[];
+  destroyed: string[];
+  reconcile: StaleReconcileDecision | null;
+  aborted: boolean;
+  error: string;
+}
+
+/**
+ * WP86 — what the one additive read-only command returns. A single "last" slot
+ * cannot audit a queued route: several passes can run between two reads, so the
+ * pass that refused would routinely be overwritten before anybody saw it.
+ */
+interface ManifestChangeReport {
+  latest: ManifestChangeDispositionLike | null;
+  recent: ManifestChangeDispositionLike[];
+}
+
 // ---------------------------------------------------------------------------
 // Protocol types (mirror BUILD_SPEC §6.1). WP5 targets these shapes directly.
 // ---------------------------------------------------------------------------
@@ -322,6 +355,8 @@ export interface CanvasNodeEditRequest {
   path: string;
   nodeId: string;
   text?: string;
+  /** WP36 — insert at this character offset of line 0 instead of at the end. */
+  at?: number;
   blur?: boolean;
   open?: boolean;
 }
@@ -431,6 +466,12 @@ export interface E2EControlHost {
   // doc nor the file, and every field of its result — `applied` included — is
   // read back from the live editing surface after the attempt.
   typeInNode?(req: CanvasNodeEditRequest): Promise<CanvasNodeEditResult>;
+  /**
+   * WP36 (C36 AC1) — what the DOC holds under `text` / `label`, per record, plus
+   * the capture's own per-write receipts. Optional on the same precedent.
+   * Read-only, and it carries shapes, lengths and counts — never the text.
+   */
+  textShape?(path: string): unknown;
   reconcileStale?(): Promise<StaleReconcileDecision>;
   // --- WP80 -----------------------------------------------------------------
   // `publishManifest` used to return the hardcoded `{ published: true }` — the
@@ -449,6 +490,15 @@ export interface E2EControlHost {
    * without also re-triggering it.
    */
   lastPublishDecision?(): ManifestPublishDecision | null;
+  /**
+   * WP86 (AC6). ADDITIVE, READ-ONLY. The disposition the most recent
+   * manifest-CHANGE pass produced — per vanished key, what was refused, what was
+   * delegated to the gated reconcile, what was actually destroyed, and whether
+   * the pass aborted. It triggers nothing: the route runs on a `Y.Map` observer,
+   * so there is no way to re-ask it, and a rig that re-computed the answer would
+   * only prove that the rig agrees with itself.
+   */
+  lastManifestChange?(): ManifestChangeReport | null;
   /**
    * ADDITIVE (AC3/AC4). The REAL `plugin.promoteToHost` / `plugin.demoteToGuest`,
    * invoked — not a copy and not a re-implementation of their rules. They are
@@ -705,6 +755,13 @@ export async function routeCommand(
         }
         return ok(host.lastPublishDecision());
       }
+      // --- WP86, ADDITIVE and READ-ONLY --------------------------------------
+      case "manifest.lastChange": {
+        if (typeof host.lastManifestChange !== "function") {
+          throw new Error("manifest.lastChange unavailable on this host");
+        }
+        return ok(host.lastManifestChange());
+      }
       case "session.promoteToHost": {
         if (typeof host.promoteToHost !== "function") {
           throw new Error("session.promoteToHost unavailable on this host");
@@ -748,15 +805,40 @@ export async function routeCommand(
         if (args.text !== undefined && typeof args.text !== "string") {
           throw new Error("invalid arg: 'text' must be a string when present");
         }
+        // WP36 (W3 revision): the caret offset. Refused at the boundary when it
+        // is not a finite number, rather than silently treated as "append" —
+        // an ignored position would let a scenario believe it typed inside a
+        // word when it appended, which is exactly C36 AC3's vacuity trap.
+        if (
+          args.at !== undefined &&
+          (typeof args.at !== "number" || !Number.isFinite(args.at))
+        ) {
+          throw new Error("invalid arg: 'at' must be a finite number when present");
+        }
         return ok(
           await host.typeInNode({
             path,
             nodeId,
             text: args.text as string | undefined,
+            at: args.at as number | undefined,
             blur: args.blur === true,
             open: args.open === true,
           }),
         );
+      }
+      // --- WP36 (C36 AC1) — THE DOC-LEVEL WITNESS, ADDITIVE and READ-ONLY ----
+      //
+      // `canvas.state` and `canvas.file` are both JSON-serialised, so both pass
+      // a nested `Y.Text` through `Y.Text.prototype.toJSON` and report the same
+      // string a plain-string field would report. Neither can tell a migrated
+      // field from a flattened one, which is why AC1 says a string read-back
+      // alone does not satisfy it. This reads the `Y.Map` itself and reports
+      // SHAPES, LENGTHS and the per-write receipts — never the text.
+      case "canvas.textShape": {
+        if (typeof host.textShape !== "function") {
+          throw new Error("canvas.textShape unavailable on this host");
+        }
+        return ok(host.textShape(requireString(args, "path")));
       }
       default:
         return badRequest(`unknown cmd: ${cmd}`);
@@ -954,6 +1036,8 @@ export interface E2EPluginLike {
   };
   remoteUsers?: Map<string, { userId: string; isHost?: boolean }>;
   cleanupStaleFiles?: () => Promise<StaleReconcileDecision>;
+  /** WP86 — the manifest-change route's own dispositions, read-only. */
+  getLastManifestChangeDisposition?: () => ManifestChangeReport;
   /** WP80 — the real role transitions, for AC3/AC4. */
   promoteToHost?: (reason?: string) => Promise<void>;
   demoteToGuest?: () => Promise<void>;
@@ -1003,6 +1087,10 @@ export interface E2EPluginLike {
       path: string,
     ): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } | null;
     getCanvasDocHandle(path: string): { doc: Y.Doc } | null;
+    // WP36 (C36 AC1) — optional, so every existing hand-rolled `canvasSync`
+    // double in the test suite stays structurally valid.
+    getTextShape?(path: string): unknown;
+    getTextWriteReceipts?(): unknown[];
   } | null;
 }
 
@@ -1354,6 +1442,14 @@ export function buildPluginHost(
       return mm.getLastPublishDecision();
     },
 
+    // WP86 (AC6, additive). Read-only. The disposition is produced by the
+    // PRODUCTION handler and stored on the plugin; nothing is composed here, and
+    // nothing is triggered by asking.
+    lastManifestChange() {
+      if (typeof plugin.getLastManifestChangeDisposition !== "function") return null;
+      return plugin.getLastManifestChangeDisposition();
+    },
+
     // WP80 (AC3/AC4, additive). The real role transitions. `promoteToHost`
     // publishes internally, so the decision that promotion produced is read back
     // from the manifest manager rather than composed here.
@@ -1424,6 +1520,20 @@ export function buildPluginHost(
     canvasState(path) {
       const snapshot = plugin.canvasSync?.getCanvasSnapshot(path);
       return snapshot ?? { nodes: [], edges: [] };
+    },
+
+    // WP36 (C36 AC1). Reads through `CanvasSync`, which owns the doc; this file
+    // holds no knowledge of the record shape and no `Y.Text` check of its own,
+    // so the witness and the mechanism cannot drift apart.
+    textShape(path) {
+      const cs = plugin.canvasSync;
+      if (!cs || typeof cs.getTextShape !== "function") {
+        return { available: false, path, subscribed: false, fields: [], receipts: [] };
+      }
+      const shape = cs.getTextShape(path);
+      const receipts =
+        typeof cs.getTextWriteReceipts === "function" ? cs.getTextWriteReceipts() : [];
+      return { available: true, ...(shape ?? { path, subscribed: false, fields: [] }), receipts };
     },
 
     bindingCounters(_path) {

@@ -1,5 +1,5 @@
 import type { EditorView } from "@codemirror/view";
-import { MarkdownView, Menu, Notice, Plugin, TFile, requestUrl } from "obsidian";
+import { MarkdownView, Menu, Notice, Plugin, TFile, TFolder, requestUrl } from "obsidian";
 
 import { minimatch } from "minimatch";
 import { type CanvasAdapter, createCanvasAdapter } from "./canvas/canvas-adapter";
@@ -52,6 +52,13 @@ import { ExclusionManager } from "./files/exclusion";
 import { FileOpsManager } from "./files/file-ops";
 import { ManifestManager } from "./files/manifest";
 import {
+  type LocalKind,
+  REMOVAL_DECISION,
+  RENAME_DECISION,
+  decideManifestRemoval,
+  decideManifestRename,
+} from "./files/manifest-removal-decision";
+import {
   canvasOwned,
   registerVaultEvents,
   resetCanvasTextFallbackWarnings,
@@ -71,6 +78,7 @@ import { SyncManager } from "./sync/sync";
 import {
   DEFAULT_SETTINGS,
   type LiveShareSettings,
+  type ManifestChangeDisposition,
   type ManifestPublishDecision,
   type StaleReconcileDecision,
 } from "./types";
@@ -183,6 +191,15 @@ export default class LiveSharePlugin extends Plugin {
   muxConnected = false;
   controlConnected = false;
   private manifestHandlerQueue: Promise<void> = Promise.resolve();
+  // WP86 (AC6) — what the manifest-change route decided, most recent pass, plus
+  // a BOUNDED history. A single "last" slot is not enough to audit this route:
+  // the passes are queued and several can run between two reads, so the pass
+  // that refused would routinely be overwritten by the next one before anybody
+  // could see it — silence again, one step over.
+  private manifestChangePasses = 0;
+  private lastManifestChange: ManifestChangeDisposition | null = null;
+  private manifestChangeHistory: ManifestChangeDisposition[] = [];
+  private static readonly MANIFEST_CHANGE_HISTORY_MAX = 40;
   // WP79: the mirror pass is serialised against itself. It is armed at six
   // sites, several of which can fire close together (a join whose manifest
   // changes a moment later), and two concurrent passes would race each other's
@@ -257,141 +274,116 @@ export default class LiveSharePlugin extends Plugin {
     });
   }
 
+  /**
+   * WP86 — what the vault actually holds at a path, classified BEFORE any
+   * decision is taken. `getAbstractFileByPath` returns `TAbstractFile | null`,
+   * and the old removal loop tested only `if (file)` before handing whatever it
+   * got to `trashFile` — which is how a retired parent-directory entry could
+   * take a folder and everything inside it.
+   */
+  private classifyLocal(localPath: string): LocalKind {
+    const file = this.app.vault.getAbstractFileByPath(localPath);
+    if (!file) return "absent";
+    if (file instanceof TFile) return "file";
+    if (file instanceof TFolder) return "folder";
+    return "other";
+  }
+
+  /** WP86 (AC6) — what the most recent manifest-change passes decided. */
+  getLastManifestChangeDisposition(): {
+    latest: ManifestChangeDisposition | null;
+    recent: ManifestChangeDisposition[];
+  } {
+    return { latest: this.lastManifestChange, recent: [...this.manifestChangeHistory] };
+  }
+
+  private recordManifestChange(disposition: ManifestChangeDisposition): void {
+    this.lastManifestChange = disposition;
+    this.manifestChangeHistory.push(disposition);
+    if (this.manifestChangeHistory.length > LiveSharePlugin.MANIFEST_CHANGE_HISTORY_MAX) {
+      this.manifestChangeHistory.splice(
+        0,
+        this.manifestChangeHistory.length - LiveSharePlugin.MANIFEST_CHANGE_HISTORY_MAX,
+      );
+    }
+    this.logger.log(
+      "manifest",
+      `change[pass=${disposition.pass}] added=${disposition.added.length} ` +
+        `removed=${disposition.removed.length} updated=${disposition.updated.length} ` +
+        `renamed=${disposition.renamed.length} delegated=${disposition.delegated.length} ` +
+        `destroyed=${disposition.destroyed.length} aborted=${disposition.aborted}` +
+        (disposition.error ? ` error=${disposition.error}` : ""),
+    );
+    for (const removal of disposition.removals) {
+      if (removal.verdict === REMOVAL_DECISION.NOTHING_TO_DESTROY) continue;
+      this.logger.log(
+        "manifest",
+        `change[pass=${disposition.pass}] removal ${removal.verdict} ${removal.path} — ${removal.reason}`,
+      );
+    }
+    for (const rename of disposition.renames) {
+      if (rename.verdict === RENAME_DECISION.RENAME) continue;
+      this.logger.log(
+        "manifest",
+        `change[pass=${disposition.pass}] rename refused ${rename.oldPath} -> ${rename.newPath} — ${rename.reason}`,
+      );
+    }
+  }
+
+  /**
+   * WP86 — A MANIFEST ENTRY DISAPPEARING IS NOT A LICENCE TO DESTROY A LOCAL
+   * FILE. See `files/manifest-removal-decision.ts` for the full argument; the
+   * two things that changed here are:
+   *
+   *  - **The trash sink is gone.** This handler no longer calls `trashFile` at
+   *    all. A vanished key with a local file behind it is DELEGATED to
+   *    `cleanupStaleFiles`, the one landed sink that holds an evidence gate
+   *    (host refusal, `hasFreshPublication`, a live host claim, the empty-manifest
+   *    floor). Nothing is re-derived here and that method is byte-unchanged.
+   *  - **The rename arm requires content identity.** It used to fall back to
+   *    `orderedAdded = added` when `matchRenamesByHash` produced no pair, and
+   *    then renamed the user's file onto the first arbitrary added key — a shape
+   *    that is ROUTINE, because `publishManifest` writes its entry `set`s and
+   *    its purge `delete`s in one `doc.transact`.
+   *
+   * The intra-handler ORDER is unchanged (rename arm -> `syncFromManifest` ->
+   * removals -> binary re-requests -> `armCanvasMirrorPass`), and so are the
+   * five registration sites: moving either cost the data-loss batch canvas E2E
+   * `[06]` (19/19 -> 17/19).
+   */
   private registerManifestChangeHandler() {
     this.manifestManager.setManifestChangeHandler((added, removed, updated) => {
       this.manifestHandlerQueue = this.manifestHandlerQueue
         .then(async () => {
-          const renamedOldPaths = new Set<string>();
-          const renamedNewPaths = new Set<string>();
-          if (added.length > 0 && removed.length > 0) {
-            // Bug E: pair removed→added by content hash, not iteration order, so
-            // concurrent renames (removed=[A,C], added=[D,B]) map A→B / C→D by
-            // identity instead of A→D. The removed file still exists on local
-            // disk here, so its hash is the pre-rename content hash; the added
-            // entry's hash is already in the manifest.
-            const removedHashes = new Map<string, string>();
-            for (const oldPath of removed) {
-              const oldFileForHash = this.app.vault.getAbstractFileByPath(toLocalPath(oldPath));
-              if (!(oldFileForHash instanceof TFile)) continue;
-              try {
-                if (isTextFile(oldPath)) {
-                  const content = normalizeLineEndings(await this.app.vault.read(oldFileForHash));
-                  removedHashes.set(oldPath, await hashContent(content));
-                } else {
-                  const buf = await this.app.vault.readBinary(oldFileForHash);
-                  removedHashes.set(oldPath, await hashBuffer(buf));
-                }
-              } catch {
-                // Unreadable file — fall back to positional pairing for it.
-              }
-            }
-            const manifestEntries = this.manifestManager.getEntries();
-            const preferredNew = matchRenamesByHash(
-              removed,
-              added,
-              (p) => removedHashes.get(p),
-              (p) => manifestEntries.get(p)?.hash,
-            );
-
-            for (const oldPath of removed) {
-              // Try the hash-matched target first, then fall back to the
-              // original manifest order for anything left unmatched.
-              const preferred = preferredNew.get(oldPath);
-              const orderedAdded = preferred
-                ? [preferred, ...added.filter((p) => p !== preferred)]
-                : added;
-              for (const newPath of orderedAdded) {
-                if (renamedNewPaths.has(newPath)) continue;
-                // Reject peer-supplied rename targets that would escape the vault.
-                if (!isPathSafe(normalizePath(newPath))) continue;
-                const localOld = toLocalPath(oldPath);
-                const localNew = toLocalPath(newPath);
-                const oldFile = this.app.vault.getAbstractFileByPath(localOld);
-                const newFile = this.app.vault.getAbstractFileByPath(localNew);
-                if (oldFile && !newFile) {
-                  renamedOldPaths.add(oldPath);
-                  renamedNewPaths.add(newPath);
-                  this.fileOpsManager.mutePathEvents(localOld);
-                  this.fileOpsManager.mutePathEvents(localNew);
-                  try {
-                    const parentDir = localNew.substring(0, localNew.lastIndexOf("/"));
-                    if (parentDir) await ensureFolder(this.app.vault, parentDir);
-                    await this.app.vault.rename(oldFile, localNew);
-                  } finally {
-                    setTimeout(() => {
-                      this.fileOpsManager.unmutePathEvents(localOld);
-                      this.fileOpsManager.unmutePathEvents(localNew);
-                    }, VAULT_EVENT_SETTLE_MS);
-                  }
-                  if (isTextFile(oldPath)) {
-                    this.backgroundSync.onFileRemoved(oldPath);
-                  }
-                  if (isTextFile(newPath)) {
-                    await this.backgroundSync.onFileAdded(newPath);
-                  }
-                  break;
-                }
-                if (!oldFile && newFile) {
-                  renamedOldPaths.add(oldPath);
-                  renamedNewPaths.add(newPath);
-                  if (isTextFile(oldPath)) {
-                    this.backgroundSync.onFileRemoved(oldPath);
-                  }
-                  if (isTextFile(newPath)) {
-                    await this.backgroundSync.onFileAdded(newPath);
-                  }
-                  break;
-                }
-              }
-            }
+          const disposition: ManifestChangeDisposition = {
+            pass: ++this.manifestChangePasses,
+            added: [...added],
+            removed: [...removed],
+            updated: [...updated],
+            removals: [],
+            renames: [],
+            renamed: [],
+            delegated: [],
+            destroyed: [],
+            reconcile: null,
+            aborted: false,
+            error: "",
+          };
+          this.lastManifestChange = disposition;
+          try {
+            await this.processManifestChange(added, removed, updated, disposition);
+          } catch (err) {
+            // WP86 (AC6) — the `.catch` below is no longer the ONLY trace of a
+            // pass that aborted mid-way. A throw anywhere here still skips
+            // `syncFromManifest`, the removal loop and the canvas mirror for
+            // this event; it now says so as observable state, not only as a log
+            // line.
+            disposition.aborted = true;
+            disposition.error = err instanceof Error ? err.message : String(err);
+            throw err;
+          } finally {
+            this.recordManifestChange(disposition);
           }
-
-          const actuallyAdded = added.filter((path) => !renamedNewPaths.has(path));
-          const actuallyRemoved = removed.filter((path) => !renamedOldPaths.has(path));
-
-          if (actuallyAdded.length > 0) {
-            const syncedCount = await this.manifestManager.syncFromManifest(
-              this.mutePathEvents,
-              this.unmutePathEvents,
-              this.requestBinaryFile,
-              { skipText: true },
-            );
-            if (syncedCount > 0) this.notify(`Live Share: synced ${syncedCount} file(s)`);
-            for (const path of actuallyAdded) {
-              if (isTextFile(path)) {
-                await this.backgroundSync.onFileAdded(path);
-              }
-            }
-          }
-          for (const path of actuallyRemoved) {
-            this.backgroundSync.onFileRemoved(path);
-            const file = this.app.vault.getAbstractFileByPath(toLocalPath(path));
-            if (file) await this.app.fileManager.trashFile(file);
-          }
-          if (actuallyRemoved.length > 0)
-            this.notify(`Live Share: removed ${actuallyRemoved.length} file(s)`);
-
-          if (updated.length > 0) {
-            for (const path of updated) {
-              const entry = this.manifestManager.getEntries().get(path);
-              if (entry?.binary) {
-                this.requestBinaryFile(path);
-              }
-            }
-          }
-          // WP79 — THE RETRY, and it is not optional wiring.
-          //
-          // The guest's mirror needs a PUBLISHED GUID, and only the host can
-          // mint one (`resolveGuidForSubscribe` refuses to mint on a guest, by
-          // C27). At a simultaneous start the guest's own pass can easily run
-          // before the host's guid lands, and an unresolvable identity is a
-          // skip — correctly, but permanently if nothing re-asks. The guid
-          // arrives as a manifest entry change, so the decision is re-asked on
-          // exactly the event that creates the evidence, in the precedent of
-          // `armStaleReconcileRetry`. Unconditional rather than gated on
-          // `added`/`updated`: a path whose file the guest already has costs one
-          // adapter `exists` and skips.
-          this.armCanvasMirrorPass();
         })
         .catch((err) => {
           this.logger.error("manifest", "handler error", err);
@@ -404,6 +396,209 @@ export default class LiveSharePlugin extends Plugin {
     // `setPublicationChangeHandler` unobserves any previous observer, so calling
     // it again on the guest paths is idempotent rather than a second listener.
     this.armStaleReconcileRetry();
+  }
+
+  private async processManifestChange(
+    added: string[],
+    removed: string[],
+    updated: string[],
+    disposition: ManifestChangeDisposition,
+  ) {
+    const renamedOldPaths = new Set<string>();
+    const renamedNewPaths = new Set<string>();
+    const renameRefusalsReported = new Set<string>();
+    if (added.length > 0 && removed.length > 0) {
+      // Bug E: pair removed→added by content hash, not iteration order, so
+      // concurrent renames (removed=[A,C], added=[D,B]) map A→B / C→D by
+      // identity instead of A→D. The removed file still exists on local
+      // disk here, so its hash is the pre-rename content hash; the added
+      // entry's hash is already in the manifest.
+      const removedHashes = new Map<string, string>();
+      for (const oldPath of removed) {
+        const oldFileForHash = this.app.vault.getAbstractFileByPath(toLocalPath(oldPath));
+        if (!(oldFileForHash instanceof TFile)) continue;
+        try {
+          if (isTextFile(oldPath)) {
+            const content = normalizeLineEndings(await this.app.vault.read(oldFileForHash));
+            removedHashes.set(oldPath, await hashContent(content));
+          } else {
+            const buf = await this.app.vault.readBinary(oldFileForHash);
+            removedHashes.set(oldPath, await hashBuffer(buf));
+          }
+        } catch {
+          // Unreadable file — no content identity is available for it, and
+          // WP86 refuses to move a file it cannot identify.
+        }
+      }
+      const manifestEntries = this.manifestManager.getEntries();
+      const preferredNew = matchRenamesByHash(
+        removed,
+        added,
+        (p) => removedHashes.get(p),
+        (p) => manifestEntries.get(p)?.hash,
+      );
+
+      for (const oldPath of removed) {
+        // The hash-matched target is tried first. WP86 — it is also the ONLY
+        // target the destructive half will accept; the old positional
+        // fallback (`orderedAdded = added`) paired an arbitrary vanished key
+        // with an arbitrary added key and renamed the user's file onto it.
+        const preferred = preferredNew.get(oldPath);
+        const orderedAdded = preferred
+          ? [preferred, ...added.filter((p) => p !== preferred)]
+          : added;
+        for (const newPath of orderedAdded) {
+          if (renamedNewPaths.has(newPath)) continue;
+          // Reject peer-supplied rename targets that would escape the vault.
+          if (!isPathSafe(normalizePath(newPath))) continue;
+          const localOld = toLocalPath(oldPath);
+          const localNew = toLocalPath(newPath);
+          const oldFile = this.app.vault.getAbstractFileByPath(localOld);
+          const newFile = this.app.vault.getAbstractFileByPath(localNew);
+          if (oldFile && !newFile) {
+            const renameDecision = decideManifestRename({
+              oldPath,
+              newPath,
+              hasContentPair: preferred === newPath,
+              oldKind:
+                oldFile instanceof TFile ? "file" : oldFile instanceof TFolder ? "folder" : "other",
+              newExists: false,
+            });
+            if (renameDecision.verdict !== RENAME_DECISION.RENAME) {
+              // One reported refusal per removed key, not one per candidate
+              // pairing — the reason is a property of the key, not of the pair.
+              if (!renameRefusalsReported.has(oldPath)) {
+                renameRefusalsReported.add(oldPath);
+                disposition.renames.push(renameDecision);
+              }
+              continue;
+            }
+            disposition.renames.push(renameDecision);
+            renamedOldPaths.add(oldPath);
+            renamedNewPaths.add(newPath);
+            this.fileOpsManager.mutePathEvents(localOld);
+            this.fileOpsManager.mutePathEvents(localNew);
+            try {
+              const parentDir = localNew.substring(0, localNew.lastIndexOf("/"));
+              if (parentDir) await ensureFolder(this.app.vault, parentDir);
+              await this.app.vault.rename(oldFile, localNew);
+              disposition.renamed.push(newPath);
+            } finally {
+              setTimeout(() => {
+                this.fileOpsManager.unmutePathEvents(localOld);
+                this.fileOpsManager.unmutePathEvents(localNew);
+              }, VAULT_EVENT_SETTLE_MS);
+            }
+            if (isTextFile(oldPath)) {
+              this.backgroundSync.onFileRemoved(oldPath);
+            }
+            if (isTextFile(newPath)) {
+              await this.backgroundSync.onFileAdded(newPath);
+            }
+            break;
+          }
+          if (!oldFile && newFile) {
+            // Bookkeeping only — nothing on disk is touched by this branch. The
+            // local vault has already applied the rename (the file-op route is
+            // faster than the manifest), so this only keeps `backgroundSync`'s
+            // subscriptions in step. Left exactly as it was.
+            renamedOldPaths.add(oldPath);
+            renamedNewPaths.add(newPath);
+            if (isTextFile(oldPath)) {
+              this.backgroundSync.onFileRemoved(oldPath);
+            }
+            if (isTextFile(newPath)) {
+              await this.backgroundSync.onFileAdded(newPath);
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    const actuallyAdded = added.filter((path) => !renamedNewPaths.has(path));
+    const actuallyRemoved = removed.filter((path) => !renamedOldPaths.has(path));
+
+    if (actuallyAdded.length > 0) {
+      const syncedCount = await this.manifestManager.syncFromManifest(
+        this.mutePathEvents,
+        this.unmutePathEvents,
+        this.requestBinaryFile,
+        { skipText: true },
+      );
+      if (syncedCount > 0) this.notify(`Live Share: synced ${syncedCount} file(s)`);
+      for (const path of actuallyAdded) {
+        if (isTextFile(path)) {
+          await this.backgroundSync.onFileAdded(path);
+        }
+      }
+    }
+    // WP86 — THE TRASH SINK THAT USED TO BE HERE IS GONE.
+    //
+    // What stood here was:
+    //
+    //     const file = this.app.vault.getAbstractFileByPath(toLocalPath(path));
+    //     if (file) await this.app.fileManager.trashFile(file);
+    //
+    // — no role guard, no evidence gate, no completeness check, and no
+    // `instanceof TFile`. It destroyed a user file on the strength of a key
+    // disappearing from a `Y.Map`, for every peer, on any peer's authority, and
+    // it handed a `TFolder` straight to `trashFile` whenever a parent-directory
+    // entry was retired for bookkeeping.
+    //
+    // The non-destructive work — `backgroundSync.onFileRemoved`, which is
+    // memory-only (timers, observers, `releaseDoc`) — still runs in EVERY
+    // branch: I11, a refusal never destroys and never cancels the pass.
+    const manifestNow = this.manifestManager.getEntries();
+    let delegateToGatedRoute = false;
+    for (const path of actuallyRemoved) {
+      this.backgroundSync.onFileRemoved(path);
+      const decision = decideManifestRemoval({
+        path,
+        localKind: this.classifyLocal(toLocalPath(path)),
+        stillInManifest: manifestNow.has(path),
+      });
+      disposition.removals.push(decision);
+      if (decision.verdict === REMOVAL_DECISION.DELEGATED) {
+        disposition.delegated.push(path);
+        delegateToGatedRoute = true;
+      }
+    }
+    if (delegateToGatedRoute) {
+      // The ONE landed, gated sink. `cleanupStaleFiles` is byte-unchanged: it
+      // refuses outright on a host, requires `hasFreshPublication` past this
+      // peer's connect baseline by somebody other than itself, requires a peer
+      // present claiming host, keeps D3's empty-manifest floor, iterates
+      // `vault.getFiles()` (so a folder can never reach `trashFile`), and mutes
+      // path events around the trash. Nothing of that is re-derived here.
+      const reconcile = await this.cleanupStaleFiles();
+      disposition.reconcile = reconcile;
+      disposition.destroyed = [...reconcile.trashed];
+    }
+    if (disposition.destroyed.length > 0)
+      this.notify(`Live Share: removed ${disposition.destroyed.length} file(s)`);
+
+    if (updated.length > 0) {
+      for (const path of updated) {
+        const entry = this.manifestManager.getEntries().get(path);
+        if (entry?.binary) {
+          this.requestBinaryFile(path);
+        }
+      }
+    }
+    // WP79 — THE RETRY, and it is not optional wiring.
+    //
+    // The guest's mirror needs a PUBLISHED GUID, and only the host can
+    // mint one (`resolveGuidForSubscribe` refuses to mint on a guest, by
+    // C27). At a simultaneous start the guest's own pass can easily run
+    // before the host's guid lands, and an unresolvable identity is a
+    // skip — correctly, but permanently if nothing re-asks. The guid
+    // arrives as a manifest entry change, so the decision is re-asked on
+    // exactly the event that creates the evidence, in the precedent of
+    // `armStaleReconcileRetry`. Unconditional rather than gated on
+    // `added`/`updated`: a path whose file the guest already has costs one
+    // adapter `exists` and skips.
+    this.armCanvasMirrorPass();
   }
 
   private get userId(): string {

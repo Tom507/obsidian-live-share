@@ -63,6 +63,52 @@ export interface ManifestPublishDecision {
   unaccounted: string[];
 }
 
+/**
+ * WP86 — what `registerManifestChangeHandler` decided about ONE manifest change.
+ *
+ * Same class of silence as {@link StaleReconcileDecision} and
+ * {@link ManifestPublishDecision}, one route over. Before this, "I trashed
+ * three files", "there was nothing at those paths", "a folder entry was retired
+ * for bookkeeping and I trashed the folder" and "the pass threw halfway and
+ * skipped the sync, the removals and the canvas mirror" were the same
+ * observation: a `Notice` counting paths, and one `.catch` logging a line.
+ *
+ * MUST stay at the TOP of this file, beside `StaleReconcileDecision` and
+ * `ManifestPublishDecision` — see the position note on `ManifestPublishDecision`
+ * above; the `DEFAULT_SETTINGS` comment-strip trap is below.
+ */
+export interface ManifestChangeDisposition {
+  /** Monotonic counter, so a reader can tell a fresh pass from a repeated read. */
+  pass: number;
+  /** The `(added, removed, updated)` key counts the pass was handed. */
+  added: string[];
+  removed: string[];
+  updated: string[];
+  /** Per vanished key: the verdict and the stated reason. Never empty-reasoned. */
+  removals: { path: string; verdict: string; reason: string }[];
+  /** Per candidate rename pairing that was considered. */
+  renames: { oldPath: string; newPath: string; verdict: string; reason: string }[];
+  /** Paths actually moved by the rename arm. */
+  renamed: string[];
+  /**
+   * Paths this route handed to the gated stale reconcile. Non-empty means "a
+   * local file existed at a key that vanished"; it does NOT mean anything was
+   * destroyed.
+   */
+  delegated: string[];
+  /** Paths actually trashed, by the gated route, during this pass. */
+  destroyed: string[];
+  /** The reconcile decision this pass delegated to, or `null` if it did not. */
+  reconcile: StaleReconcileDecision | null;
+  /**
+   * `true` when the pass threw. The handler's `.catch` used to be the only
+   * trace of a pass that aborted mid-way, skipping `syncFromManifest`, the
+   * removal loop and the canvas mirror for that event.
+   */
+  aborted: boolean;
+  /** The failure, when `aborted`. Empty string otherwise. */
+  error: string;
+}
 
 export type Permission = "read-write" | "read-only";
 
