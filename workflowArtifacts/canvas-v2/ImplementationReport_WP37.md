@@ -14,7 +14,7 @@
 | **The owner's defect** | **CLOSED.** *"manchmal verschluckt er noch Buchstaben"* — the characters now survive. |
 | **RED → GREEN, same suite, same rig** | `H:\tmp\liveshare_wp37_e2e.py`: **29 passed / 5 failed** (fix parked, run `035215`) → **32 passed / 2 failed** (fix present, run `034946`). The 2 remaining failures are RED in **both** runs and are labelled as such in the suite itself. |
 | **AC status** | AC1 ✅ · AC2 ✅ · AC3 ⚠️ **partial — the half that depends on WP36 is unsatisfiable and is reported, not faked** · AC4 ✅ · AC5 ✅ · AC6 ✅ |
-| **Unit suite** | **2060 / 2060 pass, 315 files, 0 failed** (WP37 adds **68** tests in **4** files; the pre-WP37 count in this tree is therefore 1992 / 311) |
+| **Unit suite** | **2076 / 2076 pass, 316 files, 0 failed** (WP37 adds **68** tests in **4** files; the pre-WP37 count in this tree is therefore 2008 / 312) |
 | **`npm run build`** | tsc + esbuild, **exit 0** |
 | **Canvas E2E** | **13 / 18** — and **13 / 18 with the fix parked, with the identical five failures.** Not a WP37 regression; §8 finding S30. |
 | **WP79 E2E** | **18 passed, 0 failed, 0 skipped** — unchanged |
@@ -350,11 +350,14 @@ Both are the same lesson: **a deferral is only as good as the signal that ends i
 
 | | before | after |
 |---|---|---|
-| unit tests | 1992 *(derived: 2060 − 68 new)* | **2060** |
-| unit test files | 311 *(derived: 315 − 4 new)* | **315** |
+| unit tests | 2008 *(derived: 2076 − 68 new)* | **2076** |
+| unit test files | 312 *(derived: 316 − 4 new)* | **316** |
 | failures | 0 | **0** |
 
-Measured by `npm test` from `plugin/` — `Test Files 315 passed (315)`, `Tests 2060 passed (2060)`.
+Measured by `npm test` from `plugin/` at the committed tree — `Test Files 316 passed (316)`,
+`Tests 2076 passed (2076)`. The "before" row is derived arithmetic, not a second measurement,
+and is labelled as such: the tree is shared with a sibling batch, so parking my four test files
+to measure it would have been another shared-path revert (§11).
 `npm run build` (tsc + esbuild) **exit 0**. `npm run build:e2e` produces a ~3.92 MB bundle.
 
 **No existing test was deleted, weakened, retitled, skipped or amended. WP37 took no §7 licence of any class.** The three tests that assert `e2e-control.ts`'s frozen import allow-list are green **without the allow-list being touched** — see §3 AC6.
