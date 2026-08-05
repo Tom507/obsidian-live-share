@@ -35,6 +35,8 @@ import {
   type FieldSlot,
   type FuzzRecordKind,
   type IntentTrace,
+  type TextAuthorship,
+  isCollabTextSlot,
   slotKey,
 } from "./intent-trace";
 import type { FuzzReplica } from "./replica";
@@ -46,7 +48,31 @@ export type AssertionFamily =
   | "bytes"
   | "shadow"
   | "i7"
-  | "lww";
+  | "lww"
+  /**
+   * WP36 follow-up (B32) — COLLABORATIVE TEXT.
+   *
+   * `text` and `label` are nested `Y.Text`s now, so the two families that used
+   * to judge them — `intent-trace`'s "the value equals what the LAST op wrote"
+   * and `lww`'s "my whole write landed verbatim" — were both statements of
+   * *"text is a whole-string LWW register"*, which is the property WP36 was
+   * chartered to remove.
+   *
+   * THE REPLACEMENT IS STRICTLY STRONGER, AND THAT IS THE POINT:
+   *
+   *   ├── LWW requires the replicas to AGREE. It is satisfied when one
+   *   │      author's edit is destroyed, as long as everybody destroys it.
+   *   └── This family requires BOTH EDITS TO SURVIVE. A run in which two peers
+   *          edit the same card and one of them loses is a FAILURE here and was
+   *          a PASS under the oracle it replaces.
+   *
+   * Where the harness can compute the merge exactly from its own log — two pure
+   * insertions at distinct offsets, or two replacements of the same span — it
+   * pins the exact string. Where it cannot without re-implementing the CRDT
+   * (which is the circularity `intent-trace.ts` forbids), it asserts survival
+   * and says so in the message rather than pretending to a value.
+   */
+  | "text-merge";
 
 export interface FuzzViolation {
   readonly family: AssertionFamily;
@@ -240,13 +266,58 @@ function checkRecorded(replicas: readonly FuzzReplica[]): FuzzViolation[] {
       out.push({ family: "lww", message: `replica ${replica.index}: ${artefact}` });
     }
     for (const admission of replica.writeAdmissions) {
-      if (!Object.is(admission.landed, admission.intended)) {
+      if (admission.contribution !== undefined) {
+        // WP36 follow-up (B32) — THE COLLABORATIVE-TEXT ADMISSION.
+        //
+        // "My whole string is what my doc holds" is unsatisfiable once the field
+        // merges: this replica's own doc may already carry a peer's characters,
+        // and demanding they be gone would be demanding the destruction AC3
+        // forbids. What WP21's family actually asks — was my write ADMITTED, or
+        // was it denied — survives the change intact, and is asserted here in
+        // the only form that still means it: MY characters are in MY doc,
+        // immediately after MY write.
+        const landed = typeof admission.landed === "string" ? admission.landed : "";
+        if (admission.contribution.length > 0 && !landed.includes(admission.contribution)) {
+          out.push({
+            family: "lww",
+            message:
+              `replica ${admission.replica}: its own local write to ${admission.kind}/${admission.id}.${admission.field} ` +
+              `did not land — it contributed ${JSON.stringify(admission.contribution)} and its own doc ` +
+              `holds ${JSON.stringify(admission.landed)} immediately afterwards ` +
+              `(it meant ${JSON.stringify(admission.intended)}). A write-denial artefact, which WP21 removed.`,
+          });
+        }
+      } else if (!Object.is(admission.landed, admission.intended)) {
         out.push({
           family: "lww",
           message:
             `replica ${admission.replica}: its own local write to ${admission.kind}/${admission.id}.${admission.field} ` +
             `did not land (intended ${JSON.stringify(admission.intended)}, doc held ${JSON.stringify(admission.landed)}) ` +
             `— a write-denial artefact, which WP21 removed`,
+        });
+      }
+      // WP36 follow-up (B32) — THE CLAUSE THAT MAKES THIS STRICTLY STRONGER
+      // THAN THE ORACLE IT REPLACES.
+      //
+      // The value check above is the pre-WP36 assertion, restored to full
+      // strength by snapshotting the rendered string at write time (see
+      // `WriteAdmission.landed`). On its own it is exactly as strong as before
+      // and therefore GREEN against the whole-string LWW register.
+      //
+      // This clause is not. It says the write went through the collaborative
+      // text path and left a nested `Y.Text` behind, which the pre-WP36
+      // register never does — so the pair is red on the behaviour it replaced,
+      // and it also catches the "merged once and then stopped merging"
+      // un-migration the charter names as the second most likely wrong
+      // implementation.
+      if (admission.expectYText === true && admission.shape !== "ytext") {
+        out.push({
+          family: "lww",
+          message:
+            `replica ${admission.replica}: after its own write to ${admission.kind}/${admission.id}.${admission.field} ` +
+            `the doc holds a ${admission.shape}, not a collaborative text. C36 AC1: no capture path ` +
+            `may overwrite a \`Y.Text\` with a plain value — a field that flattens back to a register ` +
+            `has silently stopped merging, and every convergence family stays green while it does.`,
         });
       }
     }
@@ -260,6 +331,204 @@ function checkRecorded(replicas: readonly FuzzReplica[]): FuzzViolation[] {
 
 function describeSlot(slot: FieldSlot): string {
   return `${slot.kind}/${slot.id}.${slot.field}`;
+}
+
+// ---------------------------------------------------------------------------
+// TEXT-MERGE — the correctness family for `text` / `label` (WP36 follow-up).
+// ---------------------------------------------------------------------------
+
+/** Every ordering of the authors' contributions. `n` is 2 in practice. */
+function permutations<T>(items: readonly T[]): T[][] {
+  if (items.length <= 1) return [[...items]];
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i++) {
+    const rest = [...items.slice(0, i), ...items.slice(i + 1)];
+    for (const tail of permutations(rest)) out.push([items[i], ...tail]);
+  }
+  return out;
+}
+
+/**
+ * The EXACT set of strings a sequence CRDT may converge on, computed from the
+ * harness's own log — or `undefined` when the shape is one the harness cannot
+ * name without simulating the CRDT.
+ *
+ * Two shapes are exactly computable, and between them they cover every
+ * concurrent text write this registry issues:
+ *
+ *   ├── PURE INSERTIONS AT DISTINCT OFFSETS (`textEditViaSave`, and the live
+ *   │      `kolla1bo2ration` case C36 AC3 is written around). Every author's
+ *   │      characters land at their own offset, so the result is a SINGLE
+ *   │      string: the base with each contribution spliced in. No tie-break is
+ *   │      involved, so there is no set — there is one answer.
+ *   └── REPLACEMENTS OF THE SAME SPAN (`contendedFieldWrite`: two peers each
+ *          retyping the whole card). The deletions coincide and both insertions
+ *          land at the same position, so the result is
+ *          `prefix + contributions in SOME order + suffix`. Yjs breaks that tie
+ *          on a random `clientID`, so the oracle names the whole set and never
+ *          which member won — asserting one would pass about half the time,
+ *          which is worse than not asserting.
+ */
+function expectedMergeSet(
+  authors: readonly TextAuthorship[],
+): { values: string[]; shape: string } | undefined {
+  if (authors.length < 2) return undefined;
+  const base = authors[0].base;
+  if (!authors.every((author) => author.base === base)) return undefined;
+
+  const contributing = authors.filter((author) => author.inserted.length > 0);
+  if (contributing.length === 0) return undefined;
+
+  // Shape 1 — pure insertions at pairwise-distinct offsets.
+  const offsets = authors.map((author) => author.offset);
+  if (
+    authors.every((author) => author.deleted.length === 0) &&
+    new Set(offsets).size === offsets.length
+  ) {
+    const ordered = [...authors].sort((a, b) => b.offset - a.offset);
+    let out = base;
+    for (const author of ordered) {
+      out = out.slice(0, author.offset) + author.inserted + out.slice(author.offset);
+    }
+    return { values: [out], shape: "pure insertions at distinct offsets" };
+  }
+
+  // Shape 2 — every author replaced exactly the same span.
+  const { offset, deleted } = authors[0];
+  if (authors.every((author) => author.offset === offset && author.deleted === deleted)) {
+    const prefix = base.slice(0, offset);
+    const suffix = base.slice(offset + deleted.length);
+    const values = permutations(contributing.map((author) => author.inserted)).map(
+      (order) => prefix + order.join("") + suffix,
+    );
+    return { values: [...new Set(values)], shape: "one replaced span, tie-broken order" };
+  }
+
+  return undefined;
+}
+
+function describeAuthors(authors: readonly TextAuthorship[]): string {
+  return authors
+    .map(
+      (author) =>
+        `r${author.replica}/${author.opClass}@w${author.window} ` +
+        `base=${JSON.stringify(author.base)} -> ${JSON.stringify(author.next)} ` +
+        `(contributed ${JSON.stringify(author.inserted)} at ${author.offset}, ` +
+        `deleted ${JSON.stringify(author.deleted)})`,
+    )
+    .join("\n      ");
+}
+
+/**
+ * Judge ONE collaborative-text slot.
+ *
+ * Order matters and is deliberate: SURVIVAL first, EXACTNESS second,
+ * AGREEMENT LAST. Convergence is exactly what the defect WP36 removed
+ * PRESERVED — two replicas agreeing on a string with one peer's characters
+ * destroyed is a perfectly convergent document — so agreement is asserted only
+ * after the properties that can actually contradict it.
+ */
+function checkTextSlot(
+  slot: FieldSlot,
+  expectation: Extract<
+    ReturnType<IntentTrace["expect"]>,
+    { kind: "text-merge" }
+  >,
+  observed: readonly unknown[],
+): FuzzViolation[] {
+  const out: FuzzViolation[] = [];
+  const where = describeSlot(slot);
+
+  const rendered: string[] = [];
+  for (const [index, value] of observed.entries()) {
+    if (typeof value !== "string") {
+      out.push({
+        family: "text-merge",
+        message:
+          `replica ${index}: ${where} reached the FILE as ${JSON.stringify(value)} ` +
+          `(${typeof value}). The projection must render a nested \`Y.Text\` to its string — ` +
+          `a consumer that receives the object is C36 AC4's failure, not a merge failure.`,
+      });
+      rendered.push("");
+      continue;
+    }
+    rendered.push(value);
+  }
+
+  // ---- 1. SURVIVAL. The clause LWW cannot satisfy. ------------------------
+  //
+  // Restricted to the LAST window that wrote the slot: an earlier author's
+  // characters may legitimately have been deleted by a later, causally ordered
+  // author, and asserting over the whole run would forbid deletion entirely —
+  // "a merge that never deletes is not a merge".
+  for (const author of expectation.lastWindowAuthors) {
+    if (author.inserted.length === 0) continue;
+    for (const [index, value] of rendered.entries()) {
+      if (value.includes(author.inserted)) continue;
+      out.push({
+        family: "text-merge",
+        message:
+          `replica ${index}: ${where} converged on ${JSON.stringify(value)}, which does NOT ` +
+          `contain the characters replica ${author.replica} contributed ` +
+          `(${JSON.stringify(author.inserted)}, op "${author.opClass}", window ${author.window}).\n` +
+          `      ${expectation.lastWindowAuthors.length > 1 ? "TWO AUTHORS WROTE THIS FIELD CONCURRENTLY AND ONE OF THEM LOST." : "A single author's own edit did not survive."}\n` +
+          `      A whole-string LWW register passes this run; a character-level merge must not.\n` +
+          `      authors:\n      ${describeAuthors(expectation.lastWindowAuthors)}`,
+      });
+    }
+  }
+
+  // ---- 2. EXACTNESS, wherever the harness can compute it ------------------
+  if (!expectation.diverged && expectation.value !== undefined) {
+    // Sequential writes from an up-to-date surface: every capture is `exact`,
+    // so the converged value IS the last author's string. Same strength as the
+    // pre-WP36 determinate check, kept verbatim.
+    for (const [index, value] of rendered.entries()) {
+      if (value === expectation.value) continue;
+      out.push({
+        family: "text-merge",
+        message:
+          `replica ${index}: ${where} converged on ${JSON.stringify(value)}, but the writes to ` +
+          `this field were strictly sequential from an up-to-date surface, so the merge had ` +
+          `nothing to reconcile and the value must be the last author's ` +
+          `${JSON.stringify(expectation.value)}.\n      authors:\n      ${describeAuthors(expectation.authors)}`,
+      });
+    }
+  } else if (expectation.lastWindowAuthors.length > 1 && expectation.lastWindowBaseVerified) {
+    // THE RECORDED PRECONDITION GATE. Without it this arm would compute a merge
+    // from bases the authors merely BELIEVED, and a stale belief makes every
+    // outcome look like an invention. `lastWindowBaseVerified` means every
+    // author of this window checked its base against its own doc and they all
+    // agree — which is exactly the state in which a sequence CRDT's outcome is
+    // a function of the log alone.
+    const exact = expectedMergeSet(expectation.lastWindowAuthors);
+    if (exact !== undefined) {
+      for (const [index, value] of rendered.entries()) {
+        if (exact.values.includes(value)) continue;
+        out.push({
+          family: "text-merge",
+          message:
+            `replica ${index}: ${where} converged on ${JSON.stringify(value)}, which is not a ` +
+            `merge of the concurrent edits (${exact.shape}). The only outcomes a sequence CRDT ` +
+            `may produce here are ${JSON.stringify(exact.values)}.\n` +
+            `      A value outside that set contains a character nobody typed, or lost one ` +
+            `somebody did.\n      authors:\n      ${describeAuthors(expectation.lastWindowAuthors)}`,
+        });
+      }
+    }
+  }
+
+  // ---- 3. AGREEMENT, and only now --------------------------------------
+  const first = rendered[0];
+  for (const [index, value] of rendered.entries()) {
+    if (value === first) continue;
+    out.push({
+      family: "text-merge",
+      message: `replica ${index}: ${where} did not converge (${JSON.stringify(value)} vs ${JSON.stringify(first)})`,
+    });
+  }
+
+  return out;
 }
 
 function checkIntentTrace(
@@ -325,6 +594,13 @@ function checkIntentTrace(
         continue;
       }
       observed.push(record[slot.field]);
+    }
+
+    // WP36 follow-up (B32): `text` and `label` are judged by the merge family,
+    // never by the LWW arms below.
+    if (expectation.kind === "text-merge") {
+      out.push(...checkTextSlot(slot, expectation, observed));
+      continue;
     }
 
     if (expectation.kind === "determinate") {

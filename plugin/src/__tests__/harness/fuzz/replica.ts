@@ -72,8 +72,45 @@ export interface WriteAdmission {
   readonly id: string;
   readonly field: string;
   readonly intended: unknown;
-  /** What the replica's OWN doc held immediately after its own local write. */
+  /**
+   * What the replica's OWN doc held immediately after its own local write.
+   *
+   * WP36 follow-up (B32) — this is a SNAPSHOT, and it has to be. `text` and
+   * `label` are nested `Y.Text`s now, so storing the doc value here stored a
+   * LIVE REFERENCE: by the time the oracle ran at the end of the scenario,
+   * `landed.toString()` was the final converged string, not the string this
+   * replica held at the instant of its own write. The check silently stopped
+   * measuring write ADMISSION and started measuring convergence — a green that
+   * cannot fail, in the family whose whole job is to catch a denied write.
+   */
   readonly landed: unknown;
+  /**
+   * WP36 follow-up (B32): the doc-level SHAPE of the field right after the
+   * write, for the two collaborative-text fields. `undefined` for every other
+   * field, which is what keeps this additive.
+   *
+   * `"string"` here means the capture wrote a plain value over the
+   * collaborative text — C36 AC1's "never replaced by a plain value", i.e. the
+   * un-migration defect that reads like flaky sync.
+   */
+  readonly shape?: "ytext" | "string" | "absent" | "other";
+  /**
+   * WP36 follow-up (B32): the characters THIS author contributed, for a
+   * collaborative-text field. Set ⇒ the oracle judges admission by "my
+   * characters are in my doc" instead of by "my whole string is my doc", which
+   * is the only form of the question that still means anything once the field
+   * merges rather than overwrites.
+   */
+  readonly contribution?: string;
+  /**
+   * WP36 follow-up (B32): `true` only where WP36 GUARANTEES a nested `Y.Text`
+   * afterwards — an EDIT to an existing record's text through the real capture
+   * path. Deliberately NOT set for a record CREATION (the migration is lazy and
+   * write-triggered: a record the local user has not edited keeps its plain
+   * string, C36 AC5) nor for the `CanvasBinding` write path (`useCanvasBinding`
+   * is `false` and frozen until P5, so WP36 never claimed it).
+   */
+  readonly expectYText?: boolean;
 }
 
 export interface FuzzReplica {
@@ -166,7 +203,20 @@ function createSyncManager() {
  * 0 structurally different from the others. Every replica here starts from the
  * same seeded doc state and the same empty surface, so no replica is privileged.
  */
-export async function createReplica(index: number, path: string): Promise<FuzzReplica> {
+export async function createReplica(
+  index: number,
+  path: string,
+  options: {
+    /**
+     * WP36 follow-up (B32) — the PRE-WP36 CONTROL SEAM, per replica. `false`
+     * builds a replica whose capture writes `text`/`label` as a whole-string
+     * LWW register, i.e. the behaviour WP36 replaced. It exists so the
+     * `text-merge` family can be shown RED against the oracle it succeeded,
+     * inside the fuzzer, over the same seeds.
+     */
+    readonly collabText?: boolean;
+  } = {},
+): Promise<FuzzReplica> {
   const vault = createVault();
   const syncManager = createSyncManager();
   const signatures: string[] = [];
@@ -175,6 +225,7 @@ export async function createReplica(index: number, path: string): Promise<FuzzRe
     syncManager as never,
     { mutePathEvents: () => {}, unmutePathEvents: () => {} } as never,
   );
+  sync.setCollabTextEnabled(options.collabText ?? true);
   sync.setLogger({
     debug: (_category: string, message: string) => {
       signatures.push(message);

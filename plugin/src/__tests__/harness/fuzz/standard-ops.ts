@@ -43,7 +43,9 @@ import {
 import { applyTombstoneOp } from "../../../canvas/canvas-tombstone";
 import { nextTombstoneTime } from "../../../files/canvas-sync";
 import {
+  COLLAB_TEXT_FIELDS,
   type FieldSlot,
+  textAffixes,
   type FileValue,
   type FuzzRecordKind,
   type IntentTrace,
@@ -76,11 +78,42 @@ const SNAPSHOT_KEY = "wp23.surface-snapshot";
  * shows, and deriving it from the doc would make every save a tautology and the
  * stale-view simulation impossible.
  */
-function buildSurface(trace: IntentTrace, overrides?: ReadonlyMap<string, FileRecord>): SurfaceSnapshot {
+function buildSurface(
+  trace: IntentTrace,
+  overrides?: ReadonlyMap<string, FileRecord>,
+  /**
+   * WP36 follow-up (B32) — THE REPLICA WHOSE OBSIDIAN IS ABOUT TO SAVE.
+   *
+   * Without it, `buildSurface` builds every replica's save from the GLOBAL
+   * trace, so every replica re-states every OTHER replica's text edits as its
+   * own local intent. Under a whole-string LWW register that is harmless — the
+   * shadow diff discards a restatement, and re-`set`ting the same string is
+   * idempotent. Under a character-level merge it is not: a restatement whose
+   * base is this replica's own older value is a genuine edit, and the merge
+   * dutifully contributes those characters AGAIN. One `staleObsidianSave`
+   * carrier text turned up THREE TIMES in the converged value in the run that
+   * produced this fix.
+   *
+   * That was a HARNESS artefact, not a product defect, and it is fixed at the
+   * source rather than absorbed into the oracle: a replica's `.canvas` holds
+   * what THAT replica last saved, so its text fields come from its own snapshot.
+   */
+  replica?: FuzzReplica,
+): SurfaceSnapshot {
   const snapshot: SurfaceSnapshot = { node: new Map(), edge: new Map(), window: -1 };
   for (const kind of ["node", "edge"] as const) {
     for (const record of trace.surfaceRecords(kind)) {
       const fields = { ...trace.expectedRecord(kind, record.id) };
+      if (replica !== undefined) {
+        for (const field of COLLAB_TEXT_FIELDS) {
+          if (!(field in fields)) continue;
+          const own = surfaceValueOf(replica, kind, record.id, field);
+          // No own surface yet = a record this replica has never saved (a peer
+          // created it). The trace value is then the honest answer: it is what
+          // the projection would have painted into the view.
+          if (own !== undefined) fields[field] = own;
+        }
+      }
       const override = overrides?.get(`${kind}|${record.id}`);
       if (override) Object.assign(fields, override);
       snapshot[kind].set(record.id, fields);
@@ -167,6 +200,37 @@ function claimSurface(ctx: OpContext): boolean {
   return true;
 }
 
+/**
+ * WP36 follow-up (B32): the doc value as a CONSUMER sees it, plus its shape.
+ *
+ * `Y.Text.toString()` is called HERE, at write time, and the string is what is
+ * stored. Storing the `Y.Text` itself stores a live reference whose contents
+ * keep changing until the end of the run.
+ */
+function readDocField(
+  replica: FuzzReplica,
+  kind: FuzzRecordKind,
+  id: string,
+  field: string,
+): { value: unknown; shape: "ytext" | "string" | "absent" | "other" } {
+  const raw = container(replica, kind).get(id)?.get(field);
+  if (raw instanceof Y.Text) return { value: raw.toString(), shape: "ytext" };
+  if (typeof raw === "string") return { value: raw, shape: "string" };
+  if (raw === undefined) return { value: undefined, shape: "absent" };
+  return { value: raw, shape: "other" };
+}
+
+/** What this replica's doc currently renders for a collaborative-text field. */
+function currentTextOf(
+  replica: FuzzReplica,
+  kind: FuzzRecordKind,
+  id: string,
+  field: string,
+): string | undefined {
+  const read = readDocField(replica, kind, id, field);
+  return typeof read.value === "string" ? read.value : undefined;
+}
+
 /** Record that this replica's OWN local write landed in its OWN doc (WP21). */
 function noteWriteLanded(
   replica: FuzzReplica,
@@ -174,15 +238,31 @@ function noteWriteLanded(
   id: string,
   field: string,
   intended: FileValue,
+  /**
+   * WP36 follow-up (B32). Pass the base this write was authored against to turn
+   * the admission check from "my whole string is the doc" into "my characters
+   * are in the doc" — and set `expectYText` where WP36 promises a nested
+   * `Y.Text` afterwards.
+   */
+  text?: { base: string; expectYText: boolean },
 ): void {
-  const record = container(replica, kind).get(id);
+  const read = readDocField(replica, kind, id, field);
+  const isText = COLLAB_TEXT_FIELDS.has(field);
   replica.writeAdmissions.push({
     replica: replica.index,
     kind,
     id,
     field,
     intended,
-    landed: record?.get(field),
+    landed: read.value,
+    // Only the two collaborative-text fields carry a shape opinion; every other
+    // field leaves it `undefined` and the oracle ignores it.
+    shape: isText ? read.shape : undefined,
+    contribution:
+      isText && text !== undefined && typeof intended === "string"
+        ? textAffixes(text.base, intended).inserted
+        : undefined,
+    expectYText: isText ? (text?.expectYText ?? false) : undefined,
   });
 }
 
@@ -192,14 +272,22 @@ function logWrite(
   slot: FieldSlot,
   value: FileValue,
   contested = false,
+  /** WP36 follow-up (B32): the third operand, for a collaborative-text slot. */
+  textBase?: string,
+  /** The replica that authored it, when it is not `ctx.replica`. */
+  author = ctx.replica.index,
+  /** WP36 follow-up (B32): the op CHECKED `textBase` against the author's doc. */
+  textBaseVerified = false,
 ): void {
   ctx.trace.write({
     window: ctx.window,
-    replica: ctx.replica.index,
+    replica: author,
     opClass,
     slot,
     value,
     contested,
+    textBase,
+    textBaseVerified,
   });
 }
 
@@ -426,12 +514,31 @@ async function saveWithOverride(
   }
   if (!claimSurface(ctx)) return false;
   const overrides = new Map<string, FileRecord>([[`${kind}|${id}`, { ...changes }]]);
-  const snapshot = buildSurface(ctx.trace, overrides);
+  const snapshot = buildSurface(ctx.trace, overrides, ctx.replica);
+  // WP36 follow-up (B32): the THIRD OPERAND, captured BEFORE the save. For a
+  // collaborative-text field this is what the file held a moment ago, which is
+  // exactly what the capture's three-way merge will use as its base — so the
+  // oracle can express the edit as "these characters were contributed" rather
+  // than as "this whole string won".
+  const textBases = new Map<string, string>();
+  for (const field of Object.keys(changes)) {
+    if (!COLLAB_TEXT_FIELDS.has(field)) continue;
+    const before = snapshot[kind].get(id);
+    textBases.set(field, String(surfaceValueOf(ctx.replica, kind, id, field) ?? before?.[field] ?? ""));
+  }
   const content = snapshotToText(snapshot);
   await runSave(ctx.replica, content, { viewOpen: false });
   for (const [field, value] of Object.entries(changes)) {
-    logWrite(ctx, opClass, { kind, id, field }, value);
-    noteWriteLanded(ctx.replica, kind, id, field, value);
+    const base = textBases.get(field);
+    logWrite(ctx, opClass, { kind, id, field }, value, false, base);
+    noteWriteLanded(
+      ctx.replica,
+      kind,
+      id,
+      field,
+      value,
+      base === undefined ? undefined : { base, expectYText: true },
+    );
   }
   rememberSurface(ctx.replica, snapshot, content, ctx.window);
   return true;
@@ -480,10 +587,11 @@ export function createStandardRegistry(): OpRegistry {
       for (const [field, value] of Object.entries(fields)) {
         logWrite(ctx, "createNodeViaSave", { kind: "node", id, field }, value);
       }
-      const snapshot = buildSurface(ctx.trace, new Map([[`node|${id}`, fields]]));
+      const snapshot = buildSurface(ctx.trace, new Map([[`node|${id}`, fields]]), ctx.replica);
       const content = snapshotToText(snapshot);
       await runSave(ctx.replica, content, { viewOpen: false });
       noteWriteLanded(ctx.replica, "node", id, "x", x);
+      noteWriteLanded(ctx.replica, "node", id, "text", fields.text);
       rememberSurface(ctx.replica, snapshot, content, ctx.window);
       return true;
     },
@@ -592,7 +700,7 @@ export function createStandardRegistry(): OpRegistry {
       // id the last apply provably handed over. Absence without that proof is
       // ignorance, not deletion — which is why nothing else is handed over here.
       target.visible = false;
-      const snapshot = buildSurface(ctx.trace);
+      const snapshot = buildSurface(ctx.trace, undefined, ctx.replica);
       const content = snapshotToText(snapshot);
       await runSave(ctx.replica, content, {
         viewOpen: true,
@@ -965,8 +1073,20 @@ export function createStandardRegistry(): OpRegistry {
         edge: new Map([...snapshot.edge].map(([id, fields]) => [id, { ...fields }])),
       });
 
+      const carrierBase = String(surfaceValueOf(ctx.replica, "node", carrier, "text") ?? "");
       await runSave(ctx.replica, staleContent, { viewOpen: false });
-      logWrite(ctx, "staleObsidianSave", { kind: "node", id: carrier, field: "text" }, freshText);
+      logWrite(
+        ctx,
+        "staleObsidianSave",
+        { kind: "node", id: carrier, field: "text" },
+        freshText,
+        false,
+        carrierBase,
+      );
+      noteWriteLanded(ctx.replica, "node", carrier, "text", freshText, {
+        base: carrierBase,
+        expectYText: true,
+      });
 
       // THE W1 DISCRIMINANT. A field the stale surface re-stated, and that the
       // world has moved past, must NOT have been pushed back over the newer
@@ -974,9 +1094,29 @@ export function createStandardRegistry(): OpRegistry {
       // never saw the newer value, so the shadow is the only thing that can tell
       // restatement from intent.
       for (const entry of superseded) {
-        const record = container(ctx.replica, entry.kind).get(entry.id);
-        const held = record?.get(entry.field);
-        if (Object.is(held, entry.stale) && !Object.is(entry.stale, entry.expected)) {
+        // WP36 follow-up (B32) — READ THROUGH THE RENDER.
+        //
+        // `record.get("text")` is a `Y.Text` now, and a `Y.Text` is never
+        // `Object.is` a string. This comparison therefore stopped being able to
+        // fire for `text`/`label` the day WP36 landed: the W1 discriminant went
+        // silently blind on the two fields where a stale push is most
+        // destructive, and nothing went red to say so. That is a
+        // green-that-cannot-fail introduced by a representation change, and it
+        // is repaired here rather than migrated away.
+        //
+        // A stale push of a collaborative text does not overwrite any more — it
+        // MERGES — so "the stale value is what the doc holds" becomes "the stale
+        // characters are in the doc and the newer value is not what it holds".
+        const read = readDocField(ctx.replica, entry.kind, entry.id, entry.field);
+        const held = read.value;
+        const pushed = COLLAB_TEXT_FIELDS.has(entry.field)
+          ? typeof held === "string" &&
+            typeof entry.stale === "string" &&
+            entry.stale.length > 0 &&
+            held.includes(entry.stale) &&
+            !Object.is(held, entry.expected)
+          : Object.is(held, entry.stale);
+        if (pushed && !Object.is(entry.stale, entry.expected)) {
           ctx.replica.stalePushes.push({
             replica: ctx.replica.index,
             kind: entry.kind,
@@ -1014,7 +1154,24 @@ export function createStandardRegistry(): OpRegistry {
           (candidate) => ctx.partitionOf(candidate.index) !== ctx.partitionOf(ctx.replica.index),
         ),
       );
-      const target = ctx.rng.pick(surfaceNodes(ctx.trace));
+      // WP36 follow-up (B32) — BOTH AUTHORS MUST HAVE A THIRD OPERAND.
+      //
+      // A replica that has never saved this record has no Surface-Shadow entry
+      // for its text, so the capture takes C36 5.3's NO-BASE branch: with no
+      // way to tell "the user deleted this" from "a peer added it after I last
+      // looked", it contributes the local characters and DELETES NOTHING. The
+      // outcome is correct and chartered, but it is not the concurrent-merge
+      // scenario this op exists to measure, and judging it as one would be
+      // asserting over a branch the op never meant to reach. The no-base branch
+      // has its own coverage in the WP36 unit tests.
+      const target = ctx.rng.pick(
+        surfaceNodes(ctx.trace).filter(
+          (record) =>
+            peer !== undefined &&
+            surfaceValueOf(ctx.replica, "node", record.id, "text") !== undefined &&
+            surfaceValueOf(peer, "node", record.id, "text") !== undefined,
+        ),
+      );
       if (!peer || !target) return false;
       if (!claimSurface(ctx)) return false;
 
@@ -1023,13 +1180,27 @@ export function createStandardRegistry(): OpRegistry {
         [peer, `contended-B w${ctx.window}`],
       ];
       for (const [replica, text] of authors) {
-        const snapshot = buildSurface(ctx.trace, new Map([[`node|${target.id}`, { text }]]));
+        // WP36 follow-up (B32): the base each author types over, read from its
+        // OWN surface before its own save. Both authors are in different
+        // partitions and have quiesced, so these are equal — which is what lets
+        // the oracle name the exact merge set rather than only survival.
+        const textBase = String(surfaceValueOf(replica, "node", target.id, "text") ?? "");
+        // Free extra coverage for the exact-merge arm: when this replica's
+        // surface happens to agree with its own doc, the merge outcome IS
+        // computable from the log, so say so. When it does not — the WP85 stale
+        // `.canvas` case — the oracle falls back to survival rather than
+        // inventing an expectation from a base nobody was actually editing.
+        const baseVerified = currentTextOf(replica, "node", target.id, "text") === textBase;
+        const snapshot = buildSurface(ctx.trace, new Map([[`node|${target.id}`, { text }]]), replica);
         const content = snapshotToText(snapshot);
         await runSave(replica, content, { viewOpen: false });
         // Neither write may be DENIED. WP21 removed the lock write-gate, so a
         // local write always reaches the local doc; a value that failed to land
         // is a write-denial artefact.
-        noteWriteLanded(replica, "node", target.id, "text", text);
+        noteWriteLanded(replica, "node", target.id, "text", text, {
+          base: textBase,
+          expectYText: true,
+        });
         // And no BASELINE-HOLD artefact: the echo baseline advanced with the
         // write, so replaying the identical content is recognised as this
         // client's own bytes and produces nothing. Under the removed gate the
@@ -1042,7 +1213,116 @@ export function createStandardRegistry(): OpRegistry {
           );
         }
         rememberSurface(replica, snapshot, content, ctx.window);
-        logWrite(ctx, "contendedFieldWrite", { kind: "node", id: target.id, field: "text" }, text, true);
+        logWrite(
+          ctx,
+          "contendedFieldWrite",
+          { kind: "node", id: target.id, field: "text" },
+          text,
+          true,
+          textBase,
+          replica.index,
+          baseVerified,
+        );
+      }
+      return true;
+    },
+  });
+
+  // -- WP36: CONCURRENT CHARACTER-LEVEL TEXT EDITS -----------------------
+  //
+  // The op the C36 charter asked for and WP36 deliberately deferred until the
+  // fuzzer's `text` oracle had been decided (its report, 5.4). It is deferred no
+  // longer, and it is deliberately NOT `contendedFieldWrite` with a different
+  // name: that op has two peers REPLACE the whole card text, which is the only
+  // thing a whole-string register could express. This one has two peers each
+  // insert ONE character at a DIFFERENT offset INSIDE THE SAME WORD, from a
+  // common base — the shape C36 AC3 is written around and the shape a
+  // whole-string register cannot represent at all, because one marker must lose
+  // by construction.
+  //
+  // Both markers must be present afterwards, at their typed offsets, on every
+  // replica. The oracle computes that string EXACTLY from its own log (there is
+  // no tie-break to hedge about: the two insertions are at different positions),
+  // so this op is judged by a value, not by a survival predicate.
+  registry.register({
+    name: "textEditViaSave",
+    weight: 4,
+    reaches: ["WP36", "WP4", "WP17"],
+    note:
+      "two peers typing one character each into the same word of the same card. " +
+      "Under the pre-WP36 whole-string LWW register exactly one of the two markers " +
+      "can survive; under a nested `Y.Text` both must.",
+    applicable: (ctx) =>
+      ctx.replicas.length >= 3 &&
+      ctx.replicas.some((peer) => ctx.partitionOf(peer.index) !== ctx.partitionOf(ctx.replica.index)) &&
+      surfaceNodes(ctx.trace).some((record) => {
+        const mine = surfaceValueOf(ctx.replica, "node", record.id, "text");
+        return typeof mine === "string" && mine.length >= 6;
+      }),
+    async run(ctx) {
+      const peer = ctx.rng.pick(
+        ctx.replicas.filter(
+          (candidate) => ctx.partitionOf(candidate.index) !== ctx.partitionOf(ctx.replica.index),
+        ),
+      );
+      if (!peer) return false;
+      // THE RECORDED PRECONDITION, and it is part of the op rather than of the
+      // write-up. Both peers' SURFACES must show the same string AND that string
+      // must be what their DOCS actually hold. Without the second half the two
+      // "concurrent" edits would be typed into stale views, the merge would have
+      // more to reconcile than the two markers, and "both markers survived"
+      // would prove nothing about character-level merging. The op declines
+      // rather than measuring a scenario it cannot interpret.
+      const target = ctx.rng.pick(
+        surfaceNodes(ctx.trace).filter((record) => {
+          const mine = surfaceValueOf(ctx.replica, "node", record.id, "text");
+          if (typeof mine !== "string" || mine.length < 6) return false;
+          if (surfaceValueOf(peer, "node", record.id, "text") !== mine) return false;
+          if (currentTextOf(ctx.replica, "node", record.id, "text") !== mine) return false;
+          return currentTextOf(peer, "node", record.id, "text") === mine;
+        }),
+      );
+      if (!target) return false;
+      if (!claimSurface(ctx)) return false;
+
+      const base = String(surfaceValueOf(ctx.replica, "node", target.id, "text"));
+
+      // Two DISTINCT offsets, strictly inside the string and close together, so
+      // at least one run of this op lands both markers inside the same word.
+      // `Q` and `Z` appear in no text this registry ever authors, which is what
+      // keeps the affix diff's offset equal to the typed offset.
+      const first = 2 + ctx.rng.int(Math.max(1, base.length - 4));
+      const second = Math.min(base.length - 1, first + 1 + ctx.rng.int(2));
+      if (second <= first) return false;
+      const edits: [FuzzReplica, number, string][] = [
+        [ctx.replica, first, "Q"],
+        [peer, second, "Z"],
+      ];
+
+      for (const [replica, offset, marker] of edits) {
+        const next = base.slice(0, offset) + marker + base.slice(offset);
+        const snapshot = buildSurface(
+          ctx.trace,
+          new Map([[`node|${target.id}`, { text: next }]]),
+          replica,
+        );
+        const content = snapshotToText(snapshot);
+        await runSave(replica, content, { viewOpen: false });
+        noteWriteLanded(replica, "node", target.id, "text", next, {
+          base,
+          expectYText: true,
+        });
+        rememberSurface(replica, snapshot, content, ctx.window);
+        logWrite(
+          ctx,
+          "textEditViaSave",
+          { kind: "node", id: target.id, field: "text" },
+          next,
+          true,
+          base,
+          replica.index,
+          true, // the precondition above verified this base against both docs
+        );
       }
       return true;
     },
@@ -1142,4 +1422,8 @@ export const REQUIRED_WP_COVERAGE: readonly string[] = [
   "WP20",
   "WP21",
   "WP22",
+  // WP36 follow-up (B32): `textEditViaSave` is the op that reaches the nested
+  // `Y.Text`. Listing it here means deleting that op breaks a test instead of
+  // silently shrinking the fuzzer back to whole-string replacement.
+  "WP36",
 ];

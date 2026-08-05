@@ -98,6 +98,12 @@ export interface FuzzScenarioOptions {
    * that vanishes and is later rewritten leaves no trace there.
    */
   readonly onWindowSettled?: (replicas: readonly FuzzReplica[], window: number) => void;
+  /**
+   * WP36 follow-up (B32): build every replica with the collaborative-text write
+   * DISABLED, i.e. the pre-WP36 whole-string LWW register. A build mode, not an
+   * op class — the core still knows no op by name.
+   */
+  readonly collabText?: boolean;
 }
 
 export interface FuzzResult {
@@ -154,7 +160,7 @@ export async function runFuzzScenario(options: FuzzScenarioOptions): Promise<Fuz
 
   const replicas: FuzzReplica[] = [];
   for (let index = 0; index < replicaCount; index++) {
-    replicas.push(await createReplica(index, path));
+    replicas.push(await createReplica(index, path, { collabText: options.collabText }));
   }
 
   const trace = new IntentTrace();

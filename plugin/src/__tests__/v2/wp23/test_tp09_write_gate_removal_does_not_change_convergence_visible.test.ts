@@ -66,13 +66,39 @@ describe("WP23 — WP21 reached: removing the write gate did not change converge
             admissions += replica.writeAdmissions.length;
             // NO DENIAL: every local write reached its own author's doc.
             for (const admission of replica.writeAdmissions) {
-              expect(
-                admission.landed,
+              const where =
                 `replica ${admission.replica}: its own write to ` +
-                  `${admission.kind}/${admission.id}.${admission.field} did not reach its own doc — ` +
-                  `that is a write-denial artefact, and WP21 removed the only thing that could ` +
-                  `produce one`,
-              ).toBe(admission.intended);
+                `${admission.kind}/${admission.id}.${admission.field}`;
+              // WP36 follow-up (B32) — RE-ORACLED for the two collaborative-text
+              // fields. "My whole string is what my doc holds" was a statement
+              // of the whole-string LWW register: once `text` merges, this
+              // replica's own doc may legitimately already carry a peer's
+              // characters, and demanding they be gone would demand the
+              // destruction C36 AC3 forbids. What WP21 actually asks — was my
+              // write ADMITTED or DENIED — is unchanged and is asserted in the
+              // only form that still means it.
+              if (admission.contribution !== undefined) {
+                expect(
+                  String(admission.landed),
+                  `${where} did not reach its own doc — that is a write-denial artefact, and ` +
+                    `WP21 removed the only thing that could produce one`,
+                ).toContain(admission.contribution);
+              } else {
+                expect(
+                  admission.landed,
+                  `${where} did not reach its own doc — that is a write-denial artefact, and ` +
+                    `WP21 removed the only thing that could produce one`,
+                ).toBe(admission.intended);
+              }
+              // And the clause the pre-WP36 register cannot satisfy: the write
+              // went through the collaborative-text path and left a nested
+              // `Y.Text` behind (C36 AC1 — never replaced by a plain value).
+              if (admission.expectYText === true) {
+                expect(
+                  admission.shape,
+                  `${where} flattened the collaborative text back to a plain register`,
+                ).toBe("ytext");
+              }
             }
             // NO BASELINE-HOLD: replaying the just-saved bytes wrote nothing.
             expect(
@@ -108,6 +134,28 @@ describe("WP23 — WP21 reached: removing the write gate did not change converge
               ).toEqual(first);
             }
             const superseded = trace.expect({ kind: kind as "node" | "edge", id, field });
+            // WP36 follow-up (B32) — THE RE-ORACLED CONTESTED ARM, and it is the
+            // strictly stronger half of this whole migration.
+            //
+            // `[...candidates].includes(first)` says "the winner is one of the
+            // two", which is the definition of a last-writer-wins register: it
+            // is SATISFIED when one author's edit is destroyed. Under a
+            // character-level merge the requirement is the opposite one — BOTH
+            // authors' characters must still be there — and a run that passed
+            // the old clause by destroying one of them fails this one.
+            if (superseded?.kind === "text-merge") {
+              for (const author of superseded.lastWindowAuthors) {
+                if (author.inserted.length === 0) continue;
+                expect(
+                  String(first),
+                  `${kind}/${id}.${field} converged on ${JSON.stringify(first)}, which lost the ` +
+                    `characters replica ${author.replica} typed (${JSON.stringify(author.inserted)}). ` +
+                    `A whole-string LWW register keeps exactly one of two concurrent edits; a ` +
+                    `character-level merge must keep both.`,
+                ).toContain(author.inserted);
+              }
+              continue;
+            }
             if (superseded?.kind !== "contested") continue;
             expect(
               [...candidates].includes(first),

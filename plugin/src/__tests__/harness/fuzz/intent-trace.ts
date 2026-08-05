@@ -134,12 +134,146 @@ export interface OpLogEntry {
    * The oracle then asserts convergence + membership, never a specific winner.
    */
   readonly contested: boolean;
+  /**
+   * WP36 follow-up (B32) — COLLABORATIVE TEXT ONLY.
+   *
+   * The string the authoring replica's OWN surface held for this field at the
+   * instant it authored the write, i.e. the third operand of the capture's
+   * three-way merge. `text` and `label` stopped being whole-string LWW
+   * registers, so "what the last op wrote" is no longer a prediction of the
+   * converged value: two concurrent authors both survive by design. What IS
+   * predictable, and what the oracle judges instead, is derived from
+   * `base -> value`: which characters this author CONTRIBUTED and which it
+   * DELETED. See {@link textAffixes} and the `text-merge` expectation.
+   *
+   * Absent for a write with no meaningful predecessor (the bootstrap seed, a
+   * record created by this very op), which the oracle reads as `""`.
+   */
+  readonly textBase?: string;
+  /**
+   * WP36 follow-up (B32) — THE RECORDED PRECONDITION.
+   *
+   * `true` only when the op VERIFIED, at issue time, that `textBase` was what
+   * the authoring replica's doc actually held — i.e. that this author really
+   * did type into the current text and not into a stale surface.
+   *
+   * It is the difference between an oracle that can name the exact merged
+   * string and one that can only say "both edits survived". Two peers editing a
+   * COMMON base produce a merge the harness can compute from its own log; two
+   * peers editing from bases the world has already moved past produce an
+   * interleaving that only the CRDT knows, and predicting THAT would mean
+   * re-implementing the CRDT inside the oracle.
+   *
+   * The op declares it; the oracle never infers it. An unverified base is
+   * exactly the vacuity C36 AC2 names — "the recorded precondition is part of
+   * the criterion, not part of the write-up".
+   */
+  readonly textBaseVerified?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// WP36 follow-up (B32) — COLLABORATIVE TEXT.
+// ---------------------------------------------------------------------------
+
+/**
+ * The two fields WP36 moved out of the LWW register world.
+ *
+ * Re-declared here rather than imported from `canvas-sync.ts`'s
+ * `isCollabTextField`, for the same reason as everything else in this file: an
+ * oracle that asks the module under test which fields it treats specially
+ * cannot disagree with it. If production widened this set and the harness did
+ * not, the harness would judge the new field by the LWW oracle and go red —
+ * which is the correct, loud outcome.
+ */
+export const COLLAB_TEXT_FIELDS: ReadonlySet<string> = new Set(["text", "label"]);
+
+export function isCollabTextSlot(slot: FieldSlot): boolean {
+  return slot.pseudo !== true && COLLAB_TEXT_FIELDS.has(slot.field);
+}
+
+/** One author's edit, expressed as the single contiguous change `base -> next`. */
+export interface TextAffixes {
+  /** Offset of the change in BASE coordinates. */
+  readonly offset: number;
+  /** The characters this author removed from `base`. */
+  readonly deleted: string;
+  /** The characters this author CONTRIBUTED. The survival oracle's subject. */
+  readonly inserted: string;
+}
+
+/**
+ * The single contiguous change between two strings.
+ *
+ * Deliberately NOT `canvas-text-merge.ts:diffBounds`, which is the code under
+ * test: an oracle that borrows the implementation's own diff cannot contradict
+ * it. Plain longest-common-prefix / longest-common-suffix, written out.
+ */
+export function textAffixes(base: string, next: string): TextAffixes {
+  let prefix = 0;
+  const minLen = Math.min(base.length, next.length);
+  while (prefix < minLen && base[prefix] === next[prefix]) prefix++;
+  let baseEnd = base.length;
+  let nextEnd = next.length;
+  while (baseEnd > prefix && nextEnd > prefix && base[baseEnd - 1] === next[nextEnd - 1]) {
+    baseEnd--;
+    nextEnd--;
+  }
+  return {
+    offset: prefix,
+    deleted: base.slice(prefix, baseEnd),
+    inserted: next.slice(prefix, nextEnd),
+  };
+}
+
+/** What one author did to one collaborative-text slot, in one window. */
+export interface TextAuthorship extends TextAffixes {
+  readonly window: number;
+  readonly replica: number;
+  readonly opClass: string;
+  readonly base: string;
+  readonly next: string;
+  /** The op checked this base against the authoring replica's own doc. */
+  readonly baseVerified: boolean;
 }
 
 /** What the trace expects a slot to hold once the run has quiesced. */
 export type SlotExpectation =
   | { readonly kind: "determinate"; readonly value: FileValue; readonly by: OpLogEntry }
-  | { readonly kind: "contested"; readonly candidates: readonly FileValue[]; readonly window: number };
+  | { readonly kind: "contested"; readonly candidates: readonly FileValue[]; readonly window: number }
+  /**
+   * WP36 follow-up (B32) — a collaborative-text slot.
+   *
+   * `authors` is every write the run made to this slot, in log order, each with
+   * the base it authored against. `diverged` says whether the harness still has
+   * an EXACT opinion about the converged string:
+   *
+   *   ├── `diverged: false` — every write so far had a base equal to the
+   *   │      harness's own last exact opinion, so the merges were all `exact`
+   *   │      and the value IS the last author's `next`. The oracle asserts that
+   *   │      value, at exactly the strength the pre-WP36 determinate check had.
+   *   └── `diverged: true`  — two authors wrote concurrently, or an author
+   *          authored against a base the world had already moved past. Under a
+   *          sequence CRDT the converged string is then a genuine INTERLEAVING,
+   *          and predicting it exactly would mean re-implementing the CRDT
+   *          inside the oracle — the circularity this file exists to forbid.
+   *          The oracle asserts SURVIVAL instead: every author's contributed
+   *          characters are still there. That is not a weaker form of LWW, it
+   *          is the property LWW cannot have — LWW keeps exactly one of them.
+   */
+  | {
+      readonly kind: "text-merge";
+      readonly diverged: boolean;
+      /** Set only while `diverged` is false. */
+      readonly value: string | undefined;
+      readonly authors: readonly TextAuthorship[];
+      /** The authors of the LAST window that touched the slot. */
+      readonly lastWindowAuthors: readonly TextAuthorship[];
+      /**
+       * Every author of the last window verified its base against its own doc
+       * and they all agree on it. Only then is the merged string computable.
+       */
+      readonly lastWindowBaseVerified: boolean;
+    };
 
 /** What the trace knows about one record, purely from the ops that built it. */
 export interface TracedRecord {
@@ -321,6 +455,7 @@ export class IntentTrace {
    * therefore the unambiguous last writer.
    */
   expect(slot: FieldSlot): SlotExpectation | undefined {
+    if (isCollabTextSlot(slot)) return this.expectText(slot);
     const key = slotKey(slot);
     let best: SlotExpectation | undefined;
     let bestWindow = -1;
@@ -345,6 +480,73 @@ export class IntentTrace {
       best = { kind: "determinate", value: entry.value, by: entry };
     }
     return best;
+  }
+
+  /**
+   * WP36 follow-up (B32) — the expectation for a COLLABORATIVE TEXT slot.
+   *
+   * Walks the harness's own log once, carrying one exact opinion for as long as
+   * the writes remain sequential-from-the-current-value. The moment they do not
+   * — two authors in one window, or an author authoring against a base the
+   * world had moved past — the opinion is dropped and SURVIVAL takes over.
+   *
+   * Nothing here reads a replica, a doc, a serialiser or the merge under test.
+   */
+  private expectText(slot: FieldSlot): SlotExpectation | undefined {
+    const key = slotKey(slot);
+    const entries = this.entries.filter(
+      (entry) => slotKey(entry.slot) === key && typeof entry.value === "string",
+    );
+    if (entries.length === 0) return undefined;
+
+    const authors: TextAuthorship[] = entries.map((entry) => {
+      const base = entry.textBase ?? "";
+      const next = entry.value as string;
+      return {
+        window: entry.window,
+        replica: entry.replica,
+        opClass: entry.opClass,
+        base,
+        next,
+        baseVerified: entry.textBaseVerified === true,
+        ...textAffixes(base, next),
+      };
+    });
+
+    let diverged = false;
+    let value: string | undefined;
+    let currentWindow = Number.NEGATIVE_INFINITY;
+    let authorsThisWindow = 0;
+    for (const author of authors) {
+      if (author.window !== currentWindow) {
+        currentWindow = author.window;
+        authorsThisWindow = 0;
+      }
+      authorsThisWindow += 1;
+      // Two writes to one text slot inside ONE window are CONCURRENT (the
+      // window is what makes cross-window writes causally ordered), and a
+      // sequence CRDT keeps both.
+      if (authorsThisWindow > 1) diverged = true;
+      // An author whose base is not what the harness believes the field held is
+      // authoring against a stale surface. C36 5.2 names that case: the merge
+      // contributes the local characters without deleting the peers', so the
+      // result is an interleaving the harness cannot name.
+      else if (value !== undefined && author.base !== value) diverged = true;
+      value = diverged ? undefined : author.next;
+    }
+
+    const lastWindow = authors[authors.length - 1].window;
+    const lastWindowAuthors = authors.filter((author) => author.window === lastWindow);
+    return {
+      kind: "text-merge",
+      diverged,
+      value,
+      authors,
+      lastWindowAuthors,
+      lastWindowBaseVerified:
+        lastWindowAuthors.every((author) => author.baseVerified) &&
+        new Set(lastWindowAuthors.map((author) => author.base)).size === 1,
+    };
   }
 
   /** Every slot the run touched, deduplicated, in first-write order. */
@@ -427,8 +629,22 @@ export class IntentTrace {
       if (slot.kind !== kind || slot.id !== id) continue;
       if (slot.pseudo) continue;
       const expectation = this.expect(slot);
-      if (expectation?.kind !== "determinate") continue;
-      out[slot.field] = expectation.value;
+      if (expectation === undefined) continue;
+      if (expectation.kind === "determinate") {
+        out[slot.field] = expectation.value;
+        continue;
+      }
+      // WP36 follow-up (B32): a collaborative-text slot has no single expected
+      // value once it has diverged, but this method is an INPUT to the save
+      // builder, not an oracle — a file still has to carry SOMETHING under
+      // `text`. The last logged value is the honest answer for a record no
+      // replica has a surface for yet (one a peer created). For every record a
+      // replica HAS saved, `buildSurface` overrides this with that replica's
+      // OWN last-saved value, which is what its Obsidian would really write.
+      if (expectation.kind === "text-merge") {
+        const last = expectation.authors[expectation.authors.length - 1];
+        if (last !== undefined) out[slot.field] = last.next;
+      }
     }
     return out;
   }
