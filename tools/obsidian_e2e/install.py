@@ -81,6 +81,17 @@ Structural damage (a field that cannot be what this module writes) is
 is :data:`~obsidian_e2e.constants.BUNDLE_RESTORE_MISMATCH` once teardown is the caller —
 the same discriminator ``ports.py`` draws, so a reader who knows one module knows this one.
 
+The build never spawns unless a caller asked it to (WP78)
+---------------------------------------------------------
+:func:`build_e2e_bundle`'s ``runner`` is **keyword-only and required**. It has no default,
+and nothing in the body substitutes one, so ``build_e2e_bundle(plugin_dir)`` is a
+``TypeError`` at the call rather than an npm spawn at runtime. The spawning implementation
+is :func:`spawning_subprocess_runner` — public, exported, the default value of nothing — and
+it holds the package's **only** two spawn primitives, both function-local. C45 AC4's
+guarantee is therefore structural again (the console is injected; nothing reaches the real
+``Obsidian.exe`` or the owner's live vaults by accident, D16) rather than a property of
+whoever writes the next call site, and C71 AC4 is decidable by walking the parsed package.
+
 ``data.json`` is not this WP's business
 ---------------------------------------
 It holds live credentials. Nothing here reads it, moves it or needs it: the string
@@ -98,7 +109,6 @@ import json
 import os
 import secrets
 import shutil
-import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,6 +130,7 @@ __all__ = [
     "RestoreBundleResult",
     "count_build_markers",
     "build_command",
+    "spawning_subprocess_runner",
     "verify_e2e_bundle",
     "build_e2e_bundle",
     "capture_bundle_state",
@@ -133,6 +144,12 @@ PathLike = Union[str, "os.PathLike[str]"]
 #: ``runner(command, cwd) -> exit_status``. The seam exists so the build can be driven by a
 #: test without ever spawning npm, and so a caller may route the real build through the
 #: workspace's ``visible-console`` tools instead of :func:`subprocess.run`.
+#:
+#: **It has no default (WP78).** :func:`build_e2e_bundle` requires one, so the only way to
+#: reach a process spawn from this package is for a caller to have written
+#: :func:`spawning_subprocess_runner` by name. A default here would make *"nothing starts a
+#: process the caller did not ask for"* a property of the call sites — a promise re-audited
+#: on every future edit — instead of a property of the signature.
 Runner = Callable[[Sequence[str], str], int]
 
 #: The emitted bundle's file name, derived from the path WP43 already pins — the name is
@@ -459,13 +476,47 @@ def build_command() -> Tuple[str, ...]:
     return (_PACKAGE_MANAGER, _PACKAGE_MANAGER_RUN, constants.E2E_BUILD_SCRIPT)
 
 
-def _default_runner(command: Sequence[str], cwd: str) -> int:
-    """Run ``command`` in ``cwd`` and return its exit status.
+def spawning_subprocess_runner(command: Sequence[str], cwd: str) -> int:
+    """Run ``command`` in ``cwd`` **by starting a process**, and return its exit status.
+
+    **This is the only thing in ``tools/obsidian_e2e/`` that starts a process** — the whole
+    package holds exactly two spawn primitives (``import subprocess`` at the top of this
+    module and the :func:`subprocess.run` below), and both are here. Nothing else in the rig
+    can launch anything: ``lifecycle.spawn_through_console`` requires an injected console,
+    and ``vaults.default_process_lister`` deliberately uses a ctypes ToolHelp snapshot rather
+    than shelling out to ``tasklist``.
+
+    **It is opt-in, and it is the default value of nothing (WP78).** It was
+    ``_default_runner`` — private, unexported, and the value :func:`build_e2e_bundle`
+    substituted when no ``runner`` was passed — which meant the one spawn in the package was
+    reachable *by omission*: ``build_e2e_bundle(plugin_dir)`` was a complete, type-correct,
+    lint-clean expression that started npm. That inverts what an opt-in should be, and it
+    turned C45 AC4's structural guarantee (*the console is injected, so no test, dev loop or
+    mistaken import can reach the real ``Obsidian.exe`` or the owner's live vaults by
+    accident* — D16) into a call-site convention. It now has exactly one name, that name is
+    exported, and a caller reaches a process spawn only by writing it:
+
+    .. code-block:: python
+
+        build_e2e_bundle(plugin_dir, runner=install.spawning_subprocess_runner)
+
+    The private ``_default_runner`` name is **not** kept as an alias: two names for one spawn
+    is how one of them stops being audited.
 
     The executable is resolved through :func:`shutil.which` so Windows' ``npm.cmd`` shim is
     found without handing the command line to a shell. The build terminates on its own; no
     timeout is used as an oracle and nothing is killed.
+
+    The ``import`` is **function-local, deliberately**, and it is the second half of the same
+    repair. A module-level ``import subprocess`` binds ``install.subprocess``, so anything
+    that imports this module can reach ``install.subprocess.run(...)`` without ever naming a
+    runner — the module scope would stay a spawn seam even after the parameter default was
+    removed. Local, the package holds no module-scope binding of ``subprocess`` at all, and
+    *every* spawn primitive in ``tools/obsidian_e2e/`` is inside this one function, which is
+    what makes C71 AC4 decidable by walking the AST instead of by reading a rule.
     """
+    import subprocess  # noqa: PLC0415 - deliberately function-local; see the docstring
+
     argv = list(command)
     resolved = shutil.which(argv[0])
     if resolved is None:
@@ -541,20 +592,28 @@ def verify_e2e_bundle(
     )
 
 
-def build_e2e_bundle(plugin_dir: PathLike, *, runner: Optional[Runner] = None) -> BuildResult:
+def build_e2e_bundle(plugin_dir: PathLike, *, runner: Runner) -> BuildResult:
     """Build the E2E bundle in ``plugin_dir`` and verify it before returning.
 
-    ``runner(command, cwd) -> exit_status`` is the injection seam. The default shells out to
-    the added npm script; a caller that must keep a long command visible passes its own
-    runner (the workspace's ``visible-console`` tools), and tests pass a fake so that no
-    test ever spawns a real build.
+    ``runner(command, cwd) -> exit_status`` is the injection seam, and it is **required**
+    (WP78). There is no default and no substitution of any shape — no ``if runner is None``,
+    no sentinel, no ``functools.partial``, no module-level constant consulted in the body —
+    so ``build_e2e_bundle(plugin_dir)`` is a :class:`TypeError` at the call rather than an
+    npm spawn at runtime. A caller that wants a real build passes
+    :func:`spawning_subprocess_runner` **by name**; a caller that must keep a long command
+    visible passes its own runner (the workspace's ``visible-console`` tools); and a test
+    passes a fake, so no test can spawn a real build even by forgetting to.
+
+    The point is the same one WP70 and WP77 make about credentials one module over:
+    auditing call sites is a promise, a signature is a guarantee. Here the guarantee is in
+    argument position.
 
     A non-zero status raises :class:`E2EBuildFailed` **without touching the outfile**, so a
     complete bundle left by an earlier build stays exactly where it was.
     """
     cwd = Path(plugin_dir)
     command = build_command()
-    reported = (runner or _default_runner)(command, str(cwd))
+    reported = runner(command, str(cwd))
     if not isinstance(reported, int):
         raise E2EBuildFailed(
             f"{' '.join(command)} reported {type(reported).__name__} instead of an exit "
