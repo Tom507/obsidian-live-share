@@ -238,7 +238,22 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ## 7. Visible Test Cases / Producer Artifacts
 
-*Filled by Worker 3's Unit Test Sub-Agent. Worker 2 leaves this section empty.*
+*Filled by Worker 3, batch B17. Blind sets are discontinued (owner instruction, 2026-08-05),
+so this is the complete test inventory for the WP — 50 tests, all visible, all headless.*
+
+Root: `workflowArtifacts/canvas-v2/tests/visible/WP77/`
+
+| File | AC | Tests | Covers |
+|---|---|---|---|
+| `_prerepair.py` | — | (helper) | Materialises a **byte copy** of the baseline package (`02aef92`) out of git's object store, re-deriving git's own object id from each written file, and imports it as `obsidian_e2e_prerepair` so before/after run side by side in one interpreter. |
+| `test_ac1_borrowed_settings_unrenderable_visible.py` | AC1 | 11 | T1 `repr` · T2 `str` · T3 `format`/f-string · T4 `%s` + `logging.LogRecord` · T5 `dataclasses.asdict` + `copy.deepcopy` · T6 failed pytest comparison at `-vv` (before/after subprocess) · T7 traceback frame locals · T8 `__bytes__`/`__iter__`/`__contains__` refusals · T9 the repair is the TYPE, not a handwritten repr · T10 one `Secret` class + relay re-exports · T10b `ports` imports no `relay`, no `os.environ` (AST) |
+| `test_ac2_byte_oracles_still_fail_visible.py` | AC2 | 11 | one-byte perturbation drives C1 splice · C2 backup · C3 recorded sha/size · C4 `capture_state` · C5 `restore_port` · C6 `install_bundle` · C7 community borrow to RED, each with its unperturbed positive control; C6b the length clause evaluated directly; C8 wrappers do not agree over different content; C9a restore independent of modify path · C9b no round trip (BOM/CRLF/tab/escape) · C9c no-prior-file restores to no file |
+| `test_ac3_defect_class_closed_visible.py` | AC3 | 12 | T1 the enumeration **derived by AST** and matched to the pinned disposition table · T2 `install.BundleState` · T3 `provisioning._CommunityState` S12 hole, before and after · T4 `relay.RelayRoom.token` still closed · T5 `readiness.RawAnswer` carried up, state **measured** and byte-unchanged · T6 nothing outside `tools/obsidian_e2e/` modified (asked of git) · T7 every module still imports |
+| `test_ac4_redacted_member_set_survives_visible.py` | AC4 | 5 | T1 `RedactedMapping` still redacting **at the splice**, with the subscript positive control at that same point · T2 the pre-repair downgrade measured (`dict`, token rendered) · T3 use unchanged incl. byte identity of the provisioned file · T4 both frames' locals render redacted · T5 empty-set refusal and `None` default unchanged |
+| `test_ac5_falsification_before_and_after_visible.py` | AC5 | 11 | I1 the six unconditional render paths, before/after, parametrised · I2 the perturbation was RED before and is RED after (the deliberate sameness) · I3 the `asdict` hole · I4 the member set through `provision_port` · I5 the before harness IS a byte copy (git object ids) · I6 the whole verification is headless |
+
+**Measured:** `python -m pytest workflowArtifacts/canvas-v2/tests/visible/WP77 --rootdir=. -q` → **50 passed**.
+Full visible suite 593 → **643 passed**, zero pre-existing tests broken.
 
 ---
 
@@ -248,22 +263,24 @@ If structure references conflict with the BUILD_SPEC or explicit task scope, the
 
 ---
 
-## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
+## 8. Autonomous Execution Plan (filled by Worker 3, batch B17, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** confirmed against the tree, not read off the charter — `BorrowState.original_bytes` was `Optional[bytes]` on a `@dataclass(frozen=True)` and leaked on all six unconditional paths; `provisioning._CommunityState`'s handwritten repr was clean while `dataclasses.asdict` returned the raw bytes; `ports.py:677` `dict(members)` produced a plain `dict` whose `repr` printed the token.
+- **Approach:** relocate WP70's `Secret`/`RedactedMapping`/`REDACTED` down into `constants.py` §10.3 (shape (a)) and re-export from `relay.py`; make the three byte-bearing fields `Optional[Secret]` with a `__post_init__` normaliser and a single `reveal_original_bytes()` accessor; rewrite the ten call sites over that accessor; build the member set as a `RedactedMapping` in both branches of `provision_port` and normalise `_with_port`'s parameter. Verify every absence against a byte copy of the baseline package taken from git's object store.
+- **Fallback path if all attempts fail:** not needed — attempt 1 landed. Had the relocation broken an import path, the charter's shape (b) was the fallback, and a third shape would have been an ESCALATE.
 
 ---
 
-## 9. Handover Summary (filled by Coder Sub-Agent on completion)
+## 9. Handover Summary (filled by Worker 3, batch B17, on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all five ACs. The owner's `data.json` bytes, the owner's `main.js` bytes and the `community-plugins.json` bytes are unrenderable by type on every general-purpose stringification; the byte-exact borrow and restore oracles are unweakened and each was driven RED by a one-byte perturbation; the member-set downgrade at `ports.py:677` is repaired in both live frames; the sweep is derived by AST rather than claimed. Implementation `20d45ee`; report `ImplementationReport_WP77.md`.
+- **What remains open:** `readiness.RawAnswer.body` (S14) — carried up by charter instruction, measured as still renderable, `readiness.py` byte-unchanged. It is now the only remaining member of this defect class in the package. Owner: none assigned.
+- **Final status:** `DONE`, risk_flag `NONE`.
 
 ---
 
 ## 10. Risk Notes for Worker 4 (filled by Worker 3 Core)
 
-*Empty at handover.*
+- **Priority for Worker 4: NORMAL.** This WP changes how a value is *held*, never what the module *does*. There is no new user-visible behaviour to drive in a live editor, and `W4 Test Targets` stays `0`.
+- **The one thing worth a second look if anything downstream misbehaves:** `provision_port` now hands `_with_port` a `RedactedMapping` even when the caller passed a plain `dict`. Output bytes were shown byte-identical either way, but it is the only behavioural *addition* in the diff.
+- **WP7 unblocked.** The ordering ruling in §2 is satisfied: the leak this WP closes is closed before the first execution that points `capture_state` at the owner's real vaults.
