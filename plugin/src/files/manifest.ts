@@ -2,7 +2,7 @@ import { Notice, type TFile, TFolder, type Vault } from "obsidian";
 import type * as Y from "yjs";
 
 import type { DocHandle, SyncManager } from "../sync/sync";
-import type { LiveShareSettings } from "../types";
+import type { LiveShareSettings, ManifestPublishDecision, SessionRole } from "../types";
 import {
   VAULT_EVENT_SETTLE_MS,
   ensureFolder,
@@ -17,6 +17,7 @@ import {
 } from "../utils";
 import { isSidecarPath } from "./canvas-sidecar";
 import type { ExclusionManager } from "./exclusion";
+import { PUBLICATION_DECISION, decidePublication } from "./manifest-purge-decision";
 
 export interface FileEntry {
   hash: string;
@@ -110,6 +111,46 @@ export class ManifestManager {
    */
   private seqAtConnect = 0;
 
+  /**
+   * WP80 — the two facts the publication decision turns on, both owned here so
+   * that `main.ts` and `sync/control-handlers.ts` gain CALLS ONLY and no
+   * conditional over manifest or sync state.
+   *
+   * `roleAtConnect` is the role this peer held when it connected the manifest.
+   * A peer that connected as host never populated its disk from anybody else's
+   * manifest; a peer that connected as GUEST pulled its disk out of the room
+   * manifest and, until that pull has accounted for every entry, its local set
+   * is a statement about how far it got. `promoteToHost` is exactly the
+   * transition that turns the second kind of peer into a publisher, and it is
+   * why "am I host?" is not the question — "what was I when my disk was
+   * filled?" is.
+   */
+  private roleAtConnect: SessionRole = null;
+  /**
+   * WP80 — `true` only after `connect()`'s `waitForSync` has returned. An empty
+   * `getEntries()` because the replay has not landed looks exactly like an empty
+   * room, and "every entry is accounted for" is trivially true of a set nobody
+   * has told us about yet.
+   */
+  private manifestSynced = false;
+  /**
+   * WP80 — STICKY for this session: another peer has published this manifest
+   * SINCE WE CONNECTED. Exactly D2's `hasFreshPublication(ownId)`, latched.
+   *
+   * Latched rather than sampled, because a peer whose first publication is
+   * additive stamps its OWN id into the attestation — a "the attestation is
+   * mine" test would grant the very NEXT publication a purge and re-open the
+   * hole one republish later.
+   *
+   * Scoped to freshness rather than to the replayed state, because a replayed
+   * attestation is the room's persistence speaking, not a live peer talking
+   * over us. Latching on the replay was measured to disable the host's own
+   * deletion propagation for whole sessions after a single role flip.
+   */
+  private foreignPublicationSinceConnect = false;
+  /** WP80 — what the most recent real publication decided. Diagnostics + the E2E instrument. */
+  private lastPublishDecision: ManifestPublishDecision | null = null;
+
   private exclusionManager: ExclusionManager | null = null;
 
   constructor(
@@ -136,6 +177,13 @@ export class ManifestManager {
 
   async connect(syncManager: SyncManager): Promise<void> {
     this.syncManager = syncManager;
+    // WP80 — captured BEFORE the awaits below, because a `join-response` can
+    // land while `waitForSync` is still pending and promote this peer mid-call.
+    // The question is what this peer was when its disk was filled, and that is
+    // decided here, not after the race.
+    this.roleAtConnect = this.settings.role ?? null;
+    this.manifestSynced = false;
+    this.foreignPublicationSinceConnect = false;
     this.docHandle = syncManager.getDoc("__manifest__");
     if (!this.docHandle) return;
     this.manifest = this.docHandle.doc.getMap("files");
@@ -144,6 +192,22 @@ export class ManifestManager {
     // D2 — take the freshness baseline AFTER the replay has landed, so the
     // relay's persisted state can never be mistaken for a live host speaking.
     this.seqAtConnect = this.getPublication()?.seq ?? 0;
+    // WP80 — same instant, same reason: only now is an empty entry set evidence
+    // of an empty room rather than of a replay that has not arrived.
+    this.manifestSynced = true;
+    this.noteForeignPublication();
+  }
+
+  /**
+   * WP80 — OR the sticky "somebody else has spoken" flag with what the doc says
+   * right now. Called at connect and before every publication; the attestation
+   * only changes when a peer publishes, so this sees every foreign publication
+   * that happened since the previous call.
+   */
+  private noteForeignPublication(): void {
+    // Reuses D2's freshness predicate verbatim rather than re-deriving it: a
+    // publication past our connect baseline, by somebody who is not us.
+    if (this.hasFreshPublication(this.localUserId)) this.foreignPublicationSinceConnect = true;
   }
 
   /** D2 — the attestation currently in the doc, or `null` if nobody ever published. */
@@ -186,11 +250,62 @@ export class ManifestManager {
     this.meta.observe(this.metaObserver);
   }
 
-  async publishManifest(options?: { purge?: boolean }): Promise<void> {
-    if (!this.manifest || !this.docHandle) return;
+  /** WP80 — what the most recent real publication decided, or `null` if none has run. */
+  getLastPublishDecision(): ManifestPublishDecision | null {
+    return this.lastPublishDecision;
+  }
+
+  private recordDecision(decision: ManifestPublishDecision): ManifestPublishDecision {
+    this.lastPublishDecision = decision;
+    return decision;
+  }
+
+  /**
+   * WP80 — publishes, and REPORTS what it published.
+   *
+   * Two changes, both load-bearing:
+   *
+   *   1. The purge is no longer the caller's bare boolean. `options.purge` is
+   *      now a REQUEST; whether it is granted is decided by
+   *      {@link decidePublication} from facts this peer already holds, and it
+   *      fails closed. A peer that cannot establish completeness still
+   *      publishes — additively — so the refusal is of the DELETION, never of
+   *      the publication (I11).
+   *   2. The early return is a NAMED REFUSAL rather than a bare `return`.
+   *      `promoteToHost` can reach this method while `connect()` is still
+   *      awaiting `waitForSync`, and before this the peer was host, believed it
+   *      had published, and no attestation existed — with nothing anywhere able
+   *      to show it.
+   */
+  async publishManifest(options?: { purge?: boolean }): Promise<ManifestPublishDecision> {
+    if (!this.manifest || !this.docHandle) {
+      const refusal = decidePublication({
+        manifestConnected: false,
+        manifestSynced: this.manifestSynced,
+        isHost: this.settings.role === "host",
+        enteredSessionAsHost: this.roleAtConnect === "host",
+        purgeRequested: options?.purge === true,
+        foreignPublicationSinceConnect: this.foreignPublicationSinceConnect,
+        manifestPaths: [],
+        localPaths: [],
+        readFailures: 0,
+      });
+      return this.recordDecision({
+        published: false,
+        purged: false,
+        verdict: refusal.decision,
+        reason: refusal.reason,
+        entries: 0,
+        deleted: [],
+        unaccounted: [],
+      });
+    }
 
     const files = this.getSharedFiles();
 
+    // WP80 / S28 — counted, not swallowed. Each failure silently omits a file
+    // from `entries`, and under a granted purge that omission is a DELETION.
+    let readFailures = 0;
     const entries = new Map<string, FileEntry>();
     for (const file of files) {
       try {
@@ -213,6 +328,7 @@ export class ManifestManager {
           });
         }
       } catch {
+        readFailures++;
         new Notice(`Live Share: failed to read ${file.path}, skipping`);
       }
     }
@@ -230,12 +346,35 @@ export class ManifestManager {
       });
     }
 
+    // WP80 — the verdict is taken by the pure core, from facts this peer already
+    // holds, BEFORE the transaction opens. No clock is consulted anywhere in
+    // this path: `publishedAt` remains diagnostics-only, and freshness stays
+    // `seq`, exactly as D2 established.
+    this.noteForeignPublication();
+    const verdict = decidePublication({
+      manifestConnected: true,
+      manifestSynced: this.manifestSynced,
+      isHost: this.settings.role === "host",
+      enteredSessionAsHost: this.roleAtConnect === "host",
+      purgeRequested: options?.purge === true,
+      foreignPublicationSinceConnect: this.foreignPublicationSinceConnect,
+      manifestPaths: Array.from(this.manifest.keys()),
+      localPaths: Array.from(entries.keys()),
+      readFailures,
+    });
+    const purgeGranted = verdict.decision === PUBLICATION_DECISION.PURGE;
+    const deleted: string[] = [];
+
     this.docHandle.doc.transact(() => {
-      if (options?.purge) {
-        for (const filePath of this.manifest?.keys() ?? []) {
-          if (!entries.has(filePath)) {
-            this.manifest?.delete(filePath);
-          }
+      if (purgeGranted) {
+        // Collected first, then deleted: the keys are the same set the verdict
+        // was taken over, and mutating a Y.Map while iterating its own key
+        // iterator is not something to rely on.
+        for (const filePath of Array.from(this.manifest?.keys() ?? [])) {
+          if (!entries.has(filePath)) deleted.push(filePath);
+        }
+        for (const filePath of deleted) {
+          this.manifest?.delete(filePath);
         }
       }
       for (const [filePath, fileEntry] of entries) {
@@ -260,6 +399,16 @@ export class ManifestManager {
         seq: (previous?.seq ?? 0) + 1,
         publishedAt: Date.now(),
       });
+    });
+
+    return this.recordDecision({
+      published: true,
+      purged: purgeGranted,
+      verdict: verdict.decision,
+      reason: verdict.reason,
+      entries: entries.size,
+      deleted,
+      unaccounted: verdict.unaccounted,
     });
   }
 
@@ -584,6 +733,13 @@ export class ManifestManager {
     this.docHandle = null;
     this.manifest = null;
     this.meta = null;
+    // WP80 — a torn-down manifest has not replayed anything, and a session that
+    // has ended tells this peer nothing about the next one's role. Both reset to
+    // the fail-closed value so a `publishManifest` between `destroy()` and the
+    // next `connect()` cannot inherit the previous session's standing.
+    this.manifestSynced = false;
+    this.roleAtConnect = null;
+    this.foreignPublicationSinceConnect = false;
     // D2 — a session that has ended has no live host by construction. Resetting
     // the baseline to 0 would make the NEXT connect's replayed state look fresh
     // if `connect()` ever failed to re-baseline; leaving it high cannot cause a

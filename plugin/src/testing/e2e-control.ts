@@ -46,6 +46,24 @@ interface StaleReconcileDecision {
   trashed: string[];
 }
 
+/**
+ * WP80 — structural mirror of `ManifestPublishDecision` in `../types`, for the
+ * same reason and with the same guarantee as the mirror above: `../types` is not
+ * on the frozen import allow-list (WP49 AC4 / WP72 AC4), and `buildPluginHost`
+ * receives the real `LiveSharePlugin`, so `tsc` checks the real
+ * `ManifestManager.publishManifest` return type against this shape at that call
+ * site. Divergence is a compile error, not a silent drift.
+ */
+interface ManifestPublishDecision {
+  published: boolean;
+  purged: boolean;
+  verdict: string;
+  reason: string;
+  entries: number;
+  deleted: string[];
+  unaccounted: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Protocol types (mirror BUILD_SPEC §6.1). WP5 targets these shapes directly.
 // ---------------------------------------------------------------------------
@@ -414,7 +432,33 @@ export interface E2EControlHost {
   // read back from the live editing surface after the attempt.
   typeInNode?(req: CanvasNodeEditRequest): Promise<CanvasNodeEditResult>;
   reconcileStale?(): Promise<StaleReconcileDecision>;
-  publishManifest?(): Promise<{ published: boolean; reason?: string }>;
+  // --- WP80 -----------------------------------------------------------------
+  // `publishManifest` used to return the hardcoded `{ published: true }` — the
+  // `canvas.simulateEdit` `applied: true` mistake wearing a different name,
+  // because the real method returned `void` and there was nothing to report. It
+  // now returns the real decision, unaltered, and the two refusal cases (not
+  // host / no manifest connected) come back as a STRUCTURED decision with a
+  // stated reason rather than a success or a thrown 400 a driver could mistake
+  // for a crash.
+  publishManifest?(): Promise<ManifestPublishDecision>;
+  /**
+   * ADDITIVE (AC5). Read-only: the decision the most recent REAL publication
+   * produced, whoever triggered it — session start, resume, promotion, or the
+   * new-peer republish. This is the only instrument that can observe the four
+   * purge call sites SEPARATELY, because none of them is reachable from the rig
+   * without also re-triggering it.
+   */
+  lastPublishDecision?(): ManifestPublishDecision | null;
+  /**
+   * ADDITIVE (AC3/AC4). The REAL `plugin.promoteToHost` / `plugin.demoteToGuest`,
+   * invoked — not a copy and not a re-implementation of their rules. They are
+   * the single implementations of the two role transitions (`join-response`,
+   * `host-transfer-complete` and `demoteToGuest` all route through them), so
+   * driving them from the rig exercises the production path with the server's
+   * verdict delivery replaced, and nothing else.
+   */
+  promoteToHost?(): Promise<{ role: string | null; publish: ManifestPublishDecision | null }>;
+  demoteToGuest?(): Promise<{ role: string | null }>;
 }
 
 /**
@@ -640,6 +684,25 @@ export async function routeCommand(
         }
         return ok(await host.publishManifest());
       }
+      // --- WP80, all three ADDITIVE ------------------------------------------
+      case "manifest.lastPublish": {
+        if (typeof host.lastPublishDecision !== "function") {
+          throw new Error("manifest.lastPublish unavailable on this host");
+        }
+        return ok(host.lastPublishDecision());
+      }
+      case "session.promoteToHost": {
+        if (typeof host.promoteToHost !== "function") {
+          throw new Error("session.promoteToHost unavailable on this host");
+        }
+        return ok(await host.promoteToHost());
+      }
+      case "session.demoteToGuest": {
+        if (typeof host.demoteToGuest !== "function") {
+          throw new Error("session.demoteToGuest unavailable on this host");
+        }
+        return ok(await host.demoteToGuest());
+      }
       // --- WP37 (C37 AC6) — the typing instrument ---------------------------
       //
       // ADDITIVE. A new `case` and a new optional host method, on the
@@ -864,10 +927,15 @@ export interface E2EPluginLike {
     getEntries(): Map<string, unknown>;
     getPublication(): { hostId: string; seq: number; publishedAt: number } | null;
     hasFreshPublication(excludeUserId?: string): boolean;
-    publishManifest(options?: { purge?: boolean }): Promise<void>;
+    publishManifest(options?: { purge?: boolean }): Promise<ManifestPublishDecision>;
+    /** WP80 — the decision the last REAL publication produced. */
+    getLastPublishDecision?(): ManifestPublishDecision | null;
   };
   remoteUsers?: Map<string, { userId: string; isHost?: boolean }>;
   cleanupStaleFiles?: () => Promise<StaleReconcileDecision>;
+  /** WP80 — the real role transitions, for AC3/AC4. */
+  promoteToHost?: (reason?: string) => Promise<void>;
+  demoteToGuest?: () => Promise<void>;
   saveSettings?: () => Promise<void> | void;
   // --- WP46 identity sources (all optional; every one degrades, none is guessed) ---
   /** Obsidian's `App`. `appId` is the stable per-vault identity; the adapter knows the path. */
@@ -1217,14 +1285,72 @@ export function buildPluginHost(
     // Lets a scenario ask a host to attest NOW, so the positive case (a live
     // host's assertion still deletes) can be driven deterministically instead of
     // waiting on whatever the session happens to do.
-    async publishManifest() {
-      if (plugin.settings.role !== "host") {
-        return { published: false, reason: "this peer is not the host" };
-      }
+    // WP80 — THE REAL METHOD, INVOKED, AND ITS ANSWER RETURNED UNALTERED.
+    //
+    // What used to be here was `await mm.publishManifest({purge:true}); return
+    // {published:true}` — a literal, because the real method returned `void`.
+    // It could not report whether the publication purged, what it deleted, or
+    // why it was allowed to, and it would have reported success for a
+    // publication that silently did nothing.
+    //
+    // The two refusal cases below are still structured refusals with a stated
+    // reason rather than a thrown 400, and they now carry the same shape as a
+    // success so a driver reads one field in every branch.
+    async publishManifest(): Promise<ManifestPublishDecision> {
       const mm = plugin.manifestManager;
-      if (!mm) return { published: false, reason: "no manifest manager on this host" };
-      await mm.publishManifest({ purge: true });
-      return { published: true };
+      if (!mm) {
+        return {
+          published: false,
+          purged: false,
+          verdict: "nothing-to-publish",
+          reason: "no manifest manager on this host",
+          entries: 0,
+          deleted: [],
+          unaccounted: [],
+        };
+      }
+      if (plugin.settings.role !== "host") {
+        return {
+          published: false,
+          purged: false,
+          verdict: "additive",
+          reason: "this peer is not the host; only a host publishes a manifest",
+          entries: 0,
+          deleted: [],
+          unaccounted: [],
+        };
+      }
+      return mm.publishManifest({ purge: true });
+    },
+
+    // WP80 (AC5, additive). Read-only, and the only way to observe what the
+    // four production call sites decided without re-triggering them.
+    lastPublishDecision() {
+      const mm = plugin.manifestManager;
+      if (!mm || typeof mm.getLastPublishDecision !== "function") return null;
+      return mm.getLastPublishDecision();
+    },
+
+    // WP80 (AC3/AC4, additive). The real role transitions. `promoteToHost`
+    // publishes internally, so the decision that promotion produced is read back
+    // from the manifest manager rather than composed here.
+    async promoteToHost() {
+      if (typeof plugin.promoteToHost !== "function") {
+        throw new Error("session.promoteToHost unavailable: no promotion on this host");
+      }
+      await plugin.promoteToHost("e2e control: promotion driven by the test rig");
+      const mm = plugin.manifestManager;
+      const publish =
+        mm && typeof mm.getLastPublishDecision === "function" ? mm.getLastPublishDecision() : null;
+      return { role: plugin.settings.role ?? null, publish };
+    },
+
+    async demoteToGuest() {
+      if (typeof plugin.demoteToGuest !== "function") {
+        throw new Error("session.demoteToGuest unavailable: no demotion on this host");
+      }
+      await plugin.demoteToGuest();
+      return { role: plugin.settings.role ?? null };
     },
 
     // --- WP37 (C37 AC6) — the typing instrument ----------------------------

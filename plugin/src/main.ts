@@ -71,6 +71,7 @@ import { SyncManager } from "./sync/sync";
 import {
   DEFAULT_SETTINGS,
   type LiveShareSettings,
+  type ManifestPublishDecision,
   type StaleReconcileDecision,
 } from "./types";
 
@@ -220,6 +221,26 @@ export default class LiveSharePlugin extends Plugin {
    * manifest handler must NOT be. Two concerns, two registrations, and the
    * pre-existing call order is left exactly as it was.
    */
+  /**
+   * WP80 — WIRING ONLY. One log line per publication, at every call site.
+   *
+   * There is deliberately NO branch here over manifest or sync state: the
+   * decision is taken by the pure core inside `ManifestManager` and this method
+   * only forwards what it was handed. Its whole job is that "I published a
+   * purging manifest", "I published additively because I could not know the set
+   * was complete" and "I could not publish at all" stop being one observation —
+   * the same silence class that made the original data loss invisible in the
+   * logs until the files were noticed missing.
+   */
+  private logPublishDecision(site: string, decision: ManifestPublishDecision) {
+    this.logger.log(
+      "manifest",
+      `publish[${site}] verdict=${decision.verdict} published=${decision.published} ` +
+        `purged=${decision.purged} entries=${decision.entries} ` +
+        `deleted=${decision.deleted.length} unaccounted=${decision.unaccounted.length} — ${decision.reason}`,
+    );
+  }
+
   private armStaleReconcileRetry() {
     this.manifestManager.setPublicationChangeHandler(() => {
       if (this.settings.role !== "guest") return;
@@ -573,7 +594,13 @@ export default class LiveSharePlugin extends Plugin {
       await this.connectSync();
       await this.manifestManager.connect(this.syncManager);
       if (this.settings.role === "host") {
-        await this.manifestManager.publishManifest({ purge: true });
+        // WP80 call site 1 of 4 (`resumeSession`, host arm). Wiring only: the
+        // publication decision is taken inside `ManifestManager` by the pure
+        // core, and is logged here so a refusal is never silent.
+        this.logPublishDecision(
+          "resume-host",
+          await this.manifestManager.publishManifest({ purge: true }),
+        );
         await this.backgroundSync.startAll("host");
         this.registerManifestChangeHandler();
         // WP79 entry point 2 (rejoin/resume), host arm.
@@ -812,7 +839,11 @@ export default class LiveSharePlugin extends Plugin {
         try {
           await this.connectSync();
           await this.manifestManager.connect(this.syncManager);
-          await this.manifestManager.publishManifest({ purge: true });
+          // WP80 call site 2 of 4 (`startSession`). Wiring only.
+          this.logPublishDecision(
+            "start-session",
+            await this.manifestManager.publishManifest({ purge: true }),
+          );
           await this.backgroundSync.startAll("host");
           this.registerManifestChangeHandler();
           // WP79 entry point 1 (session start, host).
@@ -2177,12 +2208,25 @@ export default class LiveSharePlugin extends Plugin {
    *
    * The `purge: true` republish is inherited from the existing host-transfer
    * path and is deliberate: the semantics of this product are that the host's
-   * disk is the truth. It does carry a known hazard — a peer promoted before it
-   * finished syncing publishes a manifest that omits files it simply has not
-   * received yet — but that hazard predates this change, is identical on the
-   * `host-transfer-complete` path, and is now bounded on the consuming side,
-   * where `cleanupStaleFiles` at least requires the assertion to come from a
-   * live host rather than from nobody. Recorded as unfixed, not as absent.
+   * disk is the truth.
+   *
+   * WP80 — it used to carry the hazard that made this the LAST live route from
+   * a correct promotion to a destroyed user file: a peer promoted before it
+   * finished syncing published a manifest that omitted files it simply had not
+   * received yet, and the purge deleted their entries. The claim that this was
+   * "bounded on the consuming side" was WRONG, and is corrected here rather
+   * than left in place: a newly-promoted host's truncated manifest satisfies
+   * BOTH of `cleanupStaleFiles`' conditions — the promotion itself advances
+   * `seq` under a `hostId` that is not the guest's, and the promoted peer IS a
+   * live peer claiming host — and the manifest is short, not empty, so D3's
+   * floor never fires either. The gate was not wrong; it answers "did a live
+   * host say this?", and a live host did.
+   *
+   * The `purge: true` below is now a REQUEST, not an instruction.
+   * `ManifestManager` decides whether to grant it (`files/manifest-purge-decision.ts`),
+   * and a peer that entered the session as a guest cannot establish
+   * completeness until its local set accounts for every entry it holds — so
+   * this call publishes ADDITIVELY and says so.
    */
   async promoteToHost(reason = "server designated this peer as the room host"): Promise<void> {
     if (this.settings.role === "host") return;
@@ -2191,7 +2235,11 @@ export default class LiveSharePlugin extends Plugin {
     this.settings.permission = "read-write";
     await this.saveSettings();
     await this.backgroundSync.startAll("host");
-    await this.manifestManager.publishManifest({ purge: true });
+    // WP80 call site 3 of 4 (`promoteToHost`) — THE defect site. Wiring only.
+    this.logPublishDecision(
+      "promote-to-host",
+      await this.manifestManager.publishManifest({ purge: true }),
+    );
     this.presenceManager?.broadcastPresence();
     this.updateStatusBar();
     this.refreshPresenceView();

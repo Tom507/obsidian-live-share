@@ -21,6 +21,48 @@ export interface StaleReconcileDecision {
   trashed: string[];
 }
 
+/**
+ * WP80 — the answer `publishManifest` returns instead of `void`.
+ *
+ * Same reason as {@link StaleReconcileDecision} one level up, and the same
+ * class of silence: "I published a purging manifest", "I published additively
+ * because I could not know the set was complete" and "I could not publish at
+ * all" were one observation — a bare `return`. `promoteToHost` can reach
+ * `publishManifest` while the manifest document is still connecting, in which
+ * case the peer is host, believes it published, and no attestation exists. That
+ * state was indistinguishable from a successful publication from outside the
+ * method.
+ *
+ * MUST stay at the TOP of this file, beside `StaleReconcileDecision`. The
+ * `DEFAULT_SETTINGS` block below contains a `//` comment holding the literal
+ * `` `${configDir}/**` ``, and the WP22 dormancy test strips comments with a
+ * naive non-greedy `/\*[\s\S]*?\*\/` — so that `/**` opens a block comment as
+ * far as that test is concerned, and any JSDoc placed BELOW it supplies the
+ * `*\/` that closes the pairing, swallowing `useCanvasBinding: false,` and
+ * reddening a test that has nothing to do with this change. Position, not
+ * style; it was paid for once already.
+ */
+export interface ManifestPublishDecision {
+  /** `true` when entries were written to the manifest document. */
+  published: boolean;
+  /** `true` only when the completeness gate opened and entries were deleted. */
+  purged: boolean;
+  /** `"purge" | "additive" | "nothing-to-publish"` — the closed verdict set. */
+  verdict: string;
+  /** Why this verdict was reached. Always populated, in every branch. */
+  reason: string;
+  /** How many entries this publication asserted. */
+  entries: number;
+  /** Manifest keys actually deleted. Empty on every additive publication. */
+  deleted: string[];
+  /**
+   * Manifest keys the local set did not account for — i.e. what a purge WOULD
+   * have deleted. Non-empty alongside `purged: false` is the whole point of
+   * this work package: those are the files this peer cannot know about.
+   */
+  unaccounted: string[];
+}
+
 
 export type Permission = "read-write" | "read-only";
 

@@ -124,9 +124,25 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     const isNewPeer = !!msg.userId && !plugin.remoteUsers.has(msg.userId);
     plugin.presenceManager?.handlePresenceUpdate(msg);
     if (isNewPeer && plugin.settings.role === "host") {
-      void plugin.manifestManager.publishManifest({ purge: true }).catch((err) => {
-        plugin.logger.error("manifest", "republish for new peer failed", err);
-      });
+      // WP80 call site 4 of 4 (new-peer republish). Wiring only — the purge is a
+      // REQUEST here as everywhere else, and `ManifestManager` decides whether
+      // to grant it. This site matters because it REPEATS whatever state site 3
+      // (`promoteToHost`) left behind: without the producing-side gate a wrong
+      // purge would be re-asserted with a fresh `seq` on every new peer and
+      // could never age out.
+      void plugin.manifestManager
+        .publishManifest({ purge: true })
+        .then((decision) => {
+          plugin.logger.log(
+            "manifest",
+            `publish[new-peer] verdict=${decision.verdict} purged=${decision.purged} ` +
+              `entries=${decision.entries} deleted=${decision.deleted.length} ` +
+              `unaccounted=${decision.unaccounted.length} — ${decision.reason}`,
+          );
+        })
+        .catch((err) => {
+          plugin.logger.error("manifest", "republish for new peer failed", err);
+        });
     }
   });
 
