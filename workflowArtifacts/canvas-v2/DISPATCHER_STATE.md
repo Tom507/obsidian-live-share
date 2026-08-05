@@ -67,7 +67,8 @@ Everything needed already existed; it had simply never been pointed at real Obsi
 | Build | `npm run build:e2e` (one-shot, WP69) → ~3.6 MB instrumented bundle |
 | Ports | **per-vault `e2eControlPort` in `data.json`** — 39431 (A) / 39432 (B). This solves **D14**: one Obsidian process serves both vaults, so an env var would give them one port. `session.info` returns **distinct `vaultId`s** (`703aa794cc73a117` / `55a4253eb7a90dde`). |
 | Route | `POST /command` `{cmd, args}` · `GET /events` (SSE) |
-| Working commands | `session.info`, `canvas.open`, `canvas.state`, `canvas.file`, `sync.waitQuiescent`, `scratch.create`, `plugin.settings` |
+| Working commands | `session.info`, `canvas.open`, `canvas.state`, `canvas.file`, `sync.waitQuiescent`, `scratch.create` |
+| ~~`plugin.settings`~~ | **DOES NOT EXIST — my error (S33).** `routeCommand` has no such case; the only occurrence in the file is a flag-owner label at `:1253`. I listed it here as working and it propagated into several agent briefs. Nobody tried to call it, so it cost nothing — but a capability list that has never been executed is a claim, not a measurement. |
 | **Do NOT use** | **`canvas.simulateEdit`** — writes straight into the `Y.Doc` (`e2e-control.ts:995-1005`) and returns a hardcoded `applied: true` (`:1023`). A suite built on it measures doc→relay→doc and proves nothing about capture. |
 | **Drive edits by** | **writing the `.canvas` file on disk.** `useCanvasBinding` is `false`, so the live path is `vault.on("modify")` → `handleLocalModify` — the real capture path, the one the P0 fix lives on. |
 
@@ -329,6 +330,71 @@ Two consequences, both important:
   Any future E2E design must not depend on which vault ends up host. `server/**`, out of scope.
 - **S21 was NOT widened** by WP79 — confirmed live (`published=6 materialised=0`, zero writes) and by a
   headless assertion. The host arm's `publish` verdict is a subscribe and nothing else.
+
+### 🚨 WP80 CHARTERED (`c22e1cd`) — **the data loss is NOT fully closed.** This is the priority.
+
+**The data-loss batch's *"now bounded on the consuming side"* is FALSE for this shape**, and W2 measured
+why. A newly-promoted host's **truncated purging manifest passes all three** of the new checks in
+`cleanupStaleFiles` (`main.ts:685-711`):
+
+- `hasFreshPublication` is **true** — `promoteToHost` publishes immediately and advances `seq` under a
+  `hostId` that is not the guest's
+- a live peer **does** claim host
+- the manifest is **short, not empty**, so D3's floor never fires
+
+**The D2 gate asks *"did a live host say this?"* — and a live host did.** WP80 is therefore the one
+remaining live route from a **correct** promotion to a **destroyed user file**. The gate is not wrong; it
+answers a different question than the one this shape poses. *Evidence of authority is not evidence of
+completeness.*
+
+**Client-side is sufficient** (measured): the purge decision lives on four client call sites, executes at
+`manifest.ts:234-240`, and the completeness predicate is computable from data the peer already holds — no
+new frame. Stabilising `room.hostUserId` server-side would only reduce **frequency**, since a legitimate
+transfer to a mid-sync peer produces the identical truncated purge.
+
+### ✅ WP81 CHARTERED (`c7d01fd`) — but the reported symptom was FALSIFIED, and the cause was my script
+
+**There was no silence.** Read per minute from both vaults: continuous entries through `2026-08-04T23:56`
+and every minute after; hourly totals `22h` 784/471, `23h` 829/846, `00h` 738/653 — and both files were
+still being appended to during the analysis.
+
+**What actually happened: my own `H:\tmp\liveshare_fix_debuglog.py` moved the file out of the vault root
+and rewrote `debugLogPath` — an hour BEFORE the reported stop time.** Every later reader watched a path
+that no longer existed and read absence as silence. `7754ac6` is **not** the cause either: it changed only
+the default, and could not affect a vault carrying an explicit value.
+
+**Two batches independently "reproduced" it.** Neither reproduced anything — they inherited my premise and
+confirmed it. *Independent confirmation of a shared false premise is not independent confirmation.* This
+is the same failure as a green test that cannot fail, moved one level up into the diagnosis.
+
+The *class* still holds and is chartered on what is measurably in the tree: `debug-logger.ts:153` clears
+the buffer **before** the append and `:154-156` swallows the rejection, so lines are lost permanently and
+silently at 500 ms; `log-view.ts:71` — a **view** filter — calls `setLevel`, which gates the **file** sink;
+`ui/settings.ts:306` still falls back to the pre-`7754ac6` root literal. **Ruling written in: a swallowed
+`.catch(() => {})` is not acceptable on a persistent sink. It may drop data; it may not drop the fact that
+it dropped data.**
+
+### ⚠ My own rig had a green that cannot fail — found by W2, fixed by me
+
+`liveshare_e2e_install.py` polled **`/cmd`** while the server routes only **`/command`**, and treated
+**any** HTTP reply — including the structured 404 it got every single time — as *"REMOTE CONTROL IS
+LIVE."* It measured *that something listens on the port*, which is neither what it claimed nor what the
+caller needs. **I saw the 404 in the output, reasoned correctly that the server was up, and left the
+check standing.** Reasoning around a broken check is how a broken check survives.
+
+Fixed: ready now requires all three — the correct route answered, the envelope says `ok`, and the payload
+carries a **`vaultId`**. It additionally **refuses** when both ports report the *same* `vaultId`, because
+two indistinguishable instances are exactly the D14 failure the rig exists to avoid.
+
+### More carried up from B20 (all unowned)
+
+- **S28** — a per-file **read failure** in `publishManifest` (`manifest.ts:210-217`) becomes an **entry
+  deletion** under purge. Same shape as everything else this week: a local failure to *observe* is
+  published as an assertion that the file is *gone*.
+- **S30** — the debug log now grows unbounded inside `.obsidian/` (749 960 B / 708 014 B). Moving it out
+  of the index solved the indexing complaint and not the growth.
+- **S31** — both log files carry **duplicated historical blocks**, an artefact of the file move rather
+  than a logger defect. It misleads anyone counting entries — including, plausibly, the two batches above.
 
 ### Autonomous queue (this order)
 
