@@ -432,6 +432,73 @@ Vault opening uses the Obsidian URI with the vault name **URL-encoded** (WP45 AC
 
 ---
 
+## 9a. The build runner is REQUIRED, and the spawn has exactly one name (WP78)
+
+> **Appended by WP78. §9 above is WP45's and §4.1 is WP69's — neither is modified, moved,
+> renamed or re-ordered by this block.** It exists so WP71's plan and WP7's run read the
+> symbol name from here instead of inventing a second one (rule 10).
+
+**The pinned symbol — spelled here once, read from the owning module, never re-declared:**
+
+```python
+obsidian_e2e.install.spawning_subprocess_runner        # the ONE opt-in spawning runner
+obsidian_e2e.install.build_e2e_bundle(plugin_dir, *, runner)   # `runner` is REQUIRED
+```
+
+**The rule.** `build_e2e_bundle`'s `runner` is keyword-only and has **no default**. A caller
+that wants a real npm build passes the runner **by name**:
+
+```python
+result = install.build_e2e_bundle(plugin_dir, runner=install.spawning_subprocess_runner)
+```
+
+`build_e2e_bundle(plugin_dir)` is a `TypeError` **at the call**, not an npm spawn at runtime.
+Nothing in the body substitutes a default — no `if runner is None`, no sentinel, no
+`functools.partial`, no module-level constant — and the superseded private name
+`_default_runner` does not survive as an alias. Two names for one spawn is how one of them
+stops being audited.
+
+**Where the spawn lives, pinned and countable.** `tools/obsidian_e2e/` holds **exactly two**
+spawn primitives, and **both are inside `spawning_subprocess_runner`**: its function-local
+`import subprocess` and the `subprocess.run` call. The import is function-local on purpose —
+a module-level one would bind `install.subprocess`, leaving a second spawn seam reachable by
+anyone who imports the module, needing no runner and no call to `build_e2e_bundle` at all.
+The package therefore binds `subprocess` at module scope **nowhere**.
+
+**What this is for.** C45 AC4's guarantee is *structural*: the console is **injected**, so no
+test, no dev loop and no mistaken import can reach the real `Obsidian.exe` or the owner's live
+working vaults by accident (D16). A spawning **default** turns that into a call-site
+convention. A required parameter is that guarantee in argument position — the same move WP70
+and WP77 made with `Secret` for credentials, one module over: *auditing call sites is a
+promise; a signature is a guarantee.*
+
+**Consequence for WP71 (C71 AC4).** The criterion is now satisfiable and is decided by an
+**AST walk over the parsed package**, never by a grep — a rename, an alias,
+`importlib.import_module("subprocess")` or `getattr(os, "system")` defeats a text search and
+does not defeat the walk. Four things are established together, and the walk must carry a
+**positive control** proving it found the symbols it names before any absence is asserted:
+
+├── **(a)** every `subprocess` / `Popen` / `os.system` / `os.popen` / `os.spawn*` / `os.exec*`
+│          reference is inside `spawning_subprocess_runner`, enumerated by module, function
+│          and line, with the total node count **pinned at 2**
+├── **(b)** `spawning_subprocess_runner` is the default value of **no** parameter anywhere in
+│          the package, and no `x or …` / `x if … else …` substitution names it
+├── **(c)** `build_e2e_bundle`'s `runner` is keyword-only **with no default**, read from the
+│          parsed signature
+└── **(d)** every call to `build_e2e_bundle` in the repository supplies `runner` — the one
+           admissible exception being a call written **inside `with pytest.raises(TypeError):`**
+           in order to assert that a bare call is refused, which is recognised structurally
+           and never by a file-name allowlist
+
+**The reusable oracle already exists** — `workflowArtifacts/canvas-v2/tests/visible/WP78/_spawn_oracle.py`,
+with its positive control built in. WP71 re-asserts (a)–(d) against the tree WP78 leaves; it
+introduces no new spawn reference and removes neither of the two.
+
+**Adding a spawn backend is out of scope and is an ESCALATE, not a judgement call.**
+`spawn_through_console` remains the single seam for a launched process.
+
+---
+
 ## 10. Assertion hygiene — CRDT tie-breaks
 
 Yjs resolves same-key concurrent writes by `clientID`, and `clientID` is `random.uint32()` per
