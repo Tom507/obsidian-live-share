@@ -38,6 +38,17 @@ export interface CanvasNodeEditRequest {
   nodeId: string;
   /** Characters to insert at the end of the node's current text. */
   text?: string;
+  /**
+   * WP36 (W3 revision of the WP37 instrument) — insert at this CHARACTER OFFSET
+   * of the card's first line instead of at the end.
+   *
+   * Appending is not sufficient evidence for C36 AC3: two appends by two peers
+   * land at different offsets of different strings and can be reconciled by
+   * luck. AC3 requires at least one run that places the two concurrent edits
+   * INSIDE THE SAME WORD, which needs a caret the caller can aim. The offset is
+   * clamped to the line, so an out-of-range value is a position, not an error.
+   */
+  at?: number;
   /** Blur/commit the editor after the insert (or on its own when `text` is absent). */
   blur?: boolean;
   /** Open the canvas in a workspace leaf first when it is not already showing. */
@@ -468,6 +479,10 @@ export async function driveCanvasNodeEdit(
 
   const doc = deps.document();
   const text = typeof req.text === "string" ? req.text : "";
+  // WP36: an explicit caret offset, when the caller aimed one. `Number.isFinite`
+  // rather than `typeof === "number"` so `NaN` reads as "no offset" instead of
+  // silently clamping to 0.
+  const wantsAt = typeof req.at === "number" && Number.isFinite(req.at);
 
   // --- insert --------------------------------------------------------------
   if (text.length > 0) {
@@ -481,9 +496,14 @@ export async function driveCanvasNodeEdit(
       let placed = false;
       if (isFn(editor.setCursor) && isFn(editor.lastLine) && isFn(editor.getLine)) {
         try {
-          const last = editor.lastLine() as number;
-          const line = (editor.getLine(last) as string) ?? "";
-          editor.setCursor(last, line.length);
+          if (wantsAt) {
+            const line = (editor.getLine(0) as string) ?? "";
+            editor.setCursor(0, Math.max(0, Math.min(req.at as number, line.length)));
+          } else {
+            const last = editor.lastLine() as number;
+            const line = (editor.getLine(last) as string) ?? "";
+            editor.setCursor(last, line.length);
+          }
           placed = true;
         } catch {
           placed = false;
@@ -502,8 +522,12 @@ export async function driveCanvasNodeEdit(
         // Last resort within the SAME editor: append through the editor's own
         // API. Still the editor, still unflushed — never the file, never the doc.
         try {
-          const current = editor.getValue();
-          editor.setValue(`${typeof current === "string" ? current : ""}${text}`);
+          const raw = editor.getValue();
+          const current = typeof raw === "string" ? raw : "";
+          const at = wantsAt
+            ? Math.max(0, Math.min(req.at as number, current.length))
+            : current.length;
+          editor.setValue(`${current.slice(0, at)}${text}${current.slice(at)}`);
         } catch {
           /* the read-back below reports the failure honestly */
         }

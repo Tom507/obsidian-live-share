@@ -83,10 +83,19 @@ import {
   advanceField,
   advanceRecord,
   createSurfaceShadow,
+  getField,
   getRecordState,
   markRecordAbsent,
   planIntentDiff,
 } from "../canvas/canvas-shadow";
+// WP36: the THREE-WAY text merge. A VALUE import of a ZERO-import pure core, on
+// the `canvas-seed-decision` / `reconcile-plan` precedent — it decides which ops
+// a capture must emit into a nested `Y.Text`; this file emits them.
+import {
+  type TextMergeOp,
+  type TextMergeResolution,
+  planTextMerge,
+} from "../canvas/canvas-text-merge";
 import {
   type TombstoneMap,
   applyTombstoneOp,
@@ -865,6 +874,113 @@ function isRecordSuppressed(deletedMap: TombstoneMap | undefined, id: string): b
   return isTombstoneSuppressed(readTombstoneEntry(deletedMap, id));
 }
 
+// ---------------------------------------------------------------------------
+// WP36 / C36 — NESTED COLLABORATIVE TEXT for `text` and `label`.
+// ---------------------------------------------------------------------------
+//
+// Card text and edge labels stop being whole-string LWW registers. The doc holds
+// a nested `Y.Text` under those two keys, so two people editing the same card
+// merge character-wise instead of one side's text vanishing.
+//
+// Three mechanisms make that safe, and each of them is a place the naive version
+// goes wrong:
+//
+//   1. THE WRITE ROUTER (`applyIntentPlan`). `docValueEquals` has no `Y.Text`
+//      arm — a string is never `===` a `Y.Text` — so the unmodified write at the
+//      bottom of `applyIntentPlan` would `set()` a plain string over the
+//      `Y.Text` on the FIRST capture after conversion, silently un-migrating the
+//      record and discarding its history. The router takes the field to
+//      {@link CanvasSync.writeCollabText} BEFORE the equality question is asked.
+//      `docValueEquals` itself is deliberately NOT widened: it is a value
+//      equality consumed by `upsertRecordFields` too, and teaching it that a
+//      `Y.Text` "equals" a string would make real edits silently skip.
+//   2. THE THREE-WAY MERGE (`canvas/canvas-text-merge.ts`). See that file.
+//   3. THE PROJECTION RENDER (`toCanonicalFileRecord`). See there.
+//
+// The migration is LAZY and WRITE-TRIGGERED: the first capture that changes a
+// card's text converts that one field, in ONE `set` of an ALREADY-POPULATED
+// `Y.Text`. There is no bulk pass, no `delete`-then-`set`, and no empty
+// `Y.Text` attached and filled afterwards — the key is populated at every
+// observable instant, on every peer, so no reader ever sees a `text` node with
+// no `text` and no refusal can compose into a deletion.
+
+/** The two fields that carry user prose. Nodes have both; edges have `label`. */
+function isCollabTextField(field: string): boolean {
+  return field === V2_FIELD.text || field === V2_FIELD.label;
+}
+
+/**
+ * Is this doc value a nested collaborative text?
+ *
+ * `instanceof Y.Text` and not a duck-type: this file already imports Yjs, and
+ * the shape test that `isRichTextValue` has to use (it must stay pure) would
+ * also accept a `Y.Map` or any plain object.
+ */
+function isYText(value: unknown): value is Y.Text {
+  return value instanceof Y.Text;
+}
+
+/**
+ * Doc value → the value a `.canvas` file / an Obsidian view / the Surface-Shadow
+ * may hold. The ONLY transformation is `Y.Text` → its string; everything else is
+ * passed through byte-identically, so no existing field changes shape.
+ */
+function renderDocValue(value: unknown): unknown {
+  return isYText(value) ? value.toString() : value;
+}
+
+/**
+ * C36 AC1's DOC-LEVEL WITNESS, emitted by the mechanism itself.
+ *
+ * A string read-back cannot satisfy AC1: the projected string is identical
+ * whether the doc holds a `Y.Text` or a plain string, so an assertion over it is
+ * green either way. This receipt reports what the capture actually did to the
+ * DOC — whether the target was a `Y.Text`, whether this write performed the
+ * conversion, and how many insert/delete ops were emitted. A capture reporting
+ * `ops: 0, ytextAfter: false` for a card whose text changed has flattened the
+ * field, however correct the resulting string is.
+ *
+ * NO USER TEXT APPEARS HERE — lengths and counts only (US6). The receipt is
+ * readable over the E2E control channel, so it must not be able to carry vault
+ * content out of the process.
+ */
+export interface TextWriteReceipt {
+  readonly seq: number;
+  /** The canonical `.canvas` path this write belonged to. */
+  readonly path: string;
+  readonly kind: ShadowRecordKind;
+  readonly id: string;
+  readonly field: string;
+  /** What the doc held when the write began. */
+  readonly targetBefore: "ytext" | "string" | "absent" | "other";
+  /** Is the field a `Y.Text` now? AC1's "never replaced by a plain value". */
+  readonly ytextAfter: boolean;
+  /** Did this write perform the one-op lazy conversion? */
+  readonly migrated: boolean;
+  /** Insert/delete ops emitted into the `Y.Text`. */
+  readonly ops: number;
+  readonly resolution: TextMergeResolution;
+  /** The counted context-anchoring fallback (design (a), charter §3). */
+  readonly fallback: boolean;
+  /** Did the Surface-Shadow supply a three-way base? */
+  readonly baseObserved: boolean;
+  readonly baseLength: number;
+  readonly currentLength: number;
+  readonly nextLength: number;
+  readonly resultLength: number;
+}
+
+/** The last N receipts, so a live run can read them back without a log file. */
+const TEXT_RECEIPT_RING = 200;
+
+/** Apply a merge plan's ops to a `Y.Text`, in order. */
+function applyTextOpsToYText(text: Y.Text, ops: readonly TextMergeOp[]): void {
+  for (const op of ops) {
+    if (op.kind === "delete") text.delete(op.index, op.length);
+    else text.insert(op.index, op.text);
+  }
+}
+
 /**
  * One CRDT record → one canonical FILE record, plus its `ord`.
  *
@@ -888,7 +1004,22 @@ function toCanonicalFileRecord(
       if (typeof value === "string") ord = value;
       continue;
     }
-    raw[key] = value;
+    // WP36 (C36 AC4) — THE PROJECTION RENDER, and it is EXPLICIT ON PURPOSE.
+    //
+    // `buildCanvasData` has four consumers, not one: the disk bytes
+    // (`serializeCanvas`), the OPEN Obsidian view (`reconcileLiveCanvas` ->
+    // `adapter.reloadCanvasData`), `getCanvasSnapshot` (the E2E `canvas.state`
+    // command) and `buildApplyReceipt` -> `advanceFromReceipt`, i.e. the
+    // Surface-Shadow itself.
+    //
+    // `JSON.stringify` calls `Y.Text.prototype.toJSON`, so leaving the object in
+    // `raw` would make TWO of those four right BY ACCIDENT — the two that are
+    // JSON-serialised — while handing Obsidian a `text` that is not a string and
+    // storing a non-`ShadowFieldValue` object in the shadow, whose next capture
+    // would then diff against an object. Neither of those two is observable
+    // through any JSON-shaped oracle, which is exactly why the render may not
+    // rest on `JSON.stringify`.
+    raw[key] = renderDocValue(value);
   }
   return { record: canonicalizeRecord(decodeV2RecordToFlat(raw), kind), ord };
 }
@@ -1108,6 +1239,8 @@ interface AppliedIntent {
   created: string[];
   /** Existing node ids that took a write here (telemetry only). */
   changed: string[];
+  /** WP36 AC1: one doc-level witness per captured `text`/`label` write. */
+  textWrites: TextWriteReceipt[];
 }
 
 // ---------------------------------------------------------------------------
@@ -1875,6 +2008,12 @@ export class CanvasSync {
   // the intent basis. Constructed with the instance so the capture path always
   // has one, even before any wiring runs.
   private shadow: SurfaceShadow = createSurfaceShadow();
+  // WP36 (C36 AC1): the doc-level witness ring. In-memory only, bounded, no
+  // user text — see {@link TextWriteReceipt}. It exists because AC1 cannot be
+  // satisfied by any string read-back: the projected string is identical
+  // whether the doc holds a `Y.Text` or a plain string.
+  private textWriteReceipts: TextWriteReceipt[] = [];
+  private textWriteSeq = 0;
   // WP4: what the surface can prove about the last apply, per canonical path.
   // P0's honest default is "closed, nothing handed over" — WP5 wires the real
   // Obsidian view state. Consulted at every handleLocalModify AND every
@@ -2862,6 +3001,24 @@ export class CanvasSync {
       );
     }
 
+    // WP36 AC1 — the same doc-level witness, on the log channel as well as in
+    // the ring. Ids, field NAMES, shapes and COUNTS only; never a value (US6).
+    // The ring, not this line, is the oracle: a log can stop silently.
+    if (applied.textWrites.length > 0) {
+      this.logger?.debug(
+        "canvas-sync",
+        `TEXT WRITE: ${path} ${applied.textWrites
+          .map(
+            (receipt) =>
+              `${receipt.kind}/${receipt.id}.${receipt.field} ${receipt.targetBefore}->` +
+              `${receipt.ytextAfter ? "ytext" : "value"} ops=${receipt.ops} ` +
+              `${receipt.resolution}${receipt.migrated ? " MIGRATED" : ""}` +
+              `${receipt.fallback ? " FALLBACK" : ""}${receipt.baseObserved ? "" : " NO-BASE"}`,
+          )
+          .join(", ")}`,
+      );
+    }
+
     // Telemetry: what did the local user's edit actually push? Correlate this with
     // any SCATTER/DETACH signature on the following disk write.
     if (this.logger) {
@@ -2940,6 +3097,204 @@ export class CanvasSync {
    * └── WP21: there is no lock seam here any more. No branch consults a lock
    *     before writing, and no branch refuses an id on a lock's behalf.
    */
+  /**
+   * WP36 — THE capture write for `text` / `label`. Three-way, never two-way.
+   *
+   * The two operands the merge needs are already in hand at this point and no
+   * new state store is required for either:
+   *
+   *   ├── `next`    — the string the local `.canvas` file holds, i.e. the
+   *   │               intent `planIntentDiff` classified.
+   *   └── `base`    — the Surface-Shadow's value for THIS field, which is
+   *                   "what this client last confirmed is on the surface". It
+   *                   is read here, INSIDE the transaction, because the shadow
+   *                   is only advanced after `applyIntentPlan` returns — so it
+   *                   still holds the pre-capture value, which is exactly the
+   *                   three-way base.
+   *
+   * `applyMinimalYTextUpdate` is NOT called, here or on any other canvas
+   * capture path: it diffs the `Y.Text`'s own content against the incoming
+   * string, and on this path the incoming string is the local FILE, which lacks
+   * a peer's freshly merged characters — so the helper computes them as a
+   * deletion. `plugin/src/utils.ts` is byte-unchanged by this work package.
+   */
+  private writeCollabText(
+    record: Y.Map<unknown>,
+    path: string,
+    kind: ShadowRecordKind,
+    id: string,
+    field: string,
+    next: string,
+  ): TextWriteReceipt {
+    const existingValue = record.get(field);
+    const shadowValue = getField(this.shadow, path, kind, id, field);
+    const base = typeof shadowValue === "string" ? shadowValue : undefined;
+
+    if (isYText(existingValue)) {
+      const current = existingValue.toString();
+      const plan = planTextMerge(base, next, current);
+      applyTextOpsToYText(existingValue, plan.ops);
+      return this.recordTextWrite({
+        path,
+        kind,
+        id,
+        field,
+        targetBefore: "ytext",
+        ytextAfter: true,
+        migrated: false,
+        ops: plan.ops.length,
+        resolution: plan.resolution,
+        fallback: plan.fallback,
+        baseObserved: base !== undefined,
+        baseLength: base?.length ?? -1,
+        currentLength: current.length,
+        nextLength: next.length,
+        resultLength: existingValue.length,
+      });
+    }
+
+    // ---- THE LAZY, WRITE-TRIGGERED CONVERSION -----------------------------
+    //
+    // ONE operation: a `Y.Text` is constructed with the record's previous
+    // string, the merge's ops are applied to it WHILE IT IS STILL DETACHED
+    // (Yjs queues them and replays them at integration, the same mechanism
+    // `buildDetachedRecord` relies on for a whole record), and only the
+    // finished value is `set`. So:
+    //
+    //   ├── the key is never deleted, and never absent for an instant;
+    //   ├── no empty `Y.Text` is ever attached and filled afterwards; and
+    //   └── no observer, on any peer, can see this record without its `text`.
+    //
+    // That is what keeps the conversion off the Ä4 shape, whose refusal
+    // composes into a deletion. It is also per-record and per-field: there is
+    // no bulk pass over the doc, and a record the local user did not edit is
+    // never converted.
+    const previous = typeof existingValue === "string" ? existingValue : undefined;
+    const targetBefore: TextWriteReceipt["targetBefore"] =
+      existingValue === undefined ? "absent" : previous !== undefined ? "string" : "other";
+    if (targetBefore === "other") {
+      // Something is under this key that is neither a string nor a `Y.Text`.
+      // Converting it would be a guess about a shape this build does not
+      // understand, and a guess in a CRDT is permanent — so the pre-WP36
+      // register write is kept, unchanged.
+      if (!docValueEquals(existingValue, next)) record.set(field, next);
+      return this.recordTextWrite({
+        path,
+        kind,
+        id,
+        field,
+        targetBefore,
+        ytextAfter: false,
+        migrated: false,
+        ops: 0,
+        resolution: "identical",
+        fallback: false,
+        baseObserved: base !== undefined,
+        baseLength: base?.length ?? -1,
+        currentLength: -1,
+        nextLength: next.length,
+        resultLength: next.length,
+      });
+    }
+    const start = previous ?? "";
+    const plan = planTextMerge(base, next, start);
+    const converted = new Y.Text(start);
+    applyTextOpsToYText(converted, plan.ops);
+    record.set(field, converted);
+    return this.recordTextWrite({
+      path,
+      kind,
+      id,
+      field,
+      targetBefore,
+      ytextAfter: true,
+      migrated: true,
+      ops: plan.ops.length,
+      resolution: plan.resolution,
+      fallback: plan.fallback,
+      baseObserved: base !== undefined,
+      baseLength: base?.length ?? -1,
+      currentLength: start.length,
+      nextLength: next.length,
+      resultLength: plan.result.length,
+    });
+  }
+
+  /** Stamp a receipt with its sequence number and keep it in the ring. */
+  private recordTextWrite(receipt: Omit<TextWriteReceipt, "seq">): TextWriteReceipt {
+    const stamped: TextWriteReceipt = { seq: ++this.textWriteSeq, ...receipt };
+    this.textWriteReceipts.push(stamped);
+    if (this.textWriteReceipts.length > TEXT_RECEIPT_RING) this.textWriteReceipts.shift();
+    return stamped;
+  }
+
+  /**
+   * WP36 AC1 — the doc-level witness, read-only, for the E2E control channel.
+   *
+   * Carries no user text: counts, lengths and shapes only.
+   */
+  getTextWriteReceipts(rawPath?: string): TextWriteReceipt[] {
+    if (rawPath === undefined) return this.textWriteReceipts.slice();
+    // Scoped by path, because the ring is per-CLIENT: a caller asking "what did
+    // this board's captures do?" must not be handed another board's receipts,
+    // which is how a per-field count silently becomes a session count.
+    const path = toCanonicalPath(normalizePath(rawPath));
+    return this.textWriteReceipts.filter((receipt) => receipt.path === path);
+  }
+
+  /**
+   * WP36 AC1 — WHAT THE DOC ACTUALLY HOLDS under `text` / `label`, per record.
+   *
+   * The projected string is identical whether the field is a `Y.Text` or a
+   * plain string, so `canvas.state` and `canvas.file` cannot discriminate. This
+   * reads the `Y.Map` itself. Lengths only — never the text.
+   */
+  getTextShape(rawPath: string): {
+    path: string;
+    subscribed: boolean;
+    fields: {
+      kind: ShadowRecordKind;
+      id: string;
+      field: string;
+      shape: "ytext" | "string" | "other";
+      length: number;
+    }[];
+  } | null {
+    const path = toCanonicalPath(normalizePath(rawPath));
+    if (!this.subscribedPaths.has(path)) return { path, subscribed: false, fields: [] };
+    const docId = this.canvasDocIdFor(path);
+    if (!docId) return null;
+    const docHandle = this.syncManager.getDoc(docId);
+    if (!docHandle) return null;
+    const fields: {
+      kind: ShadowRecordKind;
+      id: string;
+      field: string;
+      shape: "ytext" | "string" | "other";
+      length: number;
+    }[] = [];
+    const spaces: { kind: ShadowRecordKind; map: Y.Map<Y.Map<unknown>> }[] = [
+      { kind: "node", map: docHandle.doc.getMap<Y.Map<unknown>>("nodes") },
+      { kind: "edge", map: docHandle.doc.getMap<Y.Map<unknown>>("edges") },
+    ];
+    for (const space of spaces) {
+      for (const [id, record] of space.map) {
+        for (const field of [V2_FIELD.text, V2_FIELD.label]) {
+          const value = record.get(field);
+          if (value === undefined) continue;
+          if (isYText(value)) {
+            fields.push({ kind: space.kind, id, field, shape: "ytext", length: value.length });
+          } else if (typeof value === "string") {
+            fields.push({ kind: space.kind, id, field, shape: "string", length: value.length });
+          } else {
+            fields.push({ kind: space.kind, id, field, shape: "other", length: -1 });
+          }
+        }
+      }
+    }
+    return { path, subscribed: true, fields };
+  }
+
   private applyIntentPlan(
     plan: IntentPlan,
     maps: { node: Y.Map<Y.Map<unknown>>; edge: Y.Map<Y.Map<unknown>> },
@@ -2953,6 +3308,7 @@ export class CanvasSync {
       deletedNodeIds: [],
       created: [],
       changed: [],
+      textWrites: [],
     };
 
     // One entry per record, in plan order, so a record absent from the doc is
@@ -3019,6 +3375,22 @@ export class CanvasSync {
             applied.rejected.push(verdict.signature);
             continue;
           }
+          applied.upserts.push(upsert);
+          continue;
+        }
+        // WP36 (C36 AC1/AC2) — THE WRITE ROUTER, and it sits BEFORE the equality
+        // question rather than inside it.
+        //
+        // `docValueEquals` is a VALUE-equality predicate shared with
+        // `upsertRecordFields`; a `Y.Text` arm there would make real edits
+        // silently skip. The correct shape is a ROUTING decision: a `text` /
+        // `label` field whose intent is a string never reaches the register
+        // `set` at all, so no capture path can overwrite a `Y.Text` with a
+        // plain value.
+        if (isCollabTextField(upsert.field) && typeof upsert.value === "string") {
+          applied.textWrites.push(
+            this.writeCollabText(existing, path, kind, id, upsert.field, upsert.value),
+          );
           applied.upserts.push(upsert);
           continue;
         }

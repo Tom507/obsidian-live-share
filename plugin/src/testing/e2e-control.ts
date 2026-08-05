@@ -1168,7 +1168,7 @@ export interface E2EPluginLike {
     // WP36 (C36 AC1) — optional, so every existing hand-rolled `canvasSync`
     // double in the test suite stays structurally valid.
     getTextShape?(path: string): unknown;
-    getTextWriteReceipts?(): unknown[];
+    getTextWriteReceipts?(path?: string): unknown[];
   } | null;
 }
 
@@ -1640,8 +1640,11 @@ export function buildPluginHost(
         return { available: false, path, subscribed: false, fields: [], receipts: [] };
       }
       const shape = cs.getTextShape(path);
+      // Scoped to THIS path. The ring is per-client, so an unscoped read would
+      // report another board's captures and turn a per-field count into a
+      // session count — a witness that cannot answer the question it was asked.
       const receipts =
-        typeof cs.getTextWriteReceipts === "function" ? cs.getTextWriteReceipts() : [];
+        typeof cs.getTextWriteReceipts === "function" ? cs.getTextWriteReceipts(path) : [];
       return { available: true, ...(shape ?? { path, subscribed: false, fields: [] }), receipts };
     },
 
