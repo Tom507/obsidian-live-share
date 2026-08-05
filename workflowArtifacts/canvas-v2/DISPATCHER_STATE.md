@@ -475,7 +475,90 @@ the allow-list regex reads comments. Now green.)
 parked baseline; **the first is almost certainly the revert WP81 caught.** Nothing was lost. The correct
 instrument is a **detached worktree** — now rule 14.
 
-### 🚨 SILENT DESYNC — measured by the Dispatcher, chartered as WP82 (B24)
+> ## ⛔ THE BLOCK BELOW IS WRONG IN EVERY FACTUAL CLAIM. Read this first.
+>
+> **WP82's charter (`c214294`) falsified all three of my supporting measurements.** The conclusion
+> — *something is badly wrong, `connected` is false while the peer claims host* — survives. **Every fact
+> I offered for it does not.** Kept unedited below, because the propagation path matters more than my
+> tidiness.
+>
+> | I claimed | Measured truth |
+> |---|---|
+> | the connection dropped | **No drop. Both sockets are OPEN and carrying traffic** — an awareness pulse at `02:25:06.323Z` with `source=message`, i.e. an **inbound frame**, reachable only past `if (this.ws?.readyState !== WebSocket.OPEN) return false` (`sync/sync.ts:655-663`) |
+> | 38 connection lines, newest 2026-08-01 | **128 `[connection]` lines, 34 of them today**, newest `02:10:18.881Z`; the file is still growing |
+> | `autoReconnect: true` never fired | **`autoReconnect` is not a reconnect driver at all.** Its only non-UI read is one conjunct of the plugin-load auto-resume gate (`main.ts:513-514`); neither retry loop consults it. **The setting's name misled me.** |
+> | relay `clients: 2` "contradicts A" | **It contradicts nothing.** `clients` counts **mux sockets only** (`index.ts:74-82`); the control WSS is uncounted, and both mux sockets are genuinely alive |
+> | vault B was the healthy control | **B is wrong too, in the opposite direction** — see below |
+>
+> ### How I got it wrong, and why it is the run's own defect class
+>
+> I grepped the log for `reconnect|disconnect|socket|close|websocket|ws error|retry`. **The most common
+> connection line in the file is `control channel connected` — which matches none of those.** I searched
+> for a thing my pattern could not find, got few hits, and read the silence as evidence of silence.
+>
+> **A search that cannot match what it claims to look for is a green test that cannot fail, in
+> diagnostic form.** Ten instances of that class have been found in this project's tests; this is the
+> first one found in its *diagnosis*, and it is mine. **Rule 15: state the pattern you searched with and
+> prove it can match a known-present line before reporting an absence.**
+>
+> Two batches were briefed on these numbers. Neither had acted on them yet.
+
+### 🚨 SILENT DESYNC — the CONCLUSION stands, the mechanism is entirely different
+
+**One early `return`, pinned to the millisecond.** `plugin.controlConnected` is set `true` at exactly two
+**mutually exclusive, role-gated** sites — `main.ts:985-988` (only if `role === "host"` at socket-open)
+and `control-handlers.ts:218` (only past a `role !== "guest"` return at `:201`). And:
+
+```
+control-handlers.ts:193   if (msg.isHost === true && plugin.settings.role === "guest") {
+control-handlers.ts:194     void plugin.promoteToHost();
+control-handlers.ts:195     return;          ← never reaches :218
+```
+
+A peer that resumes as **guest** and is then **promoted** misses both sites. Vault A's log, 106 ms:
+`02:10:18.784Z resuming as guest` → `.881Z control channel connected` → `.890Z promoted to host`.
+Permanently `role: host, connected: false`. **Nothing failed, so nothing logged.**
+
+**The mirror case, which nobody had named:** B's last transition is `resuming as host` → `demoted from
+host` 92 ms later. B latched `connected: true` **as host**, then lost the role. **B's `true` is a latch on
+a role it no longer holds. Both peers are wrong, in opposite directions, from one defect — so the peer I
+used as the healthy control was not one.**
+
+**The consequence nobody had traced, and it is the real severity:** `updateOnlineState`
+(`main.ts:191-193`) has run with the latch false ⇒ `FileOpsManager.isOnline = false` ⇒ **every file op A
+performs is enqueued into an unbounded `OfflineQueue` whose only drain is an edge that can no longer
+occur** (`file-ops.ts:100-107`, `:74-82`) — while the status bar reads **`Live Share: hosting`**.
+
+**Three notions of connectivity coexist in the process and all three disagree:** `connectionState`
+(drives the status bar, **never sees the mux**), `muxConnected && controlConnected` (drives `session.info`
+and `FileOpsManager.setOnline`), and the sockets themselves (**read by nothing**).
+
+**Ruling: USER-REACHABLE, not abuse-only — and the abuse hypothesis is falsified, not merely
+unnecessary.** The trigger is a **role transition on `join-response`**, not a dropped socket;
+`join-request` is re-sent on every control `connected` event, reconnects included; and the relay
+manufactures the disagreement itself by auto-electing a survivor. **A host closing a laptop lid
+suffices.** My `taskkill` treatment produced **34 role transitions in 2 h 05 min** — it raised the *rate*
+by ~3 orders of magnitude and changed nothing about reachability.
+
+**The divergence is confirmed as a fact and deliberately NOT attributed** — canvas state travels over the
+mux, which is open on both peers, and at least four other causes are live in these vaults. WP82 owns
+*"they do not report that they have not converged"* and explicitly **not** *"they do not converge"*.
+
+### More carried up from B24 (unowned unless noted)
+
+- **S35** — `/healthz`'s `clients` counts **mux sockets only**. **I read it as "peers connected" all
+  week**, including in the brief that produced this charter.
+- **S36** — `remoteUsers` is never pruned by staleness. A peer whose own control link is dead cannot
+  receive `presence-leave` and keeps every `isHost` claim indefinitely — **an input to WP80's gate.**
+- **S37** — the relay's election quantified: **34 transitions in 2 h 05 min, no alternation.** Every live
+  E2E row must record the role the instance actually **resumed as**, or a green is a coin flip.
+- **S38** — three silent exits from the retry chains; a throw inside a reconnect timer kills it
+  permanently and invisibly. Bounded by WP82 AC5.
+- **S39** — **a first-connect network outage is shown to the user as `authentication required - sign in
+  via settings`** and ends the session. Named for its own disposition.
+- **S40** — `OfflineQueue` is unbounded.
+
+### ✅ WP37 DONE — full record
 
 **A peer lost its connection, never reconnected, kept claiming its role, and the replicas stayed
 permanently diverged.** Sampled three times at 20-second intervals, stable throughout:
