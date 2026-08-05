@@ -1967,3 +1967,45 @@ shared gitignored `plugin/main.js` with a *production* bundle, and the bundle no
 of two batches' uncommitted work**. And the honest canvas-E2E baseline that the S45 fix unblocked is
 **still unmeasured** — deliberately not run by this batch, since no product behaviour changed and running
 it would have re-contended for `plugin/main.js`.
+
+### ✅ WP88 DONE (`bd6b2da`, `0427318`) — all five routes closed, and the census found three I did not have
+
+**The route census found 3 routes the charter did not contain**, because it derives by **reachability**
+rather than by text search — which is exactly why E5 (a bare `catch` with no ceiling) was invisible to a
+`grep endSession`. Its deriver carries the **S53 reverse assertion**: an innocent module parses and
+returns `[]`, and >200 units are parsed with a positive control that it finds `main.ts#endSession`.
+
+**AC4 ran live and passed**, under all five safety conditions: guest peer only, repaired build, the
+`data.json` restore **rehearsed and verified byte-exact before the destructive row was armed**, installed
+bytes grepped for a batch-unique marker, and the ceiling evidenced by **the peer's own
+`retryChainEnded` / `reconnectAttempts:10`** rather than by elapsed time. The other peer's room stayed
+intact; recovery returned the **same room, same role, no invite**. Elapsed 129.2 s was **recorded, not
+used as the oracle** (arithmetic predicts 128.1 s).
+
+Suite **2387/2387** (341 files). WP88's own RED control at the parent commit: **16 failed / 13 passed**.
+
+### 📏 THE FIRST HONEST CANVAS BASELINE: **21/21** — and it is 21 checks, not 19
+
+Measured after S45's fix. **The "19/19" I quoted for weeks was wrong in its value *and* in its count**,
+and the later "13/18" was the rig measuring itself. This is the first number in this file that describes
+the product.
+
+### ⚠ An instrument that HANGS instead of failing — worse than one that cannot fail
+
+**`link.break{shape:"silence"}` cannot drive a link to its ceiling.** A reconnect's `onopen` is **ungated
+by `silenced`**, so every retry succeeds and resets the chain: it oscillates forever. **WP88's AC4 as
+written was unsatisfiable, and a criterion waiting on it would HANG, not fail.**
+
+That is a strictly worse failure than the class this run has been hunting: a test that cannot fail at
+least returns an answer. **A gap in WP82's landed instrument**, found by the batch that had to use it.
+WP88 produced the outage another way (`canvas.setFlag serverUrl` + `link.break{close}`) and said so.
+
+**Two landed-assertion reversals, same lesson:** *optional on the interface ≠ additive in the response* —
+`session.info`'s field set is pinned **exhaustively** by three tests, so new presence fields had to move
+to `session.severance`; and `wp82` pins one line **literally**, so it was restored verbatim. **No §7
+licence taken, no inherited test amended.**
+
+**Carried up, unowned:** a first-connect failure **cannot be classified from the client** — *"rejected"*
+and *"never reached"* are indistinguishable, since no close code is captured anywhere. WP88 stops
+*claiming* one; it cannot *tell*. Plus `DELETE /rooms`'s swallowed failure and `abortSession`'s three
+start/join callers, both still undecided.
