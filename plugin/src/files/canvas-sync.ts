@@ -2034,6 +2034,21 @@ export class CanvasSync {
   // save against the shadow — every observed field becomes intent, exactly the
   // pre-V2 behaviour. Test-only; there is no production caller.
   private shadowRebaseEnabled = true;
+  // WP36 follow-up (B32) — THE PRE-WP36 CONTROL SEAM. `false` routes `text` and
+  // `label` back through the plain register write at the bottom of
+  // `applyIntentPlan`, i.e. the whole-string LWW behaviour WP36 replaced: no
+  // `Y.Text` is ever constructed, no merge is ever planned, and a save's string
+  // overwrites whatever the doc held.
+  //
+  // It exists because a MIGRATED ORACLE THAT CANNOT FAIL ON THE BEHAVIOUR IT
+  // REPLACES HAS MIGRATED NOTHING. Every assertion this run re-oracled is paired
+  // with a control that flips this seam and shows the new assertion RED — the
+  // same instrument, in the same file, in the same run, as `setShadowRebaseEnabled`
+  // (WP4) and as WP36's own "render removed" controls.
+  //
+  // Test-only; there is no production caller. Verified by a test that greps the
+  // shipped sources for a second call site.
+  private collabTextEnabled = true;
   // WP28: the two impure halves of `EpochConflictEnv`, defaulted to the real
   // world so the archive path needs no wiring to function. Replaceable through
   // `setEpochConflictHooks`.
@@ -2096,6 +2111,12 @@ export class CanvasSync {
   // WP4 (BUILD_SPEC §8): disable the shadow rebase at its seam. Test-only.
   setShadowRebaseEnabled(enabled: boolean): void {
     this.shadowRebaseEnabled = enabled;
+  }
+
+  // WP36 follow-up (B32): disable the collaborative-text write at its router.
+  // `false` reproduces the pre-WP36 whole-string LWW register exactly. Test-only.
+  setCollabTextEnabled(enabled: boolean): void {
+    this.collabTextEnabled = enabled;
   }
 
   // Register the live-view reconciliation hook (scatter fix). Called on every
@@ -3387,7 +3408,12 @@ export class CanvasSync {
         // `label` field whose intent is a string never reaches the register
         // `set` at all, so no capture path can overwrite a `Y.Text` with a
         // plain value.
-        if (isCollabTextField(upsert.field) && typeof upsert.value === "string") {
+        //
+        // `collabTextEnabled` is the B32 control seam: with it OFF the field
+        // falls through to the register write below, which is precisely the
+        // pre-WP36 whole-string LWW behaviour the migrated oracles must go red
+        // against. There is no production caller.
+        if (this.collabTextEnabled && isCollabTextField(upsert.field) && typeof upsert.value === "string") {
           applied.textWrites.push(
             this.writeCollabText(existing, path, kind, id, upsert.field, upsert.value),
           );

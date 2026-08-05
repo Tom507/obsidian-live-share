@@ -24,6 +24,7 @@ import * as Y from "yjs";
 
 import { type SurfaceState, getField } from "../../../canvas/canvas-shadow";
 import { CanvasSync } from "../../../files/canvas-sync";
+import { collabText } from "../../harness/collab-text";
 
 const PATH = "board.canvas";
 
@@ -156,7 +157,38 @@ describe("WP4 — geometry is rounded on the capture side, before the intent dif
 
     expect(nodeField(p.doc, "g1", "x"), "rounding noise was pushed as a revert").toBe(700);
     expect(nodeField(p.doc, "g1", "y"), "99.5 rounds to 100, which equals the shadow").toBe(100);
-    expect(nodeField(p.doc, "g1", "text"), "the genuine edit was swallowed").toBe("edited");
+    // WP36 follow-up (B32) — RE-ORACLED. `text` is a nested `Y.Text` now, so
+    // `.toBe("edited")` compared a `Y.Text` to a string and could only ever
+    // fail. The value half is kept verbatim; the shape half replaces the
+    // superseded "it is a plain string" with the post-WP36 invariant "the
+    // capture did NOT flatten the collaborative text". See the paired
+    // PRE-WP36 CONTROL below for the red proof.
+    expect(collabText(nodeField(p.doc, "g1", "text")), "the genuine edit was swallowed").toEqual({
+      shape: "ytext",
+      text: "edited",
+    });
+  });
+
+  it("T2 PRE-WP36 CONTROL: the re-oracled assertion is RED on the whole-string LWW register", async () => {
+    const p = await makePeer(canvasJson([CARD]));
+    // The seam reproduces the behaviour WP36 replaced: `text` never becomes a
+    // `Y.Text`, the save's string overwrites the register, no merge is planned.
+    p.cs.setCollabTextEnabled(false);
+
+    applyRemoteDelta(p.doc, (nodes) => {
+      nodes.get("g1")?.set("x", 700);
+    });
+    p.vault.files.set(PATH, canvasJson([{ ...CARD, x: 100.4, y: 99.5, text: "edited" }]));
+    await p.cs.handleLocalModify(PATH);
+
+    const observed = collabText(nodeField(p.doc, "g1", "text"));
+    // The MIGRATED oracle, run verbatim against the old behaviour, must throw.
+    expect(() =>
+      expect(observed).toEqual({ shape: "ytext", text: "edited" }),
+    ).toThrow();
+    // And what it saw instead: the value is right, the representation is the
+    // whole-string LWW register — which is precisely the property WP36 removed.
+    expect(observed).toEqual({ shape: "string", text: "edited" });
   });
 
   it("T3 only the four geometry keys are rounded, and -0 becomes 0", async () => {

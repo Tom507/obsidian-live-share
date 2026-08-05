@@ -18,6 +18,7 @@ import {
   createVaultPersistenceIO,
 } from "../files/canvas-persistence";
 import { CanvasSync, serializeCanvas } from "../files/canvas-sync";
+import { collabText } from "./harness/collab-text";
 
 // ===========================================================================
 // SPEC_03 §8 — CanvasPersistence downstream-only writer contract (headless).
@@ -743,8 +744,51 @@ describe("WP7 / US5 AC15+AC7 — lastWrittenContent never goes stale", () => {
 
     // Only the genuinely-edited key was pushed. A STALE baseline (x=0) would have
     // seen x=42 as a local change and clobbered the un-flushed remote x=99.
-    expect((nodes.get("n1") as Y.Map<unknown>).get("text")).toBe("edited");
+    //
+    // WP36 follow-up (B32) — RE-ORACLED. The value half is the old assertion
+    // verbatim; the shape half asserts the capture went through the
+    // collaborative-text write instead of flattening it back to a register.
+    // Paired PRE-WP36 CONTROL below.
+    expect(collabText((nodes.get("n1") as Y.Map<unknown>).get("text"))).toEqual({
+      shape: "ytext",
+      text: "edited",
+    });
     expect((nodes.get("n1") as Y.Map<unknown>).get("x")).toBe(99);
+
+    persistence.destroy();
+    f.cs.destroy();
+  });
+
+  it("AC15 PRE-WP36 CONTROL: the re-oracled assertion is RED on the whole-string LWW register", async () => {
+    vi.useFakeTimers();
+    const f = makeCanvasFixture({
+      nodes: [{ id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50, text: "a" }],
+      edges: [],
+    });
+    f.cs.setCollabTextEnabled(false); // the behaviour WP36 replaced
+    await f.cs.subscribe("board.canvas", "host");
+    const doc = f.syncManager.getDoc("__canvas__:board.canvas").doc;
+    const nodes = doc.getMap<Y.Map<unknown>>("nodes");
+    const { persistence } = await attachCanvasPersistence(doc, f.io, "board.canvas", {
+      onWritten: (content) => f.cs.noteExternalDiskWrite("board.canvas", content),
+    });
+
+    applyRemoteCanvasDelta(doc, (n) => {
+      (n.get("n1") as Y.Map<unknown>).set("x", 42);
+    });
+    await vi.advanceTimersByTimeAsync(700);
+
+    const onDisk = JSON.parse(f.vault._files.get("board.canvas") as string);
+    onDisk.nodes[0].text = "edited";
+    f.vault._files.set("board.canvas", JSON.stringify(onDisk));
+    applyRemoteCanvasDelta(doc, (n) => {
+      (n.get("n1") as Y.Map<unknown>).set("x", 99);
+    });
+    await f.cs.handleLocalModify("board.canvas");
+
+    const observed = collabText((nodes.get("n1") as Y.Map<unknown>).get("text"));
+    expect(() => expect(observed).toEqual({ shape: "ytext", text: "edited" })).toThrow();
+    expect(observed).toEqual({ shape: "string", text: "edited" });
 
     persistence.destroy();
     f.cs.destroy();

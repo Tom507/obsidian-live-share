@@ -36,6 +36,7 @@ import { type SurfaceState, getField, getRecordState } from "../../../canvas/can
 // projection instead — otherwise the pair discriminates nothing.
 import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
 import { CanvasSync, buildCanvasData, serializeCanvas } from "../../../files/canvas-sync";
+import { collabText } from "../../harness/collab-text";
 
 const PATH = "board.canvas";
 
@@ -208,8 +209,44 @@ describe("WP4 AC1 — the intent plan, not lastWrittenContent, is the write basi
     p.vault.files.set(PATH, canvasJson([{ ...N1, text: "edited" }]));
     await p.cs.handleLocalModify(PATH);
 
-    expect(nodeField(p.doc, "n1", "text"), "real intent was swallowed").toBe("edited");
+    // WP36 follow-up (B32) — RE-ORACLED. The value half is the old assertion
+    // verbatim; the shape half asserts the capture wrote through the
+    // collaborative-text path instead of flattening it back to a register.
+    // Paired PRE-WP36 CONTROL below.
+    expect(collabText(nodeField(p.doc, "n1", "text")), "real intent was swallowed").toEqual({
+      shape: "ytext",
+      text: "edited",
+    });
     expect(nodeField(p.doc, "n1", "x"), "staleness leaked into the CRDT").toBe(500);
+  });
+
+  it("T2 PRE-WP36 CONTROL: the re-oracled assertion is RED on the whole-string LWW register", async () => {
+    const initial = canvasJson([N1]);
+    const p = await makePeer(initial);
+    p.cs.setCollabTextEnabled(false); // the behaviour WP36 replaced
+    p.cs.noteExternalDiskWrite(PATH, initial);
+    await settle();
+    p.surface.viewOpen = true;
+    p.surface.handedToView.node.add("n1");
+
+    applyRemoteDelta(p.doc, (nodes) => {
+      nodes.get("n1")?.set("x", 500);
+    });
+    const persisted = serializeCanvas(
+      p.doc.getMap<Y.Map<unknown>>("nodes"),
+      p.doc.getMap<Y.Map<unknown>>("edges"),
+      p.doc.getMap<unknown>("deleted"),
+    );
+    p.vault.files.set(PATH, persisted);
+    p.cs.noteExternalDiskWrite(PATH, persisted);
+    await settle();
+
+    p.vault.files.set(PATH, canvasJson([{ ...N1, text: "edited" }]));
+    await p.cs.handleLocalModify(PATH);
+
+    const observed = collabText(nodeField(p.doc, "n1", "text"));
+    expect(() => expect(observed).toEqual({ shape: "ytext", text: "edited" })).toThrow();
+    expect(observed).toEqual({ shape: "string", text: "edited" });
   });
 
   it("T3 with the view closed, a record missing from the save is not deleted", async () => {

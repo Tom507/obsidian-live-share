@@ -58,6 +58,7 @@ import { type CanvasRecords, planReconcile } from "../../../canvas/reconcile-pla
 import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
 import { CanvasSync, buildCanvasData, serializeCanvas } from "../../../files/canvas-sync";
 import { CanvasDouble } from "../../harness/canvas-double";
+import { type CollabTextReading, collabText } from "../../harness/collab-text";
 
 const PATH = "chaos/degraded.canvas";
 
@@ -197,6 +198,8 @@ async function makeRoom(
     degradation?: Degradation;
     shadowRebase?: boolean;
     perFieldReceipt?: boolean;
+    /** WP36 follow-up (B32): `false` = the pre-WP36 whole-string LWW register. */
+    collabText?: boolean;
   } = {},
 ): Promise<Room> {
   const degradation: Degradation = opts.degradation ?? "unavailable";
@@ -224,6 +227,7 @@ async function makeRoom(
   const store = createSurfaceStateStore(() => true);
   cs.setSurfaceStateProvider((path) => store.stateFor(path));
   cs.setShadowRebaseEnabled(opts.shadowRebase ?? true);
+  cs.setCollabTextEnabled(opts.collabText ?? true);
 
   const passes: PassResult[] = [];
 
@@ -357,7 +361,13 @@ interface DegradedReadings {
   local: unknown;
   peer2: unknown;
   peer3: unknown;
-  localText: unknown;
+  /**
+   * WP36 follow-up (B32): read as `{ shape, text }` rather than as a bare
+   * value. `text` is a nested `Y.Text` once a capture has written it, and an
+   * oracle that only compared the string could no longer tell a merged write
+   * from a flattened one.
+   */
+  localText: CollabTextReading;
   genuineLocal: unknown;
   genuinePeer2: unknown;
   genuinePeer3: unknown;
@@ -388,6 +398,8 @@ async function runDegraded(
     degradation?: Degradation;
     shadowRebase?: boolean;
     perFieldReceipt?: boolean;
+    /** WP36 follow-up (B32): `false` = the pre-WP36 whole-string LWW register. */
+    collabText?: boolean;
   } = {},
 ): Promise<DegradedReadings> {
   const room = await makeRoom(opts);
@@ -406,7 +418,7 @@ async function runDegraded(
     local: nodeField(room.doc1, "n1", "x"),
     peer2: nodeField(room.doc2, "n1", "x"),
     peer3: nodeField(room.doc3, "n1", "x"),
-    localText: nodeField(room.doc1, "n1", "text"),
+    localText: collabText(nodeField(room.doc1, "n1", "text")),
     genuineLocal: nodeField(room.doc1, "n3", "y"),
     genuinePeer2: nodeField(room.doc2, "n3", "y"),
     genuinePeer3: nodeField(room.doc3, "n3", "y"),
@@ -445,9 +457,16 @@ describe("WP6 AC2 — an unavailable adapter with an open view leaks nothing", (
     expect(readings.local, "the stale x was written back into the shared doc").toBe(500);
     expect(readings.peer2, "the leak reached peer 2").toBe(500);
     expect(readings.peer3, "the leak reached peer 3").toBe(500);
-    expect(readings.localText, "the stale text was written back into the shared doc").toBe(
-      "peer two",
-    );
+    // WP36 follow-up (B32) — RE-ORACLED, and STRENGTHENED here rather than
+    // merely translated: with the mechanism ON this client's save carries no
+    // text intent at all, so no capture ever ran on the field and the LAZY,
+    // WRITE-TRIGGERED migration must have left it a plain string. `shape:
+    // "string"` here is the no-bulk-pass property (C36 AC5), which the old
+    // `.toBe("peer two")` could not express.
+    expect(readings.localText, "the stale text was written back into the shared doc").toEqual({
+      shape: "string",
+      text: "peer two",
+    });
 
     expect(readings.genuineLocal, "the user's own drag was swallowed").toBe(40);
     expect(readings.genuinePeer2).toBe(40);
@@ -593,13 +612,51 @@ describe("WP6 AC3 — the degraded-adapter scenario fails with the mechanism dis
       off.local,
       "with the capture-side rebase off the save must fall back to observation-as-intent",
     ).toBe(0);
-    expect(off.localText, "the stale text must be pushed back too").toBe("contested");
+    // WP36 follow-up (B32) — RE-ORACLED, and this one changed BEHAVIOUR, not
+    // only representation. Measured, not assumed.
+    //
+    // Before WP36 the stale view's `"contested"` was pushed back over the peer's
+    // `"peer two"` — a whole-string LWW register takes whatever the save says.
+    // It no longer is, and NOT because of the seam this test flips:
+    // `setShadowRebaseEnabled(false)` disables the classification inside
+    // `planIntentDiff`, but `writeCollabText` reads its three-way BASE from the
+    // Surface-Shadow DIRECTLY. With base === next the merge's verdict is
+    // `"identical"` — "the local user changed nothing" — and it emits ZERO ops.
+    //
+    // So the text half of this leak is closed by a SECOND, independent
+    // mechanism, and this assertion now records that rather than a leak that no
+    // longer happens. It is red on the pre-WP36 behaviour in BOTH halves (the
+    // register held `"contested"`, and its shape was `"string"`); the paired
+    // PRE-WP36 CONTROL below executes exactly that.
+    expect(
+      off.localText,
+      "the peer's text was overwritten by the stale view — the three-way base did not hold",
+    ).toEqual({ shape: "ytext", text: "peer two" });
     expect(off.peer2, "the leak must reach peer 2 with the mechanism off").toBe(0);
     expect(off.peer3, "the leak must reach peer 3 with the mechanism off").toBe(0);
 
     expect(on.peer2).not.toBe(off.peer2);
     expect(on.peer3).not.toBe(off.peer3);
-    expect(on.localText).not.toBe(off.localText);
+    // The GEOMETRY leak is what this seam still discriminates. The text no
+    // longer differs between the two runs — stated explicitly, because a
+    // `not.toEqual` here would now pass only on the `shape` field and would be a
+    // discrimination that survives on an artefact.
+    expect(
+      on.localText.text,
+      "the text value must be identical with and without the seam — WP36 owns it now",
+    ).toBe(off.localText.text);
+  });
+
+  it("D1 PRE-WP36 CONTROL: the re-oracled stale-text assertion is RED on the whole-string LWW register", async () => {
+    const off = await runDegraded({ shadowRebase: false, collabText: false });
+
+    // The MIGRATED oracle, run verbatim against the old behaviour, must throw.
+    expect(() =>
+      expect(off.localText).toEqual({ shape: "ytext", text: "peer two" }),
+    ).toThrow();
+    // And what it saw instead: the whole-string LWW register, and the peer's
+    // text DESTROYED by the stale view. That is the leak WP36 closed, executed.
+    expect(off.localText).toEqual({ shape: "string", text: "contested" });
   });
 
   it("D2 seam `advanceFromReceipt(..., { perFieldReceipt: false })`: the unlanded apply leaks and deletes", async () => {

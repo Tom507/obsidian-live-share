@@ -44,6 +44,7 @@ import {
   serializeCanvas,
 } from "../files/canvas-sync";
 import { FileOpsManager } from "../files/file-ops";
+import { collabText } from "./harness/collab-text";
 import { canvasOwned, registerVaultEvents } from "../files/vault-events";
 import { BackgroundSync } from "../files/background-sync";
 import { ManifestManager } from "../files/manifest";
@@ -315,7 +316,44 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
     const e1 = docRecords(t.doc, "edges").e1;
     expect(e1.fromNode, "fromNode was deleted through applyKeyDiff").toBe("n1");
     expect(e1.toNode, "toNode was deleted through applyKeyDiff").toBe("n2");
-    expect(e1.label, "the legitimate label change did not land").toBe("L2");
+    // WP36 follow-up (B32) — RE-ORACLED. An edge `label` is a collaborative
+    // text now (`label` is a member of both V2_NODE_FIELD_KEYS and
+    // V2_EDGE_FIELD_KEYS), so the old `.toBe("L2")` compared a `Y.Text` to a
+    // string. Value verbatim, plus the post-WP36 invariant that the capture did
+    // not flatten it. Paired PRE-WP36 CONTROL below.
+    expect(collabText(e1.label), "the legitimate label change did not land").toEqual({
+      shape: "ytext",
+      text: "L2",
+    });
+    t.cs.destroy();
+    t.fileOps.destroy();
+  });
+
+  it("A2 PRE-WP36 CONTROL: the re-oracled label assertion is RED on the whole-string LWW register", async () => {
+    const full = canvasJson(
+      [
+        { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
+        { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
+      ],
+      [{ id: "e1", fromNode: "n1", toNode: "n2", fromSide: "right", toSide: "left", label: "L" }],
+    );
+    const t = await makeSubscribedCanvas(full);
+    t.cs.setCollabTextEnabled(false); // the behaviour WP36 replaced
+    t.vault.files.set(
+      PATH,
+      canvasJson(
+        [
+          { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
+          { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
+        ],
+        [{ id: "e1", label: "L2" }],
+      ),
+    );
+    await t.cs.handleLocalModify(PATH);
+
+    const observed = collabText(docRecords(t.doc, "edges").e1.label);
+    expect(() => expect(observed).toEqual({ shape: "ytext", text: "L2" })).toThrow();
+    expect(observed).toEqual({ shape: "string", text: "L2" });
     t.cs.destroy();
     t.fileOps.destroy();
   });

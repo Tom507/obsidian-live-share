@@ -34,6 +34,7 @@ import { type AwarenessLike, CanvasPresence } from "../../../canvas/canvas-prese
 import type { SurfaceState } from "../../../canvas/canvas-shadow";
 import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
 import { CanvasSync } from "../../../files/canvas-sync";
+import { collabText } from "../../harness/collab-text";
 
 const PATH = "atlas/board.canvas";
 
@@ -282,10 +283,38 @@ describe("WP21 AC1 — a peer's lock no longer denies a local write", () => {
       e1.get("toSide"),
       "the edge write was dropped because a peer holds an endpoint node",
     ).toBe("top");
-    expect(e1.get("label"), "the edge's new label never reached the doc").toBe("depends on");
+    // WP36 follow-up (B32) — RE-ORACLED. An edge `label` is a collaborative text
+    // now, so the old `.toBe("depends on")` compared a `Y.Text` to a string.
+    // Value verbatim, plus the post-WP36 invariant that the capture did not
+    // flatten it. Paired PRE-WP36 CONTROL below.
+    expect(collabText(e1.get("label")), "the edge's new label never reached the doc").toEqual({
+      shape: "ytext",
+      text: "depends on",
+    });
     expect(e1.get("color"), "the peer's concurrent key was lost by the local pass").toBe("3");
     expect(room.baseline(), "the diff baseline was held on an edge write").toBe(rerouted);
     expect(denials(room.warns), "the removed `LOCK DENIED:` emitter still fires").toEqual([]);
+
+    room.teardown();
+  });
+
+  it("PRE-WP36 CONTROL: the re-oracled label assertion is RED on the whole-string LWW register", async () => {
+    const room = await makeRoom(canvasJson([N1, N2], [E1]), ["n2"], []);
+    room.cs.setCollabTextEnabled(false); // the behaviour WP36 replaced
+    const edges = room.doc.getMap<Y.Map<unknown>>("edges");
+
+    applyRemoteCanvasDelta(room.doc, (_n, e) => {
+      (e.get("e1") as Y.Map<unknown>).set("color", "3");
+    });
+    room.vault.files.set(
+      PATH,
+      canvasJson([N1, N2], [{ ...E1, toSide: "top", label: "depends on" }]),
+    );
+    await room.cs.handleLocalModify(PATH);
+
+    const observed = collabText((edges.get("e1") as Y.Map<unknown>).get("label"));
+    expect(() => expect(observed).toEqual({ shape: "ytext", text: "depends on" })).toThrow();
+    expect(observed).toEqual({ shape: "string", text: "depends on" });
 
     room.teardown();
   });

@@ -40,6 +40,7 @@ import {
 import { isTombstoneSuppressed, readTombstoneEntry } from "../../../canvas/canvas-tombstone";
 import { planReconcile } from "../../../canvas/reconcile-plan";
 import { CanvasSync, serializeCanvas } from "../../../files/canvas-sync";
+import { collabText } from "../../harness/collab-text";
 
 const PATH = "team/board.canvas";
 
@@ -258,7 +259,29 @@ describe("WP5 AC1 — one shadow serves reconcile classification and capture bas
     // the NEW instance it is silent again.
     p.vault.files.set(PATH, canvasJson([{ ...N1, x: 500 }, { ...N2, text: "gamma" }]));
     await p.cs.handleLocalModify(PATH);
-    expect(nodeField(p.doc, "n2", "text")).toBe("gamma");
+    // WP36 follow-up (B32) — RE-ORACLED, and this is the ONE of the thirteen
+    // whose VALUE changed rather than only its representation. Read it before
+    // copying the pattern from the other six.
+    //
+    // The shadow was just replaced by an EMPTY one, so this capture has no third
+    // operand at all. C36 §5.3's no-base branch is INSERT-ONLY BY DESIGN: with
+    // no base there is no way to tell "the user deleted `beta`" from "a peer
+    // added `beta` after I last looked", and AC3's absolute rule is that a
+    // capture never deletes a character it did not observe the user delete. So
+    // it contributes the local intent's characters and removes nothing —
+    // `beta` + `gamm` interleaved on the shared suffix `a` = `betgamma`.
+    //
+    // The pre-WP36 register wrote `gamma`, which is the whole-string LWW
+    // property this WP removed: it destroys a peer's characters to make the
+    // local file win. The re-oracled assertion therefore pins BOTH halves of the
+    // no-base contract — the local intent landed, and nothing was deleted — and
+    // it is red on the old behaviour in both. Paired PRE-WP36 CONTROL below.
+    const n2Text = collabText(nodeField(p.doc, "n2", "text"));
+    expect(n2Text.text, "the local intent never reached the doc").toContain("gamm");
+    expect(n2Text, "the no-base capture deleted a character nobody observed deleted").toEqual({
+      shape: "ytext",
+      text: "betgamma",
+    });
 
     confirmReload(p.cs, docRecords(p.doc));
     const before = fingerprint(p.doc);
@@ -271,6 +294,26 @@ describe("WP5 AC1 — one shadow serves reconcile classification and capture bas
     );
     await p.cs.handleLocalModify(PATH);
     expect(fingerprint(p.doc)).toBe(before);
+  });
+
+  it("T4 PRE-WP36 CONTROL: the re-oracled assertion is RED on the whole-string LWW register", async () => {
+    const p = await makePeer(canvasJson([N1, N2]));
+    p.cs.setCollabTextEnabled(false); // the behaviour WP36 replaced
+    applyRemoteDelta(p.doc, (nodes) => {
+      nodes.get("n1")?.set("x", 500);
+    });
+    confirmReload(p.cs, docRecords(p.doc));
+    p.cs.setSurfaceShadow(createSurfaceShadow());
+
+    p.vault.files.set(PATH, canvasJson([{ ...N1, x: 500 }, { ...N2, text: "gamma" }]));
+    await p.cs.handleLocalModify(PATH);
+
+    const observed = collabText(nodeField(p.doc, "n2", "text"));
+    // The MIGRATED oracle, run verbatim against the old behaviour, must throw —
+    // in BOTH halves: the shape is a register, and the previous value `beta` was
+    // destroyed rather than merged.
+    expect(() => expect(observed).toEqual({ shape: "ytext", text: "betgamma" })).toThrow();
+    expect(observed).toEqual({ shape: "string", text: "gamma" });
   });
 
   it("T5 the classifier reads the projection of that same instance", async () => {
