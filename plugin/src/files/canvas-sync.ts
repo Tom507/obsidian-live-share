@@ -103,6 +103,14 @@ import {
   isTombstoneSuppressed,
   readTombstoneEntry,
 } from "../canvas/canvas-tombstone";
+// WP38 (C38) — the undo SCOPE lives in its own headless module; this file holds
+// the transaction it tags and the lifecycle the manager is bound to, and takes
+// no decision about what is undoable.
+import {
+  CanvasUndoRegistry,
+  captureConvertsCollabText,
+  chooseCaptureOrigin,
+} from "../canvas/canvas-undo";
 import type { DocHandle, SyncManager } from "../sync/sync";
 import {
   VAULT_EVENT_SETTLE_MS,
@@ -2097,6 +2105,24 @@ export class CanvasSync {
     this.canWrite = canWrite ?? (() => true);
   }
 
+  // WP38 (C38 AC1) — one registry per CLIENT, one `Y.UndoManager` per canvas
+  // doc inside it, attached on subscribe and destroyed on unsubscribe/teardown.
+  // Owned here because this class owns the doc lifecycle the manager's lifetime
+  // is defined against; the SCOPE decision is `canvas/canvas-undo.ts`'s.
+  private undoRegistry = new CanvasUndoRegistry();
+
+  getUndoRegistry(): CanvasUndoRegistry {
+    return this.undoRegistry;
+  }
+
+  /** Replace the registry — the clock seam C38 AC4 drives the capture-timeout
+   * boundary through. Must be called before any `subscribe`, or the managers
+   * the old registry holds are dropped without their docs being torn down. */
+  setUndoRegistry(registry: CanvasUndoRegistry): void {
+    this.undoRegistry.destroy();
+    this.undoRegistry = registry;
+  }
+
   // Bug G: inject/replace the client-side read-only guard after construction.
   // `path` is the canonical canvas path (toCanonicalPath(normalizePath(rawPath))).
   setCanWrite(predicate: (path: string) => boolean): void {
@@ -2684,6 +2710,14 @@ export class CanvasSync {
     // peer's delete and the deletion would never reach the open canvas view.
     const deletedMap = docHandle.doc.getMap<unknown>(DELETED_MAP_NAME);
 
+    // WP38 (C38 AC1) — THIS canvas doc's own manager, scoped to the three named
+    // root types above. Two subscribed canvases therefore hold two managers
+    // with two stacks; there is no shared stack for them to interact through.
+    // Attached BEFORE the host seed below so that the seed — which runs under
+    // no tracked origin — is observably not undoable rather than merely
+    // unobserved.
+    this.undoRegistry.attach(path, docHandle.doc);
+
     const diskPath = toLocalPath(path);
     if (role === "host") {
       const file = getFileByPath(this.vault, diskPath);
@@ -2858,6 +2892,11 @@ export class CanvasSync {
     if (this.sidecar !== null && sidecarGuid !== undefined) {
       void this.sidecar.detach(sidecarGuid);
     }
+    // WP38 (C38 AC1) — the manager is destroyed with its doc. It holds a
+    // reference to the doc and to every stack item over it, so leaving it
+    // attached past the release is a retained reference AND an undo that can
+    // reach a torn-down surface.
+    this.undoRegistry.detach(path);
     if (docId) this.syncManager.releaseDoc(docId);
   }
 
@@ -3015,13 +3054,48 @@ export class CanvasSync {
       return record !== undefined && renderDocValue(record.get(discard.field)) !== discard.value;
     });
 
+    // WP38 (C38 AC1/AC5) — THE ORIGIN, and it is created by this work package.
+    // Before WP38 the call below was a bare `doc.transact(fn)` with no origin
+    // argument at all. Nothing about WHAT this transaction writes changes: an
+    // origin rides on the transaction, not in the document, and `transact(fn)`
+    // and `transact(fn, origin)` produce identical document state.
+    //
+    // WHICH origin is a decision, and it is taken here because a nested
+    // `doc.transact(fn, otherOrigin)` inside an already-open transaction is
+    // IGNORED by Yjs — the outer origin wins — so it cannot be taken at the
+    // write site. The decision itself is `canvas/canvas-undo.ts`'s; what this
+    // file supplies is the measurement it is a function of: the STORED value
+    // under every collaborative-text field this pass is about to write, read
+    // before the transaction opens.
+    const collabTextTargets: unknown[] = [];
+    if (this.collabTextEnabled) {
+      for (const upsert of plan.upserts) {
+        if (!isCollabTextField(upsert.field) || typeof upsert.value !== "string") continue;
+        // Only an EXISTING record can be converted. A record this pass creates
+        // is built detached by `buildDetachedRecord` and never reaches
+        // `writeCollabText`, so creating a card keeps a plain string and stays
+        // a normal, undoable step.
+        const existing = maps[upsert.kind]?.get(upsert.id);
+        if (existing === undefined) continue;
+        collabTextTargets.push(existing.get(upsert.field));
+      }
+    }
+    const captureOrigin = chooseCaptureOrigin(captureConvertsCollabText(collabTextTargets));
+
+    // The step boundary, decided against the registry's injected clock BEFORE
+    // the transaction opens — `stopCapturing()` has to be in effect when Yjs's
+    // `afterTransaction` handler runs, or the boundary lands one step late.
+    this.undoRegistry.noteCapture(path);
+
     this.recentLocalEdits.add(path);
-    const applied = docHandle.doc.transact(() =>
-      // WP19: the author of every tombstone this pass writes is THIS client, and
-      // the `by` half of the merge tiebreak is that clientID as a string. It is
-      // read from the doc rather than invented so the value a peer sees in the
-      // entry is the same id it sees on the update itself.
-      this.applyIntentPlan(plan, maps, deletedMap, String(docHandle.doc.clientID)),
+    const applied = docHandle.doc.transact(
+      () =>
+        // WP19: the author of every tombstone this pass writes is THIS client, and
+        // the `by` half of the merge tiebreak is that clientID as a string. It is
+        // read from the doc rather than invented so the value a peer sees in the
+        // entry is the same id it sees on the update itself.
+        this.applyIntentPlan(plan, maps, deletedMap, String(docHandle.doc.clientID)),
+      captureOrigin,
     );
     this.recentLocalEdits.delete(path);
 
@@ -3602,6 +3676,8 @@ export class CanvasSync {
       const guid = this.guidByPath.get(path);
       if (this.sidecar !== null && guid !== undefined) void this.sidecar.detach(guid);
     }
+    // WP38 (C38 AC1) — every manager goes with the docs it was bound to.
+    this.undoRegistry.destroy();
     this.subscribedPaths.clear();
     this.guidByPath.clear();
     this.observedPathRefs.clear();

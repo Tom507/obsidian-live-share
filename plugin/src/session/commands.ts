@@ -5,6 +5,12 @@ import {
   IMPORT_FROM_FILE_COMMAND_NAME,
   canImportFromFile,
 } from "../canvas/canvas-import-command";
+import {
+  CANVAS_REDO_COMMAND_ID,
+  CANVAS_REDO_COMMAND_NAME,
+  CANVAS_UNDO_COMMAND_ID,
+  CANVAS_UNDO_COMMAND_NAME,
+} from "../canvas/canvas-undo";
 import type LiveSharePlugin from "../main";
 import { UserPickerModal } from "../ui/modals";
 import { normalizePath, toCanonicalPath } from "../utils";
@@ -241,6 +247,43 @@ export function registerCommands(plugin: LiveSharePlugin): void {
         // unhandled rejection. `runImportFromFile` reports every failure as a
         // status and notifies the user itself (I11).
       });
+    },
+  });
+
+  // --- WP38 (C38) — per-client undo/redo for an OWNED, SUBSCRIBED canvas -----
+  //
+  // Two separate commands with NO default hotkey. Obsidian's own file-based
+  // undo is untouched for markdown, unowned files and unsubscribed canvases —
+  // replacing it anywhere else is out of scope, and a rebind of `Ctrl+Z` would
+  // be exactly that.
+  //
+  // `checkCallback`, and its guard asks "is there a canvas in context whose
+  // undo history this client owns?" — NOT "is there a step to undo?". The
+  // second question is the one the INVOCATION answers, and it has to stay free
+  // to answer "no": an empty stack must reach the mechanism and come back with
+  // a measured `0 -> 0`, which is the one response no hardcoded literal can
+  // produce (C38 AC6).
+  //
+  // The availability predicate and the invocation are both one call each into
+  // `canvas/canvas-undo.ts` through `main.ts`. No stack arithmetic, no origin
+  // and no scope is spelt in either of these two blocks.
+  plugin.addCommand({
+    id: CANVAS_UNDO_COMMAND_ID,
+    name: CANVAS_UNDO_COMMAND_NAME,
+    checkCallback: (checking) => {
+      if (!plugin.canvasUndoAvailable()) return false;
+      if (checking) return true;
+      plugin.runCanvasUndo("undo");
+    },
+  });
+
+  plugin.addCommand({
+    id: CANVAS_REDO_COMMAND_ID,
+    name: CANVAS_REDO_COMMAND_NAME,
+    checkCallback: (checking) => {
+      if (!plugin.canvasUndoAvailable()) return false;
+      if (checking) return true;
+      plugin.runCanvasUndo("redo");
     },
   });
 }
