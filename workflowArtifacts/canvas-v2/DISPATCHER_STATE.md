@@ -2121,3 +2121,38 @@ system.** **S57** — a substituted record advanced the Surface-Shadow to the us
 text, so their save was dropped as `SHADOW STALE`; repaired at the receipt, the asymmetry inside
 `canvas-shadow.ts` untouched. **S59** — the P5 binding path reaches the view mutators and consults the
 predicate **zero** times; admitted as `FROZEN-BEHIND-FLAG`, **live the day P5 flips it.**
+
+### ✅ WP38 DONE (`a1c435e`, `df2c672`) — **P4 IS COMPLETE**
+
+All 6 ACs, **live 66 passed / 0 failed / 0 skipped**, unit **2471/2471** (347 files). Roles were exercised
+**both ways** across two installs (S37 satisfied rather than dodged).
+
+**The pre-tag origin measurement was taken properly** — four patterns, each **proved able to match a
+known-present line first** (rule 15), before a character of `canvas-sync.ts` moved. Result: **no consumer
+in the tree treats the capture transaction's origin as `null`/`undefined`**; the nine apparent hits were
+all the same **name collision** as `"capture-net"` — `invalid(CODE, origin)` rejection labels, recorded
+rather than glossed. The tag was predicted inert and **nothing reddened.** Charter line drift re-measured:
+the bare `doc.transact(fn)` is at **`:3019`, not `:2819`** — 200 lines.
+
+**The `Y.Text` conversion is excluded from undo**, and the **cost is stated rather than hidden**: the
+converting pass is untracked *in its entirety*, which with a cold shadow can be a whole board's first
+save. Hoisting it out would redden two of WP36's landed assertions — **recorded as an ESCALATE, not
+taken.** Live proof: A undoes and **A's character is gone while the peer's survives on both vaults.**
+
+**The empty-stack case ran live** — `before=0 after=0 popped=False reason="empty stack" changed=false`,
+canvas unchanged; then the same fixture pops once and reverts on both peers. That is the one call a
+hardcoded literal cannot fake, and it was the charter's reason for demanding it.
+
+### ⚠ S57 — "the installer verified the bytes on disk" is NOT evidence the LOADED plugin is those bytes
+
+A live instance answered **`unknown cmd: canvas.undo`** from one port for the first two scenarios of a
+run and normally for the remaining four — **no restart, and the installer had verified the installed
+bytes minutes earlier.** Not reproduced; cause unidentified. Mitigated by a preflight gate on the S47
+pattern: both ports must **route the command and report a `commandId`**, or the suite refuses to measure.
+
+**This is the S46 lesson one layer further in.** A digest proves *which bytes are on disk*; it says
+nothing about *what the running process loaded*. Every install-then-measure in this run rests on that gap.
+
+**WP38's `main.ts` / `e2e-control.ts` hunks were swept into WP87's commits** while both were live — the
+exact mirror of what WP36 reported. Nothing lost, whole WP in `HEAD`, **no revert performed** (rule 14
+honoured by disclosure, which is the third time today).
