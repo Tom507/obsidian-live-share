@@ -480,8 +480,8 @@ def spawning_subprocess_runner(command: Sequence[str], cwd: str) -> int:
     """Run ``command`` in ``cwd`` **by starting a process**, and return its exit status.
 
     **This is the only thing in ``tools/obsidian_e2e/`` that starts a process** — the whole
-    package holds exactly two spawn primitives (``import subprocess`` at the top of this
-    module and the :func:`subprocess.run` below), and both are here. Nothing else in the rig
+    package holds exactly two spawn primitives (the ``import subprocess`` and the
+    :func:`subprocess.run` below), and both are inside this function. Nothing else in the rig
     can launch anything: ``lifecycle.spawn_through_console`` requires an injected console,
     and ``vaults.default_process_lister`` deliberately uses a ctypes ToolHelp snapshot rather
     than shelling out to ``tasklist``.
