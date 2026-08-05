@@ -181,14 +181,27 @@ export default class LiveSharePlugin extends Plugin {
   private mutePathEvents = (path: string) => this.fileOpsManager.mutePathEvents(path);
   private unmutePathEvents = (path: string) => this.fileOpsManager.unmutePathEvents(path);
 
-  private registerManifestChangeHandler() {
-    // D2 — the retry that keeps the evidence gate from becoming a permanent
-    // "no". `cleanupStaleFiles` refuses whenever no live host has published
-    // this session, which at resume/join time is the NORMAL state: the guest
-    // is usually up before the host has republished. Without this the refusal
-    // would be final and stale files would never be cleaned, which would make
-    // the safe answer also the useless one. Here the decision is simply re-asked
-    // every time a host publishes — the exact event that creates the evidence.
+  /**
+   * D2 — the retry that keeps the evidence gate from becoming a permanent "no".
+   *
+   * `cleanupStaleFiles` refuses whenever no live host has published this
+   * session, which at resume/join time is the NORMAL state: the guest is usually
+   * up before the host has republished. Without a retry the refusal would be
+   * final and stale files would never be cleaned — the safe answer would also be
+   * the useless one. Here the decision is simply re-asked every time a host
+   * publishes, which is the exact event that creates the evidence.
+   *
+   * Deliberately SEPARATE from `registerManifestChangeHandler`, and deliberately
+   * armed earlier than it. Folding the two together meant moving
+   * `registerManifestChangeHandler` ahead of `syncFromManifest` and
+   * `backgroundSync.startAll("guest")` on the guest paths — and that reordering
+   * measurably broke canvas node deletion reaching the guest (E2E scenario [06]
+   * went 19/19 -> 17/19 on the same two instances, and back to 19/19 when the
+   * order was restored). The retry needs to be armed early; the file-level
+   * manifest handler must NOT be. Two concerns, two registrations, and the
+   * pre-existing call order is left exactly as it was.
+   */
+  private armStaleReconcileRetry() {
     this.manifestManager.setPublicationChangeHandler(() => {
       if (this.settings.role !== "guest") return;
       this.manifestHandlerQueue = this.manifestHandlerQueue
@@ -202,6 +215,9 @@ export default class LiveSharePlugin extends Plugin {
           this.logger.error("manifest", "stale reconcile failed", err);
         });
     });
+  }
+
+  private registerManifestChangeHandler() {
     this.manifestManager.setManifestChangeHandler((added, removed, updated) => {
       this.manifestHandlerQueue = this.manifestHandlerQueue
         .then(async () => {
@@ -328,6 +344,13 @@ export default class LiveSharePlugin extends Plugin {
           this.logger.error("manifest", "handler error", err);
         });
     });
+    // D2 — also arm the retry here, so the HOST paths get it too. Inert while
+    // this peer is host (the callback returns immediately on any non-guest
+    // role), and live the moment it is demoted — which is exactly the peer most
+    // in need of it, since `demoteToGuest` no longer reconciles by itself.
+    // `setPublicationChangeHandler` unobserves any previous observer, so calling
+    // it again on the guest paths is idempotent rather than a second listener.
+    this.armStaleReconcileRetry();
   }
 
   private get userId(): string {
@@ -516,12 +539,12 @@ export default class LiveSharePlugin extends Plugin {
         await this.backgroundSync.startAll("host");
         this.registerManifestChangeHandler();
       } else {
-        // D2 — the observer is armed BEFORE the first reconcile attempt, not
-        // after. On this path the attempt below is expected to refuse (the host
-        // has almost certainly not republished yet), so the retry has to already
-        // be listening or the host's publication would arrive with nothing
-        // watching for it and the legitimate cleanup would be lost.
-        this.registerManifestChangeHandler();
+        // D2 — the RETRY is armed before the first reconcile attempt, because
+        // that attempt is expected to refuse (the host has almost certainly not
+        // republished yet) and the host's publication must not arrive with
+        // nothing listening. Only the retry moves; `registerManifestChangeHandler`
+        // stays exactly where it always was — see `armStaleReconcileRetry`.
+        this.armStaleReconcileRetry();
         await this.cleanupStaleFiles();
         await this.manifestManager.syncFromManifest(
           this.mutePathEvents,
@@ -529,6 +552,7 @@ export default class LiveSharePlugin extends Plugin {
           this.requestBinaryFile,
         );
         await this.backgroundSync.startAll("guest");
+        this.registerManifestChangeHandler();
       }
       this.onActiveFileChange();
     } catch {
@@ -775,8 +799,8 @@ export default class LiveSharePlugin extends Plugin {
         try {
           await this.connectSync();
           await this.manifestManager.connect(this.syncManager);
-          // D2 — armed before the first attempt; see `resumeSession`.
-          this.registerManifestChangeHandler();
+          // D2 — only the RETRY is armed early; see `armStaleReconcileRetry`.
+          this.armStaleReconcileRetry();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,
@@ -784,6 +808,7 @@ export default class LiveSharePlugin extends Plugin {
             this.requestBinaryFile,
           );
           await this.backgroundSync.startAll("guest");
+          this.registerManifestChangeHandler();
           this.onActiveFileChange();
           this.logger.log("session", `joined, room=${this.settings.roomId}`);
           this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
@@ -809,8 +834,8 @@ export default class LiveSharePlugin extends Plugin {
         try {
           await this.connectSync();
           await this.manifestManager.connect(this.syncManager);
-          // D2 — armed before the first attempt; see `resumeSession`.
-          this.registerManifestChangeHandler();
+          // D2 — only the RETRY is armed early; see `armStaleReconcileRetry`.
+          this.armStaleReconcileRetry();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,
@@ -818,6 +843,7 @@ export default class LiveSharePlugin extends Plugin {
             this.requestBinaryFile,
           );
           await this.backgroundSync.startAll("guest");
+          this.registerManifestChangeHandler();
           this.onActiveFileChange();
           this.logger.log("session", `joined via link, room=${this.settings.roomId}`);
           this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
