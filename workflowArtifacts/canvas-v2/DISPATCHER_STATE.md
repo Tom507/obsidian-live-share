@@ -1786,3 +1786,45 @@ directions, and this run has now made both mistakes.
 - **WP80 should adopt WP82's `roleBacked` definer** at `cleanupStaleFiles`' live-host check; WP82 defined
   it and deliberately did not rewire that call site (one definer, no drive-by).
 - **S40** — the `OfflineQueue` is now reportable but still uncapped.
+
+### ✅ WP85 DONE (`2b59735`, `2117e24`) — and it settled 13/18: **the suite was measuring the rig**
+
+RED, both role orders: `on_disk=False after 30.3s / 30.2s`, file length unchanged, **`CANVAS WRITER …
+attached` ABSENT**. GREEN, both role orders: `on_disk=True after 1.0s / 0.0s`, canonical projection
+length, receipt present. Suite **2231 → 2294**, 0 failed, measured in a detached worktree.
+
+**The 13/18 answer, and it is not the product.** Measured with a live probe: **both peers' DOCS are
+byte-identical (25 nodes, same id list) while both FILES sit at 18–19 nodes**, with no writer attached on
+either peer this session. `canvas.open` **subscribes without opening a leaf**, and the leaf-open attach is
+gated on `!isSubscribed` — so calling it **permanently disables the seam that would attach the disk
+writer**. Every file-level assertion after it measures the rig.
+
+**Positive control:** opening a real leaf attached a writer on both peers and converged both files
+**6→25 / 7→25 within 8 s**. WP85's own before/after was **12/18 → 13/18**, the +1 being the flaky `[07]`,
+**with the five failures identical name for name**. *No product change can move those rows while the
+suite reaches its canvases that way.*
+
+**So the "baseline" I quoted all night — 19/19, then 13/18 — was never a product measurement.** The five
+failures were an artefact of how the suite opens a canvas. **Fixed in `H:\tmp\liveshare_e2e.py`**: the
+preflight now opens a **real leaf** via `canvas.typeInNode{open:true}` (no text, no blur — a non-invasive
+read), so the writer attaches the way it does for a user. **The baseline must be re-measured; 19/19 has
+never been established and is not claimed.**
+
+**AC4 caught a vacuous RED row and said so:** the remote change did arrive in 4.0 s — but the typed
+marker was **already in the file** (Obsidian's own view save, S48), so the row proved nothing. The
+`CANVAS WRITER:` receipt is the only sound oracle on a writerless peer.
+
+**S50 (new, unowned)** — the mirror pass runs its **host arm after a demotion is already decided**:
+`resuming as host` → `demoted` (117 ms) → `CANVAS MIRROR: role=host published=8 materialised=0`. That
+leaves a **guest** with every canvas subscribed and, pre-WP85, writerless. WP85 repairs the outcome for
+both arms; **the arming defect is untouched.**
+
+### ⚠ TOOLING HAZARD — `visible-console` can report success for a run that never happened
+
+WP85 measured it: `run_command` **without an explicit `session_key`** was answered `"reused"` against an
+**unrelated** console, and `await_console` then reported **`completed / exit 0` for the previous run**
+while **nothing executed**. Caught only by hand-checking the installed digest.
+
+**I hit this myself earlier** and read the correct-looking output as confirmation. **Always pass an
+explicit `session_key`**, and verify the artefact rather than the exit status. A console layer that
+returns the last run's success is a green that cannot fail, one level below the tests.
