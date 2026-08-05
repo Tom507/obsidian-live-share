@@ -2009,3 +2009,38 @@ licence taken, no inherited test amended.**
 and *"never reached"* are indistinguishable, since no close code is captured anywhere. WP88 stops
 *claiming* one; it cannot *tell*. Plus `DELETE /rooms`'s swallowed failure and `abortSession`'s three
 start/join callers, both still undecided.
+
+### 🚨 REPRESENTATION-BLINDNESS SWEEP DONE (`d0992b6`, `03c0741`, `de37a52`) — the class is NOT limited to two
+
+**302 candidates derived** (AST + type-checker taint, symbol-level fixpoint, 4 rounds over 425 files),
+in-class review set **123**. **Five more members, ZERO harmless** — 2 LIVE, 3 LATENT. Suite
+**2387/2387**, `tsc` exit 0.
+
+**The live one is a real product defect, and its symptom is describable in a sentence a user would say:**
+both production seed boundaries (`coldOpen` → `seedRecordsIntoYMaps`, `subscribe` → `seedFlatSpace`)
+**un-migrate a record while restating a string they rendered themselves**, destroying the CRDT history
+that makes the *next* concurrent edit merge. **"It merged once and then stopped merging."**
+
+**And the finding that explains the class better than my framing did: member 4 is precisely the check that
+would have caught member 3.** `Y.Text.toJSON` made it right by accident. **The blinded check was the
+guard on the other defect** — which is why one representation change can silently retire a whole layer of
+protection.
+
+**My framing was too narrow.** The largest single sink family is **truthiness — 38 rows, 32 in class** —
+because an empty `Y.Text` is **truthy where `""` was falsy**. That is **invisible to any `Object.is`-shaped
+search**, which is what I had described the class as.
+
+**The deriver's controls are the model to reuse:** run against the older commit it **finds both known
+members by name and line**, and it **exits 3 without emitting a census if the derivation returns nothing**
+— the WP86 failure mode made structurally impossible. **179 NARROW-KEY seams are recorded as the class's
+future membership**, so the next widening can **ask rather than remember**.
+
+**And it did not overclaim on my WP88 datum:** *"This derivation cannot reach it — its sinks are
+comparison sites; WP88's is a liveness property of an instrument."* The complementary sweep is dispatched
+as **B37**. **Seven surfaces so far:** an oracle (×2), a product write path, a diagnostic, a latent write
+path, **the anti-vacuity instrument itself**, the rig, and a criterion's precondition.
+
+**Carried up:** member 5 (`e2e-control.ts:1256`) is one line in WP88's file, **not annexed** · a residual
+on member 1 — a seed proposing a *genuinely different* string still flattens, which is a routing question
+for C36's router rather than a blind check, **reachable because of WP85**, pinned by a control test and
+deserving a WP · the honest canvas-E2E baseline **still owes a re-run** with members 1 and 3 on its list.
