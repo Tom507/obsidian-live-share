@@ -52,6 +52,23 @@ export class FileOpsManager {
   private staleTimer: ReturnType<typeof setInterval> | null = null;
   private offlineQueue = new OfflineQueue();
   private isOnline = true;
+  // --- WP88 (AC6) — S40's coupling, bounded by construction ------------------
+  //
+  // NOT a cap and not a retention policy: there is no constant here, nothing is
+  // evicted, and nothing already queued is discarded. C82's ruling that a cap
+  // is a data-retention decision stands untouched.
+  //
+  // What WP88 owns is the bound it REMOVES. Before WP88 this queue was bounded
+  // by the session being destroyed ~128 s after the link died — an accidental
+  // and destructive bound, but a bound. Now the peer survives its own outage,
+  // so an uncapped queue would grow for as long as the outage lasts.
+  //
+  // The structural answer: once the carrier link's retry chain has ENDED, this
+  // manager knows it will not send these ops. Accepting them anyway is the same
+  // lie the status bar told before WP82. So it stops accepting and COUNTS what
+  // it refused, which is the difference between a bound and a silent drop.
+  private acceptingIntoQueue = true;
+  private refusedWhileSealed = 0;
 
   constructor(vault: Vault, fileManager: FileManager) {
     this.vault = vault;
@@ -83,8 +100,38 @@ export class FileOpsManager {
    * every file operation into this queue while its status bar read
    * `Live Share: hosting`, and nothing in the process could say so.
    */
-  getOfflineState(): { online: boolean; queueDepth: number } {
-    return { online: this.isOnline, queueDepth: this.offlineQueue.size };
+  getOfflineState(): {
+    online: boolean;
+    queueDepth: number;
+    acceptingIntoQueue: boolean;
+    refusedWhileSealed: number;
+  } {
+    return {
+      online: this.isOnline,
+      queueDepth: this.offlineQueue.size,
+      // WP88 (AC6) — reported BESIDE the landed depth, never instead of it.
+      // "the depth stopped growing" and "the depth stopped growing because
+      // nothing was produced" are different observations, and only the refusal
+      // counter can tell them apart.
+      acceptingIntoQueue: this.acceptingIntoQueue,
+      refusedWhileSealed: this.refusedWhileSealed,
+    };
+  }
+
+  /**
+   * WP88 (AC6) — the stop-accepting boundary. WIRING ONLY: the decision is
+   * `sync/link-state.ts`'s `acceptsIntoOfflineQueue`, taken over the definer's
+   * verdict, and this manager is told the answer rather than computing it.
+   *
+   * Sealing NEVER discards. Everything already queued stays queued and is still
+   * drained verbatim by {@link setOnline} when the peer comes back.
+   */
+  setQueueAccepting(accepting: boolean): void {
+    if (this.acceptingIntoQueue === accepting) return;
+    this.acceptingIntoQueue = accepting;
+    // Re-opening resets the counter so a later seal reports ITS OWN refusals
+    // rather than a running total across unrelated outages.
+    if (accepting) this.refusedWhileSealed = 0;
   }
 
   setOnline(online: boolean): void {
@@ -119,6 +166,12 @@ export class FileOpsManager {
   private emitOp(op: FileOp): void {
     if (!this.sendOp) return;
     if (!this.isOnline) {
+      // WP88 (AC6) — the chain that carries file ops has ended, so this op will
+      // not be sent. Refusing it is counted; nothing already queued is touched.
+      if (!this.acceptingIntoQueue) {
+        this.refusedWhileSealed += 1;
+        return;
+      }
       this.offlineQueue.enqueue(op);
       return;
     }

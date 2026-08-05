@@ -54,6 +54,35 @@ export function registerCommands(plugin: LiveSharePlugin): void {
     },
   });
 
+  // WP88 (AC3) — THE WAY BACK. The re-arm affordance, reachable from the
+  // product and not only from `testing/`.
+  //
+  // This command exists because WP88 stops the retry ceiling from destroying
+  // the session. Retaining the six credential keys while leaving the peer with
+  // no edge that can re-arm it would be a session that reports itself alive and
+  // is not — WP82's own defect, rebuilt by WP88's repair — so the retention and
+  // the way back ship together.
+  //
+  // `checkCallback`, never `callback`: the command is meaningless without an
+  // active session, and a `callback` command would sit in the palette
+  // unconditionally with the guard nowhere to live (the WP30 precedent).
+  // Deliberately NOT gated on role: a guest whose Wi-Fi died needs this exactly
+  // as much as a host does, and the relay's election moves the role around
+  // freely anyway.
+  plugin.addCommand({
+    id: "rearm-session",
+    name: "Verbindung erneut versuchen",
+    checkCallback: (checking) => {
+      if (!plugin.sessionManager.isActive) return false;
+      if (checking) return true;
+      void plugin.rearmSharing().catch(() => {
+        // `checkCallback` is not async and Obsidian discards its result, so an
+        // escaping rejection would surface only as an unhandled rejection.
+        // `rearmSharing` reports every outcome itself (I11).
+      });
+    },
+  });
+
   plugin.addCommand({
     id: "copy-invite",
     name: "Copy invite link",

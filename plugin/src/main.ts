@@ -80,18 +80,27 @@ import { ControlChannel } from "./sync/control-ws";
 import { E2ECrypto } from "./sync/crypto";
 import {
   type AnnouncementState,
+  FILE_OP_CARRIER_LINK,
   LINK_READY_STATE,
   type LinkLifecycleEvent,
   type LinkName,
   NO_ANNOUNCEMENT,
   type PeerLinkFacts,
+  type SeveranceCause,
   type SharingVerdict,
+  WP88_BUILD_MARKER,
+  acceptsIntoOfflineQueue,
   announcementKey,
   decideSharing,
   describeLifecycle,
   isLinkUp,
   nextAnnouncement,
+  offlineQueueSealKey,
+  offlineQueueSealNoticeText,
   readyStateName,
+  severanceAnnouncementKey,
+  severanceLogLine,
+  severanceNoticeText,
   sharingNoticeText,
   sharingStatusText,
 } from "./sync/link-state";
@@ -234,6 +243,16 @@ export default class LiveSharePlugin extends Plugin {
   private controlBeliefChangedAt: number | null = null;
   /** WP82 — once-then-count state for the sharing announcement (AC5/AC6). */
   private sharingAnnouncement: AnnouncementState = NO_ANNOUNCEMENT;
+  /** WP88 (AC3) — once-then-count state for the severance announcement. */
+  private severanceAnnouncement: AnnouncementState = NO_ANNOUNCEMENT;
+  /** WP88 (AC6) — once-then-count state for the offline-queue seal. */
+  private queueSealAnnouncement: AnnouncementState = NO_ANNOUNCEMENT;
+  /**
+   * WP88 (AC3) — the last severance, or `null` while nothing has severed. Held
+   * so the rig and the status surface can read WHY a peer stopped sharing
+   * without inferring it, and cleared by a successful re-arm.
+   */
+  private lastSeverance: { cause: SeveranceCause; links: LinkName[]; at: number } | null = null;
 
   get muxConnected(): boolean {
     return isLinkUp(this.muxLinkSnapshot());
@@ -351,7 +370,12 @@ export default class LiveSharePlugin extends Plugin {
   linkReport(): Record<string, unknown> {
     const facts = this.peerLinkFacts();
     const verdict = this.getSharingVerdict(facts);
-    const offline = this.fileOpsManager?.getOfflineState() ?? { online: false, queueDepth: 0 };
+    const offline = this.fileOpsManager?.getOfflineState() ?? {
+      online: false,
+      queueDepth: 0,
+      acceptingIntoQueue: true,
+      refusedWhileSealed: 0,
+    };
     const describe = (snapshot: PeerLinkFacts["control"] | PeerLinkFacts["mux"]) => ({
       link: snapshot.link,
       hasSocket: snapshot.hasSocket,
@@ -373,6 +397,14 @@ export default class LiveSharePlugin extends Plugin {
       links: { control: describe(facts.control), mux: describe(facts.mux) },
       offlineQueueDepth: offline.queueDepth,
       fileOpsOnline: offline.online,
+      // WP88 (AC6) — BESIDE the landed depth, never instead of it. The depth
+      // alone cannot distinguish "the queue stopped growing" from "nothing was
+      // produced"; the refusal counter is what makes that testable.
+      offlineQueueAccepting: offline.acceptingIntoQueue,
+      offlineQueueRefused: offline.refusedWhileSealed,
+      // WP88 (AC3/AC4) — PRESENCE ONLY. No credential value, no length that is
+      // a fingerprint, and no fragment of any socket URL.
+      severance: this.severanceReport(),
       sharing: verdict.sharing,
       roleBacked: verdict.roleBacked,
       role: facts.role,
@@ -488,6 +520,100 @@ export default class LiveSharePlugin extends Plugin {
     }
   }
 
+  /**
+   * WP88 — the control link's four transitions, as a NAMED METHOD.
+   *
+   * Extracted verbatim from the closure that used to sit inside `connectSync`,
+   * with only the two connectivity arms changed. It is a method rather than a
+   * closure for one reason that matters: as a closure it could be driven only
+   * by booting the entire plugin, so the branch that DESTROYED THE SESSION on a
+   * dropped socket had no reachable seam and was never exercised by anything.
+   *
+   * The `connected` and `reconnecting` arms are byte-unchanged.
+   */
+  handleControlState(controlState: "connected" | "reconnecting" | "disconnected" | "auth-required") {
+    this.logger.log("connection", `control channel ${controlState}`);
+    if (controlState === "connected") {
+      this.connectionState.transition({ type: "connected" });
+      // Both host and guest must send join-request so the server knows identities
+      this.controlChannel?.send({
+        type: "join-request",
+        userId: this.userId,
+        displayName: this.settings.displayName,
+        avatarUrl: this.settings.avatarUrl,
+      });
+      // WP82 (AC1) — THE ROLE GATE IS GONE. This callback fires from the
+      // control socket's `onopen`, i.e. at a moment when the socket is
+      // provably usable, and that is a fact about the LINK. Gating it on
+      // `role === "host"` made it one of two mutually exclusive role-gated
+      // sites, and a peer that resumed as guest and was promoted a
+      // millisecond later fell between both and was never marked again for
+      // the life of the session.
+      //
+      // Marking it here is not the "set it unconditionally" mistake: this is
+      // the peer's BELIEF, and `controlConnected` is now derived from the
+      // socket's live `readyState` by the pure definer, so a dead link cannot
+      // report healthy however this belief is set.
+      this.controlConnected = true;
+      this.updateOnlineState();
+      this.presenceManager?.broadcastPresence();
+      if (this.backgroundSync.isRunning()) {
+        this.onActiveFileChange();
+      }
+    } else if (controlState === "reconnecting") {
+      this.controlConnected = false;
+      this.connectionState.transition({ type: "reconnecting" });
+      this.updateOnlineState();
+    } else if (controlState === "auth-required") {
+      // WP88 — ROUTES E2 and E3, SEVERED. This branch is S39, both halves.
+      //
+      // The DESTRUCTIVE half: `auth-required` is emitted at exactly three
+      // sites in `control-ws.ts` — the socket-construction throw (E3) and the
+      // two `everConnected === false` selectors on `onclose` / the exhausted
+      // ceiling (E2) — and all three used to end the session. E2 is E1 with
+      // one boolean flipped, so repairing one arm of that branch and not the
+      // other would have left a network outage still clearing credentials on
+      // the first-connect path.
+      //
+      // The MISLABELLING half: the old `Notice` read "authentication required
+      // - sign in via settings". That is a claim about the SERVER'S ANSWER,
+      // made in exactly the case where there was no answer at all —
+      // `everConnected` is false, so this peer has never heard from the relay
+      // on this link. After WP88 the credentials are still present and may
+      // well be valid, so instructing the user to fix them would be telling
+      // them to repair something that is probably not broken, for a session
+      // that has not ended. The replacement names BOTH possibilities and
+      // asserts neither; see `severanceNoticeText`.
+      this.controlConnected = false;
+      this.connectionState.transition({ type: "auth-expired" });
+      this.haltSharing("never-established");
+    } else {
+      // WP88 — ROUTE E1, SEVERED. The control chain exhausted its ceiling
+      // (10 attempts, 300 ms base ×2 capped at 30 s ⇒ ≈128 100 ms) after
+      // having connected at least once. `endSession()` here meant a laptop
+      // lid closed for two minutes destroyed the room for every participant.
+      this.controlConnected = false;
+      this.connectionState.transition({ type: "disconnect" });
+      if (this.sessionManager.isActive && !this.isEndingSession) {
+        this.haltSharing("retry-exhausted");
+      } else {
+        this.updateOnlineState();
+      }
+    }
+  }
+
+  /**
+   * WP88 — ROUTE E4, SEVERED. The mux ceiling: 15 attempts, 100 ms base, ×2
+   * capped at 30 s. The old body raised "sync connection lost, ending session"
+   * and then ended it, so a peer whose network dropped lost its `roomId`, its
+   * `token`, both crypto keys, its `role` and its `permission` — and if it
+   * happened to be host, the room itself, for everyone still connected fine.
+   */
+  handleMuxExhausted() {
+    this.logger?.error("sync", "mux channel exhausted reconnect attempts");
+    this.haltSharing("retry-exhausted");
+  }
+
   updateOnlineState() {
     // WP82 — consumer 1 of the definer. Was
     // `this.muxConnected && this.controlConnected`, i.e. the conjunction of two
@@ -495,6 +621,202 @@ export default class LiveSharePlugin extends Plugin {
     // This is the call that decides whether a file op goes on the wire or into
     // the offline queue.
     this.fileOpsManager.setOnline(this.getSharingVerdict().sharing);
+    // WP88 (AC6) — WIRING ONLY. Whether the queue may still accept is decided
+    // by `acceptsIntoOfflineQueue` over the definer's verdict, so the seal and
+    // the online state cannot drift apart at two call sites the way `main.ts`
+    // and `control-handlers.ts` each held a fragment of "connected" before
+    // WP82. The line above is left EXACTLY as WP82 landed it — `wp82`'s
+    // structural test pins that expression literally, and hoisting the verdict
+    // into a local (which is what this WP first did) reddened it. WP88 holds no
+    // §7 licence of any class, so the assertion wins and the verdict is simply
+    // read a second time; `getSharingVerdict` is pure over facts read at call
+    // time, so the two reads cannot disagree in a way that matters.
+    const verdict = this.getSharingVerdict();
+    const accepting = acceptsIntoOfflineQueue(verdict, FILE_OP_CARRIER_LINK);
+    this.fileOpsManager.setQueueAccepting(accepting);
+    this.announceQueueSeal(verdict);
+  }
+
+  /**
+   * WP88 (AC6) — announce the seal ONCE, then count. Reuses WP82's landed
+   * `nextAnnouncement` reducer verbatim rather than authoring a second
+   * discipline; only the KEY differs, because "this peer is not sharing" and
+   * "this peer has stopped accepting work" are different facts and a user who
+   * was told the first is still entitled to be told the second.
+   */
+  private announceQueueSeal(verdict: SharingVerdict): void {
+    const key = offlineQueueSealKey(verdict, FILE_OP_CARRIER_LINK);
+    const decision = nextAnnouncement(this.queueSealAnnouncement, key);
+    this.queueSealAnnouncement = decision.state;
+    if (decision.announce) {
+      const offline = this.fileOpsManager.getOfflineState();
+      this.logger?.warn(
+        "connection",
+        `OFFLINE QUEUE SEALED: carrier=${FILE_OP_CARRIER_LINK} retained=${offline.queueDepth} discarded=0`,
+      );
+      new Notice(offlineQueueSealNoticeText(offline.queueDepth, FILE_OP_CARRIER_LINK));
+    } else if (decision.rearmed) {
+      this.logger?.log("connection", "offline queue accepting again — seal re-armed");
+    }
+  }
+
+  /**
+   * WP88 — THE SEVERANCE. The non-destructive counterpart to `abortSession`,
+   * and the whole repair.
+   *
+   * Before WP88 five production routes answered "I cannot reach the relay" by
+   * calling `SessionManager.endSession()`, which clears SIX settings keys —
+   * `roomId`, `token`, `encryptionPassphrase`, `encryptionSalt`, `role`,
+   * `permission` — persists them to `data.json`, and, on a host, first issues
+   * `DELETE {serverUrl}/rooms/{roomId}`, destroying the room for every
+   * participant including the ones whose network is fine.
+   *
+   * This method stops sharing and keeps the identity. It does not call
+   * `sessionManager.endSession()`, it clears no setting, it calls
+   * `saveSettings()` for no credential key, and it contacts the relay not at
+   * all.
+   *
+   * ## Why the severance is HERE and not inside `endSession`
+   *
+   * Making `endSession` conditional on why it was called would put the decision
+   * inside the destructive function — which is exactly the ambiguity that hid
+   * this defect for the length of the project: ONE call answered both "I chose
+   * to leave" and "my Wi-Fi died". `endSession`'s body is preserved byte-for-
+   * byte for the user path, host `DELETE` included. The severing happens at the
+   * CALLER.
+   *
+   * ## Why it may refuse to destroy
+   *
+   * Losing the connection is a fact about the network. Losing `roomId` /
+   * `token` / `role` is a fact the client MANUFACTURES about itself, on local,
+   * negative, momentary evidence — I11's prohibition, and D2's shape one layer
+   * above the file system. The costs are asymmetric: stale credentials cost one
+   * failed join; discarded good ones cost a fresh invite for every peer, an
+   * out-of-band passphrase recovery for an encrypted room (the invite carries
+   * only `r` and `t`), and on a host a room that no longer exists for anybody.
+   */
+  private haltSharing(cause: SeveranceCause): void {
+    const verdict = this.getSharingVerdict();
+    const links = verdict.endedLinks.length > 0 ? verdict.endedLinks : verdict.downLinks;
+    this.lastSeverance = { cause, links, at: Date.now() };
+    // A DECLARED new signature (BUILD_SPEC §10). No existing signature, level,
+    // category or volume changes.
+    this.logger?.error("connection", severanceLogLine(cause, links));
+
+    // Announce once, then count — WP82's landed discipline, reused rather than
+    // rebuilt. A toast per backoff tick at 300 ms base delay would be a worse
+    // defect than the silence it replaces.
+    const decision = nextAnnouncement(
+      this.severanceAnnouncement,
+      severanceAnnouncementKey(cause, links),
+    );
+    this.severanceAnnouncement = decision.state;
+    if (decision.announce) {
+      new Notice(severanceNoticeText(cause, links));
+    } else {
+      this.logger?.debug(
+        "connection",
+        `sharing halted again: ${cause} (occurrence ${decision.count}, not re-announced)`,
+      );
+    }
+
+    // Stop transmitting, and say so on every surface. `updateOnlineState` also
+    // seals the offline queue (AC6) through the same verdict.
+    this.updateOnlineState();
+    this.updateStatusBar();
+  }
+
+  /** WP88 (AC3) — the severance, read-only, for the status surface and the rig. */
+  severanceReport(): Record<string, unknown> {
+    const offline = this.fileOpsManager?.getOfflineState() ?? {
+      online: false,
+      queueDepth: 0,
+      acceptingIntoQueue: true,
+      refusedWhileSealed: 0,
+    };
+    return {
+      // S46 — a digest proves WHICH build, not WHOSE.
+      buildMarker: WP88_BUILD_MARKER,
+      halted: this.lastSeverance !== null,
+      cause: this.lastSeverance?.cause ?? null,
+      links: this.lastSeverance?.links ?? [],
+      at: this.lastSeverance?.at ?? null,
+      // PRESENCE ONLY. This WP's subject IS these keys, so the discipline is
+      // absolute: they are named here and their values never leave the process.
+      sessionIdentityRetained: {
+        roomIdPresent: Boolean(this.settings?.roomId),
+        tokenPresent: Boolean(this.settings?.token),
+        encryptionPassphrasePresent: Boolean(this.settings?.encryptionPassphrase),
+        encryptionSaltPresent: Boolean(this.settings?.encryptionSalt),
+        rolePresent: this.settings?.role !== null && this.settings?.role !== undefined,
+        permissionPresent: Boolean(this.settings?.permission),
+      },
+      offlineQueueAccepting: offline.acceptingIntoQueue,
+      offlineQueueRefused: offline.refusedWhileSealed,
+    };
+  }
+
+  /**
+   * WP88 (AC3) — THE WAY BACK, reachable from the product.
+   *
+   * Retention without a re-arm is a worse state than the destruction it
+   * replaces: a peer that keeps its credentials and can never use them again
+   * has a session that reports itself alive with no edge that can restore it —
+   * WP82's own defect, rebuilt by WP88's repair. That is why the re-arm ships
+   * in the same work package and not a later one.
+   *
+   * It re-arms both links through their production `rearm()` seams, which
+   * deliberately do NOT reset "has this link ever connected" (S39). Three
+   * distinct dead states are reachable and all three are covered, because
+   * `shouldConnect = false` is set at three sites in `control-ws.ts` and is
+   * cleared by nothing but a fresh `connect()`: the exhausted ceiling, the
+   * socket-construction throw, and `destroy()`.
+   *
+   * If the plugin-load resume itself failed (E5) there may be no control
+   * channel at all, in which case re-arming a channel that does not exist would
+   * be a no-op that reports success. That case re-runs the resume instead.
+   */
+  async rearmSharing(): Promise<Record<string, unknown>> {
+    if (!this.sessionManager?.isActive) {
+      new Notice("Live Share: keine aktive Sitzung");
+      return { rearmed: false, reason: "no active session" };
+    }
+    const before = this.linkReport();
+    if (!this.controlChannel) {
+      // E5's way back: the resume never got far enough to build a channel.
+      this.logger?.log("session", "re-arm: no control channel — resuming session again");
+      await this.resumeSession();
+      this.severanceAnnouncement = NO_ANNOUNCEMENT;
+      this.lastSeverance = null;
+      this.updateOnlineState();
+      this.updateStatusBar();
+      return {
+        rearmed: true,
+        via: "resume",
+        reportBefore: before,
+        reportAfter: this.linkReport(),
+      };
+    }
+    const control = this.controlChannel.rearm();
+    const mux = this.syncManager?.rearm() ?? null;
+    // The announcement re-arms, so a second outage announces again.
+    this.severanceAnnouncement = NO_ANNOUNCEMENT;
+    this.lastSeverance = null;
+    this.logger?.log(
+      "connection",
+      `re-arm requested by user: control(wasEnded=${control.wasChainEnded}, started=${control.reconnectStarted}) mux(wasEnded=${mux?.wasChainEnded ?? "n/a"}, started=${mux?.reconnectStarted ?? "n/a"})`,
+    );
+    this.updateOnlineState();
+    this.updateStatusBar();
+    new Notice("Live Share: Verbindung wird erneut aufgebaut");
+    return {
+      rearmed: true,
+      via: "rearm",
+      control,
+      mux,
+      reportBefore: before,
+      reportAfter: this.linkReport(),
+    };
   }
 
   private requestBinaryFile = (path: string) => {
@@ -1108,8 +1430,22 @@ export default class LiveSharePlugin extends Plugin {
       }
       this.onActiveFileChange();
     } catch {
+      // WP88 — ROUTE E5, SEVERED. This bare `catch` wraps the WHOLE resume —
+      // `cleanupStaleFiles`, `syncFromManifest`, `backgroundSync.startAll` and
+      // the canvas mirror pass — and it used to route ANY throw at plugin load
+      // to `abortSession`, i.e. to `SessionManager.endSession()`: six settings
+      // keys cleared and persisted, and on a host a `DELETE /rooms/{roomId}`
+      // first. That is not a retry ceiling. It is an UNCLASSIFIED EXCEPTION
+      // treated as a decision to leave, and it reaches the destruction with no
+      // ceiling at all — which is why the census that found it had to be by
+      // reachability rather than by searching for `endSession`.
+      //
+      // `abortSession` keeps its other three callers (`startSession` and the
+      // two join paths), which are NOT connectivity give-ups: a session that
+      // failed to START has no identity worth retaining. Those are out of
+      // WP88's scope and are deliberately left alone.
       this.logger.error("session", "failed to resume session");
-      await this.abortSession("Live Share: failed to resume previous session");
+      this.haltSharing("resume-failed");
     }
   }
 
@@ -1462,11 +1798,13 @@ export default class LiveSharePlugin extends Plugin {
     // callback was the only `"connection"` log site in the entire plugin.
     this.syncManager.onLifecycle((event) => this.onLinkLifecycle(event));
     this.syncManager.connect();
-    this.syncManager.onMaxReconnect(() => {
-      this.logger.error("sync", "mux channel exhausted reconnect attempts");
-      new Notice("Live Share: sync connection lost, ending session");
-      void this.endSession();
-    });
+    // WP88 — the two connectivity handlers are NAMED METHODS rather than inline
+    // closures. That is not tidying: as closures inside `connectSync` they were
+    // reachable only by booting the whole plugin, so the four routes that end a
+    // session could not be driven — which is a large part of why a defect this
+    // severe survived. They are now individually invocable and individually
+    // pinned by the route census.
+    this.syncManager.onMaxReconnect(() => this.handleMuxExhausted());
     this.syncManager.onConnectionChange((connected) => {
       this.muxConnected = connected;
       this.updateOnlineState();
@@ -1494,55 +1832,7 @@ export default class LiveSharePlugin extends Plugin {
     // four `onStateChange` transitions it already narrated are UNCHANGED: same
     // signature, same category, same level, same volume.
     this.controlChannel.onLifecycle((event) => this.onLinkLifecycle(event));
-    this.controlChannel.onStateChange((controlState) => {
-      this.logger.log("connection", `control channel ${controlState}`);
-      if (controlState === "connected") {
-        this.connectionState.transition({ type: "connected" });
-        // Both host and guest must send join-request so the server knows identities
-        this.controlChannel?.send({
-          type: "join-request",
-          userId: this.userId,
-          displayName: this.settings.displayName,
-          avatarUrl: this.settings.avatarUrl,
-        });
-        // WP82 (AC1) — THE ROLE GATE IS GONE. This callback fires from the
-        // control socket's `onopen`, i.e. at a moment when the socket is
-        // provably usable, and that is a fact about the LINK. Gating it on
-        // `role === "host"` made it one of two mutually exclusive role-gated
-        // sites, and a peer that resumed as guest and was promoted a
-        // millisecond later fell between both and was never marked again for
-        // the life of the session.
-        //
-        // Marking it here is not the "set it unconditionally" mistake: this is
-        // the peer's BELIEF, and `controlConnected` is now derived from the
-        // socket's live `readyState` by the pure definer, so a dead link cannot
-        // report healthy however this belief is set.
-        this.controlConnected = true;
-        this.updateOnlineState();
-        this.presenceManager?.broadcastPresence();
-        if (this.backgroundSync.isRunning()) {
-          this.onActiveFileChange();
-        }
-      } else if (controlState === "reconnecting") {
-        this.controlConnected = false;
-        this.connectionState.transition({ type: "reconnecting" });
-        this.updateOnlineState();
-      } else if (controlState === "auth-required") {
-        this.controlConnected = false;
-        this.updateOnlineState();
-        this.connectionState.transition({ type: "auth-expired" });
-        new Notice("Live Share: authentication required - sign in via settings");
-        void this.endSession();
-      } else {
-        this.controlConnected = false;
-        this.updateOnlineState();
-        this.connectionState.transition({ type: "disconnect" });
-        if (this.sessionManager.isActive && !this.isEndingSession) {
-          new Notice("Live Share: connection lost, session ended");
-          void this.endSession();
-        }
-      }
-    });
+    this.controlChannel.onStateChange((controlState) => this.handleControlState(controlState));
 
     registerControlHandlers(this);
     this.controlChannel.connect();

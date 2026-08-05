@@ -241,8 +241,32 @@ export class SyncManager {
     readyStateAfter: number;
   } {
     const wasSilenced = this.silenced;
-    const wasChainEnded = this.retryChainEnded || !this.shouldConnect;
     this.silenced = false;
+    const rearmed = this.rearm();
+    return {
+      link: "mux",
+      wasSilenced,
+      wasChainEnded: rearmed.wasChainEnded,
+      reconnectStarted: rearmed.reconnectStarted,
+      readyStateAfter: rearmed.readyStateAfter,
+    };
+  }
+
+  /**
+   * WP88 (AC3) — the mux half of the production re-arm. Same seam, two callers:
+   * `restoreLink` (the rig, which also lifts its own suppression) and
+   * `LiveSharePlugin.rearmSharing` (the user-reachable command). See
+   * `ControlChannel.rearm` for the full reasoning; the constraint that matters
+   * on both links is that nothing here resets the "has this link ever
+   * connected" flag.
+   */
+  rearm(): {
+    link: "mux";
+    wasChainEnded: boolean;
+    reconnectStarted: boolean;
+    readyStateAfter: number;
+  } {
+    const wasChainEnded = this.retryChainEnded || !this.shouldConnect;
     let reconnectStarted = false;
     if (!this.isDestroyed && (this.retryChainEnded || !this.shouldConnect)) {
       this.retryChainEnded = false;
@@ -255,7 +279,6 @@ export class SyncManager {
     }
     return {
       link: "mux",
-      wasSilenced,
       wasChainEnded,
       reconnectStarted,
       readyStateAfter: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,

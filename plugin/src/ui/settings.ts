@@ -139,6 +139,16 @@ export class LiveShareSettingTab extends PluginSettingTab {
             void sessionManager.copyInvite();
           }),
         );
+        // WP88 (AC3) — the second reachable surface for the re-arm. The command
+        // palette entry (`rearm-session`) is the primary one; this is here
+        // because a user whose peer has given up is far more likely to open
+        // this panel than to remember a command name. Both call the SAME
+        // production method — there is no second re-arm.
+        setting.addButton((button) =>
+          button.setButtonText("Verbindung erneut versuchen").onClick(() => {
+            void this.plugin.rearmSharing().then(() => this.display());
+          }),
+        );
         if (settings.role === "host") {
           setting.addButton((button) =>
             button

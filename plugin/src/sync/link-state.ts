@@ -315,6 +315,145 @@ export function nextAnnouncement(
   return { state: { key, count: 1 }, announce: true, rearmed: false, count: 1 };
 }
 
+// ===========================================================================
+// WP88 — the terminal state's CONSUMERS. No new state, no second definer.
+//
+// `SharingState` already carries `"gave-up"` and `decideSharing` already
+// resolves it at the top of its chain. Everything below reads that verdict and
+// nothing below decides what "gave up" means. The defect WP88 repairs is not a
+// missing state — it is that five production routes destroyed the session
+// identity without ever asking this module whether a chain had ended.
+//
+// THE RULING, so the next reader does not have to reconstruct it: losing the
+// connection is a fact about the network; losing `roomId` / `token` / `role` is
+// a fact the client MANUFACTURES about itself, on local, negative, momentary
+// evidence. Stale credentials cost one failed join. Discarded good ones cost a
+// fresh invite for every peer and — on a host, which issues
+// `DELETE /rooms/{roomId}` first — a room nobody has. I11: a refusal never
+// destroys.
+// ===========================================================================
+
+/**
+ * WHY a peer stopped sharing. Every member is a CONNECTIVITY fact, never a
+ * decision about the session: none of them is evidence that the room is gone,
+ * that the credentials are wrong, or that the user wanted to leave.
+ *
+ * - `retry-exhausted`   — the chain ended after having connected at least once
+ *                         (control `disconnected`, mux `onMaxReconnect`).
+ * - `never-established` — the chain ended without the relay ever answering on
+ *                         this link (control `auth-required`). **This is S39.**
+ *                         The old code rendered it as "authentication required
+ *                         — sign in via settings", which is a claim about the
+ *                         SERVER'S ANSWER made when there was no answer at all.
+ * - `resume-failed`     — the plugin-load resume threw (E5, no ceiling at all).
+ */
+export type SeveranceCause = "retry-exhausted" | "never-established" | "resume-failed";
+
+/**
+ * WP88 — S46. A digest proves WHICH build, not WHOSE. This literal is unique to
+ * this batch's own change, is referenced from `severanceReport()` so it cannot
+ * be tree-shaken out of either bundle, and is greppable in the INSTALLED bytes
+ * before any live row is trusted. It carries no credential, no URL and no
+ * version number.
+ */
+export const WP88_BUILD_MARKER = "WP88-B34-RETRY-CEILING-SEVERANCE";
+
+/**
+ * The `Notice` for a severance. German (§1). Each string states the fact and
+ * the remedy and asserts NOTHING the peer cannot know.
+ *
+ * `never-established` deliberately names BOTH possibilities. A client that has
+ * never had an answer from the relay cannot tell "the relay rejected these
+ * credentials" from "the relay was never reached" — the socket is closed either
+ * way and no close code is captured anywhere in this plugin. Naming one of them
+ * as the diagnosis is the same move the whole defect is made of. Recorded, not
+ * repaired: distinguishing them needs close-code inspection nobody owns.
+ */
+export function severanceNoticeText(cause: SeveranceCause, links: LinkName[]): string {
+  const named = links.length > 0 ? ` (${links.join(", ")})` : "";
+  switch (cause) {
+    case "retry-exhausted":
+      return `Live Share: Verbindung verloren${named} — es werden keine Änderungen mehr übertragen. Die Sitzung bleibt bestehen; "Live Share: Verbindung erneut versuchen" stellt sie wieder her.`;
+    case "never-established":
+      return `Live Share: Verbindung zum Relay konnte nicht hergestellt werden${named} — entweder ist das Relay nicht erreichbar oder die Zugangsdaten wurden abgelehnt; das lässt sich hier nicht unterscheiden. Die Sitzung bleibt bestehen; "Live Share: Verbindung erneut versuchen" versucht es erneut.`;
+    case "resume-failed":
+      return `Live Share: Sitzung konnte nicht fortgesetzt werden — die Sitzungsdaten bleiben erhalten. "Live Share: Verbindung erneut versuchen" versucht es erneut.`;
+  }
+}
+
+/**
+ * The log line for a severance. A DECLARED machine contract (BUILD_SPEC §10),
+ * new in WP88 — no existing signature changes. Uppercase ASCII, no URL, no
+ * credential value, and it names the keys that were RETAINED rather than any of
+ * their contents.
+ */
+export function severanceLogLine(cause: SeveranceCause, links: LinkName[]): string {
+  return `SHARING HALTED: cause=${cause} links=${links.join(",") || "none"} sessionIdentityRetained=true roomDeleted=false`;
+}
+
+/**
+ * The announcement key for a severance, on the landed once-then-count
+ * discipline. Bound to the CAUSE and the links, never to the retry.
+ */
+export function severanceAnnouncementKey(cause: SeveranceCause, links: LinkName[]): string {
+  return `halted:${cause}:${links.join(",")}`;
+}
+
+// ---------------------------------------------------------------------------
+// WP88 (AC6) — S40's coupling, bounded BY CONSTRUCTION rather than by a cap.
+//
+// C82 ruled that an `OfflineQueue` cap is a data-retention decision and left it
+// unowned. That ruling stands: nothing here introduces a cap constant, chooses
+// an eviction policy, or discards anything already queued.
+//
+// What WP88 owns is the bound it REMOVES. Today the queue is bounded by the
+// session being destroyed ~128 s after the link dies — an accidental,
+// destructive bound, but a bound. After WP88 a peer can sit in `"gave-up"`
+// indefinitely with `FileOpsManager.isOnline === false`, enqueuing forever.
+//
+// The structural answer needs no constant: once the chain that CARRIES file
+// operations has ended, the peer KNOWS it will not send these ops. Continuing
+// to accept them is the same lie the status bar told before WP82. So it stops
+// accepting, counts the refusals, and says so once.
+// ---------------------------------------------------------------------------
+
+/**
+ * The link file operations travel on. Named once, here, so `main.ts` does not
+ * spell the coupling out a second time: `FileOpsManager`'s sender is
+ * `ControlChannel.send({type:"file-op"})`.
+ */
+export const FILE_OP_CARRIER_LINK: LinkName = "control";
+
+/**
+ * May the offline queue still accept? `false` once the CARRIER's retry chain
+ * has ended — not merely when the peer is offline, which is the ordinary,
+ * recoverable case the queue exists for.
+ */
+export function acceptsIntoOfflineQueue(
+  verdict: SharingVerdict,
+  carrier: LinkName = FILE_OP_CARRIER_LINK,
+): boolean {
+  return !verdict.endedLinks.includes(carrier);
+}
+
+/**
+ * The announcement key for the seal, or `null` while the queue still accepts.
+ * Separate from {@link announcementKey} on purpose: "this peer is not sharing"
+ * and "this peer has stopped accepting work" are different facts and a user who
+ * saw the first is still entitled to be told the second.
+ */
+export function offlineQueueSealKey(
+  verdict: SharingVerdict,
+  carrier: LinkName = FILE_OP_CARRIER_LINK,
+): string | null {
+  return acceptsIntoOfflineQueue(verdict, carrier) ? null : `queue-sealed:${carrier}`;
+}
+
+/** The `Notice` for the seal. German. States that nothing queued was thrown away. */
+export function offlineQueueSealNoticeText(queued: number, carrier: LinkName): string {
+  return `Live Share: Dateiänderungen werden nicht mehr zwischengespeichert (${carrier}) — ${queued} bereits vorgemerkte Änderung(en) bleiben erhalten.`;
+}
+
 // ---------------------------------------------------------------------------
 // Link lifecycle narration (AC4 / AC5).
 // ---------------------------------------------------------------------------

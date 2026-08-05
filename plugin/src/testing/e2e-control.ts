@@ -406,6 +406,20 @@ export interface E2EControlHost {
     vaultPath?: string | null;
     pluginBuild?: string;
     canvasSurface?: boolean;
+    // WP88 — NOTHING IS ADDED HERE, AND THE REASON IS RECORDED.
+    //
+    // AC4 needs "this peer still holds its identity" answered as a PRESENCE
+    // rather than as a credential value, and the obvious place was three more
+    // optional fields beside `vaultId`. That was implemented, measured, and
+    // REVERTED: `session.info`'s field set is pinned EXHAUSTIVELY by three
+    // landed assertions — `wp46/test_session_info_identity_fields_visible`,
+    // `t3/wp44/test_tp11_resolveport_precedence_visible` and
+    // `e2e-control.test.ts` — so "additive" is not additive here. Optional on
+    // the INTERFACE does not mean invisible in the RESPONSE.
+    //
+    // WP88 holds no §7 licence of any class, so the assertions stand and the
+    // criterion is served by `session.severance` instead, which is a new
+    // command and pins nothing. See `severanceReport`.
   };
   canvasOpen(path: string): Promise<{ opened: boolean; subscribed: boolean }>;
   canvasState(
@@ -550,6 +564,26 @@ export interface E2EControlHost {
    */
   breakLink?(link: string, shape: string): unknown;
   restoreLink?(link: string): unknown;
+  /**
+   * WP88 (AC3/AC4). ADDITIVE. Invokes the PRODUCTION re-arm — the same method
+   * the `rearm-session` command and the settings button call. It is emphatically
+   * NOT `restoreLink`: that one also lifts the rig's own traffic suppression,
+   * which no user affordance may do, and a live row driven through it would be
+   * measuring the instrument rather than the product.
+   *
+   * Optional on the interface, on the `vaultId` / `linkReport` precedent, so
+   * every hand-rolled fake host in the existing tests stays valid.
+   */
+  rearmSharing?(): Promise<unknown>;
+  /**
+   * WP88 (AC3/AC4). ADDITIVE, READ-ONLY. Why this peer stopped sharing and
+   * whether it kept its identity.
+   *
+   * PRESENCE ONLY, by criterion: every credential key is reported as a boolean.
+   * No value, no length that could be a fingerprint, no digest — this WP's
+   * subject IS those keys, so the discipline is absolute.
+   */
+  severanceReport?(): unknown;
 }
 
 /**
@@ -849,6 +883,23 @@ export async function routeCommand(
         }
         return ok(host.restoreLink(link));
       }
+      // --- WP88, ADDITIVE ----------------------------------------------------
+      // Two cases and two optional host methods, on the WP82 precedent above.
+      // No command above changes shape or behaviour, `session.info`'s legacy
+      // quartet is byte-unchanged, and `canvas.simulateEdit` is neither called,
+      // extended nor repaired.
+      case "session.rearm": {
+        if (typeof host.rearmSharing !== "function") {
+          throw new Error("session.rearm unavailable on this host");
+        }
+        return ok(await host.rearmSharing());
+      }
+      case "session.severance": {
+        if (typeof host.severanceReport !== "function") {
+          throw new Error("session.severance unavailable on this host");
+        }
+        return ok(host.severanceReport());
+      }
       // --- WP37 (C37 AC6) — the typing instrument ---------------------------
       //
       // ADDITIVE. A new `case` and a new optional host method, on the
@@ -1087,6 +1138,12 @@ export interface E2EPluginLike {
     roomId?: string;
     role?: string | null;
     githubUserId?: string;
+    /**
+     * WP88 (AC4) — declared so PRESENCE can be answered. Read only through
+     * `Boolean(...)`; the value never leaves this process and never reaches a
+     * response, a log, a fixture or a report.
+     */
+    token?: string;
   };
   muxConnected?: boolean;
   controlConnected?: boolean;
@@ -1121,6 +1178,9 @@ export interface E2EPluginLike {
   linkReport?: () => Record<string, unknown>;
   e2eBreakLink?: (link: "control" | "mux", shape: "close" | "silence") => Record<string, unknown>;
   e2eRestoreLink?: (link: "control" | "mux") => Record<string, unknown>;
+  /** WP88 (AC3/AC4) — the PRODUCTION re-arm and the severance, both invoked. */
+  rearmSharing?: () => Promise<Record<string, unknown>>;
+  severanceReport?: () => Record<string, unknown>;
   saveSettings?: () => Promise<void> | void;
   // --- WP46 identity sources (all optional; every one degrades, none is guessed) ---
   /** Obsidian's `App`. `appId` is the stable per-vault identity; the adapter knows the path. */
@@ -1440,6 +1500,7 @@ export function buildPluginHost(
         vaultPath: resolveVaultPath(plugin),
         pluginBuild: resolvePluginBuild(plugin),
         canvasSurface: resolveCanvasSurface(plugin),
+        // WP88 adds nothing here — see the interface comment above.
       };
     },
 
@@ -1579,6 +1640,25 @@ export function buildPluginHost(
         throw new Error("link.restore unavailable: no break seam on this host");
       }
       return plugin.e2eRestoreLink(link as "control" | "mux");
+    },
+
+    // --- WP88 (AC3/AC4) ----------------------------------------------------
+    // The REAL production method, invoked. This is the exact call the
+    // `rearm-session` command and the settings button make, which is the whole
+    // point: a live row driven through `link.restore` would be exercising the
+    // rig's own restore half and would prove nothing about a user's way back.
+    async rearmSharing() {
+      if (typeof plugin.rearmSharing !== "function") {
+        throw new Error("session.rearm unavailable: no re-arm on this host");
+      }
+      return await plugin.rearmSharing();
+    },
+
+    severanceReport() {
+      if (typeof plugin.severanceReport !== "function") {
+        throw new Error("session.severance unavailable: no severance report on this host");
+      }
+      return plugin.severanceReport();
     },
 
     // WP81 AC1 (deferred by WP81, landed by WP80). The logger's own accessor,

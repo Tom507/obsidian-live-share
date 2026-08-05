@@ -150,8 +150,44 @@ export class ControlChannel {
     readyStateAfter: number;
   } {
     const wasSilenced = this.silenced;
-    const wasChainEnded = this.retryChainEnded || !this.shouldConnect;
     this.silenced = false;
+    const rearmed = this.rearm();
+    return {
+      link: "control",
+      wasSilenced,
+      wasChainEnded: rearmed.wasChainEnded,
+      reconnectStarted: rearmed.reconnectStarted,
+      readyStateAfter: rearmed.readyStateAfter,
+    };
+  }
+
+  /**
+   * WP88 (AC3) — THE RE-ARM, and it is now reachable from the PRODUCT.
+   *
+   * WP82 landed this behaviour inside {@link restoreLink}, which is the E2E
+   * break seam's other half and is dead-code-eliminated from a production
+   * build. So a peer that had given up could be re-armed by the rig and by
+   * nothing else. After WP88 the ceiling no longer destroys the session, which
+   * makes that gap the defect: retention with no way back is a session that
+   * reports itself alive with no edge that can restore it — WP82's own defect,
+   * rebuilt by WP88's repair. Hence one seam, two callers.
+   *
+   * `everConnected` is DELIBERATELY NOT RESET (S39): resetting it would route a
+   * later network outage on this link to `"auth-required"`, i.e. would tell the
+   * user their credentials are the problem because their Wi-Fi died. The
+   * comment that used to live on `restoreLink` said exactly this and it is the
+   * reason it still says it here.
+   *
+   * `silenced` is NOT touched either — it belongs to the rig's break seam, and
+   * a production re-arm has no business lifting an instrument's suppression.
+   */
+  rearm(): {
+    link: "control";
+    wasChainEnded: boolean;
+    reconnectStarted: boolean;
+    readyStateAfter: number;
+  } {
+    const wasChainEnded = this.retryChainEnded || !this.shouldConnect;
     let reconnectStarted = false;
     if (!this.isDestroyed && (this.retryChainEnded || !this.shouldConnect)) {
       this.retryChainEnded = false;
@@ -164,7 +200,6 @@ export class ControlChannel {
     }
     return {
       link: "control",
-      wasSilenced,
       wasChainEnded,
       reconnectStarted,
       readyStateAfter: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
