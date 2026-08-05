@@ -353,6 +353,30 @@ W4 as a WP81 revision once WP37 releases `e2e-control.ts`.**
 | **M3** | `taskkill /F` discards up to 500 ms of buffer. Named, not repaired, no criterion claims otherwise. | **none** |
 | **new** | Three inherited tests are RED on `e2e-control.ts`'s import allow-list, caused by an uncommitted sibling-batch (WP37) edit. Red **before** WP81 started; WP81 is barred from the file. | **WP37** |
 | **new** | AC1's E2E command, deferred for the `e2e-control.ts` ownership constraint. Body given above. | **W4 revision** |
+| **new — S34** | **A sibling batch reverted `plugin/src/main.ts` in the shared tree mid-implementation.** See §10. | **Dispatcher** |
+
+---
+
+## 10. S34 — a sibling batch reverted a file out from under this WP, mid-run
+
+Between applying the `main.ts` wiring and staging it, `plugin/src/main.ts` **reverted to `HEAD`** —
+`git diff HEAD -- plugin/src/main.ts` came back empty and the fourth constructor argument was gone.
+`plugin/src/canvas/canvas-adapter.ts`, which was `M` at batch start, went clean in the same window,
+and `plugin/src/canvas/canvas-editing-deferral.ts` appeared as a new untracked file. The pattern is a
+sibling batch running a `git checkout --` / `git restore` over paths it did not own.
+
+Caught only because the pre-commit `git status --porcelain` was read rather than assumed. The wiring
+was re-applied and committed immediately (`594453d`), and the committed blob was verified to contain
+it (`git show HEAD:plugin/src/main.ts`).
+
+**Had this not been caught, WP81 would have shipped with no `Notice` channel at all** — AC2's
+user-visible announcement would have been silently absent while every headless test stayed green,
+because the notifier is injected and the tests inject their own. That is, precisely, this WP's own
+defect class reproduced in its own delivery: an outcome converted into an absence.
+
+**This is the exact hazard the checkpoint-commit rule exists for, and it is now observed, not
+hypothetical.** Recommendation to the Dispatcher: no batch may run a bare `git checkout --` /
+`git restore` on a shared path, and every batch should commit its own files before yielding.
 
 ---
 
