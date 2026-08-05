@@ -354,6 +354,24 @@ The brief requires this be answered rather than left open. **Ruling: no.** Four 
 
 *⚠ **Blind sets are discontinued for new work** (owner's instruction, 2026-08-05): no `blind_set1`, no `blind_set2`, no falsification-injection requirement and no `BlindVerificationLedger` row is owed by this WP. Validation is W4 against two live Obsidian instances. E2E-plugin defects found while validating go back to **W3 as a revision**.*
 
+**Acceptance evidence — two live Obsidian instances.** `H:\tmp\liveshare_wp86_e2e.py` (new, idempotent: per-run ids, sweep at preflight **and** teardown, set comparison, roles restored, SKIP recorded as SKIP, and a **vacuity guard** that turns "the key never vanished" into a SKIP with its reason rather than a pass). Ports 39431 (A) / 39432 (B). `canvas.simulateEdit` is not called.
+
+| id | AC | what it drives | oracle |
+|---|---|---|---|
+| `[S1]` | AC3 | producer 5: a shared folder both peers hold, then a `.md` created inside it — `updateFile` retires the parent directory key | **the file system on BOTH vaults**: the folder and its contents; plus the directory key's before/after presence in `manifest.info.paths` on both |
+| `[S2]` | AC2 | the WP80 shape, removal-only: a 4 MB canary only the host holds, then a REAL `plugin.promoteToHost` on the mid-sync peer, with WP80's gate disabled at its seam | **the disk of the peer that HELD the file**, plus the key's measured disappearance on both |
+| `[S3]` | AC4a | the same shape plus a 4 MB file only the guest holds, so one publication transaction carries an unpaired removal **and** an addition | the host's shared **tree set difference**, plus the product's own `renames` refusal row |
+| `[S4]` | AC4b | a real rename on the host | the guest's disk: old path gone, new path present, **content hash byte-identical** |
+| `[S5]` | AC5a | a live host publishes, then deletes a shared file | the guest's shared set shrinking by that **named** path, plus the route's `destroyed` set and the gated route's own decision |
+| `[S6]` | AC6 | reads every disposition observed in the run | the reasons are **distinct**, non-empty, and produced by production code |
+
+**Headless tests, where they are the honest tool and not the acceptance evidence:**
+
+| file | subject | tests |
+|---|---|---|
+| `plugin/src/__tests__/v2/wp86/test_tp01_vanished_key_sink_census.test.ts` | AC1's tree-derived census, its injected-site positive control, and rule 15 for the sink pattern and the body extractor | 8 |
+| `plugin/src/__tests__/v2/wp86/test_tp02_removal_decision_core.test.ts` | both pure cores' truth tables, every unknown input, non-mutation, statelessness, no empty reason | 13 |
+
 ---
 
 ## 7b. W4 Test Targets (filled by Worker 3's Unit Test Sub-Agent, if any)
@@ -364,20 +382,23 @@ The brief requires this be answered rather than left open. **Ruling: no.** Four 
 
 ## 8. Autonomous Execution Plan (filled by Coder Sub-Agent, attempt 1)
 
-- **Observed current behavior:**
-- **Approach:**
-- **Fallback path if all attempts fail:**
+- **Observed current behavior:** confirmed live, RED, on two vaults. Producer 5 destroyed a shared folder **and the file inside it on BOTH instances**. The WP80 shape destroyed a 4 MB canary on the peer that held it (`present=False`) while the key measurably vanished from both manifests. **One correction to §3 Verification 2: producer 5 is TWO `Y.Map` events, not one** — `updateFile` `await`s between the parent-directory `delete` and the file `set`, ending the implicit Yjs transaction — so it never reaches the rename arm and `trashFile(TFolder)` is its **only** outcome. Recorded as S50; it makes the shape worse, not milder.
+- **Approach:** the trash sink is **removed** from the handler rather than gated. A vanished key with a local **file** behind it is `delegated` to the landed, byte-unchanged `cleanupStaleFiles`, which already owns the evidence gate; a **folder** is `refused` by name; nothing behind it is `nothing-to-destroy`. The rename arm's destructive half now requires `preferred === newPath` (an equal content hash from `matchRenamesByHash`) **and** a `TFile` at the removed path. Two pure cores in `files/manifest-removal-decision.ts` (zero imports), one `ManifestChangeDisposition` at the top of `types.ts`, one additive read-only rig command. **No third predicate is authored** — the core has no destructive branch at all.
+- **Fallback path if all attempts fail:** not needed; no attempt was consumed.
 
 ---
 
 ## 9. Handover Summary (filled by Coder Sub-Agent on completion)
 
-- **What is complete:**
-- **What remains open:**
-- **Final status:**
+- **What is complete:** all six ACs. AC1 census derived from the tree with an injected-site positive control (8 tests). AC2 and AC3 RED-then-GREEN on two live instances. AC4 both halves. AC5 both routes, the inherited `liveshare_dataloss_e2e.py` **12/12 unamended** including `[S2] guest_copy_present=False`. AC6 observable as state with four distinct production-authored reasons and a **non-empty, named** destroyed set. Unit **2157/2157** with WP86 on a clean `d7eda85` versus **2136/2136** at that baseline; `npm run build` PASS. Commit `1494319`.
+- **What remains open:** **AC4b's positive half was satisfied by its own observable, not by a live R2 execution** — with both peers connected the file-op route applies the rename first, on the repaired **and** the pre-repair build alike. Reaching R2's positive branch live needs an offline rename across a restart; it was not run and no claim is made that it was. Four findings carried up (S50–S53) — see `ImplementationReport_WP86.md` §9.
+- **Final status:** DONE.
 
 ---
 
 ## 10. Risk Notes for Worker 4 (filled by Worker 3 Core)
 
-*Empty at handover.*
+- **Do not read a lingering file as a WP86 regression.** Under WP82's latch defect (`role=host, connected=false`) the op route is silently dead for the whole session and the gated route cannot establish a fresh publication, so a deleted file **stays** on the peer instead of being destroyed. That is the trade this WP makes deliberately (S51), measured live in run `20260805-055651`.
+- **Probe R2's positive branch.** The one path this run could not exercise live. An offline rename across a restart is the shape.
+- **AC2 and AC3 cannot be re-measured on a shipped bundle** — WP80's producing-side gate refuses the truncated purge, so nothing enters the route. The suite records that as a SKIP with its reason; a green there without the seam disabled would be vacuous.
+- **Record the role each instance RESUMED as** for every re-run (S37).
