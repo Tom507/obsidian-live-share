@@ -593,7 +593,26 @@ the run's own rule — *a measurement is not a timeless fact* — has a companio
     `unknown cmd: canvas.undo` for two scenarios though the installer had verified the digest minutes
     earlier. Not reproduced, cause unidentified; mitigated by a preflight gate. **Every
     install-then-measure in this run rests on that gap.**
-19. **S55** — 8 `subprocess.run` calls with no `timeout=`, including the E2E bundle build itself.
+19. **S55** — ~~8~~ `subprocess.run` calls with no `timeout=`, including the E2E bundle build itself.
+    **Re-censused by AST walk, and both the count and the framing needed correcting:**
+    - **In the repo: 10, not 8** — three outside tests (`tools/launch_liveshare_e2e.py:142`,
+      `tools/obsidian_e2e/install.py:527`, `workflowArtifacts/canvas-v2/_falsify_b11.py:55`) and seven
+      inside the WP77 / WP78 visible suites. **134 across the whole census**, but 124 of those are in
+      `H:/tmp` — throwaway batch scripts and stale worktree copies, none of which ships.
+    - **The one that matters is `install.py:527`, and it is a RECORDED DECISION, not an oversight.** Its
+      docstring states it: *"The build terminates on its own; no timeout is used as an oracle and nothing
+      is killed."* **That reasoning is right and it does not cover the hazard.** A timeout as an
+      **oracle** — deciding the bundle is good because the build finished in time — is the sleep-as-wait
+      class and must stay refused. A timeout as a **liveness bound** — turning a hung `npm` into
+      `E2EBuildFailed`, a named failure that decides nothing about the bundle — is the opposite, and the
+      docstring does not argue against it. **These are two different changes and the recorded decision
+      only forbids one of them.**
+    - **Not repaired here.** It is the package's most carefully reasoned function and it is guarded by a
+      byte-level baseline in WP78; overriding a recorded decision on the strength of an open-items line
+      is exactly what item 20 just demonstrated the cost of. **Charter it, with the oracle/bound
+      distinction as its first acceptance criterion.**
+    - **Side finding:** the census counted **twelve** stale worktree/snapshot copies of this repo under
+      `H:/tmp`, where the cleanup list records three. Corrected in `DISPATCHER_STATE.md`.
 20. ~~**`readiness.RawAnswer.body`** still leaks credentials on `repr`/`str`/`asdict` — measured, and the
     **only remaining member of that class** in the rig package. Unowned.~~ — **WITHDRAWN, wrong in both
     halves.** Checked before scheduling it, which is the only reason this was caught.

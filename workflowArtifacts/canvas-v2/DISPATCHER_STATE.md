@@ -2344,9 +2344,18 @@ the maximum:
 | **B44** | **canvas schedule dependence** — per-check verdict, product defect vs suite artefact | owns the live rig this round. **WP89 is gated on its result.** |
 
 **Environment still modified and NOT restored:** `obsidian-git` disabled in both vaults; both running an
-instrumented e2e bundle; `sharedFolder` scoped to `_liveshare-test` (load-bearing — leave it);
-stale worktrees at `H:\tmp\wp83-baseline`, `H:\tmp\wp83-green`, `H:/tmp/liveness-red`.
+instrumented e2e bundle; `sharedFolder` scoped to `_liveshare-test` (load-bearing — leave it).
 Undo with `python H:\tmp\liveshare_smoke_setup.py --restore`, which refuses to run while Obsidian is open.
+
+**The worktree count in this file was wrong — three recorded, TWELVE measured.** `git worktree list`
+reports **seven** registered: `liveness-red`, `reprsweep-baseline`, `reprsweep-head`, `reprsweep-parent`,
+`wp83-baseline`, `wp83-green`, `wp85-work` — all detached, none on the working branch. Plus **five**
+plain snapshot copies that git does not know about at all: `lsc_backup_20260802`, `lsc_snap_w3_b3c`,
+`lsc_w3_snap_p7_base`, `liveshare_snap_B4_P2`, `wp44_ref`. Found incidentally by an AST census that was
+looking for something else, which is the point worth keeping: **nothing in this run enumerates what it
+leaves behind, so the cleanup list has been a memory rather than a measurement.** Not pruned now — B44
+owns the live rig and a prune during its run is exactly the sibling-destroying move Rule 14 exists to
+prevent. `git worktree list` is the instrument; use it instead of this paragraph when the time comes.
 
 **Still deferred, unchanged:** the gate chain **WP50 → 74 → 75 → 76 → 51 → 71 → WP7** is unrun; **P3
 (WP31–35)** and most of **P5** unbuilt; the amendment set recorded and not scheduled; the signal register
