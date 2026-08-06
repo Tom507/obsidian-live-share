@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S63** |
+| **Next free number** | **S65** |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
@@ -100,6 +100,13 @@ The first entries allocated the way §1 requires — described by the finder, nu
 | signal | finding | status |
 |---|---|---|
 | **S62** | `readiness.RawAnswer.body` renders an **unbounded, externally-supplied** byte string verbatim on `repr`/`str`/`asdict`. Not a credential — the probe sends a frozen `session.info` body and that response carries none — but the probe knows a **port**, not a peer. Under `S57(installer)`, where something else answers where the rig assumed the plugin, that third party's bytes reach any diagnostic that renders the record. | **open**, low severity, recorded not fixed. Supersedes the withdrawn open-item 20 in Development Report II. |
+| **S63** | **WP90's durable store keys by `diskPath` (`toLocalPath(canonical)`), which on Windows maps a few ASCII characters to fullwidth.** Stable per machine. A vault carried between Windows and macOS keys those paths differently, so the standing withhold is **not found** and the next cold open projects the doc over the user's file. | **open.** The mechanism WP90 built to stop I11 expiring with the *session* still expires with the *platform*, and silently. Reported by the implementor. |
+| **S64** | **WP90's store writes are fire-and-forget**; nothing awaits `store.idle()` at plugin unload. A refusal recorded microseconds before a hard kill is lost. | **open**, low severity. Strictly no worse than WP63, which had no durability at all — but it is a real window and it is now the only one. |
+
+**S63 is the one to schedule.** It is the same defect as WP90's own premise — *a protection with a lifetime is
+not "never", it is "not yet"* — surviving the repair with its lifetime rewritten from "the session" to "the
+platform". A durable I11 protection that evaporates when the vault moves machines is the failure mode the
+work package exists to prevent, and the loss is silent: nothing reports a store entry that was never matched.
 
 **Why this one is worth reading as a method note:** open-item 20 asserted a credential leak in this field
 and called it unowned. Both halves were false — WP77 had enumerated the class, ruled this member a

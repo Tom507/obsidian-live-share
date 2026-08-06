@@ -2360,3 +2360,51 @@ prevent. `git worktree list` is the instrument; use it instead of this paragraph
 **Still deferred, unchanged:** the gate chain **WP50 → 74 → 75 → 76 → 51 → 71 → WP7** is unrun; **P3
 (WP31–35)** and most of **P5** unbuilt; the amendment set recorded and not scheduled; the signal register
 still collides at S50/S56/S57 with S58 and S60 never allocated.
+
+---
+
+## ✅ WP90 LANDED (`a67ff9f` product · `2debb41` tests) — the oldest open P0 is closed
+
+**The withhold now outlives the session.** Found on the first day of this stretch, unowned through
+fifteen work packages, chartered twice and killed once by the spend limit. `SeedRefusalStore` sits on
+WP24's own `SidecarIO` — **no second file seam, no new dependency, no clock** — and `coldOpen` hydrates
+**ahead of** the `docNonEmpty` branch, which is the exact line where the record used to die.
+
+**Verified by me, not taken from the report:** `tsc -noEmit` clean; **2493 passed / 353 files** (up from
+2471/347, and I re-ran the whole suite myself); `plugin/src/__tests__/v2/wp63/` **untouched — 0 files in
+the diff**, so WP63's contract stands by measurement rather than by claim; `canvas-persistence.ts` is
+**112 insertions and 0 deletions**, so WP85's queue, mute refcount, settle window and debounce are not
+merely "unaffected" — they are not in the diff at all.
+
+**The batch caught one of its own tests being unfalsifiable, and only by running the break.** A case
+originally *repaired* the refused record; a repaired record is valid, so the lift pruned it on the next
+write and the test went green under the deliberate break either way. Rewritten to *remove* the record —
+the state the lift provably cannot rescue. **That is the discipline working**: the break is not a
+formality, it is the thing that found the defect.
+
+### Three residues, and one of them is the same defect wearing a new lifetime
+
+| signal | residue |
+|---|---|
+| **S63** | **the store keys by `diskPath`**, which on Windows maps some ASCII to fullwidth. A vault carried Windows → macOS keys those paths differently, does not find the standing withhold, and projects the doc over the user's file. **Silent.** |
+| **S64** | writes are fire-and-forget; nothing awaits `store.idle()` at unload. A refusal recorded microseconds before a hard kill is lost. Low severity, and strictly better than WP63's nothing. |
+| — | `canvasImportAvailability`'s `degraded` now reports correctly across a restart where it previously reported `false`. A **behaviour change**, benign, and no WP30 assertion binds to the ledger's lifetime. |
+
+**S63 is scheduled next of the three.** WP90's own premise was *a protection with a lifetime is not
+"never", it is "not yet"* — and the repair rewrote the lifetime from **the session** to **the platform**
+instead of removing it. The work package's founding argument applies to its own result.
+
+### Still owed for WP90
+
+- **Live E2E across a real restart of two instances** — AC1's RED and AC2's GREEN. **Nothing here has run
+  in a real editor.** Under the current workflow that is W4's, and it is blocked until B44 releases the
+  rig: two E2E suites against one instance pair do not compose.
+- `ImplementationReport_WP90.md` — needs the live rows above, so it waits on the same thing.
+
+### Bookkeeping corrected while recording this
+
+- **`SEED REFUSAL STORE:` is now registered in BUILD_SPEC §10.** It was emitting unregistered, which
+  breaks the section's own rule that every declared signature has exactly one production emitter.
+- **BUILD_SPEC §10 said *"`plugin/manifest.json` is a broken symlink … do not read or edit"*.** That has
+  been false since `083fbe0`/`67f1036`. A standing instruction not to touch the file that must ship
+  beside `main.js` is worse than the broken symlink was.
