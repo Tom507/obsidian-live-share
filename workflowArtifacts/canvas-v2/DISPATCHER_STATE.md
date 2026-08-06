@@ -2269,3 +2269,80 @@ Rule 5 (*a line number is a measurement*) is stated, agreed, and broken repeated
 lines, `log-view.ts:71`→`:72`, `canvas-sync.ts:2819`→`:3019`, and now a citation into a file that never
 contained it. **The countermeasure that has worked is citing by symbol with a rule-15 pattern. The one
 that has not worked is remembering to re-measure.**
+
+---
+
+## ⛔ SPEND-LIMIT STOP (2026-08-05) AND RESUME (2026-08-07)
+
+**The run did not end; it was cut off.** The account hit its monthly spend limit and **both live workers
+died mid-package with the same error**, neither having committed anything:
+
+| batch | package | last reported action |
+|---|---|---|
+| **B43** | WP90 — the withhold outlives the session | *"Now the ledger and the durable store in `canvas-sync.ts`."* |
+| **B41** | canvas schedule dependence | *"Receipts obtained. Now pinning the threshold with a focused sweep."* |
+
+**A worker that dies leaves its work in the SHARED TREE, not in its own branch.** Rule 14 already says the
+tree is shared; the spend limit adds the corollary that **the tree is where a dead batch's output lives**,
+and nothing else records it. `git log` showed no WP90 commits — only the charters. A `git status` was the
+only instrument that could see two files of finished analysis.
+
+### What was rescued, and why not simply re-derived
+
+**`9ce014e` — WP90 PARTIAL, behaviour-neutral.** B43's ledger seam: `SEED_REFUSAL_STORE_FILENAME` and
+`seedRefusalStorePath()` in `canvas-sidecar.ts` (spelled beside the other sidecar names, so
+`isSidecarPath()`'s directory-prefix test covers the store **by construction** — WP26 exclusion with no
+second rule), and `setDurableSink` / `restore` / `reportDurable` on `SeedRefusalLedger`. **Nothing calls
+`setDurableSink`**, so `durableSink` is always `undefined`, every `reportDurable()` is a no-op, and the
+runtime behaviour is WP63's byte for byte. `tsc` clean; WP63 tp01–tp04 **12/12 green**, tp03 unmodified.
+
+**I rewrote B43's two doc blocks before committing, and this is the point worth recording.** As written
+they announced the fix in the **present tense** — *"IT IS NO LONGER PER SESSION"* — over code that does
+nothing of the sort. That is this run's dominant defect class arriving by a **new route**: not a test that
+cannot fail, but a **comment that is false the moment it is written**, in a file whose comments are the
+only surviving record of the analysis. Had it landed unedited, the next reader would have had a citation
+saying the oldest open P0 was closed. The blocks now open with a STATUS paragraph and keep the analysis.
+
+**Rule 16 (new): a partial landing documents what RUNS, not what is intended.** Aspirational prose in the
+present tense is a false citation with a commit hash attached.
+
+**`1b43c9c` — `WORKFLOW_ANALYSIS.md`**, 635 lines, untracked and unattributed in the tree; a sibling's
+read-only census that would have been lost on the next clean. It answers the owner's *"wieso haben wir
+gefühlt 1000 Stunden gebraucht"* with measurements, and **it contradicts this file**: I report
+*"23 963 generierte Testdateien"*; the disk census finds **118 742 lines**, with the table's other four
+rows reconciling to within 4 %. Its findings: product code ~29 200 lines against a ~159 600-line generated
+test corpus (**5.4 : 1**), of which **97 809 lines are blind-set duplicates** — 61 % of the corpus, driven
+by a **hard unconditional 3× multiplier in the workflow definition, not in CONCEPT_V2**, whose entire test
+strategy is **37 lines**. Largest single driver: **one wrong sentence in Teil 14** claiming the E2E rig
+never existed (it existed as a headless mock) — **19 work packages**. Prose is **1.6× the product code**;
+a 902-line concept produced 47 961 lines of workflow prose.
+
+**This is the evidence base for the amendment set.** It was measured independently of the report that
+proposes them, and it agrees with them.
+
+### Tier 0 was also only half fixed — by me
+
+`083fbe0` replaced the manifest symlink's **target** with the real manifest content and **left the git mode
+at `120000`**. The blob was still a symlink whose target had become a ten-line JSON document: on a POSIX
+checkout git would create exactly that link. **A worse failure than the one it replaced, because it now
+looks correct in every diff.** Closed by **`67f1036`** (mode `120000` → `100644`). Verify a mode fix with
+`git ls-tree`, not with `cat`.
+
+### Resume state
+
+**Tree clean at `1b43c9c`.** Dispatch is working again — the limit no longer blocks. Two workers live,
+the maximum:
+
+| batch | package | notes |
+|---|---|---|
+| **B45** | **WP90 completion** — the store, the wiring, the `coldOpen` hydration, visible tests | continues from `9ce014e`. Told not to build: `plugin/main.js` is contended. |
+| **B44** | **canvas schedule dependence** — per-check verdict, product defect vs suite artefact | owns the live rig this round. **WP89 is gated on its result.** |
+
+**Environment still modified and NOT restored:** `obsidian-git` disabled in both vaults; both running an
+instrumented e2e bundle; `sharedFolder` scoped to `_liveshare-test` (load-bearing — leave it);
+stale worktrees at `H:\tmp\wp83-baseline`, `H:\tmp\wp83-green`, `H:/tmp/liveness-red`.
+Undo with `python H:\tmp\liveshare_smoke_setup.py --restore`, which refuses to run while Obsidian is open.
+
+**Still deferred, unchanged:** the gate chain **WP50 → 74 → 75 → 76 → 51 → 71 → WP7** is unrun; **P3
+(WP31–35)** and most of **P5** unbuilt; the amendment set recorded and not scheduled; the signal register
+still collides at S50/S56/S57 with S58 and S60 never allocated.
