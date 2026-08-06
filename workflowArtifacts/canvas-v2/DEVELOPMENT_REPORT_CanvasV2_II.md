@@ -594,8 +594,27 @@ the run's own rule — *a measurement is not a timeless fact* — has a companio
     earlier. Not reproduced, cause unidentified; mitigated by a preflight gate. **Every
     install-then-measure in this run rests on that gap.**
 19. **S55** — 8 `subprocess.run` calls with no `timeout=`, including the E2E bundle build itself.
-20. **`readiness.RawAnswer.body`** still leaks credentials on `repr`/`str`/`asdict` — measured, and the
-    **only remaining member of that class** in the rig package. Unowned.
+20. ~~**`readiness.RawAnswer.body`** still leaks credentials on `repr`/`str`/`asdict` — measured, and the
+    **only remaining member of that class** in the rig package. Unowned.~~ — **WITHDRAWN, wrong in both
+    halves.** Checked before scheduling it, which is the only reason this was caught.
+    - **Not a credential.** The field holds a `session.info` response, whose field set is pinned
+      *exhaustively* by three landed assertions: `clientId`, `role`, `roomId`, `connected`, `vaultId`,
+      `vaultName`, `vaultPath`, `pluginBuild`, `canvasSurface`. No credential among them, and
+      `_SESSION_INFO_BODY` is a module constant, so no code path can make the probe send anything else.
+      The rig's `Secret` discipline exists for **owner-vault file bytes**, and all four of those —
+      `install.BundleState`, `ports.BorrowState`, `provisioning._CommunityState`, `relay.RelayRoom.token`
+      — are closed.
+    - **Not unowned.** WP77 enumerated the class by walking the package AST, ruled this member a
+      *deliberate carry-up* under `S14`, and pinned it: `T1` fails if the class gains a member, `T5`
+      asserts this record is **still renderable** so a later reader can tell a decision from an oversight.
+      Reversing it is a decision to re-open, not a gap to close — and the recorded reason is better than
+      my reason for reversing it. Measured today: **50/50 green**.
+    - **What is real, and it is narrower:** newly allocated **S62**. The probe knows a *port*, not a
+      peer. Under `S57(installer)` — something else answering where the rig assumed the plugin — the body
+      is an arbitrary third party's response rendered verbatim into any diagnostic. Low severity,
+      recorded rather than fixed.
+    - **This is the third time the open-items list has been wrong when checked**, which is what §0's
+      provenance warning predicted about §7. The list is a set of leads. Verify before scheduling.
 21. **S18 / S19** — `LocalRelay(room_minter=None)`, the only optional default doing a *write-shaped*
     network op; `__all__` omits three landed modules.
 22. **S30** — the debug log grows unbounded inside `.obsidian/` (+33 234 B / +28 633 B in one day).

@@ -50,7 +50,7 @@ HERE = Path(__file__).resolve().parent
 BASELINE_PATH = HERE / "signal_register_baseline.json"
 
 # -- the register's own facts. Change SIGNAL_REGISTER.md and this together. --
-NEXT_FREE = 62
+NEXT_FREE = 63
 BURNED = {58, 60}
 AMBIGUOUS = {25, 28, 29, 30, 31, 50, 56, 57}
 

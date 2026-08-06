@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S62** |
+| **Next free number** | **S63** |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
@@ -90,6 +90,22 @@ with a qualifier.
 | **S60** | never allocated. Same reason. |
 | **S29(logger)** | **the finding itself was falsified.** The debug logger never went silent; `liveshare_fix_debuglog.py` had moved the file an hour before the reported stop, so every later reader watched a path that no longer existed. **Two batches "independently reproduced" it** — they inherited the premise from the brief. The number stays burned so the falsification is not lost. |
 | **S45** | not burned — **live and load-bearing.** Recorded here because it *supersedes* three earlier readings: `canvas.open` subscribes without opening a leaf and permanently disables the writer-attach seam, so `S28(no-leaf)`, `S30(13-18)` and the 19/19 and 13/18 canvas figures were all **the suite measuring itself**. |
+
+---
+
+## 3a. Allocations made under this register
+
+The first entries allocated the way §1 requires — described by the finder, numbered by the Dispatcher.
+
+| signal | finding | status |
+|---|---|---|
+| **S62** | `readiness.RawAnswer.body` renders an **unbounded, externally-supplied** byte string verbatim on `repr`/`str`/`asdict`. Not a credential — the probe sends a frozen `session.info` body and that response carries none — but the probe knows a **port**, not a peer. Under `S57(installer)`, where something else answers where the rig assumed the plugin, that third party's bytes reach any diagnostic that renders the record. | **open**, low severity, recorded not fixed. Supersedes the withdrawn open-item 20 in Development Report II. |
+
+**Why this one is worth reading as a method note:** open-item 20 asserted a credential leak in this field
+and called it unowned. Both halves were false — WP77 had enumerated the class, ruled this member a
+deliberate carry-up under `S14`, and pinned it with a test asserting it is *still renderable*, precisely so
+a later reader could tell a decision from an oversight. **That pin worked.** The finding survived contact
+with the check, shrank to its true size, and got a number of its own instead of re-opening a settled one.
 
 ---
 
