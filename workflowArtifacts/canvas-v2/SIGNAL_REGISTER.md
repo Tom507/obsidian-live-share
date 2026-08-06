@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S68** |
+| **Next free number** | **S69** |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
@@ -106,6 +106,13 @@ The first entries allocated the way §1 requires — described by the finder, nu
 | **S65** | **The debug log's stamp-to-flush lag reached ~58 s.** Every offset-based receipt reader in `H:\tmp` uses a **2–2.5 s** margin, so each one reads zero lines and reports the absence as a result. | **open, and the most serious of this block.** It does not merely threaten future measurements — it means any past conclusion of the form *"the signature never fired"* may have been reading a file the writer had not flushed. Caught only by the Rule 15 guard that requires a grep to prove it can match its target first. |
 | **S66** | **`link.break shape="close"` is not a break.** A run scored **29/29 with the link nominally severed**; `autoReconnect` reversed it before anything could fail. | **open.** A negative control that cannot fail is worth less than no control, because it is quoted as evidence. `shape="mux"` does break the link — 15/29 with all fourteen dependent checks red. |
 | **S67** | **The repo's committed `plugin/main.js` is not the installed bundle** (`85a29c85` vs `b672be50`). Anyone running the installer without `LS_EXPECT_SHA256` **silently changes the code under measurement**. | **open.** Distinct from `S57(installer)`, which is *installed bytes are not loaded bytes*; this is *committed bytes are not installed bytes*. Both are live, and they compose. |
+
+| **S68** | **A SECOND re-arming settle window that B44 did not cite.** `noteExternalDiskWrite` (`canvas-sync.ts:3969-3977`) clears and re-arms its own independent `VAULT_EVENT_SETTLE_MS = 250` timer per write, the same shape as `armSettleRelease` and fed by the same `main.ts:2903` `onWritten` wiring. **Two** 250 ms timers are held across the burst, not one. | **open, and it scopes WP91.** A fix confined to `CanvasPersistence` bounds one window and leaves the other, so the swallow survives at roughly half the width — the most expensive kind of partial fix, because the measurement moves and the defect does not go. Found by B47 while chartering. |
+
+**S68's arithmetic closes, and that is a falsifiable prediction rather than a flourish:**
+`MAX_WAIT_MS = 500` (`canvas-sync.ts:309`) + `DISK_WRITE_SETTLE_MS = 250` = **750 ms**, against a measured
+boundary of lost ≤ 0.8 s / OK ≥ 0.9 s. **If the implementor measures a materially higher ceiling, there is
+a third timer nobody has found**, and that is how they will know.
 
 **S63 is the one to schedule** of the WP90 block. It is the same defect as WP90's own premise — *a protection with a lifetime is
 not "never", it is "not yet"* — surviving the repair with its lifetime rewritten from "the session" to "the

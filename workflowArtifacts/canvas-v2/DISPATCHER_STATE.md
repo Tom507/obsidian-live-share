@@ -2427,9 +2427,21 @@ live path for a real user.**
 
 | delta | result |
 |---|---|
-| ≤ 0.5 s | **LOST 20/20**, all four edit shapes |
-| ≤ 0.8 s | **LOST 11/12** |
+| ≤ 0.5 s | ~~**LOST 20/20**~~ — **see the correction below; this row does not support a threshold** |
+| 0.5–0.8 s | **LOST 11/12** |
 | ≥ 0.9 s | OK 4/4 (5/5 at 1–8 s) |
+
+> **⚠ CORRECTION — my error, caught by B47 when it checked the brief I wrote.** I presented the
+> `≤ 0.5 s → LOST 20/20` row as a clean measurement in this file, in the WP91 brief and in my report to
+> the owner. **B44's own §1 records that that sweep lost its positive control**, which by the script's own
+> stated rule invalidates the block. It supports *"everything at ≤ 0.5 s is lost"* and **nothing narrower**.
+> **The threshold rests on the 0.5–0.8 s block (11/12) and 0.9–1.0 s (4/4)** — which is still decisive,
+> so the defect stands unchanged and only my number was wrong.
+>
+> **The failure is mine and it is the one this run keeps repeating:** I lifted a headline figure out of a
+> report *whose own body disclaimed it*, and the disclaimer was two paragraphs from the table. B44 did the
+> honest thing and recorded the invalidation; I dropped it in transcription and then briefed an agent with
+> it. **A worker's caveat is part of its result. Reading only the table is how a caveat dies.**
 
 **Mechanism — I verified all four sites myself at `fb631f8`**, not from the report:
 
