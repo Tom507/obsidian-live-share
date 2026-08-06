@@ -595,6 +595,11 @@ reports is a defect whatever caused the drop.**
 
 ### 🔢 SIGNAL REGISTER — COLLIDED. My bookkeeping failure, and it reached agent briefs.
 
+> **SUPERSEDED as the authority.** `SIGNAL_REGISTER.md` is now the register; this section is the
+> historical account of the first collision and is kept for that. The rule below was right and it still
+> did not work — it collided again three times afterwards — so the register is now enforced by
+> `check_signal_register.py` rather than by anybody remembering it. Read `SIGNAL_REGISTER.md` §0 for why.
+
 Two batches allocated `S`-numbers independently and **five collided**. I then briefed three agents using
 the ambiguous ones. B25 caught it (its own S42) and had to disambiguate mid-charter.
 
