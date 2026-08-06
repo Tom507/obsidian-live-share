@@ -194,6 +194,38 @@ Described, not numbered — the Dispatcher allocates.
    that copies a fake-plugin fixture, and the failure names WP88 rather than the
    new suite.
 
+### 4a. Addendum, taken after the WP68 commits landed
+
+The tree kept moving. Minutes after `e2f6358`, `plugin/src/files/canvas-sync.ts`
+also appeared as modified — the sibling's WP91 work advancing — and a full-suite
+run then reported **1 failed / 2570 passed (358 files)**:
+
+```
+FAIL src/__tests__/canvas-single-writer.test.ts
+  > AC6 case 2 — subscribed, CanvasSync's own disk-write echo → NEITHER
+AssertionError: expected "vi.fn()" to be called +0 times, but got 1 times
+  ❯ src/__tests__/canvas-single-writer.test.ts:579
+```
+
+**It is not WP68's, and the attribution is exact rather than circumstantial.**
+That file drives the REAL `registerVaultEvents` modify handler; line 579 asserts
+`handleLocalModify` is NOT called for a `CanvasSync` disk-write echo. The
+uncommitted WP91 edit to `vault-events.ts` in the tree right now removes exactly
+`!canvasSync.isRecentDiskWrite(file.path) &&` from that branch's condition, which
+makes the capture run for the echo — the assertion and the removed term are the
+same fact. Its imports are `background-sync.ts`, `canvas-persistence.ts`,
+`canvas-sync.ts`, `vault-events.ts` and a two-peer harness; **WP68 touches none
+of them.** Three of those four are currently modified in the shared tree by the
+sibling batch.
+
+The 358/2571/0-failures figure in the table above was measured twice on a tree in
+which `canvas-sync.ts` was still clean, and the WP68 suite is 78/78 green now,
+before and after.
+
+`plugin/src/files/canvas-sidecar.ts` also shows as modified throughout. Its blob
+hash is identical to `HEAD` (`019571d8…`); that is a stat-cache artefact of
+`core.autocrlf`, not a change.
+
 ## 6. Method note — one risk taken that should not have been
 
 To decide whether the `wp5/latency.test.ts` flake was mine, a scoped
