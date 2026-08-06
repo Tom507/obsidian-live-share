@@ -1455,22 +1455,89 @@ function refusalKey(refusal: SeedRefusal): string {
  * The refused set for ONE canvas path.
  *
  * Per path on purpose (AC2 / I5 DEGRADE): a withhold is a degraded persistence
- * state for one canvas, never a session-wide condition. It is also per SESSION —
- * the predicate is "did THIS session's seed refuse something for this path?", so
- * it is reset whenever the path's doc is re-seeded (`reset()`) and starts empty
- * whenever the owning persistence instance is rebuilt.
+ * state for one canvas, never a session-wide condition.
+ *
+ * ── WP90 (I11): PER SESSION IS A DATA-LOSS DEFECT — PARTIAL, NOT YET FIXED ──
+ *
+ * STATUS: this class carries the seam only. `durableSink` has NO assigning
+ * caller, so `reportDurable()` is a no-op and the runtime behaviour is still
+ * WP63's, byte for byte. The store, the hydration on cold open and the tests are
+ * NOT here. Do not read the analysis below as a description of what runs.
+ *
+ * WP63 scoped this to one session, on the reading that the predicate asks "did
+ * THIS session's seed refuse something for this path?". The composition that
+ * reading missed is one restart long: session 2 opens the board with a doc the
+ * relay (or the sidecar) already holds, `coldOpen` takes its `doc-wins` branch,
+ * NEVER READS THE FILE, and flushes the projection — which has never contained
+ * the refused record — over the user's `.canvas`. The record is gone, deleted as
+ * a consequence of a refusal, which is I11 verbatim one restart later.
+ *
+ * The invariant says NEVER. A protection with a lifetime is not "never", it is
+ * "not yet": widening the scope to "until the plugin unloads" or to "N minutes"
+ * moves the moment of destruction without removing it. So the intended lifetime
+ * is "until the refusal is RESOLVED", with the durable half in a store keyed by
+ * {@link seedRefusalStorePath} — which does not exist yet.
+ *
+ * What must NOT change when the rest lands, each load-bearing:
+ *
+ *   ├── `reset()` still empties the set on a RE-SEED. A seed re-derives its
+ *   │   verdict from the file it just read, so a stale verdict still cannot
+ *   │   outlive its file (WP63 `test_tp03`, which passes byte-unmodified).
+ *   ├── the lift is still asked ONLY on the write trigger, never on a timer and
+ *   │   never at startup — `prune` is unchanged and has exactly one caller.
+ *   └── nothing here is ever re-injected into the projection. The durable record
+ *       carries IDS, REASONS AND BOUNDARIES ONLY; it holds no user text, no node
+ *       content and no `.canvas` payload, because a durable store that keeps a
+ *       copy of the content is Ä3's rejected pass-through wearing a coat.
  */
 export class SeedRefusalLedger {
   private readonly refused = new Map<string, SeedRefusal>();
+  /**
+   * WP90: where this set is kept so it outlives the process.
+   *
+   * UNWIRED as of this checkpoint — nothing calls {@link setDurableSink}, so this
+   * stays `undefined` and every `reportDurable()` is a no-op. That is deliberate
+   * for a partial landing: the in-memory behaviour WP63 shipped is preserved
+   * exactly, rather than half-wired into something that silently forgets.
+   */
+  private durableSink: ((refusals: readonly SeedRefusal[]) => void) | undefined;
+
+  /**
+   * WP90: hand this ledger the durable sink it reports every change to.
+   *
+   * Assigning the sink does NOT persist: hydration and persistence must not be
+   * the same event, or a rebuild that read the store would immediately write it
+   * back and a corrupted read would launder itself into the file.
+   */
+  setDurableSink(sink: (refusals: readonly SeedRefusal[]) => void): void {
+    this.durableSink = sink;
+  }
+
+  /**
+   * WP90: fill this ledger from the durable store, WITHOUT reporting back.
+   *
+   * Deliberately not `note()`: `note` is a seed boundary's verdict and must be
+   * persisted; this is the same verdict coming back out of the file it was
+   * already persisted to.
+   */
+  restore(refusals: readonly SeedRefusal[]): void {
+    for (const refusal of refusals) this.refused.set(refusalKey(refusal), refusal);
+  }
+
+  private reportDurable(): void {
+    this.durableSink?.(this.list());
+  }
 
   /** Record refusals from one seed pass. Idempotent per `${kind}:${id}`. */
   note(refusals: readonly SeedRefusal[]): void {
     for (const refusal of refusals) this.refused.set(refusalKey(refusal), refusal);
+    this.reportDurable();
   }
 
   /** Forget everything — the path is being re-seeded, so the old verdicts are stale. */
   reset(): void {
     this.refused.clear();
+    this.reportDurable();
   }
 
   get size(): number {

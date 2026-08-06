@@ -43,6 +43,17 @@ export const SIDECAR_DIR = ".obsidian/liveshare/state";
 export const SIDECAR_HISTORY_EXT = ".yhistory";
 export const SIDECAR_CHECKPOINT_EXT = ".ycheckpoint";
 export const SIDECAR_INDEX_FILENAME = "index.json";
+/**
+ * WP90 (I11): the durable refused set's filename.
+ *
+ * It is spelled HERE, next to the other sidecar filenames, for one reason that
+ * is an acceptance criterion rather than tidiness: {@link isSidecarPath} is a
+ * DIRECTORY-prefix test, so anything named through this constant is covered by
+ * WP26's exclusion by construction — it can never be published into a manifest,
+ * never enter a file-op payload and never be reachable from a peer. A path
+ * invented at the call site would have to argue that separately.
+ */
+export const SEED_REFUSAL_STORE_FILENAME = "seed-refusals.json";
 
 /** Frame header width: u32 big-endian payload length. */
 const FRAME_HEADER_BYTES = 4;
@@ -59,6 +70,11 @@ export function sidecarCheckpointPath(guid: string): string {
 
 export function sidecarIndexPath(): string {
   return `${SIDECAR_DIR}/${SIDECAR_INDEX_FILENAME}`;
+}
+
+/** WP90 (I11): the one spelling of the durable refused set's path. */
+export function seedRefusalStorePath(): string {
+  return `${SIDECAR_DIR}/${SEED_REFUSAL_STORE_FILENAME}`;
 }
 
 /**
