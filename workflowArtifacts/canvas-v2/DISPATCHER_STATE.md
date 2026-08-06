@@ -2503,3 +2503,69 @@ charter does not name.
 Both vaults connected, A=host/39431, B=guest/39432, bundle unchanged, `sharedFolder=_liveshare-test`
 verified before and after. **The relay room had been deleted server-side** and was re-provisioned; the old
 room's doc history is gone. Pre-swap snapshot at `H:\tmp\b44_shared_snapshot\20260807_004046\`.
+
+---
+
+## ✅ WP68 LANDED (`58aff0a` · `156eef5` · `e2f6358` · `25d086b`) — Tier 1 closed
+
+**The peer-reachable write into `.obsidian/**` is shut, in both directions.** The rename branch was the
+only file-op admitting on `.some(isSharedPath)` instead of the strict all-paths form. Outbound guard sits
+**above** the `sendQueues` acquisition; inbound sits **before** `applyRemoteOp`, so a refusal takes no
+queue slot, no `mutePathEvents`, and makes not one vault call.
+
+**Baseline moves: 2493 / 353 → 2571 / 358.** Exactly `2493+78` and `353+5`. The batch measured my 2493/353
+independently before starting and it matched.
+
+### The verification is the strongest this run has produced
+
+**18 deliberate product breaks, each executed, each red observed and quoted, each restored.** Then — and
+this is the part worth copying — **the complement was run as a census over row names: 73 of 78 rows go red
+under at least one break.** The five that never do are named individually, each with its own proof that it
+can find something. **That inverts the usual claim.** Every other suite in this project asserts *"each test
+was seen red"*; this one can also say *which tests could never have been seen red, and why that is correct
+for each.* No suite outside `wp68/` reddened under any break.
+
+**B3 is the break that matters:** refuse-then-delete produced *"the refusal degraded into a destructive
+operation — this is the refuse-then-delete trap AC3 exists to forbid"* and *"…hello.md was unlinked by the
+refusal"*. **I11 has a live, executed counter-example, not an argument.**
+
+### ⚖️ RULING — the third production file is ACCEPTED, not a scope violation
+
+The charter said *exactly two production files*; B46 changed a third, `utils.ts`, **comment-only**, and
+asked for a ruling rather than deciding it silently. **Accepted, and it was forced rather than chosen.**
+`skipsAutoTextSync`'s contract comment holds the `isSidecarPath` consumer list, and `wp26/test_tp09`
+**derives that list from the tree**. Adding the inbound consumer without its row reddens a landed test —
+B46 verified it: `AssertionError: undocumented consumer: sync/control-handlers.ts`.
+
+The three alternatives were: leave the guard unimplemented, weaken `tp09`, or ship a knowingly red tree.
+**The charter's constraint was about behaviour, and the predicate's body is byte-identical** — `wp83/tp02`'s
+"body unchanged" row stays green. **A derived test detecting an undocumented consumer is that test working
+exactly as designed**, and the charter simply did not anticipate that its own guard would become one.
+Asking rather than deciding is the correct handling and is why this is a ruling and not an incident.
+
+### Two new signals, both about instruments rather than the product
+
+- **S69** — `onFileCreate` emits a **sidecar folder** on the wire, above the guard. It cannot compose into
+  a write (inbound `folder-create` is refused by the strict gate), but it **publishes the name and
+  existence of a local replica-state directory to every peer.** Same surface WP68 closed, one op type over.
+- **S70** — `wp88`'s route census pins a **whole-test-tree** property: exactly one file may contain the
+  literal `endSession`. Any new suite with an inert teardown stub reddens it, **and the failure names WP88
+  rather than the newcomer**, so the batch that trips it goes looking for a defect in code it never
+  touched. It caught B46. **It will catch the next batch that copies a fake-plugin fixture.**
+
+### The 1-failed report was WP91's live edit, and B48 has since amended it correctly
+
+B46 reported `canvas-single-writer.test.ts > AC6 case 2` failing and **attributed it by the term** rather
+than to itself: the uncommitted WP91 edit removes `!canvasSync.isRecentDiskWrite(file.path) &&` from that
+branch. Checked: B48 has since turned that row into an **enumerated §7 amendment** with its justification
+written above it — the router-level outcome the AC owns is unchanged and still asserted; what moved is
+*which mechanism* declines the echo. **Correct handling on both sides**, and a good demonstration that
+attribution-by-term beats attribution-by-blame.
+
+### One recorded mistake, B46's own
+
+It used a path-scoped `git stash push` for ~90 s to decide whether a `wp5/latency` flake was its own.
+Rule 14 warns against `stash` in a shared tree. It verified the sibling's `vault-events.ts` survived, and
+**the isolation run answered the same question afterwards without the stash** — so the risk bought nothing.
+Recorded in its own report so the next batch does not repeat it. **A self-reported near-miss is worth more
+than a clean report**, and this is the second batch to volunteer one.

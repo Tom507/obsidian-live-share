@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S69** |
+| **Next free number** | **S71** |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
@@ -108,6 +108,9 @@ The first entries allocated the way §1 requires — described by the finder, nu
 | **S67** | **The repo's committed `plugin/main.js` is not the installed bundle** (`85a29c85` vs `b672be50`). Anyone running the installer without `LS_EXPECT_SHA256` **silently changes the code under measurement**. | **open.** Distinct from `S57(installer)`, which is *installed bytes are not loaded bytes*; this is *committed bytes are not installed bytes*. Both are live, and they compose. |
 
 | **S68** | **A SECOND re-arming settle window that B44 did not cite.** `noteExternalDiskWrite` (`canvas-sync.ts:3969-3977`) clears and re-arms its own independent `VAULT_EVENT_SETTLE_MS = 250` timer per write, the same shape as `armSettleRelease` and fed by the same `main.ts:2903` `onWritten` wiring. **Two** 250 ms timers are held across the burst, not one. | **open, and it scopes WP91.** A fix confined to `CanvasPersistence` bounds one window and leaves the other, so the swallow survives at roughly half the width — the most expensive kind of partial fix, because the measurement moves and the defect does not go. Found by B47 while chartering. |
+
+| **S69** | **`onFileCreate` announces a sidecar FOLDER on the wire.** Its `folder-create` emit sits **above** the `skipsAutoTextSync` guard, so a folder under the sidecar dir is emitted verbatim. | **open.** It does **not** compose into a write — the inbound `folder-create` is refused by the strict all-paths gate — but it **publishes the existence and the name of a local replica-state directory to every peer**. Same surface WP68 exists to close, one op type over. Found by B46 while building `tp04`. |
+| **S70** | **`wp88/test_ac1_route_census_derived_visible.test.ts` pins a whole-TEST-TREE property**: exactly one file in `plugin/src/__tests__/` may contain the literal `endSession`. | **open, and it will bite the next batch.** Any new suite with an inert teardown stub on a fake plugin reddens it, **and the failure names WP88 rather than the new suite** — so the batch that trips it looks for a defect in code it did not touch. It caught B46, which removed its stub rather than amend the pin. A census over a corpus other people are still writing needs an exemption mechanism or a failure message that names the newcomer. |
 
 **S68's arithmetic closes, and that is a falsifiable prediction rather than a flourish:**
 `MAX_WAIT_MS = 500` (`canvas-sync.ts:309`) + `DISK_WRITE_SETTLE_MS = 250` = **750 ms**, against a measured
