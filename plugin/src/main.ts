@@ -59,6 +59,7 @@ import {
   WRITER_ATTACH_VERDICT,
   decideCanvasWriterAttach,
 } from "./files/canvas-writer-attach-decision";
+import { SeedRefusalStore } from "./files/seed-refusal-store";
 
 import { ExclusionManager } from "./files/exclusion";
 import { FileOpsManager } from "./files/file-ops";
@@ -224,6 +225,13 @@ export default class LiveSharePlugin extends Plugin {
   // Paths whose writer attach is in flight (the cold open is awaited), so two
   // subscribe call sites can never race a second writer onto one path.
   private canvasWriterAttaching = new Set<string>();
+  // WP90 (I11): the durable home of every path's refused set. ONE per plugin
+  // instance — it is one file for the whole vault, read once and rewritten in
+  // place — and its lifetime is deliberately the PLUGIN's, not the session's:
+  // the withhold it carries has to survive exactly the boundary a session does
+  // not. Built lazily at the first canvas writer attach so a vault that never
+  // opens a shared canvas never creates the file.
+  private seedRefusalStore: SeedRefusalStore | null = null;
   explorerIndicators: ExplorerIndicators | null = null;
   controlChannel: ControlChannel | null = null;
   remoteUsers = new Map<string, PresenceUser>();
@@ -2832,6 +2840,17 @@ export default class LiveSharePlugin extends Plugin {
       isPathSafe: (diskPath) => isPathSafe(diskPath),
       ensureFolder: (parentDir) => ensureFolder(this.app.vault, parentDir),
     });
+    // WP90 (I11): the durable refused set, over WP24's OWN vault I/O adapter —
+    // not `baseIo`. `baseIo` is the canvas writer's seam and it is decorated by
+    // WP87's editing-aware hold; routing the store through it would put the
+    // refusal record behind a gate that exists to defer `.canvas` bytes while
+    // an inline editor is open, which has nothing to do with it. The store's
+    // path is inside `SIDECAR_DIR`, so it is excluded from every shared surface
+    // by `isSidecarPath`'s directory-prefix test (WP26) by construction.
+    this.seedRefusalStore ??= new SeedRefusalStore(createVaultSidecarIO(this.app.vault.adapter), {
+      logger: this.logger,
+    });
+    const seedRefusalStore = this.seedRefusalStore;
     // ── WP87 (C87 AC1/AC3) — THE SECOND CONSULTATION ────────────────────────
     //
     // WIRING AND A VERDICT READ, exactly like the WP85 attach consultation
@@ -2886,6 +2905,11 @@ export default class LiveSharePlugin extends Plugin {
           // which has already run by the time we get here — so the writer reads
           // the refused set from the object that filled it.
           seedRefusals: this.canvasSync?.seedRefusalLedger(canonical),
+          // WP90 (I11): and the place that refused set is KEPT, so it is still
+          // there next session. Handed in here rather than to `CanvasSync`
+          // because `coldOpen` is the one moment it must be consulted — before
+          // the `doc-wins` branch flushes the projection over the user's file.
+          durableRefusals: seedRefusalStore,
           // WP29 (I9/AC1): the two conditions were measured by `subscribe`,
           // which has already resolved by the time we get here — so the cold
           // open reads them from the object that took them.

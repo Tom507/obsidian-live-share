@@ -21,6 +21,7 @@ import {
   seedRecordsIntoYMaps,
   serializeCanvas,
 } from "./canvas-sync";
+import type { DurableSeedRefusals } from "./seed-refusal-store";
 
 // ---------------------------------------------------------------------------
 // CanvasPersistence — downstream-only `.canvas` writer (SPEC_03, Phase 1).
@@ -129,6 +130,21 @@ export interface CanvasPersistenceOpts {
    */
   seedRefusals?: SeedRefusalLedger;
   /**
+   * WP90 (I11): where the refused set is kept so it OUTLIVES THE PROCESS.
+   *
+   * Optional, and omitting it is exactly WP63: the ledger keeps its per-session
+   * lifetime and every existing caller behaves as it did. Supplying it makes
+   * `coldOpen` consult the store BEFORE the `doc-wins` branch can flush a
+   * projection over the user's file — which is where the deletion happens and
+   * the only reason this seam exists.
+   *
+   * Injected rather than constructed here for the same reason `seedRefusals` is:
+   * one store serves every canvas path in the vault, and this class is headless
+   * (its I/O arrives through {@link PersistenceIO}, the store's through WP24's
+   * `SidecarIO`).
+   */
+  durableRefusals?: DurableSeedRefusals;
+  /**
    * BUILD_SPEC §8 DISCRIMINATION SEAM — test-only, no production caller.
    *
    * `false` restores the pre-WP63 composition exactly: a seed refusal drops the
@@ -173,6 +189,11 @@ export class CanvasPersistence {
   // WP63 (I11): the refused set for THIS path, and the seam that arms the guard.
   private readonly refusals: SeedRefusalLedger;
   private readonly withholdOnSeedRefusal: boolean;
+  // WP90 (I11): where that set is kept so it survives a restart. Absent = WP63.
+  private readonly durableRefusals?: DurableSeedRefusals;
+  // WP90: the hydration is once per instance, at cold open, and never repeated
+  // — a second hydration after a lift would restore what the lift just dropped.
+  private durableHydrated = false;
   // WP29 (I9/AC1): the seed-knowledge probe `coldOpen` consults. Held as a whole
   // object rather than as two booleans so `decideSeed` sees exactly what the
   // caller supplied — including a field the caller failed to fill, which the
@@ -226,6 +247,10 @@ export class CanvasPersistence {
     // session's refusals for this path).
     this.refusals = opts.seedRefusals ?? new SeedRefusalLedger();
     this.withholdOnSeedRefusal = opts.withholdOnSeedRefusal ?? true;
+    // WP90 (I11): "starts with an EMPTY refused set by construction" above is
+    // still true of the LEDGER — the store is what fills it, and only at cold
+    // open, which is the one moment before the `doc-wins` flush.
+    this.durableRefusals = opts.durableRefusals;
     // Only an OMITTED probe defaults to "nothing knows the doc". Anything the
     // caller actually passed is handed to `decideSeed` unchanged, so a probe
     // that answered `null` stays an unanswered question instead of being
@@ -469,9 +494,19 @@ export class CanvasPersistence {
    * {@link migrateRecordBearingDoc}.
    *
    * The caller then binds (with `seedModelFromDoc: true`) and calls `start()`.
+   *
+   * WP90 (I11) — ONE STATEMENT WAS ADDED AND ITS POSITION IS THE WHOLE POINT.
+   * {@link hydrateDurableRefusals} runs FIRST, ahead of the `docNonEmpty`
+   * branch, because `doc-wins` flushes and that flush is where a refused record
+   * is deleted from the user's file one restart after it was protected. It is
+   * NOT a second file→CRDT input: it reads the refusal STORE, never the
+   * `.canvas`, opens no transaction, and can only ever cause the writer to
+   * write LESS. `"Doc wins. Never read the file."` is untouched, and so are the
+   * three outcomes and the order they are decided in (C29 AC4).
    */
   async coldOpen(seedOrigin: symbol = CANVAS_SEED_ORIGIN): Promise<ColdOpenResult> {
     if (this.destroyed) return "empty";
+    await this.hydrateDurableRefusals();
 
     const docNonEmpty = this.nodesMap.size > 0 || this.edgesMap.size > 0;
     if (docNonEmpty) {
@@ -515,6 +550,83 @@ export class CanvasPersistence {
     this.seedDocFromCanvasData(data, seedOrigin);
     this.migrateRecordBearingDoc();
     return "seeded-from-file";
+  }
+
+  /**
+   * ── WP90 (I11): THE WITHHOLD OUTLIVES THE SESSION ─────────────────────────
+   *
+   * Connect this path's ledger to the durable store, once, at cold open. With
+   * no store this is a no-op and the whole class behaves exactly as WP63's.
+   *
+   * THE ORDER OF THE FOUR STEPS IS THE DESIGN:
+   *
+   *   1. ASK WHETHER A SEED ALREADY RAN. `hasSeededThisSession` is true when
+   *      the HOST seed (`CanvasSync.applyCanvasToYMaps`, which runs during
+   *      `subscribe`, i.e. before this instance existed) has already re-derived
+   *      the verdict from the file it just read. A stored verdict is then OLDER
+   *      than the file, and restoring it would resurrect a withhold the user
+   *      already earned their way out of by REPAIRING the `.canvas`. That is
+   *      `reset()`'s rule — a stale verdict never outlives its file — carried
+   *      across the restart instead of being abandoned at it.
+   *   2. RESTORE, and only in the other case. `restore()` deliberately does not
+   *      report.
+   *   3. ASSIGN THE SINK — AFTER the restore, never before. Hydration and
+   *      persistence must not be the same event: a rebuild that read the store
+   *      would otherwise immediately write it back, and a partial read would
+   *      launder itself into the file as the new truth.
+   *   4. ADOPT a seed verdict the sink was not there to hear. This is the one
+   *      write hydration causes and it is deliberately NOT hydration: the value
+   *      being persisted came from a seed reading the user's file moments ago,
+   *      not from the store. Without it the host arm's refusal would never
+   *      become durable — and the host arm is the one that is only ACCIDENTALLY
+   *      safe today, saved by producer A happening to re-derive.
+   *
+   * It reads the store, never the `.canvas`, and it emits no CRDT write (I3).
+   * A store that cannot answer degrades to WP63 and is narrated by the store.
+   */
+  private async hydrateDurableRefusals(): Promise<void> {
+    const store = this.durableRefusals;
+    if (store === undefined || this.durableHydrated) return;
+    this.durableHydrated = true;
+
+    const reseeded = this.refusals.hasSeededThisSession;
+    let stored: readonly SeedRefusal[] = [];
+    if (!reseeded) {
+      try {
+        stored = await store.load(this.diskPath);
+      } catch (err) {
+        // Defence in depth: the store already degrades internally rather than
+        // throwing. If it ever throws anyway, this path becomes WP63 — never a
+        // failed cold open, and never a silent full-trust "no refusals".
+        this.logger?.warn?.(
+          "canvas-persistence",
+          `SEED REFUSAL STORE: ${this.diskPath} could not be read (${String(err)}) — ` +
+            "the refused set for this path is in-memory only for this session",
+        );
+        stored = [];
+      }
+      if (stored.length > 0) {
+        this.refusals.restore(stored);
+        // AC2's narration: the withhold is observable state in session N+1 even
+        // though NO seed ran to produce it. Ids and reason codes only.
+        this.logger?.warn?.(
+          "canvas-persistence",
+          `SEED REFUSAL STORE: ${this.diskPath} restored ${stored.length} standing ` +
+            `refusal(s) from the durable store — ${this.refusals.describe()}`,
+        );
+      }
+    }
+
+    this.refusals.setDurableSink((refusals) => store.save(this.diskPath, refusals));
+
+    if (reseeded) {
+      store.save(this.diskPath, this.refusals.list());
+      this.logger?.debug(
+        "canvas-persistence",
+        `SEED REFUSAL STORE: ${this.diskPath} adopted this session's seed verdict ` +
+          `(${this.refusals.size} refused) — the stored set is re-derived, not restored`,
+      );
+    }
   }
 
   /**

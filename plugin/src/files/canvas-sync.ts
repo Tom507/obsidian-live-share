@@ -1457,12 +1457,7 @@ function refusalKey(refusal: SeedRefusal): string {
  * Per path on purpose (AC2 / I5 DEGRADE): a withhold is a degraded persistence
  * state for one canvas, never a session-wide condition.
  *
- * ── WP90 (I11): PER SESSION IS A DATA-LOSS DEFECT — PARTIAL, NOT YET FIXED ──
- *
- * STATUS: this class carries the seam only. `durableSink` has NO assigning
- * caller, so `reportDurable()` is a no-op and the runtime behaviour is still
- * WP63's, byte for byte. The store, the hydration on cold open and the tests are
- * NOT here. Do not read the analysis below as a description of what runs.
+ * ── WP90 (I11): THE WITHHOLD OUTLIVES THE SESSION ──────────────────────────
  *
  * WP63 scoped this to one session, on the reading that the predicate asks "did
  * THIS session's seed refuse something for this path?". The composition that
@@ -1474,17 +1469,29 @@ function refusalKey(refusal: SeedRefusal): string {
  *
  * The invariant says NEVER. A protection with a lifetime is not "never", it is
  * "not yet": widening the scope to "until the plugin unloads" or to "N minutes"
- * moves the moment of destruction without removing it. So the intended lifetime
- * is "until the refusal is RESOLVED", with the durable half in a store keyed by
- * {@link seedRefusalStorePath} — which does not exist yet.
+ * moves the moment of destruction without removing it. So the lifetime is now
+ * "until the refusal is RESOLVED", and the answer is kept in
+ * `files/seed-refusal-store.ts` under {@link seedRefusalStorePath}.
  *
- * What must NOT change when the rest lands, each load-bearing:
+ * THIS CLASS STILL OWNS NO I/O. It reports every change to an injected sink and
+ * is filled from one by {@link restore}; the store, its degradation and its
+ * bytes are the other module's, and `CanvasPersistence.coldOpen` is the only
+ * thing that connects them (`durableRefusals`, consulted BEFORE the `doc-wins`
+ * flush can change a byte).
  *
- *   ├── `reset()` still empties the set on a RE-SEED. A seed re-derives its
- *   │   verdict from the file it just read, so a stale verdict still cannot
- *   │   outlive its file (WP63 `test_tp03`, which passes byte-unmodified).
+ * Three properties are load-bearing and none of them moved:
+ *
+ *   ├── `reset()` still empties the set on a RE-SEED, and now also records
+ *   │   that a seed ran ({@link hasSeededThisSession}). A seed re-derives its
+ *   │   verdict from the file it just read, so a stale verdict cannot outlive
+ *   │   its file — within a session (WP63 `test_tp03`, passing byte-unmodified)
+ *   │   or across a restart, where the flag is what stops a STORED verdict
+ *   │   being restored over a freshly derived one.
  *   ├── the lift is still asked ONLY on the write trigger, never on a timer and
- *   │   never at startup — `prune` is unchanged and has exactly one caller.
+ *   │   never at startup — `prune` has exactly one caller and WP90 added none.
+ *   │   It does now report, because a lift that never reached the store would
+ *   │   be resurrected by the next restart: a PERMANENT withhold, which is the
+ *   │   one way this repair could be worse than the defect.
  *   └── nothing here is ever re-injected into the projection. The durable record
  *       carries IDS, REASONS AND BOUNDARIES ONLY; it holds no user text, no node
  *       content and no `.canvas` payload, because a durable store that keeps a
@@ -1493,14 +1500,25 @@ function refusalKey(refusal: SeedRefusal): string {
 export class SeedRefusalLedger {
   private readonly refused = new Map<string, SeedRefusal>();
   /**
-   * WP90: where this set is kept so it outlives the process.
+   * WP90: where this set is reported so it outlives the process.
    *
-   * UNWIRED as of this checkpoint — nothing calls {@link setDurableSink}, so this
-   * stays `undefined` and every `reportDurable()` is a no-op. That is deliberate
-   * for a partial landing: the in-memory behaviour WP63 shipped is preserved
-   * exactly, rather than half-wired into something that silently forgets.
+   * Optional by design. A ledger with no sink behaves exactly as WP63's did,
+   * which is what every headless caller and every degraded store falls back to.
    */
   private durableSink: ((refusals: readonly SeedRefusal[]) => void) | undefined;
+
+  /**
+   * WP90: has a seed boundary re-derived this path's verdict in THIS process?
+   *
+   * Set by {@link reset}, which is called by both seed boundaries and by
+   * nothing else (`CanvasSync.applyCanvasToYMaps`, the host seed; and
+   * `CanvasPersistence.seedDocFromCanvasData`, the cold-open seed). It is the
+   * discriminator hydration needs: a seed that has already run read the file,
+   * so its verdict is newer than anything on disk — including the verdict
+   * "nothing is refused any more", which is how a user who REPAIRED the file
+   * gets their withhold lifted after a restart.
+   */
+  private seededThisSession = false;
 
   /**
    * WP90: hand this ledger the durable sink it reports every change to.
@@ -1524,6 +1542,11 @@ export class SeedRefusalLedger {
     for (const refusal of refusals) this.refused.set(refusalKey(refusal), refusal);
   }
 
+  /** WP90: true once a seed boundary has re-derived this path's verdict here. */
+  get hasSeededThisSession(): boolean {
+    return this.seededThisSession;
+  }
+
   private reportDurable(): void {
     this.durableSink?.(this.list());
   }
@@ -1537,6 +1560,7 @@ export class SeedRefusalLedger {
   /** Forget everything — the path is being re-seeded, so the old verdicts are stale. */
   reset(): void {
     this.refused.clear();
+    this.seededThisSession = true;
     this.reportDurable();
   }
 
@@ -1564,11 +1588,20 @@ export class SeedRefusalLedger {
    * Drop every refusal the predicate reports resolved (AC3). The caller runs
    * this on the SAME trigger as the write — never on a timer — so a withhold
    * that could lift cannot outlive the next write attempt.
+   *
+   * WP90: it reports the lift, and ONLY when something actually lifted. Both
+   * halves matter. Reporting at all, because a lift that never reached the
+   * store would be restored by the next cold open and the withhold would become
+   * PERMANENT — the one way a durable protection is worse than a session-scoped
+   * one. Only on a change, because this runs on every withheld flush and an
+   * unconditional report would hand the store a write per debounce tick.
    */
   prune(isResolved: (refusal: SeedRefusal) => boolean): void {
+    let lifted = 0;
     for (const [key, refusal] of [...this.refused]) {
-      if (isResolved(refusal)) this.refused.delete(key);
+      if (isResolved(refusal) && this.refused.delete(key)) lifted += 1;
     }
+    if (lifted > 0) this.reportDurable();
   }
 }
 
