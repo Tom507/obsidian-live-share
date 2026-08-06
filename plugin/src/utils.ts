@@ -316,9 +316,10 @@ export function isTextFile(path: string): boolean {
  * private copies of `path.endsWith(".canvas")` is exactly how this defect class
  * propagated (a guard added at one of N call sites).
  *
- * WP26's exclusion additionally has FOUR seams this predicate must NOT serve,
+ * WP26's exclusion additionally has SIX seams this predicate must NOT serve,
  * because at each of them a `.canvas` has to keep passing. They call
- * `isSidecarPath` directly.
+ * `isSidecarPath` directly. (Four came from WP26; the last two are WP68's two
+ * ends of the file-operation channel.)
  *
  * The CONSUMER LIST is the indented block below, and it is exhaustive in both
  * directions: every production call site of `isSidecarPath`, other than this
@@ -338,8 +339,10 @@ export function isTextFile(path: string): boolean {
  *   files/manifest.ts         syncFromManifest
  *   files/manifest.ts         isSharedPath
  *   files/manifest.ts         renameFile
+ *   files/file-ops.ts         onFileRename
+ *   sync/control-handlers.ts  registerControlHandlers
  *
- * Why each of the four, and why it takes the sidecar predicate alone rather than
+ * Why each of the six, and why it takes the sidecar predicate alone rather than
  * this one:
  *
  *   handleLocalTextModify  AC2's "modifying" verb. Guarding it with THIS
@@ -361,6 +364,19 @@ export function isTextFile(path: string): boolean {
  *                          `isSharedPath`; it re-keys an entry directly, so the
  *                          membership gate cannot constrain it. Destination side
  *                          only.
+ *   onFileRename           WP68, the OUTBOUND file-op boundary. It carries no
+ *                          content, so THIS predicate is the wrong one twice
+ *                          over: an ordinary `.canvas` must still be renamed
+ *                          across the link. Both endpoints, because a rename out
+ *                          of the sidecar directory names a file every peer
+ *                          holds. Refuses the emit and nothing else — no vault
+ *                          call, no queue slot, no mute.
+ *   registerControlHandlers  WP68, the INBOUND file-op admission gate, in the
+ *                          `rename` branch. The rename branch is the only one
+ *                          admitted on `.some(isSharedPath)` rather than on the
+ *                          strict all-paths form, so a sidecar endpoint rode in
+ *                          on its shared partner. Refuses before the op reaches
+ *                          the vault at all.
  *
  * Readers are constrained by `isSharedPath`; writers are not, unless they ask it.
  * `publishManifest` (via `getSharedFiles`), `updateFile` and `addFolder` all ask

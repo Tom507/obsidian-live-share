@@ -1,6 +1,7 @@
 import { minimatch } from "minimatch";
 import { MarkdownView, Notice, TFile } from "obsidian";
 
+import { isSidecarPath } from "../files/canvas-sidecar";
 import type LiveSharePlugin from "../main";
 import type { ControlMessage, FileOp } from "../types";
 import { ApprovalModal } from "../ui/approval-modal";
@@ -47,6 +48,45 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     if (paths.length === 0) return;
     const isRename = op.type === "rename";
     if (isRename) {
+      // ----------------------------------------------------------- WP68 AC2 --
+      // THE RECEIVER REFUSES INDEPENDENTLY OF THE SENDER.
+      //
+      // The rename branch is the ONLY file-op admitted on `.some(isShared)`
+      // rather than on the strict all-paths form below, and that is exactly what
+      // made this reachable: with C26 landed `isSharedPath` answers `false` for a
+      // sidecar path, so a rename straddling the boundary was admitted on the
+      // strength of its SHARED endpoint alone. The op then reached
+      // `applyRemoteOpInner`'s `"rename"` case, which finds this peer's own file
+      // at `oldPath`, calls `ensureFolder` for the destination's parent and moves
+      // it — a peer-driven write into this process's own `.obsidian/**`.
+      //
+      // No sender-side guard is in the picture here on purpose. The outbound
+      // guard in `files/file-ops.ts` constrains what THIS peer produces; it says
+      // nothing about an older build, a differently-configured vault or a
+      // hostile one, and those are precisely the cases this gate has to survive.
+      //
+      // BEFORE `applyRemoteOp`, not inside it (AC3, AC4): refusing here means no
+      // `opQueues` slot is taken, no `mutePathEvents` is issued and therefore
+      // none can be stranded, and — the criterion that matters most — NOT ONE
+      // vault call is made. Nothing is renamed, trashed, created, modified or
+      // folder-created at either endpoint, and the file at `oldPath` is left
+      // exactly as it was. A refusal that degraded into a delete would be the
+      // I11 failure this criterion exists to forbid.
+      //
+      // The membership test is `isSidecarPath` from `files/canvas-sidecar.ts` —
+      // imported, never re-spelt (C26 AC3). NOT `skipsAutoTextSync`: an ordinary
+      // `.canvas` must keep passing this boundary, exactly as it does through
+      // `isSharedPath`.
+      //
+      // Per-path and non-fatal (I5): one refused rename does not throw, does not
+      // touch the session and does not affect any other path or op type.
+      if (paths.some((path) => isSidecarPath(path))) {
+        plugin.logger.warn(
+          "file-op",
+          `refused remote rename touching the sidecar directory (${paths.length} paths)`,
+        );
+        return;
+      }
       if (!paths.some((path) => plugin.manifestManager.isSharedPath(path))) return;
     } else {
       if (paths.some((path) => !plugin.manifestManager.isSharedPath(path))) return;

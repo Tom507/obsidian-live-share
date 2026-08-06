@@ -14,6 +14,7 @@ import {
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
+import { isSidecarPath } from "./canvas-sidecar";
 
 const CHUNK_SIZE = 512 * 1024;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -69,6 +70,15 @@ export class FileOpsManager {
   // it refused, which is the difference between a bound and a silent drop.
   private acceptingIntoQueue = true;
   private refusedWhileSealed = 0;
+  // --- WP68 (C68 AC1) — the outbound sidecar-rename refusal, COUNTED ---------
+  //
+  // A refusal that leaves no trace is indistinguishable from a rename that never
+  // happened, and this run has already paid for that confusion twice. The
+  // counter is the observable; it is state, not a log line, so a test can be an
+  // oracle over it (see the WP88 counter directly above for the precedent and
+  // the reasoning). It counts refusals only — it is never decremented, and
+  // nothing else in this class reads it.
+  private refusedSidecarRenames = 0;
 
   constructor(vault: Vault, fileManager: FileManager) {
     this.vault = vault;
@@ -116,6 +126,19 @@ export class FileOpsManager {
       acceptingIntoQueue: this.acceptingIntoQueue,
       refusedWhileSealed: this.refusedWhileSealed,
     };
+  }
+
+  /**
+   * WP68 (C68 AC1) — READ-ONLY. How many outbound renames this manager refused
+   * because one of their endpoints was a sidecar path.
+   *
+   * "Nothing was emitted" and "nothing was emitted because the refusal fired"
+   * are different observations, and only this counter tells them apart. It
+   * carries no path: the count is a diagnostic, and a path here would put local
+   * replica-state filenames into a value other components may render.
+   */
+  getSidecarRenameRefusals(): number {
+    return this.refusedSidecarRenames;
   }
 
   /**
@@ -562,12 +585,63 @@ export class FileOpsManager {
     const localNew = normalizePath(file.path);
     const localOld = normalizePath(oldPath);
     if (this.isPathMuted(localNew) || this.isPathMuted(localOld) || !this.sendOp) return;
+    const wireOld = toCanonicalPath(localOld);
+    const wireNew = toCanonicalPath(localNew);
+    // ------------------------------------------------------------- WP68 AC1 --
+    // THE OUTBOUND HALF OF C26'S GUARANTEE, ON THE FILE-OP CHANNEL.
+    //
+    // C26 established that local replica state is never shared CONTENT. This is
+    // the same guarantee for the file-operation channel, in the direction this
+    // peer produces. Before this line `onFileRename` had no path-class guard of
+    // any kind — its only conditions were the two mutes and the presence of a
+    // sender — so a rename whose destination lay under the sidecar directory was
+    // emitted verbatim, and a peer applying it would move ITS OWN copy of a
+    // shared note into ITS OWN `.obsidian/**`. The reverse direction is not
+    // decoration: `index.json` is a fixed filename every peer holds, so a rename
+    // OUT of the sidecar directory names a path that exists everywhere.
+    //
+    // BOTH ENDPOINTS, and both spellings. The local and the canonical form of a
+    // path can only differ in the seven characters `toLocalPath` substitutes on
+    // Windows, none of which occurs in the sidecar directory prefix — so today
+    // the four tests below collapse to two. They are written out anyway rather
+    // than argued down to two, because the argument depends on a character map
+    // in another module and a test that rests on it would go quiet if that map
+    // ever grew a `.` or a `/`.
+    //
+    // PLACED ABOVE THE QUEUE ACQUISITION, deliberately (AC4). A refusal takes no
+    // `sendQueues` slot, takes no mute and schedules no task, so it leaves the
+    // per-path bookkeeping exactly as an ordinary muted rename does — the early
+    // return one line up. There is no path here on which a refusal could strand
+    // a mute count and silently freeze the path.
+    //
+    // REFUSING IS ALL IT DOES (AC3, I11). No trash, no delete, no recreate, and
+    // no vault call whatsoever: `onFileRename` has never touched the disk and
+    // still does not. The local rename Obsidian already performed stands; the
+    // peers keep their own copies at the old path. That divergence is the
+    // ACCEPTED outcome. "The file left the shared tree, so drop it" is the
+    // refuse-then-delete trap, and it is the defect this guard exists to avoid
+    // becoming.
+    //
+    // The manifest arm is NOT merged into this one and must not be:
+    // `ManifestManager.renameFile` still deletes the stale old key and still
+    // declines a sidecar destination (WP26/C26). The two arms give deliberately
+    // different answers to the same event — the manifest entry goes, the peer's
+    // file stays — and unifying them breaks one of the two.
+    if (
+      isSidecarPath(localOld) ||
+      isSidecarPath(localNew) ||
+      isSidecarPath(wireOld) ||
+      isSidecarPath(wireNew)
+    ) {
+      this.refusedSidecarRenames += 1;
+      return;
+    }
     const prev = this.sendQueues.get(localOld) ?? Promise.resolve();
     const task = prev.then(() => {
       this.emitOp({
         type: "rename",
-        oldPath: toCanonicalPath(localOld),
-        newPath: toCanonicalPath(localNew),
+        oldPath: wireOld,
+        newPath: wireNew,
       });
     });
     this.sendQueues.set(localOld, task);
