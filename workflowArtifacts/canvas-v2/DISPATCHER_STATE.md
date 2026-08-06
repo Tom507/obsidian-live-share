@@ -2408,3 +2408,86 @@ instead of removing it. The work package's founding argument applies to its own 
 - **BUILD_SPEC §10 said *"`plugin/manifest.json` is a broken symlink … do not read or edit"*.** That has
   been false since `083fbe0`/`67f1036`. A standing instruction not to touch the file that must ship
   beside `main.js` is worse than the broken symlink was.
+
+---
+
+## 🚨 B44 VERDICT: THE SCHEDULE DEPENDENCE WAS A PRODUCT SWALLOW THE SUITE WAS HIDING (`61e18c2`)
+
+**The ruling was right and the answer is worse than either option.** I ruled the five schedule-dependent
+checks *a finding to investigate, not a property to preserve*. The verdict is **2 product / 3 suite** —
+and **the three suite artefacts were masking the same product defect the other two surface.**
+
+### The defect — chartered as WP91 (B47)
+
+**A local whole-file write to a shared `.canvas` landing within ~0.8 s of a remote change being applied
+to that path is silently DROPPED.** The bytes stay on the writer's disk, **the writer's own doc never
+shows them**, the peer never shows them, and 20 s later nothing has changed. **No `local modify` receipt
+at all** — the event never reaches `handleLocalModify`. `useCanvasBinding` is `false`, so **this is the
+live path for a real user.**
+
+| delta | result |
+|---|---|
+| ≤ 0.5 s | **LOST 20/20**, all four edit shapes |
+| ≤ 0.8 s | **LOST 11/12** |
+| ≥ 0.9 s | OK 4/4 (5/5 at 1–8 s) |
+
+**Mechanism — I verified all four sites myself at `fb631f8`**, not from the report:
+
+| site | what it does |
+|---|---|
+| `vault-events.ts:232` | `if (plugin.fileOpsManager.isPathMuted(file.path)) return;` — an **unconditional early return before any content is examined, with no log line.** The event is gone and nothing records that it existed. |
+| `file-ops.ts:196` | `isPathMuted` is a **bare per-path refcount**. No content test, no origin test. **A user's edit is indistinguishable from our own echo**, and the code does not try. |
+| `canvas-persistence.ts:463` | `armSettleRelease()` **clears and re-arms on every write**, holding the mute across the whole burst one remote change provokes — which is why the window is **~0.8 s, not the 250 ms constant at `:53`**. |
+| `canvas-sync.ts:3065` | a second, independent drop on the same journey. |
+
+**The comment at `canvas-persistence.ts:50-53` is the whole story:** it declares the settle window
+*"Purely mechanical echo suppression — **NOT a correctness mechanism**."* It has become one. **A mechanism
+documented as unable to affect correctness was silently discarding user edits, and that is precisely why
+nothing looked at it for the entire run.**
+
+**Not WP37.** WP37 fixed a *view-rebuild* keystroke loss. This is the **capture** side, whole-file writes,
+never reaching `handleLocalModify`. A reader who conflates them will believe this is already fixed.
+
+### The three suite artefacts — two were greens that cannot fail
+
+- `[02] endpoints survived intact` — `if edge in eb:` meant a missing edge **vanished from the count
+  instead of failing**. That is why the denominator moved 21→20, and **why `21/21` and `16/20` were never
+  comparable numbers.** My own headline figure was built on it.
+- `[06] B: node gone` — the precondition named A only, and with per-run ids **absence is the default
+  state**, so "not on B" was true for free. **A green that cannot fail, in the scenario testing deletion.**
+- `[06] no resurrection` — a bare `sleep(5)`; when the deletion never propagated it failed with *"no
+  resurrection"*, **accusing the product of resurrecting a node it had never deleted.**
+
+### The suite is now an instrument
+
+`write_and_confirm_capture()` makes the writer's **own doc** an oracle, so *"never captured"* and
+*"captured, never arrived"* stop being one failure. **Swallowed writes are deliberately NOT retried** — a
+retry re-issues the event outside the mute window and turns the defect back into a green. Red demonstrated
+at `LS_E2E_BREAK=mux`: **15/29 with all fourteen dependent checks red.** The first attempt used
+`shape="close"` and scored **29/29 with the link nominally severed** — recorded as **S66**.
+
+### WP89 is UNBLOCKED — and it inherits a fact
+
+The swallow is on the **capture** side; WP89's `defer-drag` arm is on the **apply** side. `CANVAS WRITE
+HELD:` and `SHADOW STALE:` had **zero hits in every window**, each proved matchable first. **But the disk
+write WP89's arm leaves running is what opens the mute burst that deafens the path** — a second cost its
+charter does not name.
+
+### New signals — S65 is the one that reaches backwards
+
+- **S65 — the debug log's stamp-to-flush lag reached ~58 s**, while every offset-based receipt reader in
+  `H:\tmp` uses a **2–2.5 s** margin. Each reads zero lines and reports the absence as a result. **This
+  does not merely threaten future measurements: any past conclusion of the form "the signature never
+  fired" may have been reading a file the writer had not flushed.** Caught only by the Rule 15 guard.
+- **S66** — `link.break shape="close"` is not a break. A negative control that cannot fail is worth less
+  than no control, because it gets quoted as evidence.
+- **S67** — the repo's committed `plugin/main.js` is **not** the installed bundle (`85a29c85` vs
+  `b672be50`). Running the installer without `LS_EXPECT_SHA256` **silently changes the code under
+  measurement.** Distinct from `S57(installer)` — that is *installed ≠ loaded*, this is *committed ≠
+  installed* — and the two compose.
+
+### Rig state
+
+Both vaults connected, A=host/39431, B=guest/39432, bundle unchanged, `sharedFolder=_liveshare-test`
+verified before and after. **The relay room had been deleted server-side** and was re-provisioned; the old
+room's doc history is gone. Pre-swap snapshot at `H:\tmp\b44_shared_snapshot\20260807_004046\`.

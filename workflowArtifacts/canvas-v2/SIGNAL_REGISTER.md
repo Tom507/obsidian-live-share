@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S65** |
+| **Next free number** | **S68** |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
@@ -103,7 +103,11 @@ The first entries allocated the way §1 requires — described by the finder, nu
 | **S63** | **WP90's durable store keys by `diskPath` (`toLocalPath(canonical)`), which on Windows maps a few ASCII characters to fullwidth.** Stable per machine. A vault carried between Windows and macOS keys those paths differently, so the standing withhold is **not found** and the next cold open projects the doc over the user's file. | **open.** The mechanism WP90 built to stop I11 expiring with the *session* still expires with the *platform*, and silently. Reported by the implementor. |
 | **S64** | **WP90's store writes are fire-and-forget**; nothing awaits `store.idle()` at plugin unload. A refusal recorded microseconds before a hard kill is lost. | **open**, low severity. Strictly no worse than WP63, which had no durability at all — but it is a real window and it is now the only one. |
 
-**S63 is the one to schedule.** It is the same defect as WP90's own premise — *a protection with a lifetime is
+| **S65** | **The debug log's stamp-to-flush lag reached ~58 s.** Every offset-based receipt reader in `H:\tmp` uses a **2–2.5 s** margin, so each one reads zero lines and reports the absence as a result. | **open, and the most serious of this block.** It does not merely threaten future measurements — it means any past conclusion of the form *"the signature never fired"* may have been reading a file the writer had not flushed. Caught only by the Rule 15 guard that requires a grep to prove it can match its target first. |
+| **S66** | **`link.break shape="close"` is not a break.** A run scored **29/29 with the link nominally severed**; `autoReconnect` reversed it before anything could fail. | **open.** A negative control that cannot fail is worth less than no control, because it is quoted as evidence. `shape="mux"` does break the link — 15/29 with all fourteen dependent checks red. |
+| **S67** | **The repo's committed `plugin/main.js` is not the installed bundle** (`85a29c85` vs `b672be50`). Anyone running the installer without `LS_EXPECT_SHA256` **silently changes the code under measurement**. | **open.** Distinct from `S57(installer)`, which is *installed bytes are not loaded bytes*; this is *committed bytes are not installed bytes*. Both are live, and they compose. |
+
+**S63 is the one to schedule** of the WP90 block. It is the same defect as WP90's own premise — *a protection with a lifetime is
 not "never", it is "not yet"* — surviving the repair with its lifetime rewritten from "the session" to "the
 platform". A durable I11 protection that evaporates when the vault moves machines is the failure mode the
 work package exists to prevent, and the loss is silent: nothing reports a store entry that was never matched.
