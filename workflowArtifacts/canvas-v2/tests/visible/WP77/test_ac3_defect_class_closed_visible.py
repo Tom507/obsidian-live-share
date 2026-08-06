@@ -199,21 +199,54 @@ def test_t5_raw_answer_is_the_carried_up_record_and_its_state_is_measured_not_cl
     assert diff == []
 
 
+#: WP77's own commits, oldest first. The charter constraint is a statement about THESE,
+#: and nothing else in the repository's history.
+WP77_COMMITS = ("f4846c2", "20d45ee", "2ffe771", "032e749")
+
+
 def test_t6_nothing_outside_tools_obsidian_e2e_was_modified_by_this_wp() -> None:
-    """The charter's hard constraint, checked against git rather than asserted."""
-    changed = subprocess.run(
-        ["git", "diff", "--name-only", _prerepair.BASELINE_COMMIT, "--", "tools/", "server/",
-         "plugin/"],
-        cwd=str(_REPO), capture_output=True, text=True, check=True,
-    ).stdout.split()
-    offenders = [
-        path
-        for path in changed
-        if not path.startswith("tools/obsidian_e2e/")
-        # `plugin/src/**` belongs to a sibling agent working in this same tree; it is not
-        # this WP's and is explicitly excluded rather than silently tolerated.
-        and not path.startswith("plugin/src/")
-    ]
+    """The charter's hard constraint, asked of WP77's OWN COMMITS.
+
+    ── why this was rewritten, because the previous form is a defect class ──
+
+    It used to diff the working tree against `BASELINE_COMMIT` — an OPEN-ENDED range.
+    That measures every commit anyone has landed since, not the work package it names, so
+    it fails on other people's legitimate work and drifts further out of date every day.
+    It had already grown one exclusion for a sibling (`plugin/src/**`) and, when a later
+    Tier-0 fix touched `plugin/manifest.json`, it went red for a change WP77 could not
+    have made: `git log` shows WP77's four commits touch `tools/obsidian_e2e/` and nothing
+    else. **A scope assertion with an unbounded endpoint stops being about its scope.**
+
+    The failure mode is the one this suite exists to hunt, arriving from the other side.
+    A test that cannot pass gets exclusions bolted on until it cannot fail: each addition
+    weakens it, none of them is ever decided, and the blanket `plugin/src/**` exemption
+    covered precisely the tree where a violation would have shown. (It was *true* — the
+    `plugin/src` changes in that range are B16a's data-loss chain, verifiable by
+    `git log 02aef92..032e749 -- plugin/src/` — but it was true by luck, not by check.)
+
+    So the question is asked directly instead: **the union of files WP77's own commits
+    touched, restricted to the guarded trees, must contain nothing outside
+    `tools/obsidian_e2e/`.** No baseline, no range, no exclusions, nothing to drift — and
+    it still fails if WP77 had reached outside its scope, which the old form could not.
+    """
+    touched: set[str] = set()
+    for commit in WP77_COMMITS:
+        files = subprocess.run(
+            ["git", "show", "--name-only", "--format=", commit],
+            cwd=str(_REPO), capture_output=True, text=True, check=True,
+        ).stdout.split()
+        touched.update(
+            path for path in files
+            if path.startswith(("tools/", "server/", "plugin/"))
+        )
+
+    # POSITIVE CONTROL. An empty derivation would satisfy the assertion below without
+    # having looked at anything — a mistyped hash, a rewritten history or a detached
+    # checkout would all read as "nothing out of scope". The WP demonstrably edited five
+    # modules, so requiring them here is what makes the green mean something.
+    assert len(touched) >= 5, f"derived only {sorted(touched)} - the check found nothing to check"
+
+    offenders = sorted(p for p in touched if not p.startswith("tools/obsidian_e2e/"))
     assert offenders == [], offenders
     # And no suite was mirrored into the plugin's TypeScript tests.
     assert not list((_REPO / "plugin" / "src" / "__tests__").glob("*[Ww][Pp]77*"))
