@@ -3502,3 +3502,76 @@ What is gone is only what **I** put there: a 0-byte file I created in A's *share
 something that actually lived at the root, and a redundant root copy. **Both of my two errors here came from
 acting on their vault before establishing where their file actually was** — `find` answered it in one call, and
 I ran that call only after the second mistake. **Stop touching the vault; the state is correct.**
+
+---
+
+# 📍 RESUME POINT — written 2026-08-07 for context compaction
+
+**Read this section plus `TRIAGE_STOPLINE.md` and you have the run.** Everything below was in the
+Dispatcher's context only; the rest is already on disk.
+
+## Where the run stands
+
+`HEAD` = `03d0c77`. Last clean gate: **2975 tests, 405 files, `tsc` clean, register exit 0** (at `93936ef`).
+
+**Ten signals closed today** — S114, S115, S116, S118, S119, S123, S125, S126, S128, S129. Four were
+data-loss. **S128 was the generator** behind four of the others (`waitForSync` resolving on *"the relay has
+nothing more to say"* while six callers read *"the data has arrived"*); it is fixed at the source and all six
+consumers are audited. Full ranking and the stop line → `TRIAGE_STOPLINE.md`.
+
+## In flight right now — two workers
+
+| Worker | Task | Expected back |
+|---|---|---|
+| **W3b** (fresh context) | **Finish WP108** — the tree carries an uncommitted S120 + S124 fix whose author was killed on the step before committing. | S120 and S124 reported **separately**, break table, bracketed gate figure, and the justification written into the census pin |
+| **W4** (fresh context, resumed mid-package) | **WP107 live validation** on pinned build `d8f98603ad6ddb1c` | Phase 0's answer first, then AC2 |
+
+### The uncommitted WP108 state — do not mistake RED for breakage
+
+Tree carries: `file-ops.ts`, `control-handlers.ts`, `vault-events.ts`, `e2e-control.ts`,
+`s115_break_table.py`, and new `plugin/src/__tests__/v2/wp108/`. **The suite is RED — 15 failures — and this
+is expected.** `wp93/test_tp01_the_census_is_closed_and_derived_visible.test.ts` **deliberately pins** the
+`isPathMuted` consumer set and reddens whenever it changes; the S120 fix changes it (`file-ops.ts` 8→9 calls,
+the second file's call gone). Updating that pin **with justification and without weakening the property** is
+the missing step. Backup: `H:/tmp/wp108_rescue/` (415-line patch + the test dir).
+
+### W4's Phase 0 question, which is itself a finding
+
+All three clients report **`connected: false`** after a plugin update + restart, though `roomId`/role/token
+persist in `data.json` and `autoReconnect` defaults on. Either startup auto-resume is genuinely broken after a
+build swap — a real defect — or the previous run never issued a start/join. **Establish which; do not route
+around it.**
+
+## Environment facts a resumed session needs
+
+- **Vaults (the owner's real ones, playground-authorised):** `H:\Developement\_NeuralAngels\ObsidianOrga`
+  (A, e2e **39431**), `... - Kopie` (B, **39432**, host), `... - W4TestC` (C, **39433**).
+- **E2E protocol:** `POST http://127.0.0.1:<port>/command`, body `{"cmd": "..."}` — the field is **`cmd`**,
+  not `command`. All three answer; 6 Obsidian processes up.
+- **Deployed build pinned at `d8f98603ad6ddb1c`.** Do not rebuild while W4 is live.
+- Keep in every share: `Properties.md`, `hello.md` (both 0 bytes — keep, do not restore), `smoke.canvas`
+  and six other pre-existing `.canvas` files. `Properties 1.md` at each vault root is the owner's.
+- **`smoke.canvas` is 45,603 B on A and B but 1,730 B on C**, unattended and unexplained. Not moving.
+- `ARCHITECTURE.md`, `README.md`, `docs/security.md` modified and `USER_STORIES.md` deleted are **the
+  owner's** — never stage, revert or touch them.
+- **`npx biome check --write` corrupts this tree.** Never run it.
+
+## The structural limit that bounds every live claim
+
+All three instances run **on one machine**, so every client is the same distance from the relay. A
+**symmetric** delay cannot open the first-arrival window at all — measured: it shut at a **10 ms** subscribe
+gap under **40 ms** one-way delay. **The S128 family's trigger is unreachable in this rig at any latency**, so
+no quiet live run is evidence those four fixes work. `S131`, in closed form:
+`NO_PEERS ⟺ seederDelay > subscribeGap + readerDelay` — *a peer on a slower link than yours loses the race to
+seed, and you are told the document is new.*
+
+## Standing process rules learned this run
+
+- **One worker, one batch — ≤3 small related packages, chartered UP FRONT, never accumulated by resumption.**
+  Measured cost of getting this wrong: W3 161k→529k tokens across 7 packages, W4 247k→451k across 6, and one
+  died mid-task on work a fresh agent finished easily. Now Dispatcher Rule 13. **Retire a worker with a
+  handoff, not a message.**
+- **The workflow `.md` files under `AtomicAgentOrchestrator/` are GENERATED** from `templates/*.template.md`
+  and are overwritten on every config-panel save. Four authored rules were found living only in the generated
+  copies and were ported to the templates (`0bd5768`). **Author process rules in the template, never the
+  generated file.** `workflow_obsidian_liveshare.md` is *not* generated and is safe.
