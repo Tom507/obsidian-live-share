@@ -178,6 +178,42 @@ export interface CanvasPersistenceOpts {
    */
   durableRefusals?: DurableSeedRefusals;
   /**
+   * WP92 (C92 AC1 / I11): the DOCUMENT's identity, and the store's key.
+   *
+   * WP90 keyed the durable store by `diskPath` — `toLocalPath(canonical)` — a
+   * string that is a function of the running host AND of the file's current
+   * name. The host half (S63) has a real mechanism and a falsified reproduction;
+   * the NAME half is reachable today by one ordinary gesture: `handleRename`
+   * re-keys `guidByPath`, the manifest guid, every `index.json` row and the
+   * in-memory ledger, and tells the store nothing — so the standing withhold is
+   * left under the retired name and the new path cold-opens with none.
+   *
+   * This is WP27's guid, the same token `canvasDocId`, `<guid>.yhistory`,
+   * `<guid>.ycheckpoint` and `index.json`'s KEYS are built from. Production
+   * fills it from `CanvasSync.getCanvasGuid`, which is cached and synchronous
+   * and cannot be `null` here by the attach precondition — `attachCanvasWriter`
+   * returns early unless `getCanvasDocHandle` answered, and that answers `null`
+   * unless the path has a guid or the identity store is absent (in which case
+   * the canonical path IS the identity token, by `canvasDocIdFor`'s own rule).
+   *
+   * OMITTED AND `null` ARE DIFFERENT ANSWERS, on this file's own precedent
+   * ({@link CanvasPersistenceOpts.seedKnowledge}: "only an OMITTED probe
+   * defaults"):
+   *
+   *   ├── OMITTED — the caller predates WP92 and has no opinion, so the key
+   *   │   stays WP90's `diskPath` and every such caller behaves exactly as it
+   *   │   did. Production never omits it, and `wp92/` asserts that structurally
+   *   │   over `main.ts` so the compatibility default cannot be reached by the
+   *   │   product.
+   *   └── `null` — the caller ASKED and this document has no stable identity.
+   *       That is I5 DEGRADE: the store is not consulted for this path at all,
+   *       narrated, for this path only and never for the session. It does NOT
+   *       fall back to the path — a second vocabulary in the file is the defect,
+   *       and "the withhold is in memory only" is honest where "the withhold is
+   *       under a key the next rename will orphan" is not.
+   */
+  refusalIdentity?: string | null;
+  /**
    * BUILD_SPEC §8 DISCRIMINATION SEAM — test-only, no production caller.
    *
    * `false` restores the pre-WP63 composition exactly: a seed refusal drops the
@@ -225,6 +261,11 @@ export class CanvasPersistence {
   private readonly withholdOnSeedRefusal: boolean;
   // WP90 (I11): where that set is kept so it survives a restart. Absent = WP63.
   private readonly durableRefusals?: DurableSeedRefusals;
+  // WP92 (I11): the key that set is kept UNDER — the document's identity, not
+  // the file's name and not the host's spelling of it. Absent = WP63 for this
+  // path, narrated. `diskPath` remains the LEGACY key and is read once, at
+  // hydrate, so a WP90-era entry is found and re-keyed rather than abandoned.
+  private readonly refusalIdentity?: string | null;
   // WP90: the hydration is once per instance, at cold open, and never repeated
   // — a second hydration after a lift would restore what the lift just dropped.
   private durableHydrated = false;
@@ -291,6 +332,11 @@ export class CanvasPersistence {
     // still true of the LEDGER — the store is what fills it, and only at cold
     // open, which is the one moment before the `doc-wins` flush.
     this.durableRefusals = opts.durableRefusals;
+    // WP92 (I11): held exactly as supplied. An omitted identity and a `null` one
+    // mean the same thing — "no stable name for this document" — and both must
+    // degrade rather than be laundered into the path, which is the key this WP
+    // exists to stop using.
+    this.refusalIdentity = opts.refusalIdentity;
     // Only an OMITTED probe defaults to "nothing knows the doc". Anything the
     // caller actually passed is handed to `decideSeed` unchanged, so a probe
     // that answered `null` stays an unanswered question instead of being
@@ -643,11 +689,44 @@ export class CanvasPersistence {
     if (store === undefined || this.durableHydrated) return;
     this.durableHydrated = true;
 
+    // ── WP92 (C92 AC1): THE KEY IS THE DOCUMENT'S, NOT THE FILE'S ───────────
+    //
+    // I5 DEGRADE, and the direction is deliberate: with no stable identity the
+    // store is not consulted at ALL for this path, which is exactly WP63 —
+    // in-memory, this session, narrated. The tempting alternative (fall back to
+    // `diskPath`) would put a second vocabulary in the file and re-arm the very
+    // orphan this change removes, under a key nothing would ever migrate.
+    // An OMITTED identity is a pre-WP92 caller and keeps WP90's key; an identity
+    // the caller actually supplied as `null` (or empty) is an ANSWER, and the
+    // answer is "this document has no stable name".
+    const key = this.refusalIdentity === undefined ? this.diskPath : this.refusalIdentity;
+    if (key === null || key.length === 0) {
+      this.logger?.warn?.(
+        "canvas-persistence",
+        `SEED REFUSAL STORE: ${this.diskPath} has no stable document identity — the ` +
+          "refused set for this path is in-memory only for this session",
+      );
+      return;
+    }
+
     const reseeded = this.refusals.hasSeededThisSession;
+    // WP92 (AC2): WP90's key, read ONCE and only as a fallback. It is the exact
+    // expression WP90 used (`main.ts` handed `toLocalPath(canonical)` in as
+    // `diskPath`), so a store written by the previous build is found rather than
+    // silently stopping to match — which is the cheap answer this AC forbids.
+    const legacyKey = this.diskPath;
+    let migrateFrom: string | undefined;
     let stored: readonly SeedRefusal[] = [];
     if (!reseeded) {
       try {
-        stored = await store.load(this.diskPath);
+        stored = await store.load(key);
+        if (stored.length === 0 && legacyKey !== key) {
+          const legacy = await store.load(legacyKey);
+          if (legacy.length > 0) {
+            stored = legacy;
+            migrateFrom = legacyKey;
+          }
+        }
       } catch (err) {
         // Defence in depth: the store already degrades internally rather than
         // throwing. If it ever throws anyway, this path becomes WP63 — never a
@@ -671,10 +750,24 @@ export class CanvasPersistence {
       }
     }
 
-    this.refusals.setDurableSink((refusals) => store.save(this.diskPath, refusals));
+    this.refusals.setDurableSink((refusals) => store.save(key, refusals));
+
+    // WP92 (AC2): the re-key, AFTER the sink and only when a legacy entry was
+    // actually found. It is a WRITE and it is named as one — `load()` still
+    // performs none, so property 5 (hydration and persistence are different
+    // events) survives: an ordinary hydrate, which is every hydrate after the
+    // first upgraded open, touches the file zero times.
+    if (migrateFrom !== undefined) {
+      store.migrate?.(migrateFrom, key);
+      this.logger?.debug(
+        "canvas-persistence",
+        `SEED REFUSAL STORE: ${this.diskPath} carried ${stored.length} standing refusal(s) ` +
+          "forward from the legacy path key onto the document's identity",
+      );
+    }
 
     if (reseeded) {
-      store.save(this.diskPath, this.refusals.list());
+      store.save(key, this.refusals.list());
       this.logger?.debug(
         "canvas-persistence",
         `SEED REFUSAL STORE: ${this.diskPath} adopted this session's seed verdict ` +

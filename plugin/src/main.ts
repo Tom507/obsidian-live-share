@@ -59,7 +59,7 @@ import {
   WRITER_ATTACH_VERDICT,
   decideCanvasWriterAttach,
 } from "./files/canvas-writer-attach-decision";
-import { SeedRefusalStore } from "./files/seed-refusal-store";
+import { SeedRefusalStore, flushSeedRefusalStore } from "./files/seed-refusal-store";
 
 import { ExclusionManager } from "./files/exclusion";
 import { FileOpsManager } from "./files/file-ops";
@@ -231,6 +231,17 @@ export default class LiveSharePlugin extends Plugin {
   // not. Built lazily at the first canvas writer attach so a vault that never
   // opens a shared canvas never creates the file.
   private seedRefusalStore: SeedRefusalStore | null = null;
+  /**
+   * WP92 (C92 AC4 / S64): every teardown flush of the store, serialised.
+   *
+   * Wiring, and the chain is the wiring: `teardownCanvasPresences` (both destroy
+   * paths — `onunload` AND `cleanupSession`) STARTS a flush, and `onunload`
+   * AWAITS this chain after its synchronous teardown has run. So the one moment
+   * the process may actually be about to end is the one moment that waits, and
+   * the sync half of `onunload` still runs synchronously — nothing moved behind
+   * an await that was not behind one before.
+   */
+  private seedRefusalFlush: Promise<void> = Promise.resolve();
   explorerIndicators: ExplorerIndicators | null = null;
   controlChannel: ControlChannel | null = null;
   remoteUsers = new Map<string, PresenceUser>();
@@ -1390,7 +1401,11 @@ export default class LiveSharePlugin extends Plugin {
     }
   }
 
-  onunload() {
+  // WP92 (C92 AC4 / S64): `async` so the store's queued writes can be AWAITED.
+  // Obsidian ignores the returned promise, which is why the entire pre-existing
+  // teardown stays ABOVE the first await and therefore still runs synchronously
+  // — the await is appended, never interleaved.
+  async onunload() {
     this.testControlHandle?.close();
     this.testControlHandle = null;
     this.logger.destroy();
@@ -1420,6 +1435,38 @@ export default class LiveSharePlugin extends Plugin {
     this.backgroundSync.destroy();
     this.manifestManager.destroy();
     this.syncManager.destroy();
+
+    // WP92 (C92 AC4 / S64) — THE LAST THING, AND THE ONLY AWAIT.
+    //
+    // WP90 built `save()` to extend its queue synchronously so that a caller
+    // which then awaits `idle()` waits for THAT save, and then nothing ever
+    // awaited it: a refusal recorded microseconds before a hard kill was lost,
+    // and so was WP92's own one-shot migration. Bounded inside
+    // `flushSeedRefusalStore`, never rethrowing, so an unwritable store still
+    // unloads the plugin.
+    await this.flushSeedRefusals();
+  }
+
+  /**
+   * WP92 (C92 AC3 + AC4): land the store's writes, then name what nobody asked for.
+   *
+   * Serialised on {@link seedRefusalFlush} so the two destroy paths cannot race
+   * each other into two concurrent flushes of one queue. `reportUnmatched()` runs
+   * AFTER the flush because the migration is itself a re-key: reporting first
+   * would name an entry the flush is about to move.
+   */
+  private flushSeedRefusals(): Promise<void> {
+    const store = this.seedRefusalStore;
+    if (!store) return this.seedRefusalFlush;
+    this.seedRefusalFlush = this.seedRefusalFlush
+      .then(async () => {
+        await flushSeedRefusalStore(store, { logger: this.logger });
+        store.reportUnmatched();
+      })
+      .catch(() => {
+        /* a teardown that cannot narrate must still be a teardown */
+      });
+    return this.seedRefusalFlush;
   }
 
   private async resumeSession() {
@@ -2931,6 +2978,14 @@ export default class LiveSharePlugin extends Plugin {
           // because `coldOpen` is the one moment it must be consulted — before
           // the `doc-wins` branch flushes the projection over the user's file.
           durableRefusals: seedRefusalStore,
+          // WP92 (I11): and the KEY it is kept under — the DOCUMENT's identity,
+          // not the file's name. `getCanvasGuid` is WP27's cached, synchronous
+          // read of the same token `canvasDocId` is built from, so this is a
+          // measurement taken from the object that owns it and not a second
+          // identity resolution. It cannot be `null` on this line by the attach
+          // precondition above (`getCanvasDocHandle` already returned), and
+          // `CanvasPersistence` degrades to WP63 for the path if it ever is.
+          refusalIdentity: this.canvasSync?.getCanvasGuid(canonical) ?? null,
           // WP29 (I9/AC1): the two conditions were measured by `subscribe`,
           // which has already resolved by the time we get here — so the cold
           // open reads them from the object that took them.
@@ -3186,6 +3241,12 @@ export default class LiveSharePlugin extends Plugin {
     }
     this.canvasWriters.clear();
     this.canvasWriterAttaching.clear();
+    // WP92 (C92 AC4 / S64): THE WRITER DETACH is a moment a refusal write can be
+    // in flight, and this method is the one both destroy paths (`onunload` and
+    // `cleanupSession`) go through. Started here and JOINED at `onunload`, which
+    // awaits the same chain — a `void` here would be the fire-and-forget S64
+    // names, and this method cannot be async without changing two sync callers.
+    void this.flushSeedRefusals();
     this.canvasPresences.clear();
     this.canvasAdapters.clear();
     // WP5 (C5 AC1): the hand-over receipt lives and dies with the adapters. The
