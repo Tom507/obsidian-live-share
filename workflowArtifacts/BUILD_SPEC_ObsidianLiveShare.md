@@ -257,6 +257,89 @@ Only demonstrated or statically closed findings are listed as facts. Historical 
 - An absent encryption passphrase currently means the session is not encrypted rather than throwing. Normal session creation generates the passphrase; reachability of an unintended empty value has not been demonstrated and remains unverified.
 - `readiness.RawAnswer.body` can render externally supplied bytes in diagnostics. It is not known to carry credentials in the current probe and is low severity.
 
+### Latency-triggered defects — fixed in code, NOT reproducible on the project's own live rig
+
+A family of four data-loss defects shares one cause (`S128`): `SyncManager.waitForSync` resolved on a
+signal meaning *"the relay has nothing more to say right now"*, which six call sites read as *"the data has
+arrived"*. `sync.ts` set `synced = true` whenever `peerCount === 0`, and for a **document id nobody has
+subscribed yet that is the common case, not an edge case** — so the await returned instantly on an empty
+document.
+
+| Signal | What it destroyed | Status |
+|---|---|---|
+| `S119` | every `.md` in the share truncated to 0 bytes, once per manifest entry, on restart | fixed — empty-write floor on both write arms |
+| `S123` | a new canvas never materialised on a peer, for the rest of the session | fixed — the mirror re-arms on an event, not a one-shot probe |
+| `S126` | *(regression introduced by `S119`'s first fix)* a legitimate delete refused on any peer that had not opened the note | fixed — evidence is the document's tombstones, not this peer's session history |
+| `S129` | opening a shared note could bind an empty `Y.Text` over the editor buffer and Obsidian would persist it | fixed — the bounded wait's expiry refuses instead of falling through to bind |
+
+`waitForSync` now reports **why** it resolved (`PEER_STATE` / `NO_PEERS` / `ALREADY_SYNCED`) without changing
+when it resolves.
+
+#### The trigger, in closed form (`S131`)
+
+Measured deterministically, 0/4 either side of the boundary, no flapping:
+
+```text
+NO_PEERS  ⟺  seederDelay > subscribeGap + readerDelay
+```
+
+**In plain terms: a peer on a slower link than yours loses the race to seed, and you are told the document
+is new.** This is not a rare race. Any mixed-latency session — one peer on mobile, on a VPN, or on another
+continent, the other on fibre — puts the faster peer on the wrong side of the cliff for **every** document
+the slower peer seeds.
+
+#### Why the live rig cannot reproduce it, and why that is not a matter of effort
+
+**A symmetric latency knob cannot widen this window at all.** Delay applied equally to every client still
+leaves the second peer reaching the relay `gap` after the first, however large the delay. Measured: the
+symmetric sweep shut the window at a **10 ms** subscribe gap under **40 ms** of one-way delay.
+
+The project's live rig runs **two or three Obsidian instances on one machine** against a remote relay. The
+network delay is real, but it is **the same for every client** — which is precisely the configuration that
+cannot produce the trigger. **The live setup has the same structural blind spot the test suite had**, for
+the same reason, and adding more instances or more waiting does not change it. Reproduction requires two
+peers at *genuinely different distances* from the relay.
+
+This is recorded so nobody re-derives it: *"we did not test it live"* would be the wrong summary. **The
+single-machine rig is not capable of it.**
+
+#### If a user reports these symptoms — diagnostic steps
+
+Symptoms that point at this family:
+
+- a shared note opens **empty** on one peer while another peer sees it with content
+- a note in the shared folder goes to **0 bytes**, and `.canvas` files in the same folder are untouched
+- a newly created canvas **never appears** on one peer while appearing on another
+- a deletion does not propagate to a peer that **did not have the note open**
+
+Steps, in order:
+
+1. **Ask which peer is on the slower connection.** The symptom lands on the *faster* peer, describing the
+   *slower* peer's documents. Asymmetry, not absolute latency, is the variable.
+2. **Enable Debug logging** (Settings → Live Share → Debug). The file is at `.obsidian/live-share-debug.md`
+   — inside the config folder, **not** among the notes. "Debug log location" shows the resolved path, the
+   lines written this session, and any write failure; an enabled sink that is failing looks exactly like an
+   empty log.
+3. **Read the refusal ledgers rather than inferring.** `emptyWriteRefusals` counts refused empty writes by
+   arm; `conflictCopies` counts preserved local versions. A **non-zero** empty-write count on a peer showing
+   stale content means the floors are working and the document genuinely never arrived — that is `S128`'s
+   trigger, not a new defect.
+4. **Check `LOG SINK:` and `MUTE OVERRUN:` lines.** The latter (`S120`) is an unrelated defect with a
+   similar presentation: a file op issued within ~1 s of that file arriving from a peer is dropped silently
+   and permanently, with no retry and no self-healing.
+5. **Reproducing it requires asymmetric latency.** Two machines on genuinely different links, or a traffic
+   shaper on one of them. `plugin/src/__tests__/wp5/` contains a per-socket asymmetric latency harness and a
+   cold-arrival scenario that produce the condition deterministically; that is the cheaper route.
+
+#### Validation status, stated exactly
+
+- **Demonstrated in the harness**, through a real subscribe race against a live in-process relay driven to
+  the far side of the `S131` cliff, with a control that binds normally when the seeder is on the near side.
+- **Argued, not demonstrated:** `yCollab`'s own reconciliation of a CodeMirror document against an empty
+  `Y.Text`. What is pinned is whether the binding is reached.
+- **Not validated in a real Obsidian setup**, for the structural reason above. `S119`'s *pre-fix* behaviour
+  was observed live (18 zero-byte files, 14 of them inside 75 ms); the *fixes* have not been.
+
 ## 9. File-operation contract
 
 All inbound and outbound file operations must use the declared discriminated operation shape. A rename is `{type, oldPath, newPath}` and has no generic destination `path` field.
@@ -340,6 +423,9 @@ Absence selects among records already authorized by a surface receipt; absence d
 - Every quoted figure must be re-run after the change it covers, on a tree bracketed by identical `git status` output.
 - A test result from a tree being edited by a sibling is void unless the subject is pinned to an explicit commit.
 - A measurement that lost its positive control is not a result.
+- **Latency applied equally to every client is not a latency test.** It cannot widen the first-arrival
+  window (`S131`), which is where the `S128` family lives. Asymmetric per-peer delay is required, and a
+  green run under symmetric delay must not be quoted as covering it.
 - Live suites that share the same two Obsidian instances must run serially.
 
 ### Release blockers
