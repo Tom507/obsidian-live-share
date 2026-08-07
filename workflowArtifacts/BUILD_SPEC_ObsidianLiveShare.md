@@ -226,6 +226,64 @@ The matrix must prove all of the following before WP7 can pass:
 - The local relay and rig-owned shared folder are provisioned safely and restored byte-exactly.
 - No scenario inherits records from a previous run; the suite is idempotent or creates unique isolated state.
 
+### Guest canvas creation — REQUIRED, owner decision 2026-08-07
+
+**A guest must be able to create or import a `.canvas` in the shared folder and have it become real for
+every peer.** The owner has ruled this a required capability, not an optional one: *"this is a big
+limitation if it doesn't work."*
+
+**Current behaviour (`S122`, open):** a guest-created `.canvas` reaches **nobody** and enters **no client's
+manifest, including its own.** Three doors close at once and none of them is individually wrong:
+
+| Door | Refusal | Deliberate |
+|---|---|---|
+| manifest `updateFile` | `role === "host"` | yes — the host is the only manifest writer |
+| content push | `skipsAutoTextSync` | yes — WP83; raw character-merge corrupts a canvas |
+| **guid mint** | `role !== "host" → null` | **this is the owner of the hole** |
+
+Without a guid the guest opens no canvas document at all, so its canvas has no CRDT identity, no manifest
+entry, and the mirror pass cannot see the path.
+
+#### The sanctioned design — host-mediated creation
+
+The guest sends the **whole canvas** to the host over the control channel with a request to materialise it;
+the host validates, creates it in the shared space, mints the guid, and seeds the document.
+
+**This preserves canvas seed authority rather than changing it, and that is the reason it is the sanctioned
+design.** An earlier content-free variant (announce the path, let the originating guest seed from its own
+file) was declined twice on the grounds that it moves seed authority to guests — which interacts badly with
+the open residual below. Under host-mediated creation the host remains the **sole seeder**, so:
+
+- **WP83 holds** — the handoff is a one-shot structured transfer over the control channel, never the
+  character-merge text path. A `.canvas` is still never synced as raw text.
+- **Host-only manifest authority holds** — the host still mints and still writes the manifest.
+- **The single-writer rule holds** — exactly one peer seeds, and it is the same peer that always did.
+
+Requirements on the implementation:
+
+1. The host validates the request before acting: `isPathSafe`, `isSharedPath`, `isProtectedPath`, and a size
+   bound. A guest naming a path outside the share, or inside `.obsidian/`/`.git/`, is refused.
+2. **A refusal must reach the guest and be visible to the user.** A silently dropped creation is `S114`'s
+   shape — the user made a canvas, nothing happened, and nothing said why.
+3. Large canvases must not be assumed small. The existing binary transfer chunks to 50 MB; the shared boards
+   in this project's own test vault reach 45 KB, and an imported canvas can be far larger.
+4. The originating guest must converge onto the host's document rather than keeping a private one. Its local
+   file already exists, so the mirror's `SKIP_LOCAL_FILE` verdict is wrong for this case and must be
+   replaced by an adopt path.
+5. Import is explicitly in scope — the owner named *"new or imported"* canvases together.
+
+#### Open residual that must be closed with it
+
+`canvas-sync.ts` computes `peerKnowsDoc` as *"did bytes arrive across the await"*, which under `NO_PEERS`
+(see `S131`) is `false`, and `decideSeed` can then return `SEED_FROM_FILE`. **Blast radius:** a guest holding
+a *stale* local canvas that wins the subscribe race seeds its stale content into the shared document; the
+host's later subscribe sees a non-empty document, `doc-wins`, and **the host's canvas is overwritten.** Real
+data loss, narrow reachability.
+
+It is listed here rather than under §8 because the two decisions are the same decision: **if guests never
+seed, this residual closes with it.** Implementing guest canvas creation as host-mediated is what makes the
+residual closable rather than worse.
+
 ## 8. Open product and reliability risks
 
 Only demonstrated or statically closed findings are listed as facts. Historical signals that were falsified are excluded or explicitly marked withdrawn.
