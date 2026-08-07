@@ -83,8 +83,8 @@ describe("WP46 AC1 — the four pre-existing session.info fields are untouched",
       app: {
         appId: "app-id-vault-a",
         vault: {
-          getName: () => "ObsidianOrga",
-          adapter: { getBasePath: () => "H:\\Developement\\_NeuralAngels\\ObsidianOrga" },
+          getName: () => "LiveShare-E2E-A",
+          adapter: { getBasePath: () => "C:\\ObsidianVaults\\LiveShare-E2E-A" },
         },
       },
       manifest: { version: "1.4.2" },

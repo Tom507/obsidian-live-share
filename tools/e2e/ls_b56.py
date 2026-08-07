@@ -47,8 +47,8 @@ from ls_logwait import (  # noqa: E402
 )
 
 VAULTS: dict[str, tuple[Path, int]] = {
-    "A": (Path(r"H:\Developement\_NeuralAngels\ObsidianOrga"), 39431),
-    "B": (Path(r"H:\Developement\_NeuralAngels\ObsidianOrga - Kopie"), 39432),
+    "A": (Path(os.environ.get("LIVESHARE_E2E_VAULT_A", Path.home() / "ObsidianVaults" / "LiveShare-E2E-A")), 39431),
+    "B": (Path(os.environ.get("LIVESHARE_E2E_VAULT_B", Path.home() / "ObsidianVaults" / "LiveShare-E2E-B")), 39432),
 }
 SHARED = "_liveshare-test"
 REQUIRED_SHARED_FOLDER = "_liveshare-test"

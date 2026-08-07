@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -37,8 +38,8 @@ import urllib.request
 from pathlib import Path
 
 VAULTS = {
-    "A": Path(r"H:\Developement\_NeuralAngels\ObsidianOrga"),
-    "B": Path(r"H:\Developement\_NeuralAngels\ObsidianOrga - Kopie"),
+    "A": Path(os.environ.get("LIVESHARE_E2E_VAULT_A", Path.home() / "ObsidianVaults" / "LiveShare-E2E-A")),
+    "B": Path(os.environ.get("LIVESHARE_E2E_VAULT_B", Path.home() / "ObsidianVaults" / "LiveShare-E2E-B")),
 }
 PLUGIN_REL = Path(".obsidian/plugins/live-share")
 SHARED = "_liveshare-test"

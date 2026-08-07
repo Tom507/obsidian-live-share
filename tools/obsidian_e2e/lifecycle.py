@@ -190,7 +190,7 @@ def obsidian_uri(vault_name: str) -> str:
 
     ``quote(..., safe="")`` encodes a space as ``%20``. The form encoding ``+`` would be
     wrong here: Obsidian parses this as a URI component, not as form data, so
-    ``ObsidianOrga+-+Kopie`` opens nothing. Unreserved characters (``-``, ``_``, ``.``,
+    ``LiveShare-E2E-B`` opens nothing. Unreserved characters (``-``, ``_``, ``.``,
     ``~``) are left alone, so a plain vault name comes back unchanged.
     """
     return constants.OBSIDIAN_OPEN_URI_TEMPLATE.format(vault=quote(str(vault_name), safe=""))

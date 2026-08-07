@@ -7,7 +7,7 @@ about two files nobody was syncing.
 
 The gate runs against a **local** relay
 --------------------------------------
-A release gate must be hermetic. Deploying to the NeuralAngels box is *authorised* but is
+A release gate must be hermetic. Deploying to a remote self-hosted server is
 not a requirement, and a network dependency injects exactly the flake this run has spent
 its length removing from its own signals. Remote-relay operation is a possible **future,
 non-gating** matrix case; it is not chartered and must not be added in passing.

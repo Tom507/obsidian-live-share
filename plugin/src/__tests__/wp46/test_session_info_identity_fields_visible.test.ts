@@ -25,7 +25,7 @@ const ADDED_FIELDS = [
   "canvasSurface",
 ] as const;
 
-const VAULT_PATH_A = "H:\\Developement\\_NeuralAngels\\ObsidianOrga";
+const VAULT_PATH_A = "C:\\ObsidianVaults\\LiveShare-E2E-A";
 
 function canvasSyncStub() {
   return {
@@ -45,7 +45,7 @@ function realisticPlugin(): E2EPluginLike {
     app: {
       appId: "app-id-vault-a",
       vault: {
-        getName: () => "ObsidianOrga",
+        getName: () => "LiveShare-E2E-A",
         adapter: { getBasePath: () => VAULT_PATH_A },
       },
     },
@@ -71,7 +71,7 @@ describe("WP46 AC1 — session.info carries a positive instance identity", () =>
     const info = hostFor(realisticPlugin()).sessionInfo() as Record<string, unknown>;
     expect(info.vaultId).toBe("app-id-vault-a");
     expect(info.vaultId).not.toBe("");
-    expect(info.vaultName).toBe("ObsidianOrga");
+    expect(info.vaultName).toBe("LiveShare-E2E-A");
     expect(info.vaultPath).toBe(VAULT_PATH_A);
   });
 

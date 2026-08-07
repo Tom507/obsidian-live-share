@@ -27,7 +27,15 @@ from datetime import datetime, timezone
 #      alternatives). These describe the owner's machine.
 # ---------------------------------------------------------------------------
 
-OBSIDIAN_EXE_PATH = r"C:\Users\tschm\AppData\Local\Programs\Obsidian\Obsidian.exe"
+OBSIDIAN_EXE_PATH = os.environ.get(
+    "OBSIDIAN_EXE_PATH",
+    os.path.join(
+        os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+        "Programs",
+        "Obsidian",
+        "Obsidian.exe",
+    ),
+)
 OBSIDIAN_EXE_NAME = "Obsidian.exe"
 
 #: Vault registry — ``%APPDATA%\obsidian\obsidian.json``. Shared global state:
@@ -39,8 +47,14 @@ VAULT_REGISTRY_PATH = os.path.join(
 )
 
 #: The owner's two live working vaults. Note the space in vault B — it is load-bearing.
-REAL_VAULT_PATH_A = r"H:\Developement\_NeuralAngels\ObsidianOrga"
-REAL_VAULT_PATH_B = r"H:\Developement\_NeuralAngels\ObsidianOrga - Kopie"
+REAL_VAULT_PATH_A = os.environ.get(
+    "LIVESHARE_E2E_VAULT_A",
+    os.path.join(os.path.expanduser("~"), "ObsidianVaults", "LiveShare-E2E-A"),
+)
+REAL_VAULT_PATH_B = os.environ.get(
+    "LIVESHARE_E2E_VAULT_B",
+    os.path.join(os.path.expanduser("~"), "ObsidianVaults", "LiveShare-E2E-B"),
+)
 
 # ---------------------------------------------------------------------------
 # §2 — Roles and identifiers
