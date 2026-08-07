@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S85** |
+| **Next free number** | **S89** |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
@@ -144,6 +144,11 @@ asserts that an omission without a receipt must not delete, **citing I7**. It is
 incomplete about coverage** — it pins the defect *as the specification*. That is a different and more
 serious thing than a vacuous test: **the repair must amend a passing, deliberately-argued test, and it owes
 a written I7 argument for doing so.** I passed the claim on without checking it.
+
+| **S85** | **S74's INVERSE, and it is worse: a fixed sleep used as a settle, so under load the assertion passes because nothing has happened yet.** `wp5/latency.test.ts` — *"reconnecting holder re-claims only still-free nodes (US4 AC3/AC4)"* sleeps `NOMINAL_RTT_MS*2` and `*4`, then asserts a single holder and no split lock. **Under load the reconnecting host's re-claim may simply not have arrived**, so the policy check passes on an empty world. Same class, smaller radius: *"remote delete of a locked node (US3 AC6)"* — a late resurrect lands after the assertion. | **open, and the highest-value row here.** S74 failed **loudly** for the wrong reason; this one **passes silently** for the wrong reason. A flaky red gets investigated; a load-dependent green never does. Found by B54 while fixing its opposite. |
+| **S86** | **Two different bounds on one interval, the tighter asserted separately.** `wp5/latency.test.ts` — *"reconnect re-renders the caret (US1 AC6/AC7)"* puts `expect(reMs).toBeLessThanOrEqual(2000)` **after** `waitUntil(…, {timeout: 4000})`, so a 2–4 s run is red for scheduling alone. Its doc comment (*"within a heartbeat of reconnect completing"*) is **not true as written** — the file's own note puts the awareness heartbeat at 12 s. | **open**, not yet observed failing (its margin is far larger than S74's). **Deliberately not fixed**: B54 declined to change a green row on the eve of a baseline quote, which is the right call and is why it is recorded instead. |
+| **S87** | **A test row with no subject.** `wp5/latency.test.ts` — *"a zero-latency run is annotated as non-proof (US6 AC5)"* asserts `isLatencyGating`, a two-line helper **defined in the test file and used by nothing else in the file or in production**. The row asserts a local function against itself. | **open.** Not a green that cannot fail — a green with nothing on the other side of it. It has been counted in every suite total this project has quoted. |
+| **S88** | **`v2/wp93/`'s census tests `readFileSync` the LIVE WORKING COPY** of `file-ops.ts` and `vault-events.ts` and compare byte-for-byte against a pinned pre-repair blob. **Any full-suite run that lands mid-edit reds them.** | **open.** Observed twice by B54, which **investigated rather than attributing** — not load, not its change, green whenever the sibling was between saves. It means *"exactly zero failures"* is **transiently violable while any batch is live in those files**, so the gate figure is a function of who else is typing. A derived census over a shared working tree needs to read a **commit**, not the tree. |
 
 **S68's arithmetic closes, and that is a falsifiable prediction rather than a flourish:**
 `MAX_WAIT_MS = 500` (`canvas-sync.ts:309`) + `DISK_WRITE_SETTLE_MS = 250` = **750 ms**, against a measured

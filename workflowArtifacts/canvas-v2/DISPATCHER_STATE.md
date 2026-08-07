@@ -2742,3 +2742,52 @@ that used to break it.
 **Roles have swapped by server designation — A is now GUEST (:39431), B is now HOST (:39432).** That is
 `S27/S37`'s coin flip, live, and any script assuming A=host is now wrong. `sharedFolder=_liveshare-test`
 verified in both; shared trees restored to their pre-run 8-file state.
+
+---
+
+## ✅ S74 CLOSED · `fileop.inject` BUILT (`e64678f`, `1fa5131`) — **2653 / 370, ZERO FAILURES**
+
+**Verified by me.** The baseline is quotable again for the first time in this stretch — no *"except the flaky one"* caveat.
+
+### The fix is a decomposition, not a widened band
+
+The old row timed a live one-way awareness delivery, doubled it, and demanded ≤150 ms — **a statement about how promptly the host schedules a `setTimeout` while 370 files run in parallel.** Measured headroom: the one-way figure is **58–62 ms against a 75 ms ceiling on an idle machine**, so the entire margin was host overhead. US6 AC1 is now three claims, each against the operand that can carry it:
+
+1. **the configured band** — arithmetic over `LINK_DELAY_MS` and its hop model. **The only honest home for an UPPER bound**: the band is a property of what the harness injects, never of what the host managed to schedule.
+2. **the injection is installed** — the sockets the two clients actually opened are the injected class. **The anti-vacuity control**; without it every figure below could come from an uninjected run that merely happened to be slow.
+3. **the injection is in effect** — a live delivery takes **at least** the injected hold. **A lower bound is causal**: two holds stand between write and read, so load can only push it *up*.
+
+The weaker `oneWay > 20` also became `>= 40`, because a real 0 ms link measured 14 ms — the old bound barely discriminated.
+
+### 🏅 The evidence discipline is the thing to copy
+
+I asked for five full-suite runs. **The batch ran four BEFORE the change and all four were green** — the flake does not reproduce at idle on this machine — and then said so: *"the five runs on their own say nothing about a flake, exactly as the brief warned."*
+
+So it built a **controlled comparison under 12-way CPU contention**:
+
+| | row | result |
+|---|---|---|
+| loaded #1 | pre-fix | **FAIL** — `expected 260 to be less than or equal to 150` |
+| loaded #2 | pre-fix | **FAIL** — `expected 194 to be less than or equal to 150` |
+| loaded #3–4 | post-fix | latency row green |
+
+**It reproduced my exact failure shape under load and showed the new row surviving the same load.** That is the evidence; the green runs were not. **A batch that had simply delivered five greens would have proved nothing and looked more convincing.**
+
+### Four findings in the ten sibling rows — and S85 is the one that matters
+
+- **S85 — S74's inverse, and worse.** A fixed sleep used as a settle: under load the re-claim has not arrived, so *"no split lock"* passes **on an empty world**. **S74 failed loudly for the wrong reason; this passes silently for the wrong reason.** A flaky red gets investigated; a load-dependent green never does.
+- **S86** — two bounds on one interval, the tighter asserted separately; its doc comment is untrue as written. **Deliberately not fixed** — B54 declined to touch a green row on the eve of a baseline quote, which is the right call.
+- **S87** — a row that asserts a two-line helper **defined in the test file and used by nothing else**, against itself. **A green with nothing on the other side of it**, counted in every total this project has quoted.
+- **S88** — **`v2/wp93/`'s census tests read the LIVE WORKING COPY** of two files a sibling is editing. B54 saw them red twice and **investigated rather than attributing**. *"Exactly zero failures"* is therefore **transiently violable while any batch is live in those files** — a derived census over a shared tree must read a **commit**, not the tree.
+
+### `fileop.inject` — the inbound half of WP68 is now demonstrable
+
+Enters at the **real** boundary: the frame is handed to the **live socket** as a `message` event, so relay → `ControlChannel.onmessage` → handler table → the WP68 gate all run. Nothing between socket and gate is reproduced; `isSidecarPath`, `isSharedPath` and `applyRemoteOp` appear nowhere in the module and there is no branch on `op.type`.
+
+**It is not a second `canvas.simulateEdit`:** no field asserts success. Admission is *measured* — the path mute latched across the settle window, plus `exists`/`size`/**sha256-of-bytes** at every endpoint before and after. The three ways nothing can reach the gate are **named refusals**, never something that reads as the gate refusing. **Content is never returned**, because this command can be pointed at `.obsidian/**` where `data.json` holds live credentials.
+
+**The `esbuild` `define` exclusion was verified by running it**, not assumed — to a **temp outfile**, leaving `plugin/main.js` alone (S67).
+
+### Self-reported, second batch running: a `git stash push`
+
+On its own file only, popped immediately, `git stash list` verified empty, no sibling file touched — and it still says *"it should not have been reached for at all given the standing warning."* **Two batches in a row have now volunteered this.** The rule holds; what it needs is a cheaper alternative to reach for, not a louder warning.
