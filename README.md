@@ -46,6 +46,7 @@ The main architectural changes are:
 - Canvas cursors, peer identity, and card interaction presence.
 - File and folder create, delete, rename, and binary transfer.
 - Offline operation queue and reconnect support.
+- Offline-edit preservation: a guest's divergent local file is copied into a dedicated conflicts folder before the host version is applied.
 - Presentation, follow, summon, and collaborator controls.
 
 ### Access and safety
@@ -69,6 +70,21 @@ The main architectural changes are:
 - GUID-backed identity across rename.
 - Editing-aware deferral and blur merge.
 - Explicit import instead of accidental reseeding.
+- Empty-document safeguards that distinguish missing CRDT content from an intentional delete.
+
+### Offline conflict preservation
+
+The host remains authoritative when a guest rejoins with a different local file, but the guest's work is no longer silently overwritten. If the local file changed after that peer's previous session ended, Live Share preserves it before applying the host version:
+
+```text
+Shared Notes/
+└── projects/plan.md
+
+Shared Notes (conflicts)/
+└── projects/plan (2026-08-07 17-42-03).md
+```
+
+When the whole vault is shared, copies go under `Live Share (conflicts)/` at the vault root. The relative folder structure is retained, filenames are timestamped, and the conflicts area is explicitly excluded from sharing so copies cannot recursively create more conflicts. If the plugin cannot determine whether a local file changed offline, it preserves the file rather than risking data loss.
 
 ## How it works
 
@@ -88,6 +104,12 @@ The relay forwards state and coordinates rooms. It does not understand Canvas se
 A local save is compared with the last state the Obsidian surface actually accepted. The resulting intent is validated before entering Yjs. Remote state follows the opposite path: it is planned, safely applied or deferred around a live editor, receipted, and serialized through one writer.
 
 Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full runtime, document model, security boundaries, and concurrency design.
+
+### Obsidian Canvas compatibility
+
+Canvas collaboration uses the public `.canvas` file format and a guarded adapter over Obsidian's currently undocumented live Canvas controller. The adapter is needed for live geometry, selection, dragging, inline-editor protection, and non-destructive view updates. These internal members are not part of Obsidian's stable public plugin API and may change between Obsidian releases.
+
+The dependency is isolated in `plugin/src/canvas/canvas-adapter.ts`, capability-checked at runtime, restored when the adapter is destroyed, and designed to fall back to file-driven synchronization when a live capability is unavailable. Nevertheless, new Obsidian versions must be compatibility-tested before they are declared supported. This project is an independent community plugin and is not affiliated with or endorsed by Obsidian.
 
 ## Quick start
 
@@ -206,9 +228,12 @@ Never commit a production `.env`, server password, token, JWT secret, or session
 ## Security model
 
 - TLS protects all traffic in transit.
-- Session encryption protects encrypted payloads from the relay.
-- The relay still sees connection and protocol metadata.
+- AES-GCM session encryption protects file-operation content, file chunks, and transferred file paths from the relay.
+- Yjs CRDT updates, including Markdown and Canvas collaboration state, are not end-to-end encrypted. The relay can read that live state; TLS protects it only while in transit.
+- The relay also sees connection, room, presence, and protocol metadata.
 - A relay password is shared access, not per-user revocation.
+- JWT identity is trusted only when `JWT_SECRET` is explicitly configured; the insecure historical default is never accepted.
+- Peer-supplied paths are constrained to the vault and protected `.obsidian/**` paths are rejected before disk writes.
 - Collaborators are trusted participants; the protocol is not Byzantine-fault-tolerant.
 - The host and guests can modify files within the configured shared surface according to permissions.
 
@@ -257,7 +282,7 @@ Useful plugin commands:
 
 ## Project status
 
-The settled implementation includes Canvas V2 foundations, sidecar/GUID/epoch identity, editing-aware reconcile, durable refusal protection, relay checkpoints, and the real-Obsidian test infrastructure.
+The settled implementation includes Canvas V2 foundations, sidecar/GUID/epoch identity, editing-aware reconcile, durable refusal protection, relay checkpoints, offline conflict preservation, empty-write protection, event-driven Canvas mirror materialization, and the real-Obsidian test infrastructure.
 
 Still incomplete or under active validation:
 
@@ -265,6 +290,7 @@ Still incomplete or under active validation:
 - Room-mode consensus and Receive-and-Persist as a complete phase.
 - Promotion of model-driven operation capture as the universal Canvas path.
 - Some cross-platform identity and lifecycle edge cases.
+- Compatibility validation whenever Obsidian changes its undocumented Canvas controller.
 
 The canonical current-state contract is [workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md](workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md). The many neighboring workflow files are an audit trail, not competing current documentation.
 

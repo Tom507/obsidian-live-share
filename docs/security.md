@@ -24,6 +24,13 @@ The passphrase and salt are in the invite link and never sent to the server.
 
 ## Authentication
 
+Authentication has two separate scopes:
+
+- The relay authenticates plugin traffic with its server password, room token, and optional GitHub-issued JWT.
+- A deployment may separately protect a browser landing or download page with SSO.
+
+Browser SSO does not authenticate the plugin's WebSocket connections. Obsidian's Electron client does not inherit the browser's forward-auth cookie, so any MUX, CONTROL, or REST paths exempted from an SSO proxy must retain the relay's own authentication. Do not describe an SSO-protected landing page as end-to-end per-user relay authentication.
+
 ### Room Tokens
 
 Each room has a random 24-character token (nanoid). Compared using `crypto.timingSafeEqual`.
@@ -84,5 +91,6 @@ JWTs are only trusted when `JWT_SECRET` is explicitly configured. If it is unset
 - Enable TLS (`wss://`) to encrypt all traffic
 - Self-host the server for full control
 - Enable GitHub OAuth for authenticated sessions
+- If credentials are distributed through an SSO-gated landing page, keep the relay password enabled and rotate it when access is revoked
 - Use file exclusion patterns in settings to exclude sensitive files
 - Share invite links through a secure channel
