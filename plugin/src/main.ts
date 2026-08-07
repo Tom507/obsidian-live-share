@@ -119,7 +119,9 @@ import {
   type LiveShareSettings,
   type ManifestChangeDisposition,
   type ManifestPublishDecision,
+  STALE_RECONCILE_RULE,
   type StaleReconcileDecision,
+  type StaleReconcileRule,
 } from "./types";
 
 import { AuditLogModal } from "./ui/audit-modal";
@@ -253,6 +255,23 @@ export default class LiveSharePlugin extends Plugin {
   explorerIndicators: ExplorerIndicators | null = null;
   controlChannel: ControlChannel | null = null;
   remoteUsers = new Map<string, PresenceUser>();
+
+  /**
+   * S116 — the canonical paths this vault held BEFORE this session's guest arm
+   * started, i.e. the files the session did not give us and is not entitled to
+   * take away.
+   *
+   * `null` is not "empty" — it is "never captured", and it REFUSES. The two
+   * must not collapse: an empty set means "this guest joined with an empty
+   * vault, so everything here now arrived through the session" (a real and
+   * permissive state), while `null` means the question was never asked. Only
+   * one of those may license a deletion.
+   *
+   * Session-scoped by construction, and therefore lost on reload — see
+   * {@link captureVaultBaseline} for what that costs and why it is the safe
+   * direction.
+   */
+  private vaultBaseline: Set<string> | null = null;
   remoteReadOnlyPatterns: string[] = [];
   presenceManager: PresenceManager | null = null;
   private connectionStateUnsub: (() => void) | null = null;
@@ -1511,6 +1530,8 @@ export default class LiveSharePlugin extends Plugin {
         // nothing listening. Only the retry moves; `registerManifestChangeHandler`
         // stays exactly where it always was — see `armStaleReconcileRetry`.
         this.armStaleReconcileRetry();
+        // S116 — BEFORE the first reconcile and before `syncFromManifest`.
+        this.captureVaultBaseline();
         await this.cleanupStaleFiles();
         await this.manifestManager.syncFromManifest(
           this.mutePathEvents,
@@ -1635,19 +1656,64 @@ export default class LiveSharePlugin extends Plugin {
    * legitimate cleanup still happens — the moment the evidence arrives, and not
    * one instant before.
    */
+  /**
+   * S116 — snapshot the vault as it stands BEFORE the session delivers
+   * anything. Must be called on the guest arm immediately ahead of the first
+   * {@link cleanupStaleFiles}.
+   *
+   * WHY THIS INSTANT IS THE RIGHT ONE, and not merely a convenient one: at all
+   * three guest entry points the first `cleanupStaleFiles()` already runs
+   * BEFORE `syncFromManifest()`. So at the moment this is called, every file in
+   * the vault is by definition the user's own — the session has not written a
+   * byte. No ledger, no per-write bookkeeping and no new persisted file are
+   * needed to know what the session did not bring; it is the complement of what
+   * it later adds, and it is knowable in one `getFiles()`.
+   *
+   * WHAT IT DOES NOT SURVIVE: a plugin reload or an Obsidian restart. On the
+   * next `resumeSession` the baseline is re-taken, and files a PREVIOUS session
+   * delivered are then indistinguishable from the user's own — so they become
+   * protected. That direction is deliberate: the failure mode is a stale file
+   * that outlives the host's deletion of it, which is untidy. The other
+   * direction is destroying a user's note, which is the incident this whole
+   * subsystem exists because of. Durable cross-restart provenance needs a
+   * per-write delivery ledger; see the S116 report for why that is a package of
+   * its own and not a line here.
+   */
+  private captureVaultBaseline(): void {
+    this.vaultBaseline = new Set(
+      this.app.vault.getFiles().map((file) => toCanonicalPath(normalizePath(file.path))),
+    );
+    this.logger.log(
+      "manifest",
+      `pre-join vault baseline captured: ${this.vaultBaseline.size} file(s) pre-date this session`,
+    );
+  }
+
   public async cleanupStaleFiles(): Promise<StaleReconcileDecision> {
-    const refuse = (reason: string): StaleReconcileDecision => {
-      this.logger.log("manifest", `stale reconcile refused: ${reason}`);
-      return { ran: false, reason, candidates: 0, trashed: [], scope: null };
+    const refuse = (rule: StaleReconcileRule, reason: string): StaleReconcileDecision => {
+      this.logger.log("manifest", `stale reconcile refused [${rule}]: ${reason}`);
+      return {
+        ran: false,
+        reason,
+        candidates: 0,
+        trashed: [],
+        scope: null,
+        rule,
+        withheldPreExisting: 0,
+      };
     };
 
     if (this.settings.role === "host") {
-      return refuse("this peer is the host; the host is the source of the manifest, not a consumer");
+      return refuse(
+        STALE_RECONCILE_RULE.HOST,
+        "this peer is the host; the host is the source of the manifest, not a consumer",
+      );
     }
     // Condition 1 — somebody published while we were online.
     if (!this.manifestManager.hasFreshPublication(this.userId)) {
       const pub = this.manifestManager.getPublication();
       return refuse(
+        STALE_RECONCILE_RULE.NO_PUBLICATION,
         pub
           ? `no manifest publication observed this session (last attestation seq=${pub.seq} ` +
               "predates this connection, so it proves only that a host once existed)"
@@ -1657,7 +1723,10 @@ export default class LiveSharePlugin extends Plugin {
     // Condition 2 — that somebody is still here.
     const liveHost = Array.from(this.remoteUsers.values()).find((user) => user.isHost);
     if (!liveHost) {
-      return refuse("a manifest was published but no peer in this session claims to be host");
+      return refuse(
+        STALE_RECONCILE_RULE.NO_LIVE_HOST,
+        "a manifest was published but no peer in this session claims to be host",
+      );
     }
 
     const manifest = this.manifestManager.getEntries();
@@ -1666,7 +1735,10 @@ export default class LiveSharePlugin extends Plugin {
     // folder is empty", but the cost of being wrong here is the whole shared
     // tree, so this one stays paranoid.
     if (manifest.size === 0) {
-      return refuse("the freshly published manifest is empty; refusing to empty the shared folder");
+      return refuse(
+        STALE_RECONCILE_RULE.EMPTY_MANIFEST,
+        "the freshly published manifest is empty; refusing to empty the shared folder",
+      );
     }
 
     // Condition 4 (S115) — WHAT RANGE DID THE HOST ACTUALLY SPEAK ABOUT?
@@ -1688,16 +1760,73 @@ export default class LiveSharePlugin extends Plugin {
       // vault, so guessing wrong in the permissive direction is precisely the
       // data loss. An older host that publishes no scope is a real deployment
       // and it lands here, on purpose, doing nothing at all.
-      return refuse(`the host's shared folder is unknown: ${scope.reason}`);
+      return refuse(
+        STALE_RECONCILE_RULE.UNKNOWN_SCOPE,
+        `the host's shared folder is unknown: ${scope.reason}`,
+      );
+    }
+
+    // Condition 5 (S116) — CONSENT, for the one scope whose blast radius is
+    // everything.
+    //
+    // S115 made a SCOPED host safe. It did not change anything for a host in
+    // the default configuration, which publishes `sharedRoot: ""` — a scope
+    // that is perfectly KNOWN and happens to mean "all of it". So the guest
+    // sailed through the fail-closed branch and reconciled its whole vault, and
+    // the only party ever asked to confirm that arrangement was the host.
+    if (scope.root === "" && !this.settings.allowWholeVaultReconcile) {
+      // Loud, not silent. A reconcile that quietly stops running is the S114
+      // shape — a safe-looking default that removes a behaviour the user still
+      // believes they have — so the refusal is surfaced, not just logged.
+      this.notify(
+        "Live Share: the host shares their entire vault. Stale-file cleanup is OFF " +
+          "until you enable “Allow whole-vault cleanup” in Live Share settings.",
+      );
+      return refuse(
+        STALE_RECONCILE_RULE.WHOLE_VAULT_NO_CONSENT,
+        `host ${liveHost.userId} shares its ENTIRE vault, so every local file this ` +
+          "manifest omits would be trashed; this guest has not enabled whole-vault cleanup",
+      );
+    }
+
+    // Condition 6 (S116) — PROVENANCE. Scoping asks WHERE; this asks WHOSE.
+    //
+    // A file that was in this vault before the guest joined was never the
+    // host's to delete, no matter which folder it sits in. That is the property
+    // no amount of scoping can express, and it is why this family of defects
+    // kept needing another fix: S115 narrowed the range and a pre-existing note
+    // INSIDE the host's range was still destroyed.
+    //
+    // The baseline is captured at session start, which is exactly the instant
+    // at which "everything in this vault is mine" is true — `cleanupStaleFiles`
+    // runs BEFORE `syncFromManifest` at all three guest entry points, so
+    // nothing the session delivers has landed yet. That ordering was previously
+    // just an awkward fact (the first reconcile almost always refuses); here it
+    // is the enabling one.
+    //
+    // `null` means the baseline was never taken, and that REFUSES. A future
+    // entry point that forgets to capture it therefore fails closed instead of
+    // silently treating the user's whole vault as the session's property.
+    const baseline = this.vaultBaseline;
+    if (!baseline) {
+      return refuse(
+        STALE_RECONCILE_RULE.NO_BASELINE,
+        "no pre-join vault baseline was captured for this session, so which files " +
+          "pre-date the join is unknowable and none of them can be shown to be the session's",
+      );
     }
 
     const manifestPaths = new Set(manifest.keys());
     const localFiles = this.app.vault
       .getFiles()
       .filter((file) => this.manifestManager.isWithinSharedRoot(file.path, scope.root));
-    const stale = localFiles.filter(
+    const absentFromManifest = localFiles.filter(
       (file) => !manifestPaths.has(toCanonicalPath(normalizePath(file.path))),
     );
+    const stale = absentFromManifest.filter(
+      (file) => !baseline.has(toCanonicalPath(normalizePath(file.path))),
+    );
+    const withheldPreExisting = absentFromManifest.length - stale.length;
 
     const trashed: string[] = [];
     for (const file of stale) {
@@ -1715,7 +1844,8 @@ export default class LiveSharePlugin extends Plugin {
     const scopeLabel = scope.root === "" ? "<entire vault>" : scope.root;
     const reason =
       `host ${liveHost.userId} published a manifest of ${manifest.size} entry/entries this ` +
-      `session, scoped to ${scopeLabel}`;
+      `session, scoped to ${scopeLabel}; ${withheldPreExisting} candidate(s) withheld as ` +
+      "pre-dating this join";
     // S115 AC5 — UNCONDITIONAL. This used to fire only when something was
     // trashed, which made the two outcomes that matter most indistinguishable:
     // "I ran and selected nothing" and "I ran and selected your whole vault but
@@ -1724,10 +1854,19 @@ export default class LiveSharePlugin extends Plugin {
     // BEFORE the count of what was destroyed, so both are stated every time.
     this.logger.log(
       "manifest",
-      `stale reconcile ran: scope=${scopeLabel} candidates=${stale.length} ` +
+      `stale reconcile ran [${STALE_RECONCILE_RULE.RAN}]: scope=${scopeLabel} ` +
+        `candidates=${stale.length} withheldPreExisting=${withheldPreExisting} ` +
         `trashed=${trashed.length} — ${reason}`,
     );
-    return { ran: true, reason, candidates: stale.length, trashed, scope: scope.root };
+    return {
+      ran: true,
+      reason,
+      candidates: stale.length,
+      trashed,
+      scope: scope.root,
+      rule: STALE_RECONCILE_RULE.RAN,
+      withheldPreExisting,
+    };
   }
 
   cleanupSession() {
@@ -1755,6 +1894,10 @@ export default class LiveSharePlugin extends Plugin {
     this.presenceManager = null;
     this.removeScrollListener();
     this.remoteUsers.clear();
+    // S116 — a baseline describes ONE session. Carrying it into the next one
+    // would license deletions against a vault snapshot taken before a different
+    // host's share; `null` makes the next reconcile refuse until it is retaken.
+    this.vaultBaseline = null;
     this.remoteReadOnlyPatterns = [];
     this.refreshPresenceView();
     this.fileOpsManager.clearPendingChunks();
@@ -1850,6 +1993,8 @@ export default class LiveSharePlugin extends Plugin {
           await this.manifestManager.connect(this.syncManager);
           // D2 — only the RETRY is armed early; see `armStaleReconcileRetry`.
           this.armStaleReconcileRetry();
+          // S116 — BEFORE the first reconcile and before `syncFromManifest`.
+          this.captureVaultBaseline();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,
@@ -1887,6 +2032,8 @@ export default class LiveSharePlugin extends Plugin {
           await this.manifestManager.connect(this.syncManager);
           // D2 — only the RETRY is armed early; see `armStaleReconcileRetry`.
           this.armStaleReconcileRetry();
+          // S116 — BEFORE the first reconcile and before `syncFromManifest`.
+          this.captureVaultBaseline();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,

@@ -132,6 +132,7 @@ function makeSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSett
     avatarUrl: "",
     cursorColor: "#000",
     sharedFolder: "",
+    allowWholeVaultReconcile: false,
     encryptionPassphrase: "",
     encryptionSalt: "",
     autoReconnect: false,

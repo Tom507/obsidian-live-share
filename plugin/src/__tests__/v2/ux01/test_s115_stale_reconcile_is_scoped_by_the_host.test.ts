@@ -146,6 +146,19 @@ async function rig(options: {
   liveHost?: boolean;
   /** Overrides the guest's vault contents. Defaults to {@link GUEST_VAULT}. */
   guestPaths?: string[];
+  /**
+   * S116 — the pre-join baseline this session captured. DEFAULTS TO EMPTY, i.e.
+   * "this guest joined with an empty vault, so everything present now arrived
+   * through the session". That is the configuration in which S116's provenance
+   * floor is inert, which is exactly what these rows want: they are about
+   * SCOPE, and a row that varies two things at once measures neither. S116's
+   * own floor is exercised in `test_s116_*`.
+   *
+   * `null` stands for "never captured" and makes the reconcile refuse.
+   */
+  preExisting?: string[] | null;
+  /** S116 — whether this guest consented to whole-vault cleanup. */
+  allowWholeVaultReconcile?: boolean;
 }): Promise<Rig> {
   const guestPaths = options.guestPaths ?? GUEST_VAULT;
   const doc = new Y.Doc();
@@ -156,6 +169,7 @@ async function rig(options: {
     githubUserId: "",
     role: "guest",
     sharedFolder: options.guestSharedFolder,
+    allowWholeVaultReconcile: options.allowWholeVaultReconcile ?? false,
   };
   const guestVault = vaultDouble(guestPaths);
   const guestManifest = new ManifestManager(guestVault as never, guestSettings as never);
@@ -218,6 +232,8 @@ async function rig(options: {
       mutePathEvents: vi.fn(),
       armMuteRelease: vi.fn(),
     },
+    vaultBaseline:
+      options.preExisting === null ? null : new Set(options.preExisting ?? []),
     logger: {
       log: (category: string, message: string) => logs.push(`${category}: ${message}`),
       debug: () => {},
@@ -331,7 +347,14 @@ describe("S115 — the stale reconcile is scoped by the HOST's shared root", () 
     // unknown one, and it means what it has always meant. This row is what
     // stops the fix from being "disable the feature": the reconcile still runs,
     // and it still removes what the host does not have.
-    const r = await rig({ guestSharedFolder: "Journal", hostSharedFolder: "" });
+    // S116 — this arrangement now additionally requires the guest's consent;
+    // without it the reconcile refuses (see `test_s116_*`). Granted here so the
+    // row keeps measuring what it was written to measure: the SCOPE.
+    const r = await rig({
+      guestSharedFolder: "Journal",
+      hostSharedFolder: "",
+      allowWholeVaultReconcile: true,
+    });
     const decision = await r.run();
     expect(decision.ran).toBe(true);
     expect(decision.scope).toBe("");

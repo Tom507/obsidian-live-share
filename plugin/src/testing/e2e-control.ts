@@ -53,6 +53,10 @@ interface StaleReconcileDecision {
   trashed: string[];
   /** S115 — the HOST's shared root the candidate set was scoped to; `null` on a refusal. */
   scope: string | null;
+  /** S116 — the machine-readable rule that produced this answer. */
+  rule: string;
+  /** S116 — candidates withheld because they pre-date this guest's join. */
+  withheldPreExisting: number;
 }
 
 /**

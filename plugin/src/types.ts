@@ -31,7 +31,56 @@ export interface StaleReconcileDecision {
    * field exists to make visible.
    */
   scope: string | null;
+  /**
+   * S116 — WHICH RULE PRODUCED THIS ANSWER, as a stable machine-readable token
+   * rather than a sentence.
+   *
+   * `reason` is prose for a human reading a log; it gets reworded, and a
+   * validator that greps it is asserting on the wording rather than on the
+   * behaviour. This names the decision itself, so W4 can tell "refused because
+   * the host shares the whole vault and this guest never consented" apart from
+   * "refused because no host is here" without parsing English.
+   *
+   * The closed set is {@link STALE_RECONCILE_RULE}.
+   */
+  rule: StaleReconcileRule;
+  /**
+   * S116 — how many candidates were withheld because they PRE-DATE this guest's
+   * join, i.e. files the session never delivered and therefore was never
+   * entitled to remove. `0` on a refusal, and `0` on a run that had nothing to
+   * withhold; the two are distinguished by `ran`.
+   */
+  withheldPreExisting: number;
 }
+
+/**
+ * S116 — the closed set of rules `cleanupStaleFiles` can decide by.
+ *
+ * Every exit from that method names exactly one of these. A new exit without a
+ * new token here does not compile, which is the point: the previous three
+ * signals in this family were all cases where a destructive path acquired a new
+ * outcome that nothing outside the method could observe.
+ */
+export const STALE_RECONCILE_RULE = {
+  /** Ran and applied the host's published scope. The only destructive outcome. */
+  RAN: "ran",
+  /** This peer is the host. */
+  HOST: "refused-host",
+  /** No fresh publication — D2's evidence gate. */
+  NO_PUBLICATION: "refused-no-publication",
+  /** A publication, but nobody present claims to be host. */
+  NO_LIVE_HOST: "refused-no-live-host",
+  /** D3's paranoid empty-manifest floor. */
+  EMPTY_MANIFEST: "refused-empty-manifest",
+  /** S115 — the host stated no scope (a build older than S115). */
+  UNKNOWN_SCOPE: "refused-unknown-scope",
+  /** S116 — no pre-join baseline was captured, so provenance is unknowable. */
+  NO_BASELINE: "refused-no-baseline",
+  /** S116 — the host shares its WHOLE vault and this guest never consented. */
+  WHOLE_VAULT_NO_CONSENT: "refused-whole-vault-without-consent",
+} as const;
+
+export type StaleReconcileRule = (typeof STALE_RECONCILE_RULE)[keyof typeof STALE_RECONCILE_RULE];
 
 /**
  * WP80 — the answer `publishManifest` returns instead of `void`.
@@ -134,6 +183,24 @@ export interface LiveShareSettings {
   displayName: string;
   cursorColor: string;
   sharedFolder: string;
+  /**
+   * S116 — CONSENT to the one configuration whose blast radius is the whole
+   * vault: a host that shares its entire vault, joined by this guest.
+   *
+   * When a host publishes `sharedRoot: ""` the scope is KNOWN (it is "the whole
+   * vault"), so S115's fail-closed branch does not fire, and the guest's stale
+   * reconcile is licensed against every file it owns. The host is asked to
+   * confirm before sharing a whole vault; the guest was asked nothing before
+   * being reconciled against one. This is that missing half.
+   *
+   * Ships `false`, and `false` REFUSES rather than narrows — a guest that has
+   * not opted in does not reconcile against a whole-vault host at all. It is a
+   * persisted setting rather than a per-session modal on purpose: a modal
+   * cannot be answered by the peer that needs to answer it (the reconcile runs
+   * from a publication observer, not from a user gesture), and a decision this
+   * destructive should be revocable in the same place it was granted.
+   */
+  allowWholeVaultReconcile: boolean;
   role: SessionRole;
   encryptionPassphrase: string;
   encryptionSalt: string;
@@ -168,6 +235,8 @@ export const DEFAULT_SETTINGS: LiveShareSettings = {
   displayName: "Anonymous",
   cursorColor: "#7c3aed",
   sharedFolder: "",
+  // S116 — ships REFUSING. The permissive value has to be chosen by a human.
+  allowWholeVaultReconcile: false,
   role: null,
   encryptionPassphrase: "",
   encryptionSalt: "",

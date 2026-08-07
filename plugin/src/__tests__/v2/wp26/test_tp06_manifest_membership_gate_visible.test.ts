@@ -53,6 +53,7 @@ function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSe
     displayName: "Test User",
     cursorColor: "#ff0000",
     sharedFolder: "",
+    allowWholeVaultReconcile: false,
     role: "host",
     encryptionPassphrase: "",
     encryptionSalt: "",

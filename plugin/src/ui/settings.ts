@@ -252,6 +252,27 @@ export class LiveShareSettingTab extends PluginSettingTab {
         });
       })
       .addSetting((setting) => {
+        // S116 — the GUEST half of the whole-vault warning. The host is asked to
+        // confirm before sharing an entire vault; this is the peer on the other
+        // end of that arrangement, whose own files are the ones at risk, being
+        // asked the same question. Deliberately NOT disabled during an active
+        // session: it is the control that stops an in-progress arrangement, so
+        // locking it while the risk is live would be exactly backwards.
+        setting
+          .setName("Allow whole-vault cleanup")
+          .setDesc(
+            "When the host shares their ENTIRE vault, allow Live Share to delete local files " +
+              "the host does not have. Off by default: while off, files that pre-date this " +
+              "session are never deleted and whole-vault hosts trigger no cleanup at all.",
+          )
+          .addToggle((toggle) => {
+            toggle.setValue(settings.allowWholeVaultReconcile).onChange(async (value) => {
+              settings.allowWholeVaultReconcile = value;
+              await this.plugin.saveSettings();
+            });
+          });
+      })
+      .addSetting((setting) => {
         setting
           .setName("Require approval")
           .setDesc("Guests must be approved by the host before joining")

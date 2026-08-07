@@ -24,6 +24,7 @@ TESTS = [
     "src/__tests__/v2/ux01/test_s115_stale_reconcile_is_scoped_by_the_host.test.ts",
     "src/__tests__/v2/ux01/test_s115_guest_stale_reconcile_candidate_set.test.ts",
     "src/__tests__/dataloss/test_stale_reconcile_evidence_gate.test.ts",
+    "src/__tests__/v2/ux01/test_s116_a_guest_only_trashes_what_the_session_gave_it.test.ts",
 ]
 
 # (id, acceptance criterion, description, [(file, old, new), ...])
@@ -59,15 +60,20 @@ BREAKS = [
         "B4a",
         "AC5",
         "the success log line is renamed, i.e. the observable stops being emitted",
-        [(MAIN, "stale reconcile ran: scope=", "stale reconcile XX: scope=")],
+        # NOTE: re-anchored for S116, which rewrote this line to carry the rule
+        # token. The original anchor silently stopped matching, which the driver
+        # reported as ANCHOR NOT FOUND rather than as a pass — that distinction
+        # is the reason it prints it.
+        [(MAIN, "stale reconcile ran [", "stale reconcile XX [")],
     ),
     (
         "B4b",
         "AC5",
         "the decision no longer reports the scope it used",
+        # Re-anchored for S116 (the return became a multi-line object literal).
         [(MAIN,
-          "return { ran: true, reason, candidates: stale.length, trashed, scope: scope.root };",
-          "return { ran: true, reason, candidates: stale.length, trashed, scope: null };")],
+          "      scope: scope.root,\n      rule: STALE_RECONCILE_RULE.RAN,",
+          "      scope: null,\n      rule: STALE_RECONCILE_RULE.RAN,")],
     ),
     (
         "B5",
@@ -95,6 +101,63 @@ BREAKS = [
         [(MAIN,
           "the host's shared folder is unknown: ",
           "the host's shared directory is not known: ")],
+    ),
+    # ---- S116 / WP98 ----
+    (
+        "B8",
+        "S116 AC1",
+        "the pre-join baseline no longer filters the candidate set",
+        [(MAIN,
+          "      (file) => !baseline.has(toCanonicalPath(normalizePath(file.path))),",
+          "      () => true,")],
+    ),
+    (
+        "B9",
+        "S116 AC1/AC4",
+        "a missing baseline is treated as permissive instead of refusing",
+        [(MAIN,
+          "    const baseline = this.vaultBaseline;\n    if (!baseline) {",
+          "    const baseline = this.vaultBaseline ?? new Set<string>();\n    if (!baseline && false) {")],
+    ),
+    (
+        "B10",
+        "S116 AC3",
+        "the whole-vault consent floor is removed",
+        [(MAIN,
+          'if (scope.root === "" && !this.settings.allowWholeVaultReconcile) {',
+          'if (false && scope.root === "" && !this.settings.allowWholeVaultReconcile) {')],
+    ),
+    (
+        "B11",
+        "S116 AC3",
+        "the consent refusal becomes SILENT (the S114 shape: a quiet degradation)",
+        [(MAIN,
+          '"Live Share: the host shares their entire vault. Stale-file cleanup is OFF "',
+          '"Live Share: cleanup skipped. "')],
+    ),
+    (
+        "B12",
+        "S116 AC2",
+        "the baseline over-protects everything (the 'just refuse' non-fix)",
+        [(MAIN,
+          "      (file) => !baseline.has(toCanonicalPath(normalizePath(file.path))),",
+          "      () => false,")],
+    ),
+    (
+        "B13",
+        "S116 AC5",
+        "two distinct refusals collapse onto one rule token",
+        [(MAIN,
+          "        STALE_RECONCILE_RULE.WHOLE_VAULT_NO_CONSENT,",
+          "        STALE_RECONCILE_RULE.NO_BASELINE,")],
+    ),
+    (
+        "B14",
+        "S116 wiring",
+        "one guest entry point stops capturing the baseline",
+        [(MAIN,
+          "        // S116 — BEFORE the first reconcile and before `syncFromManifest`.\n        this.captureVaultBaseline();\n",
+          "")],
     ),
 ]
 
