@@ -2842,6 +2842,9 @@ export class CanvasSync {
     moveMap(this.externalWriteWindowOpenedAt);
     moveMap(this.lastWrittenContent);
     moveMap(this.seedRefusalLedgers);
+    // WP94: the receipts are per-SURFACE, and a rename does not change which
+    // surface they were obtained from — the path is only its key.
+    moveMap(this.fileReceipts);
     // WP29: the knowledge is about the DOC, and a rename does not change which
     // doc the (renamed) path names — left behind, the renamed canvas would
     // report "nothing knows this board" and become seedable from a stale file.
@@ -3180,6 +3183,9 @@ export class CanvasSync {
     // from here would let the very write this WP exists to stop reach the file.
     // A later re-subscribe re-seeds and gets a fresh ledger.
     this.seedRefusalLedgers.delete(path);
+    // WP94: an unsubscribed path has no surface this client is observing, so it
+    // holds no receipts either. A later re-subscribe earns them again.
+    this.fileReceipts.delete(path);
     // WP29: the measurement belongs to the subscribe that took it. A later
     // re-subscribe takes it again; until then this path knows nothing, which is
     // the same answer it gave before it was ever subscribed.
@@ -3351,9 +3357,84 @@ export class CanvasSync {
     return this.surfaceEvidence(toCanonicalPath(normalizePath(rawPath)));
   }
 
-  /** The merged P1 + P2/P3 evidence for one canonical path. */
+  /**
+   * The merged P1 + P2/P3 evidence for one canonical path.
+   *
+   * P1 is the injected provider's (`main.ts`'s `SurfaceStateStore`, fed by
+   * `noteHandover`); P2/P3 are this class's own ledger. They are merged HERE, at
+   * the single point of consumption, rather than being written into the injected
+   * store — which would need a wiring line in `main.ts` that BUILD_SPEC section
+   * 3.1 S11 forbids, and would put both producers behind `noteHandover`'s
+   * replace-not-merge semantics (S83).
+   */
   private surfaceEvidence(path: string): SurfaceState {
-    return this.surfaceStateProvider(path);
+    const provided = this.surfaceStateProvider(path);
+    const own = this.fileReceipts.get(path);
+    if (!own) return provided;
+    return { ...provided, receipts: { node: own.node, edge: own.edge } };
+  }
+
+  /**
+   * WP94 (C94 AC2) — ISSUE a receipt for every id this observation proves was on
+   * the surface, tagged with WHICH surface that was.
+   *
+   * The tag is taken at ISSUANCE, because it is a fact about where the bytes came
+   * from, and it is what stops the widening from degenerating into "any past
+   * knowledge licenses any future absence": a receipt earned while the board was
+   * closed does not license an absence observed on an open board, and vice versa.
+   *
+   * Both producers are positive, per-record facts the product already asserts:
+   *
+   *   ├── P2 `handleLocalModify` read the file at this path and it CONTAINED the
+   *   │      record. The surface that wrote that file therefore held it.
+   *   └── P3 `noteExternalDiskWrite` was handed the bytes the single writer just
+   *          put on disk, with the view closed — which is the exact condition
+   *          under which its own comment says the FILE is the surface.
+   *
+   * ⚠ A COMPLETE OBSERVATION **REPLACES** THAT KIND'S RECEIPT SET. IT NEVER
+   * ACCUMULATES, AND THAT IS THE PROPERTY THAT KEEPS THE WIDENING FROM
+   * DEGENERATING INTO *"ANY PAST KNOWLEDGE LICENSES ANY FUTURE ABSENCE"*.
+   *
+   * A receipt is "what the surface held THE LAST TIME I LOOKED", not "what it
+   * has ever held". An accumulating ledger is unsound, and the WP23 convergence
+   * fuzzer proved it rather than anyone arguing it: with receipts accumulating,
+   * seed 6221142 destroyed a bootstrap edge on all four replicas. A replica had
+   * saved the edge once (earning a file receipt), its surface later stopped
+   * carrying the record, and a subsequent save of the SAME surface then read the
+   * stale receipt as a licence to delete something no op had touched. The
+   * production analogue is exact and it is severe: a client whose canvas view has
+   * not yet caught up with a peer's record saves a file that omits it, and an
+   * accumulating licence turns that staleness into a deletion — I11 inverted, one
+   * level below WP80's.
+   *
+   * Replacement is per KIND and it is conditional on THAT KIND's observation
+   * being complete, because an incomplete observation teaches nothing: it must
+   * neither issue receipts nor revoke them. `noteExternalDiskWrite`'s content is
+   * complete for both kinds by construction (it is the writer's own full
+   * serialisation), so it replaces both.
+   *
+   * Issued AFTER the diff has already run, so this save's own absences are judged
+   * against the PREVIOUS observation — which is exactly what makes a deletion
+   * detectable at all.
+   */
+  private recordSurfaceObservation(
+    path: string,
+    surface: ReceiptSurface,
+    ids: { node: Iterable<string>; edge: Iterable<string> },
+    complete: { node: boolean; edge: boolean },
+  ): void {
+    if (!complete.node && !complete.edge) return;
+    let ledger = this.fileReceipts.get(path);
+    if (!ledger) {
+      ledger = { node: new Map<string, ReceiptSurface>(), edge: new Map<string, ReceiptSurface>() };
+      this.fileReceipts.set(path, ledger);
+    }
+    for (const kind of RECORD_KINDS) {
+      if (!complete[kind]) continue;
+      const replacement = new Map<string, ReceiptSurface>();
+      for (const id of ids[kind]) replacement.set(id, surface);
+      ledger[kind] = replacement;
+    }
   }
 
   async handleLocalModify(rawPath: string): Promise<void> {
@@ -3441,7 +3522,7 @@ export class CanvasSync {
     // FLAT fields against the Surface-Shadow until WP18 wires the registers.
     const parsed = parseCanvasReport(content);
     const save = toParsedSave(path, decodeCanvasDataToFlat(parsed.data));
-    const surface = this.surfaceStateProvider(path);
+    const surface = this.surfaceEvidence(path);
     // WP19 AC2: the resurrect block now reads the doc's real `deleted`
     // container unless a caller injected a view at the seam.
     const tombstones = this.tombstoneView ?? createDocTombstoneView(deletedMap);
@@ -3535,6 +3616,35 @@ export class CanvasSync {
     for (const del of applied.deletes) {
       markRecordAbsent(this.shadow, path, del.kind, del.id);
     }
+
+    // WP94 (C94 AC2) — P2, AND IT IS THE PRODUCER S78 WAS MISSING.
+    //
+    // This client just read the file at `path` and it CONTAINED these records.
+    // That is a positive, per-record fact about a surface — the same surface a
+    // later save of the same file comes from — and it is exactly the evidence
+    // `handedToView` was built to carry and could never obtain here, because its
+    // one producer runs only on a REMOTE delta. A record this client created and
+    // no peer re-delivered therefore held no licence, ever: the diff computed the
+    // delete set correctly and threw it away.
+    //
+    // Issued for every id the SAVE mentioned, not merely for the ones that were
+    // written: a record restated at its shadow value is discarded as staleness
+    // and produces no upsert, yet the file provably held it. Issued AFTER the
+    // transaction, so a pass that threw issues nothing.
+    //
+    // A record the doc REFUSED gets a receipt too, and that is correct rather
+    // than sloppy — the receipt is a fact about the FILE. The doc side is held by
+    // `applyIntentPlan`'s membership veto, and the shadow never marks a refused
+    // record `present`, so it cannot become a candidate in the first place.
+    this.recordSurfaceObservation(
+      path,
+      surface.viewOpen ? "view" : "file",
+      {
+        node: save.nodes.map((record) => record.id),
+        edge: save.edges.map((record) => record.id),
+      },
+      save.complete ?? { node: true, edge: true },
+    );
 
     // WP94 (C94 AC6) — the withhold ledger, from BOTH deciders: the criterion
     // (`plan.withheld`, per record, before the transaction) and the pass itself
@@ -4092,6 +4202,45 @@ export class CanvasSync {
     for (const entry of plan.withheld) {
       if (entry.kind === "node") heldBackNodes.set(entry.id, entry.reason);
     }
+    const nodesGoingThisPass = new Set(
+      plan.deletes.filter((del) => del.kind === "node").map((del) => del.id),
+    );
+
+    /**
+     * WP94 (C94 AC4) — WHY AN EDGE WHOSE ENDPOINT IS GONE IS NOT DELETABLE BY
+     * OMISSION, AND IT IS NOT A CONVENIENCE.
+     *
+     * The `.canvas` file is written from `buildCanvasData`, and WP19 AC3's
+     * `visibleNodeIds` guard REFUSES TO EMIT an edge whose endpoint node is
+     * tombstoned. So the moment a node is deleted, every edge touching it
+     * vanishes from the file — not because anyone deleted the arrow, but because
+     * the projection is not allowed to draw it. The next capture then reads that
+     * suppression back as "the user removed this edge".
+     *
+     * The WP23 convergence fuzzer caught exactly this (seed 6221142): one replica
+     * legitimately deleted node `s1`, every replica's file consequently stopped
+     * carrying edge `se0`, and a peer with a file receipt for `se0` tombstoned an
+     * arrow no op had touched. WP19 AC3 is explicit that the cascade is a
+     * CONSEQUENCE OF THE SUPPRESSION RULE rather than a second mechanism — an
+     * independent tombstone on the edge would make it one, and it would break
+     * undo: restoring the node could no longer bring its arrows back, because
+     * they would carry a tombstone of their own that the node's undo never
+     * mentions.
+     *
+     * So the absence of such an edge from a save is not an observation at all,
+     * and it is charged `incomplete-observation`: the writer was never permitted
+     * to speak about it.
+     */
+    const endpointHold = (nodeId: string): DeleteWithholdReason | null => {
+      const withheld = heldBackNodes.get(nodeId);
+      if (withheld !== undefined) return withheld;
+      if (nodesGoingThisPass.has(nodeId)) return "incomplete-observation";
+      if (isTombstoneSuppressed(readTombstoneEntry(deletedMap, nodeId))) {
+        return "incomplete-observation";
+      }
+      return null;
+    };
+
     const gestureHold = (del: DeleteIntent): DeleteWithholdReason | null => {
       if (captureRefused) return "incomplete-observation";
       // WP94 (C94 AC5) — A REFUSAL IS NOT A DELETION, AND THE TWO ARE MIRROR
@@ -4109,14 +4258,14 @@ export class CanvasSync {
       // `Y.Map`, and the resurrect block would then make it PERMANENTLY
       // UNCREATABLE.
       if (maps[del.kind].get(del.id) === undefined) return "refused-at-ingest";
-      if (del.kind !== "edge" || heldBackNodes.size === 0) return null;
+      if (del.kind !== "edge") return null;
       const record = maps.edge.get(del.id);
       if (!record) return null;
       for (const slot of [FROM_KEY, TO_KEY]) {
         const endpoint = readEndpointNodeId(record, slot);
         if (endpoint === undefined) continue;
-        const reason = heldBackNodes.get(endpoint);
-        if (reason !== undefined) return reason;
+        const reason = endpointHold(endpoint);
+        if (reason !== null) return reason;
       }
       return null;
     };
@@ -4277,6 +4426,7 @@ export class CanvasSync {
     // WP63: same rule as `unsubscribe` — release the references, never reset the
     // ledgers themselves.
     this.seedRefusalLedgers.clear();
+    this.fileReceipts.clear();
     this.seedKnowledgeByPath.clear();
   }
 
@@ -4454,6 +4604,37 @@ export class CanvasSync {
     // only a confirmed apply is a receipt there, and that is WP5's mechanism.
     if (this.surfaceStateProvider(path).viewOpen === false) {
       this.advanceShadowFromContent(path, content, true);
+      // WP94 (C94 AC2) — ⚠ P3 IS DELIBERATELY **NOT** A DELETE LICENCE, AND THAT
+      // IS A DEVIATION FROM THE CHARTER'S THREE-PRODUCER SCOPE. IT IS MEASURED.
+      //
+      // The charter lists this call as the third issuer, on the strength of the
+      // comment above: with no open canvas the FILE is the surface, and what the
+      // single writer just put there provably reached it. Both halves of that are
+      // TRUE, and they still do not add up to a delete licence, because a licence
+      // has to be a fact about the surface THAT PRODUCES THE NEXT SAVE — and this
+      // call proves only what WE wrote, never what the next writer had read.
+      //
+      // Measured, not argued. Wiring this as an issuer reddened
+      // `wp91/test_tp05` T2: a peer's record lands in the doc, `CanvasPersistence`
+      // projects it to the file (issuing a P3 receipt for it), and the user's
+      // editor — still holding the PRE-projection bytes — saves without it. With
+      // P3 licensing, that stale overwrite tombstones a record the user never saw,
+      // and the peer's copy is destroyed. That is I11 inverted, and it is the
+      // exact two-step chain WP91 AC4 exists to pin.
+      //
+      // Nothing is lost by the omission: AC7's closed board still captures its
+      // deletions, through P2. A record the local writer has actually saved earns
+      // a `"file"`-tagged receipt from that save, and its later absence from that
+      // same surface is a real deletion. What P3 would have added is a licence for
+      // records that reached the file ONLY through our own projection and were
+      // never echoed back by a local save — which is precisely the set the local
+      // writer may not have caught up with yet.
+      //
+      // The shadow advance above is UNCHANGED. `content` is the writer's own
+      // IN-MEMORY string (`writeSnapshot` -> `onWritten`), never a re-read, which
+      // is what makes the paired `markMissingAbsent = true` safe: it cannot be
+      // truncated. Any change that makes this arm read from disk turns that into
+      // a shadow-wide erase on a partial read.
     }
     // WP91 (C91 AC5, S68) — THE SECOND RE-ARMING WINDOW, AND IT IS NOW BOUNDED.
     //

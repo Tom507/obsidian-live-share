@@ -169,12 +169,29 @@ describe("WP94 AC3 — an incomplete observation deletes nothing", () => {
 
       await save(peer, '{"nodes":[],"edges":[]}');
 
-      for (const id of ["n1", "n2", "n3", "e1"]) {
+      for (const id of ["n1", "n2", "n3"]) {
         expect(isDeleted(peer.doc, id), `the user's wipe did not delete ${id}`).toBe(true);
       }
+      // ...and the board really is empty for the user and for every peer.
       expect(projection(peer.doc)).toEqual({ nodes: [], edges: [] });
-      // A licensed, complete delete is not a withhold.
-      expect(peer.cs.deleteWithholdCounts()).toEqual(before);
+
+      // THE EDGE IS **NOT** INDEPENDENTLY TOMBSTONED, AND THAT IS WP19 AC3, NOT A
+      // MISSED DELETE. `e1` runs between `n1` and `n2`, both of which this pass
+      // deletes, so `buildCanvasData`'s `visibleNodeIds` guard already refuses to
+      // emit it — the cascade is a CONSEQUENCE of the suppression rule rather than
+      // a second mechanism. Tombstoning the arrow as well would break undo:
+      // restoring the card could no longer bring its arrow back, because the arrow
+      // would carry a tombstone of its own that the card's undo never mentions.
+      // The edge's own absence from the file is therefore not an observation about
+      // the edge at all, and it is charged as such.
+      expect(
+        isDeleted(peer.doc, "e1"),
+        "the arrow was tombstoned independently of its cards — undo can no longer restore it",
+      ).toBe(false);
+      const after = peer.cs.deleteWithholdCounts();
+      expect(after["incomplete-observation"] - before["incomplete-observation"]).toBe(1);
+      expect(after["no-receipt"]).toBe(before["no-receipt"]);
+      expect(after["no-open-surface"]).toBe(before["no-open-surface"]);
     });
 
     it("(iii) and (v) are told APART over the same fixture in the same run", async () => {

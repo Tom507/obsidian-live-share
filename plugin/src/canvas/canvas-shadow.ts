@@ -763,14 +763,23 @@ export function planIntentDiff(
 
   // Rule 4 — delete, on the WP94 evidence criterion.
   //
-  // ⚠ THE `viewOpen` GATE IS STILL HERE, AND ITS REMOVAL IS THE NEXT COMMIT.
-  // Removing it is S84's repair, and S84's repair is a WIDENING. WP94's ordering
-  // rule is that the completeness proof lands FIRST, because this gate is
-  // currently the only barrier between a truncated read and the destruction of a
-  // shared board. This commit installs the criterion and the completeness proof
-  // underneath the unchanged gate, so the delete set it produces is a SUBSET of
-  // the pre-WP94 one; the commit that widens issuance removes the gate.
-  const pathState = surface.viewOpen ? shadow.paths.get(save.path) : undefined;
+  // THE `if (surface.viewOpen)` GATE THAT STOOD HERE IS GONE, and its removal is
+  // S84's repair. Rules 2 and 3 consult no surface state at all, so with the gate
+  // in place an instance whose board was CLOSED captured creations and mutations
+  // normally and never captured a deletion — of any record, at any delta, ever.
+  // That is S78's general form and it is far wider than anything B50 measured.
+  //
+  // A closed board is not "no surface". It is the FILE surface, which is what
+  // `noteExternalDiskWrite` has asserted in prose since WP4: "with no open
+  // Obsidian canvas the FILE is the surface … what the single writer just put
+  // there provably reached it". `viewOpen` now SELECTS which surface produced the
+  // save rather than gating the rule, and a record whose only receipt names a
+  // surface that did not produce this save is refused by the criterion — named
+  // and counted, which is what the gate never was.
+  //
+  // This removal is a WIDENING and it is deliberately not the first thing WP94
+  // did: it is sound only because `Complete(save)` already stands in front of it.
+  const pathState = shadow.paths.get(save.path);
   if (pathState) {
     const observedOn: ReceiptSurface = surface.viewOpen ? "view" : "file";
     for (const kind of kinds) {
