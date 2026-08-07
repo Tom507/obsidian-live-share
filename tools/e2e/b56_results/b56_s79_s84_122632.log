@@ -1,0 +1,76 @@
+==============================================================================
+B56 / W4 — S79 + S84   run 122632   2026-08-07 12:26:32
+==============================================================================
+  bundle A: sha256=d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4  size=4692730
+  bundle B: sha256=d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4  size=4692730
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 4 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 6.7s behind wall clock
+    B: newest on-disk log stamp is 34.6s behind wall clock
+
+==============================================================================
+  S79 — a shared file leaves the shared tree on B
+==============================================================================
+
+  [vault_root] _liveshare-test/b56-s79-122632-vault_root.canvas -> b56-s79-122632-root.canvas
+    fixture created=True  peer has it after 0.0s: True
+    moved on disk at 12:26:34
+    peer lost its copy: True after 1.2s
+    peer has the destination: False
+    B log lines in the window naming an op/manifest path: 0
+    A log lines: 0
+    cleanup: removed B:b56-s79-122632-root.canvas
+
+  [sidecar] _liveshare-test/b56-s79-122632-sidecar.canvas -> .obsidian/liveshare/state/b56-s79-122632-sc.canvas
+    fixture created=True  peer has it after 0.0s: True
+    moved on disk at 12:26:37
+    peer lost its copy: True after 1.2s
+    peer has the destination: False
+    B log lines in the window naming an op/manifest path: 0
+    A log lines: 0
+    cleanup: removed B:.obsidian/liveshare/state/b56-s79-122632-sc.canvas
+
+  [inside_tree] _liveshare-test/b56-s79-122632-inside_tree.canvas -> _liveshare-test/b56-s79-122632-moved.canvas
+    fixture created=True  peer has it after 0.0s: True
+    moved on disk at 12:26:40
+    peer lost its copy: True after 1.2s
+    peer has the destination: True
+    B log lines in the window naming an op/manifest path: 0
+    A log lines: 0
+    cleanup: removed A:_liveshare-test/b56-s79-122632-moved.canvas
+    cleanup: removed B:_liveshare-test/b56-s79-122632-moved.canvas
+
+==============================================================================
+  S84 — the closed-board deletion ladder on B (PRE-WP94 profile)
+==============================================================================
+  board state on B: hasAdapter=False hasWriter=False adapterAvailable=False
+  (hasAdapter=True means a LEAF IS OPEN on this board — the arm reports
+   which regime it measured rather than assuming the board is closed.)
+    delta=0.3  ADD     captured_in_writer_doc=True after=0.2s  present_in_peer_doc=False
+      !! WAIT TIMED OUT after 60.0s waiting for: b56-122632-s84-delete-03 reaches BOTH docs before it is deleted
+    delta=0.3 DELETE: PRECONDITION FAILED (b56-122632-s84-delete-03 never reached both docs) — INVALID, not scored
+    delta=1.0  ADD     captured_in_writer_doc=True after=0.2s  present_in_peer_doc=False
+      !! WAIT TIMED OUT after 60.0s waiting for: b56-122632-s84-delete-10 reaches BOTH docs before it is deleted
+    delta=1.0 DELETE: PRECONDITION FAILED (b56-122632-s84-delete-10 never reached both docs) — INVALID, not scored
+    delta=2.0  ADD     captured_in_writer_doc=True after=0.2s  present_in_peer_doc=False
+      !! WAIT TIMED OUT after 60.0s waiting for: b56-122632-s84-delete-20 reaches BOTH docs before it is deleted
+    delta=2.0 DELETE: PRECONDITION FAILED (b56-122632-s84-delete-20 never reached both docs) — INVALID, not scored
+
+  ---- teardown of the ladder board ----
+      !! WAIT TIMED OUT after 20.0s waiting for: both replicas free of every node this arm added
+      !! WAIT TIMED OUT after 20.0s waiting for: both replicas free of every node this arm added
+      !! WAIT TIMED OUT after 20.0s waiting for: both replicas free of every node this arm added
+      !! WAIT TIMED OUT after 20.0s waiting for: both replicas free of every node this arm added
+      !! WAIT TIMED OUT after 20.0s waiting for: both replicas free of every node this arm added
+      !! WAIT TIMED OUT after 20.0s waiting for: both replicas free of every node this arm added
+  teardown INCOMPLETE — {'A': [], 'B': ['b56-122632-s84-add-03', 'b56-122632-s84-add-10', 'b56-122632-s84-add-20', 'b56-122632-s84-delete-03', 'b56-122632-s84-delete-10', 'b56-122632-s84-delete-20']}
+
+  ---- shared trees, before vs after ----
+    A: added=[] removed=[]
+    B: added=[] removed=[]

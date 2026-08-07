@@ -1,0 +1,82 @@
+{
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "s84": {
+    "board_open_on_writer": false,
+    "rows": [
+      {
+        "delta": 0.3,
+        "shape": "ADD",
+        "valid": true,
+        "node": "b56-123328-s84-add-03",
+        "captured": true,
+        "after_s": 0.0,
+        "present_in_peer_doc": false,
+        "on_writer_disk": true
+      },
+      {
+        "delta": 0.3,
+        "shape": "DELETE",
+        "valid": true,
+        "node": "b56-123328-s84-delete-03",
+        "captured": false,
+        "after_s": 45.0,
+        "present_in_peer_doc": false,
+        "on_writer_disk": false
+      },
+      {
+        "delta": 1.0,
+        "shape": "ADD",
+        "valid": true,
+        "node": "b56-123328-s84-add-10",
+        "captured": true,
+        "after_s": 0.2,
+        "present_in_peer_doc": false,
+        "on_writer_disk": true
+      },
+      {
+        "delta": 1.0,
+        "shape": "DELETE",
+        "valid": true,
+        "node": "b56-123328-s84-delete-10",
+        "captured": false,
+        "after_s": 45.0,
+        "present_in_peer_doc": false,
+        "on_writer_disk": false
+      },
+      {
+        "delta": 2.0,
+        "shape": "ADD",
+        "valid": true,
+        "node": "b56-123328-s84-add-20",
+        "captured": true,
+        "after_s": 0.2,
+        "present_in_peer_doc": false,
+        "on_writer_disk": true
+      },
+      {
+        "delta": 2.0,
+        "shape": "DELETE",
+        "valid": true,
+        "node": "b56-123328-s84-delete-20",
+        "captured": false,
+        "after_s": 45.0,
+        "present_in_peer_doc": false,
+        "on_writer_disk": false
+      }
+    ],
+    "left_over": {
+      "A": [],
+      "B": [
+        "b56-123328-s84-add-03",
+        "b56-123328-s84-add-10",
+        "b56-123328-s84-add-20",
+        "b56-123328-s84-delete-03",
+        "b56-123328-s84-delete-10",
+        "b56-123328-s84-delete-20"
+      ]
+    }
+  }
+}

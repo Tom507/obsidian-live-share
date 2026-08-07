@@ -1,0 +1,74 @@
+==============================================================================
+B56 / W4 — S81 step 1 — A RECORDS (as host)   board _liveshare-test/b56-s81-115521.canvas
+==============================================================================
+  The board is planted while Obsidian is DOWN, because a file created
+  externally into a running vault is not noticed (measured this run: an
+  external CREATE produced zero receipts over 90 s while an external
+  MODIFY of a shared canvas reached both docs in 2.0 s).
+  provisioning a room with HOST=A
+    | provisioning a room with HOST=A  GUEST=B
+    | stopping Obsidian — data.json is rewritten on quit
+    |   processes now: 0
+    | snapshot A: 8 entries -> H:\tmp\b56_room_snapshot\20260807_115525\A
+    | snapshot B: 9 entries -> H:\tmp\b56_room_snapshot\20260807_115525\B
+    |   encryptionPassphrase: A=8cafcf6cf72d B=8cafcf6cf72d match=True
+    |   encryptionSalt: A=280e7cd15462 B=280e7cd15462 match=True
+    |   serverPassword: A=3570f8bd7e1f B=3570f8bd7e1f match=True
+    |   sharedFolder: both '_liveshare-test'
+    |   old room 5ab855ac-d9cf-4bc9-9bf2-a1a987509f93
+    |   created room ca1d24e9-2b40-4283-a849-545fce645ed9  token sha256=096217fc4031
+    |   guest join accepted (200)
+    | vault A: role=host room=ca1d24e9-2b40-4283-a849-545fce645ed9 sharedFolder='_liveshare-test' port=39431
+    | vault B: role=guest room=ca1d24e9-2b40-4283-a849-545fce645ed9 sharedFolder='_liveshare-test' port=39432
+    | 
+    | room provisioned.
+  Obsidian stopped
+  planted the malformed board in A:_liveshare-test/b56-s81-115521.canvas sha256=c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad
+  planted the malformed board in B:_liveshare-test/b56-s81-115521.canvas sha256=c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad
+
+  ---- RESTART both instances — S81 step 1 ----
+    | bundle: 4692730 bytes  sha256=d8818271c5b3e228…
+    |   digest matches LS_EXPECT_SHA256 — this is the bundle you built
+    | Obsidian not running
+    | vault A: installed and verified (d8818271c5b3e228…), e2eControlPort=39431
+    | vault B: installed and verified (d8818271c5b3e228…), e2eControlPort=39432
+    | 
+    | relaunching…
+    |   vault A opened (4 processes)
+    |   vault B opened (5 processes)
+    | 
+    | waiting for the control servers…
+    |   both answering after 4s
+    |     vault A: vaultId=703aa794cc73a117 role=host
+    |     vault B: vaultId=55a4253eb7a90dde role=guest
+    | 
+    | REMOTE CONTROL IS LIVE.
+  both connected after 0.1s — roles now A=host, B=guest
+==============================================================================
+B56 / W4 — S81 step 1 — the recording session   run 115521   2026-08-07 11:55:58
+==============================================================================
+  bundle A: sha256=d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4  size=4692730
+  bundle B: sha256=d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4  size=4692730
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=host connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=guest connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=host, B=guest
+  S57 gate: both ports ROUTED all 4 commands
+  HOST = A   GUEST = B   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 11.3s behind wall clock
+    B: newest on-disk log stamp is 4.0s behind wall clock
+      !! WAIT TIMED OUT after 150.0s waiting for: A's durable store holds an entry for this path
+  A (host) store entry after 150.0s: null
+  A doc after 0.0s: nodes=['b56-s81-115521-N1', 'b56-s81-115521-N2'] edges=[]
+      !! WAIT TIMED OUT after 150.0s waiting for: the GUEST B loses the malformed record from its own disk (B50 §2.3)
+
+  ---- lines naming this board ----
+    [A] 1 lines
+        2026-08-07T09:55:31.714Z [WARN] [canvas-sync] INGEST REJECTED signature: boundary=host-seed refused edge b56-s81-115521-BADEDGE (MISSING_TO)
+    [B] 0 lines
+  A file: {"exists": true, "sha256": "c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad", "nodes": ["b56-s81-115521-N1", "b56-s81-115521-N2"], "edges": ["b56-s81-115521-BADEDGE"], "bad_edge_on_disk": true}
+  B file: {"exists": true, "sha256": "c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad", "nodes": ["b56-s81-115521-N1", "b56-s81-115521-N2"], "edges": ["b56-s81-115521-BADEDGE"], "bad_edge_on_disk": true}
+
+  STEP 1: store_entry_recorded=False  host_kept_bad_edge=True  guest_copy_destroyed=False
