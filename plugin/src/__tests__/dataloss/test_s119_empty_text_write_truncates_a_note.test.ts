@@ -210,7 +210,9 @@ describe("S119 — the precondition is reachable: waitForSync resolves on an emp
     expect(synced.get(NOTE)).toBe(true);
     // …and the document it just declared synced is empty.
     expect(doc.getText("content").toString()).toBe("");
-    // So the consumer's `await waitForSync(path)` returns immediately.
-    await expect(manager.waitForSync(NOTE)).resolves.toBeUndefined();
+    // So the consumer's `await waitForSync(path)` returns immediately — and
+    // since S128 it says WHY: there was nobody to ask. That is the fact this
+    // consumer needed and could not obtain when the truncation shipped.
+    await expect(manager.waitForSync(NOTE)).resolves.toBe("no-peers");
   });
 });

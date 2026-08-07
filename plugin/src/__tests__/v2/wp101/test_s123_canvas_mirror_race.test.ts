@@ -269,7 +269,9 @@ describe("S123 — the readiness signal is literally the S119 one", () => {
     expect((manager as unknown as { synced: Map<string, boolean> }).synced.get(docId)).toBe(true);
     // Declared synced, and empty — the two facts that compose into S123.
     expect(docHasRecords(doc)).toBe(false);
-    await expect(manager.waitForSync(docId)).resolves.toBeUndefined();
+    // Since S128 the resolution names the reason, and for a brand-new canvas
+    // doc id it is always this one.
+    await expect(manager.waitForSync(docId)).resolves.toBe("no-peers");
   });
 });
 

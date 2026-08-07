@@ -22,6 +22,8 @@ MANIFEST = PLUGIN / "src" / "files" / "manifest.ts"
 BGSYNC = PLUGIN / "src" / "files" / "background-sync.ts"
 CONFLICT = PLUGIN / "src" / "files" / "conflict-copy.ts"
 MIRROR = PLUGIN / "src" / "files" / "canvas-mirror.ts"
+YTEXT = PLUGIN / "src" / "files" / "ytext-history.ts"
+SYNC = PLUGIN / "src" / "sync" / "sync.ts"
 
 TESTS = [
     "src/__tests__/v2/ux01/test_s115_stale_reconcile_is_scoped_by_the_host.test.ts",
@@ -32,6 +34,8 @@ TESTS = [
     "src/__tests__/dataloss/test_s119_empty_write_floor.test.ts",
     "src/__tests__/dataloss/test_s125_the_guests_version_is_preserved.test.ts",
     "src/__tests__/v2/wp101/test_s123_canvas_mirror_race.test.ts",
+    "src/__tests__/dataloss/test_s126_a_real_delete_reaches_a_closed_note.test.ts",
+    "src/__tests__/v2/wp103/test_s128_waitforsync_says_why.test.ts",
 ]
 
 # (id, acceptance criterion, description, [(file, old, new), ...])
@@ -195,8 +199,10 @@ BREAKS = [
         "B18",
         "S119 AC4",
         "background-sync evidence is always true (the floor becomes inert)",
+        # Re-anchored for S126, which replaced the session-local witness with the
+        # replicated CRDT tombstone probe.
         [(BGSYNC,
-          "          intentional: this.observedNonEmpty.has(path),",
+          "          intentional: yTextHeldContent(docText) || this.observedNonEmpty.has(path),",
           "          intentional: true,")],
     ),
     (
@@ -300,6 +306,58 @@ BREAKS = [
           "      post.identityResolves === true &&",
           "      true &&")],
     ),
+    # ---- S126 / WP103 part 1 : the evidence is the DOCUMENT, not this peer ----
+    (
+        "B32",
+        "S126 AC2",
+        "the floor falls back to the session-local witness (the shipped regression)",
+        [(BGSYNC,
+          "          intentional: yTextHeldContent(docText) || this.observedNonEmpty.has(path),",
+          "          intentional: this.observedNonEmpty.has(path),")],
+    ),
+    (
+        "B33",
+        "S126 AC1",
+        "the tombstone probe stops finding tombstones",
+        [(YTEXT,
+          "      if (node.deleted === true) return true;",
+          "      if (false) return true;")],
+    ),
+    (
+        "B34",
+        "S126 AC2 (the S119 half)",
+        "the tombstone probe answers true for a document that never held content",
+        [(YTEXT,
+          "  if (!text) return false;",
+          "  if (!text) return false;\n  if (true) return true;")],
+    ),
+    # ---- S128 / WP103 part 2 : the readiness signal says why ----
+    (
+        "B35",
+        "S128 AC5",
+        "the two resolutions collapse onto one token again",
+        [(SYNC,
+          "      this.setSynced(docId, true, SYNC_RESOLUTION.NO_PEERS);",
+          "      this.setSynced(docId, true, SYNC_RESOLUTION.PEER_STATE);")],
+    ),
+    (
+        "B36",
+        "S128 AC5",
+        "an unknown reason masquerades as the STRONGER fact",
+        # The FIRST of the three ALREADY_SYNCED fallbacks — the one taken by a
+        # caller whose doc was already synced before it asked.
+        [(SYNC,
+          "      return Promise.resolve(this.syncResolution.get(filePath) ?? SYNC_RESOLUTION.ALREADY_SYNCED);",
+          "      return Promise.resolve(this.syncResolution.get(filePath) ?? SYNC_RESOLUTION.PEER_STATE);")],
+    ),
+    (
+        "B37",
+        "S128 AC5 (behaviour unchanged)",
+        "the reason survives releaseDoc, so a re-subscribe inherits a stale answer",
+        [(SYNC,
+          "    this.syncResolution.delete(filePath);",
+          "    void filePath;")],
+    ),
 ]
 
 
@@ -338,7 +396,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT, MIRROR}
+    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT, MIRROR, YTEXT, SYNC}
     baseline_sha = {p: sha256(p) for p in targets}
 
     print("=== BASELINE (no break) ===")

@@ -101,6 +101,33 @@ export interface DocHandle {
 
 type SyncListener = (synced: boolean) => void;
 
+/**
+ * S128 — the closed set of reasons `waitForSync` can resolve for.
+ *
+ * The API defect this fixes is not that the signal lied; it is that two
+ * different facts resolved the same promise and no caller could tell which one
+ * it got. Naming them is the whole repair.
+ */
+export const SYNC_RESOLUTION = {
+  /** A peer answered and its state was applied. The document is authoritative. */
+  PEER_STATE: "peer-state",
+  /**
+   * The relay reported no peers hold this doc. There was NOBODY TO ASK, so an
+   * empty document here means "new", not "empty on the other side". Any caller
+   * about to take a destructive decision from this doc's contents needs to
+   * know this and, before S128, could not.
+   */
+  NO_PEERS: "no-peers",
+  /**
+   * Resolved from a state that was already synced when the caller asked, and
+   * whose original reason is no longer held (a re-subscribe, a legacy path).
+   * Treated as UNKNOWN by anything destructive.
+   */
+  ALREADY_SYNCED: "already-synced",
+} as const;
+
+export type SyncResolution = (typeof SYNC_RESOLUTION)[keyof typeof SYNC_RESOLUTION];
+
 export class SyncManager {
   private docs = new Map<string, Y.Doc>();
   private awarenessMap = new Map<string, awarenessProtocol.Awareness>();
@@ -148,6 +175,8 @@ export class SyncManager {
   // retires the legacy safety valve in handleMessage.
   private relaySupportsBlobs = false;
   // Last peer count announced with MUX_SUBSCRIBED, for the sole-peer trigger.
+  /** S128 — why each doc's sync resolved. */
+  private syncResolution = new Map<string, SyncResolution>();
   private peerCounts = new Map<string, number>();
   private updatesSinceCheckpoint = new Map<string, number>();
 
@@ -444,12 +473,45 @@ export class SyncManager {
     this.replayGate.endReplay(filePath, "unsupported");
     this.relayLastSeq.delete(filePath);
     this.peerCounts.delete(filePath);
+    this.syncResolution.delete(filePath);
     this.updatesSinceCheckpoint.delete(filePath);
   }
 
-  waitForSync(rawPath: string, timeoutMs = 10_000): Promise<void> {
+  /**
+   * S128 — WHY THIS DOC IS CONSIDERED SYNCED.
+   *
+   * `waitForSync` resolving has always meant two different things, and no
+   * caller could tell them apart:
+   *
+   *   PEER_STATE  a peer answered and its state was applied
+   *   NO_PEERS    the relay said nobody holds this doc, so there was nobody to
+   *               ask and the document is empty because it is new
+   *
+   * Both are legitimate "you may proceed" answers and both resolve the promise
+   * at exactly the same instant — that is deliberately unchanged here. What was
+   * missing is that a caller about to make a DESTRUCTIVE decision (write this
+   * doc's contents over a file, decide a canvas has no records) needs the
+   * second fact and could not obtain it. Three defects in this run — S119,
+   * S121, S123 — are that one API gap, reached from three directions.
+   *
+   * `peerCount === 0` is not an edge case. For any doc id no peer has ever
+   * subscribed to — every new canvas, every newly shared note — it is the
+   * COMMON case.
+   */
+  getSyncResolution(rawPath: string): SyncResolution | null {
+    return this.syncResolution.get(normalizePath(rawPath)) ?? null;
+  }
+
+  /**
+   * Resolves exactly when it always did. The RESOLVED VALUE now carries why —
+   * a caller that ignores it (`await waitForSync(x)`) is unaffected, which is
+   * what keeps this package free of behaviour change.
+   */
+  waitForSync(rawPath: string, timeoutMs = 10_000): Promise<SyncResolution> {
     const filePath = normalizePath(rawPath);
-    if (this.synced.get(filePath)) return Promise.resolve();
+    if (this.synced.get(filePath)) {
+      return Promise.resolve(this.syncResolution.get(filePath) ?? SYNC_RESOLUTION.ALREADY_SYNCED);
+    }
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -467,14 +529,14 @@ export class SyncManager {
         if (!isSynced) return;
         listeners?.delete(listener);
         clearTimeout(timer);
-        resolve();
+        resolve(this.syncResolution.get(filePath) ?? SYNC_RESOLUTION.ALREADY_SYNCED);
       };
       listeners.add(listener);
 
       if (this.synced.get(filePath)) {
         listeners.delete(listener);
         clearTimeout(timer);
-        resolve();
+        resolve(this.syncResolution.get(filePath) ?? SYNC_RESOLUTION.ALREADY_SYNCED);
       }
     });
   }
@@ -960,7 +1022,9 @@ export class SyncManager {
     this.peerCounts.set(docId, peerCount);
 
     if (peerCount === 0) {
-      this.setSynced(docId, true);
+      // S128 — NOBODY TO ASK. The doc is empty because no peer holds it, which
+      // is NOT the same fact as "a peer sent me its state and it was empty".
+      this.setSynced(docId, true, SYNC_RESOLUTION.NO_PEERS);
     } else {
       // Bug A: a newcomer must announce its own already-set (static) awareness
       // state to peers that were present before it joined.
@@ -1016,7 +1080,8 @@ export class SyncManager {
     }
 
     if (msgType === SYNC_STEP2) {
-      this.setSynced(docId, true);
+      // S128 — a peer answered and its state has been applied above.
+      this.setSynced(docId, true, SYNC_RESOLUTION.PEER_STATE);
     }
   }
 
@@ -1060,7 +1125,8 @@ export class SyncManager {
     }
   }
 
-  private setSynced(docId: string, value: boolean): void {
+  private setSynced(docId: string, value: boolean, reason?: SyncResolution): void {
+    if (value && reason) this.syncResolution.set(docId, reason);
     const prev = this.synced.get(docId);
     this.synced.set(docId, value);
     // WP42 (AC3): the documented fallback release. A WP41 relay closes the
