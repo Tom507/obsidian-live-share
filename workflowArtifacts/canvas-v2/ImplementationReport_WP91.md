@@ -213,8 +213,8 @@ Twenty-one product breaks, applied one at a time to the committed tree, each run
 | `npx tsc -noEmit -skipLibCheck` | **clean** |
 | Dispatcher's stated baseline | 2493 passed / 353 files |
 | Baseline at `e2f6358` (**after B46/WP68 landed**) | **2571 passed / 358 files** — B46 raised it by 78 tests / 5 files |
-| After WP91 | **2603 passed / 364 files**, 0 failed |
-| `npx vitest run src/__tests__/v2/wp91` | **32 passed / 6 files** |
+| After WP91 | **2603 passed / 364 files**, 0 failed — reproduced on 4 of 8 full-suite runs; see the flake below |
+| `npx vitest run src/__tests__/v2/wp91` | **32 passed / 6 files**, on every run |
 | Biome on the six new files | clean (`organizeImports` + `format` applied to this batch's own files only; the pre-existing whole-file CRLF finding on the three production files is untouched, per the charter) |
 
 **Attribution.** The delta from 2493 → 2571 is entirely B46/WP68 (`58aff0a`, `156eef5`, `e2f6358`), which committed between the Dispatcher's measurement and the start of this batch. The delta from 2571 → 2603 is exactly this WP's 32 rows. **No pre-existing test was deleted, skipped, retitled or weakened.** One assertion was amended, enumerated in §7.
@@ -222,6 +222,29 @@ Twenty-one product breaks, applied one at a time to the committed tree, each run
 `npm run build` was **not** run and `plugin/main.js` was **not** rebuilt or staged.
 
 **Affected pre-existing test files, named rather than hidden behind a suite green:** `src/__tests__/canvas-single-writer.test.ts` is the only pre-existing file this batch edited, and the only pre-existing file whose behaviour changed. Every other file that exercises `handleLocalModify` (38 files, per `grep -rl handleLocalModify src/__tests__`) passes byte-unmodified.
+
+### 5.1 A load-sensitive flake in `wp5/latency.test.ts`, measured and attributed away from this batch
+
+`src/__tests__/wp5/latency.test.ts` → *"harness injects a measurable RTT inside the 50–150 ms band (US6 AC1)"* fails intermittently under full-suite parallel load:
+
+```
+AssertionError: expected 440 to be less than or equal to 150   (latency.test.ts:141)
+AssertionError: expected 402 to be less than or equal to 150
+```
+
+**Observed rate on this host at `390df2a`: 4 red / 8 full-suite runs.** The same file run alone passes **11/11** every time (38.5 s, dominated by the deliberate 33.5 s sleeper).
+
+**It is not this batch's.** The decisive measurement is a full-suite run with WP91's six files excluded:
+
+```
+$ npx vitest run --exclude "src/__tests__/v2/wp91/**"
+  Test Files  1 failed | 357 passed (358)
+      Tests   1 failed | 2570 passed (2571)     ← the same row, the same assertion
+```
+
+At the **pre-WP91 file set**, on the same host, at the same moment. The batch adds ~0.5 s of CPU in `wp91/tp04` and does not add the failure.
+
+**What it actually is, and it is the same class as the finding in §6.1:** `:141` asserts a **wall-clock** round-trip inside a 50–150 ms band. A host that defers a timer by 300 ms breaks it, and the observed values (402 ms, 440 ms) are consistent with ordinary scheduling pressure rather than with anything in the product. It is a timer-shaped assertion about a machine, described in `WP5/US6 AC1` as a property of the harness. **Not fixed, not amended, not skipped, not numbered** — described here so the next batch that sees a red on this row looks at its load before it looks at its diff. It needs a signal number; I do not allocate one.
 
 ---
 
@@ -232,6 +255,31 @@ Twenty-one product breaks, applied one at a time to the committed tree, each run
 The S68 twin measures 700 ms at 100 ms sampling granularity — the same bound, one sample short of it.
 
 **But the charter's picture of *why* the window reached ~0.8 s needs one correction, and it is recorded here rather than repaired.** The re-arm only holds a window open indefinitely when landed writes are closer together than the settle window. Under the ordinary debounce (`DEBOUNCE_MS` 200 capped by `MAX_WAIT_MS` 500) a stream of remote deltas lands a write roughly every 500 ms, which is **wider** than the 250 ms settle — so before this WP the mute alternated open/closed rather than staying open, and the *coverage* was partial rather than total. That is consistent with B44 measuring LOST 11/12 rather than 12/12 in the 0.5–0.8 s block, and it is why AC5's control fixture had to drive `flush()` directly: with the debounce alone the window closes between writes for a reason that has nothing to do with a cap, and the control would have been green against any implementation. This does not change the mechanism, the severity or the fix; it changes one sentence about the shape of the window, and the sentence was in the charter.
+
+### 6.1 THE CEILING HOLDS ONLY WHILE THE HOST IS NOT CLAMPING, and that is a property of the shape, not a tuning problem
+
+Handed to this batch by the Dispatcher from **B49's S65 audit**, taken as a given and **not re-measured here** (confirming it needs a window-focus change on a shared rig, which is not this batch's to take):
+
+> `setTimeout` / `setInterval` in the renderer are clamped to **60.00 s ± 0.02**. Measured over 84 logger flush batches across both live vaults: min 0.011 s, median 0.988 s, **p90 59.986 s**, max 60.823 s — 44.0 % in the 0.50–0.60 s band (matching `FLUSH_DELAY_MS = 500` to the millisecond) and **26.2 % in the 40–61 s band**. The mechanism is not the logger: `SyncManager`'s independent `setInterval(4000)` awareness tick stretches to the same whole minute at the same moments and says so — `AWARENESS GAP: 59998ms … source=tick`. Two unrelated timers clamped simultaneously to 60.00 s is a **host wake-up clamp on the renderer**. Historically ~0.7 % of 18 600 pulses: a fat tail, not the steady state.
+
+Three consequences, stated plainly rather than tuned around.
+
+**1. The 750 ms I measured is a statement about the UNCLAMPED regime, and my instrument cannot see the other one.** AC5's measurement runs on `vi.useFakeTimers()`, where a timer fires exactly when the virtual clock says so — by construction there is no host in it to clamp anything. So "750 ms measured against 750 ms predicted" is an exact statement about **the mechanism's arithmetic** (`MAX_WAIT_MS` 500 + settle 250), and it is the regime B44's 0.8 s / 0.9 s boundary was measured in. It is **not** a statement about the longest wall-clock mute a user can experience. Nothing in this batch measured that, and nothing in this batch could have.
+
+**2. A ceiling enforced by a `setTimeout` cannot be honoured on a platform that clamps `setTimeout`.** This is worth being blunt about because it is a limitation of what I built. `armSettleRelease` computes a *shorter delay* under the cap — but the release still only happens when the host fires the timer. Under a clamp the host does not fire it for up to ~60 s, so **the longest continuous muted interval becomes the clamp, not the cap**, in roughly 0.7 % of pulses. The same is true of the S68 twin, which uses a bare `setTimeout`. **AC5's bound holds while the host is not clamping; when it clamps, the window is whatever the clamp is.** I did not widen the cap, re-time anything, or arrange the measurement to hide this.
+
+**3. And this is the strongest argument for the shape the charter asked for, so it belongs in the record rather than in a footnote.** *A byte-identity decision is unaffected by a clamp; a timer-shaped one is not.*
+
+| | pre-WP91 | after WP91 |
+|---|---|---|
+| what decides whether a local save is our echo | a mute held open by a `setTimeout` | the bytes, at `canvas-sync.ts:3239` |
+| unclamped | ~750 ms in which every local canvas save is silently destroyed | nothing is destroyed; the mute is not consulted on the capture path at all |
+| **clamped (~0.7 % of pulses)** | **~60 s in which every local canvas save is silently destroyed** | **nothing is destroyed.** The mute stays held for a minute and it costs *nothing on the capture path* |
+| what the clamp costs after WP91 | — | **latency, not data.** The projection write and the mute release are late; the user's save is still read, still captured, still on the peer |
+
+So the clamp does not merely fail to threaten this fix — **it is the case that makes the fix's shape necessary.** Had WP91 been delivered as a smaller constant, a 60 s clamp would have re-opened the defect at eighty times the measured width, intermittently, on a schedule nobody controls, and the ladder would still have gone green. That is exactly the outcome the charter forbade when it said *"an implementation that changes only timing constants FAILS, whatever the ladder measures."*
+
+**A consequence for AC5's own honesty rule, recorded, not repaired:** the rewritten comment at `canvas-persistence.ts:50-79` now lets a reader compute 750 ms from the module's own constants, which is true of the mechanism and true of the wall clock only while the host is not clamping. A cap that is robust to the clamp would have to be enforced at the *next event*, not by a timer — e.g. releasing the mute lazily when a write or a query finds the window already older than `MAX_MUTE_MS`. That is a different design, it was not chartered, and it is not what I built. **It needs a signal number and a decision; I do not allocate one.** Under WP91's shape it is a latency improvement rather than a correctness one, which is why I did not take it unasked.
 
 ---
 
@@ -259,6 +307,10 @@ The S68 twin measures 700 ms at 100 ms sampling granularity — the same bound, 
 3. **`canvas-sync.ts:4276` `writeToDisk`, whose `finally` (`:4302`) still arms a raw 250 ms `setTimeout` that both deletes from `recentDiskWrites` and calls `unmutePathEvents`.** It is the retired seed-path writer with no CRDT-observer-driven caller, it is not on the capture path, and it is uncapped. Left alone: bounding it would have touched a fourth mechanism for no measured benefit.
 
 4. **`CanvasSync.isRecentDiskWrite` now has no production consumer.** It is still correct, still maintained, still bounded (AC5) and still used by tests as a window observable. Removing a public accessor is not this WP's business.
+
+5. **A timer-enforced ceiling is not clamp-proof, and a lazy one would be.** See §6.1. Releasing the mute at the next event that finds the window older than `MAX_MUTE_MS`, rather than on a `setTimeout`, would hold the stated ceiling through a renderer wake-up clamp. Not chartered, not built, and after WP91 it buys latency rather than correctness. **Needs a signal number and a decision.**
+
+6. **`wp5/latency.test.ts:141` asserts a wall-clock RTT band and reds under load.** See §5.1. 4 red / 8 full-suite runs on this host, reproduced with WP91's files excluded, green 11/11 in isolation. **Needs a signal number.**
 
 ---
 
