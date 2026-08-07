@@ -95,6 +95,15 @@ with a qualifier.
 
 ## 3a. Allocations made under this register
 
+> **S108 is BURNED — allocated and withdrawn within the hour, by me.** I saw an unfamiliar 0-byte file
+> appear in the shared folder in the same second as my own write and filed it as a plugin collision
+> artefact. **It was the owner's file**, made by hand while moving a note to their vault root. I reported a
+> *mechanism* from an *adjacency*. W4 had met the same file earlier and said it **could not attribute the
+> event** — the correct answer was already in the record and I read it as an open question instead of an
+> answer. **When two explanations cannot be separated, the finding is "I could not separate them", not the
+> more interesting one.** The number is burned rather than reused, per §3.
+
+
 The first entries allocated the way §1 requires — described by the finder, numbered by the Dispatcher.
 
 | signal | finding | status |

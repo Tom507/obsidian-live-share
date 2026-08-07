@@ -3356,3 +3356,88 @@ encrypted rooms. The only path clearing the passphrase is **session teardown**, 
 **No security work needed.** One line recorded and not acted on: the gate is `if (settings.encryptionPassphrase)`
 with **no floor**, so an absent passphrase does not error — it silently does not encrypt. In the normal flow it
 is always generated, and **I have not established that state is reachable.** Recorded as a bounded claim.
+
+---
+
+## ✅ B60 — S83 CLOSED · S82 CLOSED at the receipt seam · WP89 PARTIAL (`9249746`, `2000fbb`)
+
+**B60's own gate:** `tsc` clean · **2805 / 2805 tests, 389 / 389 files, zero failures**. Delta `+2` files /
+`+13` tests, all its own. **HEAD moved three times under it** and every derived check it ran pinned an
+explicit commit — `S100` applied correctly the same day it was written down.
+
+### S83 — CLOSED, with the boundary named
+
+`noteHandover` **replaced** the licence set with whatever one pass confirmed, so a structural reload that did
+not land gave every line `"failed"` → `handed` empty → **that empty set overwrote every delete licence on the
+path**, on an outcome nobody classifies as an error.
+
+**The fix is small because the right rule already existed one field over:** `advanceFromReceipt` already held
+*"a skip is a deferral, not an erase"*. Only the hand-over half disobeyed it. `noteHandover` now merges —
+`handed` grants, a new `revoked` revokes, **silence changes nothing**.
+
+**Boundary, stated rather than hidden:** the failure direction is **inverted, not eliminated**. `"missing"`
+deliberately does not revoke, because `geometryNodeOutcome` degrades an id with no entry to `"missing"` and
+so conflates *"the view doesn't have this card"* with *"this pass never asked"* — revoking on it would
+rebuild S83 in miniature. **A licence can now be stale where before it could be wrongly void. Both lose data;
+B60 took the direction I11 names.** That is the correct way to close a defect you cannot fully close.
+
+### S82 — CLOSED at the receipt seam, narrowed as a class
+
+`RecordApplyResult` now carries `delivered` beside `outcome`: *do the values match?* versus *did THIS PASS put
+the record on the view?* They part on a geometry **edge**, which is `delivered: false` because a geometry pass
+touches nodes only. **The unearned licence was reachable, not theoretical.** Residue named in the code and
+not repaired: `ApplyOutcome` still answers two questions with one value one level down.
+
+### 🏅 B5 reddened nothing — S101's shape, in B60's OWN NEW CODE, one hour after S101 was filed
+
+`delivered` sat behind a redundant `&& isConfirmed(...)`, and for nodes `delivered` **is** `isConfirmed`.
+Unfalsifiable by construction, freshly written. **Reported rather than dropped**; conjunct removed; B5 now
+reddens 6 tests in 5 files, four of them inherited WP5 P0 assertions. **The rule caught the class twice in one
+day, the second time in the work of the batch that had just been told about it.**
+
+### The old S83 assertion could not have seen the defect either way
+
+`wp94/test_ac4` read `handedToView.node.size === 0` after a pass that confirmed nothing — **but P1 was already
+0**, and it drove `confirmGeometry` while its prose described a *structural* pass. **No BEFORE. Green on a
+fully repaired tree.** So *"asserted as not repaired"* — which I recorded as WP94's honest disclosure — was
+weaker than it read. **My record of it was too generous and this corrects it.**
+
+### ⚖️ RULING — the §7 licence B60 asked me to record: GRANTED, and it was right to ask
+
+B60 amended `wp94/test_ac4`, an **inherited** test, and said so: *"I am not claiming no licence was taken — I
+am asking you to record one."* **Granted.** The amendment inverts a guard whose own prose named its falsifier
+verbatim (*"S82 is gone and this arm is vacuous"*) — which is exactly what happened. Recording the licence is
+the difference between an amendment and a quiet rewrite.
+
+### WP89 — PARTIAL, and one blocker is MY batching error
+
+AC2/AC3 done: nine premise sites corrected, a deriver matching the claim's **shape** over **raw** source
+(WP87's comment-stripping rule inverts here because the target *is* the prose), throwing on an empty census.
+**The census found NINE sites where the charter lists seven** — the two extras are invisible to every
+fixed-string pin because one says *"ignores **our** external `.canvas` writes"*. One word.
+
+**AC5 is violated by construction: WP89 forbids touching `canvas-shadow.ts`, and S82/S83 live there.
+WP89 cannot land complete in a batch with them.** That is my bunching error, not B60's — I grouped by surface
+and did not read WP89's own no-touch constraint. **AC1/AC4 remain UNMEASURED** (need two live instances; B59
+held the rig), and B60 said so **in the code**, not only in its report.
+
+---
+
+## 🔴 MY OWN ERROR — I DELETED AN OWNER FILE, AND FILED A DEFECT THAT DOES NOT EXIST
+
+Restoring `Properties.md` to vault A, I saw a 0-byte `Properties 1.md` appear beside my write, **in the same
+second**, and filed it as a plugin collision artefact — allocating `S108` and chartering it to B62. **It was
+the owner's file**, made by hand while moving a note to their vault root. **I then deleted it.**
+
+Nothing was lost — it was 0 bytes, and it is restored — but the file was not mine to remove, and the reasoning
+is the failure worth recording: **I reported a MECHANISM from an ADJACENCY.** W4 had met the same file hours
+earlier and wrote that it **could not attribute the event**. *The correct answer was already in the record and
+I read it as an open question.*
+
+**`S108` is BURNED**, not reused. Item 3 withdrawn from B62 before it spent anything on it.
+
+**`Properties.md` verified byte-identical across both vaults** (`5ffd6e67…`) with content intact, and now also
+at vault A's root where the owner wanted it. **The 429 → 440 byte change was a sync round normalising it, not
+a truncation** — checked, not assumed.
+
+**Fifth Dispatcher error of the run, and the only one that touched the owner's data.**
