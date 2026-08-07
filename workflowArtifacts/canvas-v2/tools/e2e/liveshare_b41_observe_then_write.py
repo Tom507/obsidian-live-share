@@ -65,6 +65,17 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+# --- S65 guard ---
+# The debug log's stamp-to-flush lag was measured at 0.50 s unthrottled and
+# 60.0 s when the Obsidian renderer's timers are clamped (bimodal; 25% of
+# samples exceeded 2.5 s). Every reader below used a fixed 2-2.5 s margin and
+# would read ZERO LINES in the clamped regime - an empty read that has been
+# reported as "the signature never fired". See workflowArtifacts/canvas-v2/
+# S65_ABSENCE_AUDIT.md.
+sys.path.insert(0, r"H:\tmp")
+from ls_logwait import wait_for_flush as _s65_wait_for_flush  # noqa: E402
+
+
 VAULTS = {
     "A": (Path(r"H:\Developement\_NeuralAngels\ObsidianOrga"), 39431),
     "B": (Path(r"H:\Developement\_NeuralAngels\ObsidianOrga - Kopie"), 39432),
@@ -167,6 +178,10 @@ def log_since(role: str, offset: int) -> list[str]:
     p = log_path(role)
     if not p or not p.exists():
         return []
+    # S65: prove the sink flushed past THIS MOMENT before reading. An
+    # empty read must be indistinguishable from nothing, never reportable
+    # as an absence. Raises FlushNotProven rather than returning [].
+    _s65_wait_for_flush({role: p}, label="log_since(%s)" % role)
     try:
         with p.open("rb") as fh:
             fh.seek(offset)
