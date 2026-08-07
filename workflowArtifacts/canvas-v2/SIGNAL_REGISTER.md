@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S89** |
+| **Next free number** | **S90** |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
@@ -149,6 +149,12 @@ a written I7 argument for doing so.** I passed the claim on without checking it.
 | **S86** | **Two different bounds on one interval, the tighter asserted separately.** `wp5/latency.test.ts` — *"reconnect re-renders the caret (US1 AC6/AC7)"* puts `expect(reMs).toBeLessThanOrEqual(2000)` **after** `waitUntil(…, {timeout: 4000})`, so a 2–4 s run is red for scheduling alone. Its doc comment (*"within a heartbeat of reconnect completing"*) is **not true as written** — the file's own note puts the awareness heartbeat at 12 s. | **open**, not yet observed failing (its margin is far larger than S74's). **Deliberately not fixed**: B54 declined to change a green row on the eve of a baseline quote, which is the right call and is why it is recorded instead. |
 | **S87** | **A test row with no subject.** `wp5/latency.test.ts` — *"a zero-latency run is annotated as non-proof (US6 AC5)"* asserts `isLatencyGating`, a two-line helper **defined in the test file and used by nothing else in the file or in production**. The row asserts a local function against itself. | **open.** Not a green that cannot fail — a green with nothing on the other side of it. It has been counted in every suite total this project has quoted. |
 | **S88** | **`v2/wp93/`'s census tests `readFileSync` the LIVE WORKING COPY** of `file-ops.ts` and `vault-events.ts` and compare byte-for-byte against a pinned pre-repair blob. **Any full-suite run that lands mid-edit reds them.** | **open.** Observed twice by B54, which **investigated rather than attributing** — not load, not its change, green whenever the sibling was between saves. It means *"exactly zero failures"* is **transiently violable while any batch is live in those files**, so the gate figure is a function of who else is typing. A derived census over a shared working tree needs to read a **commit**, not the tree. |
+
+| **S89** | **A TENTH mute-release site, and `grep` is structurally blind to it.** `manifest.ts:519` — `syncFromManifest` takes the release as an **injected callback** (`unmute?.(diskPath)`) inside a bare 250 ms `setTimeout`, reached from **six** `main.ts` sites (join / resume / reconnect ×2 / demotion / reload). Uncapped. Named by **no document in this run**. | **open**, and the count has now gone **2 → 9 → 10** across three successive batches. **The method is the finding:** every census so far grepped `unmutePathEvents`, and an **injected callback has no call site to grep**. `S75` recorded that the timer count rose as each batch looked harder; this says the search itself cannot close. **A census over a capability passed as a parameter has to follow the parameter, not the name.** |
+
+**Charter arithmetic corrected by the implementor**, and recorded rather than quietly fixed: WP93's census is
+**14 calls over 13 lines**, not 13 calls — `onFileRename` asks twice on one line — and §3.1's *"eleven
+decisions"* does not match its own seven-row table. Neither changes the repair; both would have propagated.
 
 **S68's arithmetic closes, and that is a falsifiable prediction rather than a flourish:**
 `MAX_WAIT_MS = 500` (`canvas-sync.ts:309`) + `DISK_WRITE_SETTLE_MS = 250` = **750 ms**, against a measured

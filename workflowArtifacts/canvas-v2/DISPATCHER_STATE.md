@@ -2791,3 +2791,59 @@ Enters at the **real** boundary: the frame is handed to the **live socket** as a
 ### Self-reported, second batch running: a `git stash push`
 
 On its own file only, popped immediately, `git stash list` verified empty, no sibling file touched — and it still says *"it should not have been reached for at all given the standing warning."* **Two batches in a row have now volunteered this.** The rule holds; what it needs is a cheaper alternative to reach for, not a louder warning.
+
+---
+
+## ✅ WP93 LANDED (`8c39548`, `a8ffc8a`) — the ceiling now survives a host clamp
+
+**No timing constant changed and none was added.** `VAULT_EVENT_SETTLE_MS` (250) is now the **stated
+ceiling**, not the decision — release happens on the first of *(consuming event)* or *(ceiling)*, the
+inversion the charter argued for. Gate: **2653 / 2653 in 370 files, two consecutive clean runs.**
+
+### The proof obligation I set was discharged exactly, and that is rare
+
+I demanded the clamped fixture be shown to hold the mute ~60 s **on pre-repair code**, because a fixture
+that clamps a timer nothing under test uses is a second instrument that cannot observe what it claims to.
+
+`test_tp03` **T0** reads `git show e1cbf69:plugin/src/files/file-ops.ts`, asserts it still contains the
+exact five-line pre-repair `finally { setTimeout(...) }` block **and that the working tree no longer does**,
+then **runs that expression verbatim** against the real shipped primitives under a clamp on the **global**
+`setTimeout`. Measured: muted at 1 000 ms, muted at 59 999 ms, released at **60 000 ms**;
+`longestMutedInterval` reduced **from the recorded call sequence**, never from a constant. **T0b** bridges
+the two clamps by showing production's default scheduler routes to the globals. **Break B16 reddens T0 — so
+the instrument is itself falsifiable.**
+
+### 24 injections, and the two that reddened NOTHING are again the valuable ones
+
+- the deriver's **comment strip is inert** — no comment in the tree spells `isPathMuted` with its paren;
+- `destroy()`'s cancel assertion **could not tell *cancelled* from *fired late***.
+
+Both rows were strengthened until they went red. **B22/B22d also redden nothing, and that is CORRECT:**
+`onFileCreate`/`onFileModify`'s entry checks are redundant with their post-await re-checks, while
+`onFileDelete`/`onFileRename` have no re-check and do red. **That complement census is written into the
+test file** — the third batch running to get more from a break than the break was designed for.
+
+### The system caught its own author
+
+**WP83's `PRIVATE_CANVAS_SPELLERS` oracle reddened on the first `muteClass`**, which spelled
+`endsWith(".canvas")` privately. Fixed by importing `isCanvasPath`. **A landed guard from ten work packages
+ago stopped a new private speller on its first day** — which is what all this machinery is for.
+
+### 🔟 S89 — the count went 2 → 9 → 10, and the METHOD is the finding
+
+`manifest.ts:519` is a **tenth** mute-release site, uncapped, named by no document in this run. It takes the
+release as an **injected callback** (`unmute?.(diskPath)`) inside a bare 250 ms `setTimeout`, reached from
+**six** `main.ts` sites. **`grep unmutePathEvents` is structurally blind to it — an injected callback has no
+call site to grep.** S75 recorded that the timer count rose as each batch looked harder; **this says the
+search itself cannot close.** A census over a capability passed as a parameter must follow the parameter,
+not the name.
+
+### Debts, one of them mine
+
+- **`MUTE OVERRUN:` shipped unregistered** — the charter forbids the implementor editing BUILD_SPEC, so it
+  correctly flagged the debt instead of taking it. **Registered now**, §10. Same shape B45 caught with
+  `SEED REFUSAL STORE:`; second occurrence, and the workflow that produces it is mine.
+- **Charter arithmetic corrected by the implementor:** **14 calls over 13 lines**, not 13 calls, and
+  §3.1's *"eleven decisions"* does not match its own seven-row table. Recorded, not quietly fixed.
+- **Both §7b live arms are NOT discharged and the report says so plainly.** AC4's live overrun counter and
+  AC5's real-editor gates are owed to W4.
