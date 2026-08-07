@@ -248,10 +248,37 @@ describe("WP92 AC6 — WP90's five properties, driven on POPULATED fixtures", ()
     expect(changed, "utils.ts was modified — that is an ESCALATE, not a fix").not.toContain(
       "plugin/src/utils.ts",
     );
-    // WP63's four files must not be in the diff at ALL — with a positive control
-    // that the directory is not empty, which is why it is read here.
-    expect(changed.filter((f) => f.includes("__tests__/v2/wp63/"))).toEqual([]);
-    expect(changed.filter((f) => f.includes("__tests__/v2/wp90/"))).toEqual([]);
+    // ----------------------------------------------------------------- WP95 --
+    // CONVERTED TO THE METHOD THIS FUNCTION'S OWN COMMENT PRESCRIBES, eleven
+    // lines up, and which the loop above already applies to the six production
+    // files: ATTRIBUTION, not absence.
+    //
+    // These two lines used to assert whole-file diff PRESENCE — that nothing
+    // under `wp63/` or `wp90/` appears in the change set at all. That is exactly
+    // the statement RULE 14 says no single batch can make about a shared tree,
+    // and this function says so itself before contradicting itself here. It is
+    // also a tripwire on the wrong thing: it reds for ANY future batch that so
+    // much as touches those directories, whoever they are and whatever they did.
+    //
+    // It fired that way for real. A sibling batch edited
+    // `wp90/test_tp06_…` under a Dispatcher ruling that had nothing to do with
+    // this work package, and this row reported it as a WP92 scope violation.
+    //
+    // The replacement is STRICTER where it matters, not weaker: a file in these
+    // directories may now be touched by somebody else, but not one ADDED line
+    // anywhere in either directory may carry a WP92 marker. A genuine in-scope
+    // leak is still caught; a sibling's unrelated edit is no longer misreported
+    // as one. Same regex, same helper, same discipline as the loop above.
+    for (const dir of ["__tests__/v2/wp63/", "__tests__/v2/wp90/"]) {
+      for (const file of changed.filter((f) => f.includes(dir))) {
+        expect(
+          wp92AddedLines(file).filter((line) =>
+            /WP92|refusalIdentity|SeedRefusalStore|seedRefusalFlush/.test(line),
+          ),
+          `${file} carries a WP92 line and ${dir} is out of this WP's scope`,
+        ).toEqual([]);
+      }
+    }
 
     // …and the ATTRIBUTION detector is shown FIRING, on this WP's own in-scope
     // file. Without it, "no forbidden file carries a WP92 line" would be

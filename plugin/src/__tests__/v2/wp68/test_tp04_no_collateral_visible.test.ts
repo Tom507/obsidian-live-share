@@ -342,14 +342,48 @@ describe("WP68 AC4 — INBOUND: every non-sidecar rename is still admitted and s
     expect(rig.vault.bytes.has("_liveshare-test/ok.md")).toBe(true);
   });
 
-  it("EVERY OTHER OP TYPE STILL USES THE STRICT ALL-PATHS GATE — unchanged by this WP", async () => {
-    // A `create` for a sidecar path was already refused before WP68, by the
-    // `paths.some(path => !isSharedPath(path))` form the other branches use. It
-    // must still be refused, and still by THAT gate — recorded here so a later
-    // edit that moves the rename guard up out of its branch, and thereby changes
-    // the other branches, reddens something.
+  it("EVERY OTHER OP TYPE IS REFUSED, AND THE TEST NAMES WHICH GATE DID IT", async () => {
+    // ----------------------------------------------------------------- WP95 --
+    // THIS ROW WAS A GREEN THAT COULD NO LONGER FAIL FOR ITS STATED REASON.
+    //
+    // It was written to say: a `create` for a sidecar path is refused by the
+    // `paths.some(path => !isSharedPath(path))` form the non-rename branches
+    // use — "and still by THAT gate — recorded here so a later edit that moves
+    // the rename guard up out of its branch, and thereby changes the other
+    // branches, reddens something."
+    //
+    // WP95 moved the guard up out of that branch. This row STAYED GREEN. Its
+    // only assertion was `admitted === []`, which is satisfied by ANY gate
+    // refusing for ANY reason, so the thing it was written to detect happened
+    // and it detected nothing. Its stated intent and its measurement had come
+    // apart — the defect class this run keeps paying for, caught while forming
+    // rather than after.
+    //
+    // The repair is to assert the ATTRIBUTION the comment always claimed. Not
+    // "something refused" but "this gate refused", so the row can distinguish
+    // the two gates that now both cover this path and can fail when the one it
+    // names stops firing.
     await rig.deliver({ type: "create", path: SIDECAR_INDEX, content: "x" });
     expect(rig.admitted).toEqual([]);
+    // `SIDECAR_INDEX` is under `.obsidian`, so WP95's protected-path gate is
+    // ordered ahead of everything else and is the gate that answers. Naming it
+    // is what makes this row falsifiable again: remove that gate and the refusal
+    // falls through to `isSharedPath`, `admitted` is still `[]`, and ONLY this
+    // assertion notices.
+    expect(
+      rig.warnings.join("\n"),
+      "the create branch refused, but no gate identified itself — this row cannot " +
+        "tell WP95's protected-path gate from the strict all-paths membership gate",
+    ).toContain("arm=file-op-gate");
+
+    // NOT ASSERTED HERE: that the strict all-paths membership gate still refuses
+    // independently. It cannot be isolated in this rig and saying so is better
+    // than a row that looks like it proves it. Every sidecar path lies under
+    // `.obsidian`, so WP95's gate now answers first for ALL of them, and the
+    // harness's `isSharedPath` treats everything else as shared — so this
+    // fixture contains no path on which the membership gate alone is
+    // responsible. `wp26/tp06` holds that gate's own coverage directly on the
+    // predicate, which is where it belongs.
 
     await rig.deliver({ type: "create", path: "_liveshare-test/fresh.md", content: "x" });
     expect(rig.admitted, "the create branch stopped admitting an ordinary path").toHaveLength(1);
