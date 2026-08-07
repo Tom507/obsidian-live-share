@@ -69,13 +69,26 @@ const SURFACE: SurfaceState = {
 };
 
 describe("WP2 DoD — all four rules from one call", () => {
-  it("returns exactly the three categories", () => {
+  // WP94 (C94 AC6) — THE FOURTH CATEGORY, and it is added for the same reason
+  // `discarded` is a category rather than an absence.
+  //
+  // WP2's own comment on `DiscardedStaleness` says it: "The discard is a
+  // first-class output, not an absence". A WITHHELD DELETE is the same kind of
+  // fact one rule further down — "this record was a delete candidate and the
+  // evidence did not license it" — and S78 survived a whole run of adversarial
+  // review precisely because it was an absence: the delete set was computed
+  // correctly, dropped for want of a licence, and reported as `-0 node(s)`, which
+  // is byte-identical to "the user deleted nothing". The pin below is UPDATED,
+  // not relaxed: it is still an exact key set, so a fifth category cannot appear
+  // unnoticed either.
+  it("returns exactly the four categories", () => {
     const plan = planIntentDiff(buildShadow(), SAVE, TOMBSTONES, SURFACE);
 
-    expect(Object.keys(plan).sort()).toEqual(["deletes", "discarded", "upserts"]);
+    expect(Object.keys(plan).sort()).toEqual(["deletes", "discarded", "upserts", "withheld"]);
     expect(Array.isArray(plan.upserts)).toBe(true);
     expect(Array.isArray(plan.deletes)).toBe(true);
     expect(Array.isArray(plan.discarded)).toBe(true);
+    expect(Array.isArray(plan.withheld)).toBe(true);
   });
 
   it("rule 2 — the only real edit is the only upsert", () => {

@@ -441,10 +441,20 @@ describe("W4 L2-A — PROTECTED_KEYS: an edge cannot lose its endpoints (D2)", (
   });
 
   it("A7 a genuine WHOLE-record delete is unaffected by PROTECTED_KEYS", async () => {
+    // WP94 (C94 AC5) — `text: ""` IS LOAD-BEARING AND IT WAS MISSING.
+    //
+    // Without it both nodes are `MISSING_TYPE_SPECIFIC` and the HOST SEED REFUSES
+    // THEM: they never reach `nodesMap` at all. This test was green anyway,
+    // because the seed advanced the Surface-Shadow over the whole file — refusals
+    // included — so `n1` read as `present` on a surface the doc had never
+    // received it on, and the delete rule duly tombstoned an id with no `Y.Map`.
+    // That is not "a genuine WHOLE-record delete"; it is the AC5 pathology, and
+    // this fixture was measuring it by accident. The added key makes the records
+    // admissible, so the delete under test is a real one.
     const full = canvasJson(
       [
-        { id: "n1", type: "text", x: 0, y: 0, width: 100, height: 50 },
-        { id: "n2", type: "text", x: 300, y: 0, width: 100, height: 50 },
+        { id: "n1", type: "text", text: "", x: 0, y: 0, width: 100, height: 50 },
+        { id: "n2", type: "text", text: "", x: 300, y: 0, width: 100, height: 50 },
       ],
       [{ id: "e1", fromNode: "n1", toNode: "n2", fromSide: "right", toSide: "left" }],
     );

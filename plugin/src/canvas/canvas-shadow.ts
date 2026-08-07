@@ -336,6 +336,24 @@ export interface ParsedSave {
   path: string;
   nodes: readonly ParsedSaveRecord[];
   edges: readonly ParsedSaveRecord[];
+  /**
+   * WP94 (C94 AC3) — is this save a COMPLETE observation of its surface?
+   *
+   * A property of the OBSERVATION, which is why it lives on the save rather than
+   * arriving as a fifth parameter: WP2 pins this function's arity at four because
+   * a fifth parameter carrying the CRDT is the defect the design removes, and
+   * that pin is worth keeping literally. Nothing here is CRDT-derived.
+   *
+   * PER KIND, because the ignorance it records can be about one id space and not
+   * the other: `parseCanvas` guards with `Array.isArray`, so a `.canvas` with no
+   * `edges` key at all is indistinguishable from one whose every edge was
+   * deleted, while its `nodes` may be a perfectly complete observation.
+   *
+   * Absent ⇒ complete for both kinds. That is the pre-WP94 reading and it keeps
+   * every pure unit caller of the diff classifying exactly as it did; production
+   * always supplies the measured value (`buildDeleteContext`).
+   */
+  complete?: { readonly node: boolean; readonly edge: boolean };
 }
 
 /** Read-only seam over the `deleted` container: `true` iff the id carries `on:true`. */
@@ -343,14 +361,176 @@ export interface TombstoneView {
   isDeleted(kind: ShadowRecordKind, id: string): boolean;
 }
 
+/**
+ * WP94 / C94 — WHICH SURFACE a receipt was obtained from, and which surface a
+ * save came from.
+ *
+ * A `.canvas` path has exactly one surface producing its saves at any instant,
+ * and which one it is is decided by whether an Obsidian canvas leaf is open:
+ *
+ *   ├── `"view"` — a canvas leaf is open. Obsidian's canvas view owns the board
+ *   │              and is the writer of every save; it ignores external file
+ *   │              writes while it is open (see `noteExternalDiskWrite`).
+ *   └── `"file"` — no leaf is open. The FILE is the surface, which is what
+ *                  `noteExternalDiskWrite`'s own comment has said since WP4:
+ *                  "with no open Obsidian canvas the FILE is the surface".
+ */
+export type ReceiptSurface = "view" | "file";
+
+/**
+ * WP94 / C94 — the CLOSED reason set for a deletion that was withheld
+ * (BUILD_SPEC §10, `DELETE WITHHELD:`).
+ *
+ * Deliberately NOT a seventh `CaptureDeclineReason`: all six of those describe a
+ * whole pass that captured nothing and all six fire in front of the diff, while
+ * every member below is per RECORD inside a pass that DID capture.
+ *
+ *   ├── `incomplete-observation` the save is not a complete picture of the
+ *   │                            surface, so its absences prove nothing (AC3)
+ *   ├── `refused-at-ingest`      the doc provably never received this record, so
+ *   │                            it is a REFUSAL standing in the file, not a
+ *   │                            deletion standing in the doc (AC5)
+ *   ├── `no-receipt`             no surface ever vouched for this record, or the
+ *   │                            only surface that did is not the one this save
+ *   │                            came from and is not the view
+ *   └── `no-open-surface`        the record's receipt names the VIEW and the view
+ *                                is not open, so the surface that vouched for it
+ *                                cannot be the one that produced this save
+ */
+export type DeleteWithholdReason =
+  | "no-open-surface"
+  | "no-receipt"
+  | "incomplete-observation"
+  | "refused-at-ingest";
+
+/** The closed set, in a fixed order, for exhaustive iteration by counters. */
+export const DELETE_WITHHOLD_REASONS = [
+  "no-open-surface",
+  "no-receipt",
+  "incomplete-observation",
+  "refused-at-ingest",
+] as const satisfies readonly DeleteWithholdReason[];
+
+/**
+ * WP94 / C94 — the four INDEPENDENT facts rule 4 decides on, as data.
+ *
+ * `state` and `seen` SELECT the candidate; `receipts` and `complete` AUTHORISE
+ * it. That split is the whole criterion and it is not symmetric — see
+ * {@link judgeDelete}.
+ */
+export interface DeleteEvidence {
+  /** every surface that has positively vouched for this record on this path */
+  receipts: readonly ReceiptSurface[];
+  /** the surface this save came from */
+  observedOn: ReceiptSurface;
+  /** AC3 — is this save a COMPLETE observation of that surface, for this kind? */
+  complete: boolean;
+  /** the shadow's three-state knowledge about the record */
+  state: ShadowRecordState;
+  /** does the save mention the id at all? */
+  seen: boolean;
+}
+
+/** What {@link judgeDelete} decided, and — when it refused — why. */
+export interface DeleteVerdict {
+  delete: boolean;
+  /** `null` when the record was never a candidate: a non-candidate is not a withhold. */
+  reason: DeleteWithholdReason | null;
+}
+
+/**
+ * WP94 / C94 — THE EVIDENCE CRITERION. A pure total function of its argument.
+ *
+ *     Delete(X) ⇔ Receipt(X, surface) ∧ Complete(save) ∧ Present(X) ∧ ¬Seen(X, save)
+ *
+ * **ABSENCE NEVER AUTHORISES. A RECEIPT AUTHORISES; ABSENCE ONLY SELECTS WHICH
+ * AUTHORISED RECORD TO SPEND IT ON.**
+ *
+ * The four conjuncts are independent and the expression is NOT symmetric in
+ * them, which is the single most important property of this function:
+ *
+ *   ├── drop `¬Seen` and NOTHING is deleted — every record is "still there";
+ *   └── drop `Receipt` and EVERYTHING is — every record the file does not
+ *          mention is destroyed, which is the naive rule
+ *          *"records absent from the file are deleted from the doc"*. That rule
+ *          is this same expression with `Receipt` and `Complete` hard-wired to
+ *          `true`, it is I11 inverted, and it is the exact substitution WP80 and
+ *          WP86 both shipped and had to be repaired for. `parseCanvas` degrades
+ *          EVERY JSON error to an empty canvas, so under that rule one truncated
+ *          read destroys a whole shared board.
+ *
+ * Order of evaluation is part of the contract, because exactly ONE reason is
+ * charged per withheld record and the counters are the oracle (S65/S71 make the
+ * log inadmissible as one):
+ *
+ *   1. SELECTION — `state`/`seen`. A record that is not a candidate is not a
+ *      withhold either, and yields `reason: null`. Counting non-candidates would
+ *      make the ledger report the size of the board rather than a refusal.
+ *   2. `complete` — an untrustworthy observation withholds EVERY candidate, so
+ *      it dominates: no other reason can be charged on a save we cannot read.
+ *   3. `receipts` — the licence itself, and last, so that a missing licence is
+ *      never reported for a record that was disqualified earlier.
+ *
+ * `refused-at-ingest`, the fourth member of the closed reason set, is NOT decided
+ * here and that is deliberate: it is a fact about the DOC (the record has no
+ * `Y.Map`, so the doc never received it), and a doc-derived input to this
+ * function is exactly what WP2's four-parameter contract exists to keep out. It
+ * is charged by `applyIntentPlan`, which is where the doc is.
+ */
+export function judgeDelete(evidence: DeleteEvidence): DeleteVerdict {
+  // 1. SELECTION. `absent` and `unknown` are both "not a present record of this
+  //    surface": one is proven gone, the other was never seen, and neither is
+  //    something that can be deleted now.
+  if (evidence.state !== "present") return { delete: false, reason: null };
+  if (evidence.seen) return { delete: false, reason: null };
+
+  // 2-4. AUTHORISATION.
+  if (!evidence.complete) return { delete: false, reason: "incomplete-observation" };
+  if (evidence.receipts.length === 0) return { delete: false, reason: "no-receipt" };
+  if (!evidence.receipts.includes(evidence.observedOn)) {
+    // A receipt exists, but not for the surface that produced this save. The
+    // dominant case is a view hand-over surviving the closing of the board, and
+    // `no-open-surface` names it exactly; a file receipt held while the board is
+    // open is the mirror case and there is simply no receipt for the view.
+    return {
+      delete: false,
+      reason: evidence.receipts.includes("view") ? "no-open-surface" : "no-receipt",
+    };
+  }
+  return { delete: true, reason: null };
+}
+
 /** What the surface can prove about the last apply. */
 export interface SurfaceState {
   viewOpen: boolean;
+  /**
+   * P1 — the confirmed reconcile apply. Always a `"view"` receipt: its only
+   * production producer is `noteHandover`, fed by a pass that applied to an open
+   * canvas adapter.
+   */
   handedToView: {
     readonly node: ReadonlySet<string>;
     readonly edge: ReadonlySet<string>;
   };
+  /**
+   * WP94 — P2/P3, the receipts `CanvasSync` issues for itself, each tagged with
+   * the surface it was obtained from.
+   *
+   *   ├── P2 this client's own capture of the record FROM THIS PATH: the file
+   *   │      provably held it, so the surface that wrote the file vouched for it.
+   *   └── P3 `noteExternalDiskWrite`'s content, issued only with the view closed,
+   *          which is exactly the condition under which the file is the surface.
+   *
+   * Optional: a caller that supplies none is in the pre-WP94 world, where the
+   * only issuer was P1. That is the legacy shape and it still classifies
+   * identically.
+   */
+  receipts?: {
+    readonly node: ReadonlyMap<string, ReceiptSurface>;
+    readonly edge: ReadonlyMap<string, ReceiptSurface>;
+  };
 }
+
 
 /** "This field changed on the surface" — the unit of intent is the FIELD (I6). */
 export interface FieldUpsertIntent {
@@ -384,11 +564,28 @@ export interface DiscardedStaleness {
   reason: "equals-shadow";
 }
 
-/** Exactly these three keys, always arrays, never `undefined`. */
+/**
+ * WP94 — "this record was a delete CANDIDATE and the evidence did not license
+ * it", with the one reason it was charged.
+ *
+ * A first-class output for the same reason `DiscardedStaleness` is one: S78
+ * survived a whole run of adversarial review because the withhold produced
+ * NOTHING — no signature, no counter, no receipt, and a telemetry line reading
+ * `-0 node(s)` that is identical to "the user deleted nothing".
+ */
+export interface WithheldDelete {
+  path: string;
+  kind: ShadowRecordKind;
+  id: string;
+  reason: DeleteWithholdReason;
+}
+
+/** Exactly these four keys, always arrays, never `undefined`. */
 export interface IntentPlan {
   upserts: FieldUpsertIntent[];
   deletes: DeleteIntent[];
   discarded: DiscardedStaleness[];
+  withheld: WithheldDelete[];
 }
 
 /**
@@ -509,14 +706,15 @@ function fieldValueEquals(a: unknown, b: unknown, depth = 0): boolean {
  *
  * And once over the shadow:
  *
- *   4. Delete (AC3) — a `present` record of `save.path` missing from the save is
- *      a delete intent ONLY with an open view AND a hand-over receipt for that
- *      (kind, id). Absence without that proof is ignorance, not deletion. This
- *      rule does not consult the tombstone view: re-asserting an existing
- *      tombstone converges.
+ *   4. Delete (AC3, rewritten by WP94) — a `present` record of `save.path` that
+ *      the save does not mention is a delete intent ONLY when {@link judgeDelete}
+ *      says the evidence licenses it. Absence without that proof is ignorance,
+ *      not deletion, and it is now RECORDED as `plan.withheld` rather than
+ *      silently dropped. This rule does not consult the tombstone view:
+ *      re-asserting an existing tombstone converges.
  *
  * Only `save.path` is read; the two kinds are separate id spaces in the shadow,
- * the tombstone view and the hand-over sets alike.
+ * the tombstone view and the receipt sets alike.
  */
 export function planIntentDiff(
   shadow: SurfaceShadow,
@@ -524,7 +722,7 @@ export function planIntentDiff(
   tombstones: TombstoneView,
   surface: SurfaceState,
 ): IntentPlan {
-  const plan: IntentPlan = { upserts: [], deletes: [], discarded: [] };
+  const plan: IntentPlan = { upserts: [], deletes: [], discarded: [], withheld: [] };
   const kinds: readonly ShadowRecordKind[] = ["node", "edge"];
   // Which ids the save mentions at all — blocked records included, so that a
   // record the resurrect block silenced can never fall through into rule 4.
@@ -563,22 +761,57 @@ export function planIntentDiff(
     }
   }
 
-  // Rule 4 — delete, gated on the two seam flags.
-  if (surface.viewOpen) {
-    const pathState = shadow.paths.get(save.path);
-    if (pathState) {
-      for (const kind of kinds) {
-        for (const [id, record] of pathState[kind]) {
-          if (record.state !== "present") continue;
-          if (seen[kind].has(id)) continue;
-          if (!surface.handedToView[kind].has(id)) continue;
-          plan.deletes.push({ path: save.path, kind, id });
+  // Rule 4 — delete, on the WP94 evidence criterion.
+  //
+  // ⚠ THE `viewOpen` GATE IS STILL HERE, AND ITS REMOVAL IS THE NEXT COMMIT.
+  // Removing it is S84's repair, and S84's repair is a WIDENING. WP94's ordering
+  // rule is that the completeness proof lands FIRST, because this gate is
+  // currently the only barrier between a truncated read and the destruction of a
+  // shared board. This commit installs the criterion and the completeness proof
+  // underneath the unchanged gate, so the delete set it produces is a SUBSET of
+  // the pre-WP94 one; the commit that widens issuance removes the gate.
+  const pathState = surface.viewOpen ? shadow.paths.get(save.path) : undefined;
+  if (pathState) {
+    const observedOn: ReceiptSurface = surface.viewOpen ? "view" : "file";
+    for (const kind of kinds) {
+      const complete = save.complete?.[kind] ?? true;
+      for (const [id, record] of pathState[kind]) {
+        const verdict = judgeDelete({
+          receipts: receiptsFor(surface, kind, id),
+          observedOn,
+          complete,
+          state: record.state,
+          seen: seen[kind].has(id),
+        });
+        if (verdict.delete) plan.deletes.push({ path: save.path, kind, id });
+        else if (verdict.reason !== null) {
+          plan.withheld.push({ path: save.path, kind, id, reason: verdict.reason });
         }
       }
     }
   }
 
   return plan;
+}
+
+/**
+ * WP94 — every surface that has vouched for ONE record on ONE path.
+ *
+ * The two producers are read together and de-duplicated, so a record that both a
+ * confirmed reconcile apply and this client's own capture have seen carries both
+ * surfaces and is deletable from either. Order is not significant:
+ * {@link judgeDelete} tests membership, never position.
+ */
+function receiptsFor(
+  surface: SurfaceState,
+  kind: ShadowRecordKind,
+  id: string,
+): ReceiptSurface[] {
+  const out: ReceiptSurface[] = [];
+  if (surface.handedToView[kind].has(id)) out.push("view");
+  const tagged = surface.receipts?.[kind].get(id);
+  if (tagged !== undefined && !out.includes(tagged)) out.push(tagged);
+  return out;
 }
 
 // ---------------------------------------------------------------------------

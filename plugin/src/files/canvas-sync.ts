@@ -1,4 +1,4 @@
-import { Notice, type Vault } from "obsidian";
+import { Notice, type TFile, type Vault } from "obsidian";
 import * as Y from "yjs";
 
 import {
@@ -70,16 +70,21 @@ import {
 } from "../canvas/canvas-schema";
 import { guardTypeWrite } from "../canvas/canvas-type-guard";
 import {
+
   type DeleteIntent,
+  type DeleteWithholdReason,
   type FieldUpsertIntent,
   type IntentPlan,
   type ParsedSave,
   type ParsedSaveRecord,
+  type ReceiptSurface,
   type ShadowFieldValue,
   type ShadowRecordKind,
   type SurfaceShadow,
   type SurfaceState,
   type TombstoneView,
+  type WithheldDelete,
+  DELETE_WITHHOLD_REASONS,
   advanceField,
   advanceRecord,
   createSurfaceShadow,
@@ -367,6 +372,15 @@ export const CAPTURE_DECLINE_REASONS = [
   "no-file",
 ] as const satisfies readonly CaptureDeclineReason[];
 
+function emptyWithholdCounts(): Record<DeleteWithholdReason, number> {
+  return {
+    "no-open-surface": 0,
+    "no-receipt": 0,
+    "incomplete-observation": 0,
+    "refused-at-ingest": 0,
+  };
+}
+
 function emptyDeclineCounts(): Record<CaptureDeclineReason, number> {
   return {
     echo: 0,
@@ -579,7 +593,38 @@ function toV2Edge(source: Record<string, unknown>): V2EdgeRecord {
   return record as unknown as V2EdgeRecord;
 }
 
-export function parseCanvas(content: string): CanvasData {
+/**
+ * WP94 (C94 AC3) — what {@link parseCanvas} could NOT tell you, made explicit.
+ *
+ * `parseCanvas` catches every JSON error and returns empty records rather than
+ * throwing (I5: degrade, never break), and that contract has callers depending on
+ * it, so it is preserved byte for byte. What it cannot do is tell its caller
+ * WHICH empty it returned — and the difference between the two is the difference
+ * between a canvas the user cleared and a file that was half-flushed when we read
+ * it. `handleLocalModify` never asked, so a truncated read, a zero-byte file and a
+ * genuinely emptied board all arrived at the delete rule as `save.nodes = []`.
+ *
+ * Two facts, and they fail for two different reasons:
+ *
+ *   ├── `degraded`     — `JSON.parse` threw. The records are empty because the
+ *   │                    bytes were unreadable, not because the board is.
+ *   └── `hasNodesKey` / `hasEdgesKey` — the source carried an ARRAY under that
+ *          key. `parseCanvas` guards both with `Array.isArray`, so a document
+ *          with no `edges` key at all is indistinguishable, downstream, from one
+ *          whose every edge was deleted. It is well-formed JSON, so `degraded`
+ *          is `false` for it, and it is excluded by THIS conjunct instead.
+ *
+ * Additive by construction: nothing here changes what `parseCanvas` returns, and
+ * a caller that does not ask is behaviourally unaffected.
+ */
+export interface CanvasParseReport {
+  data: CanvasData;
+  degraded: boolean;
+  hasNodesKey: boolean;
+  hasEdgesKey: boolean;
+}
+
+export function parseCanvasReport(content: string): CanvasParseReport {
   try {
     const parsed = JSON.parse(content);
     const nodes: Record<string, V2Node> = {};
@@ -604,12 +649,35 @@ export function parseCanvas(content: string): CanvasData {
         }
       }
     }
-    return { nodes, edges, order: { nodes: nodeOrder, edges: edgeOrder } };
+    return {
+      data: { nodes, edges, order: { nodes: nodeOrder, edges: edgeOrder } },
+      degraded: false,
+      hasNodesKey: Array.isArray(parsed?.nodes),
+      hasEdgesKey: Array.isArray(parsed?.edges),
+    };
   } catch {
     // AC4: a JSON error yields EMPTY records rather than throwing. Preserved
     // byte for byte, now extended to the new `order` field.
-    return { nodes: {}, edges: {}, order: { nodes: [], edges: [] } };
+    //
+    // WP94 AC3: and it now SAYS SO. `degraded` is the one fact that separates a
+    // board the user cleared from a file we could not read, and every caller that
+    // is about to conclude something from an ABSENCE has to have it.
+    return {
+      data: { nodes: {}, edges: {}, order: { nodes: [], edges: [] } },
+      degraded: true,
+      hasNodesKey: false,
+      hasEdgesKey: false,
+    };
   }
+}
+
+/**
+ * The parsed records alone — the pre-WP94 signature, unchanged in behaviour and
+ * in its degrade-never-throw contract, for the callers that do not need to know
+ * how the parse went.
+ */
+export function parseCanvas(content: string): CanvasData {
+  return parseCanvasReport(content).data;
 }
 
 /**
@@ -1309,6 +1377,8 @@ interface AppliedIntent {
   upserts: FieldUpsertIntent[];
   /** Record deletes that reached the CRDT. */
   deletes: DeleteIntent[];
+  /** WP94 AC3/AC4: deletes the plan licensed that this pass still refused. */
+  deletesWithheld: WithheldDelete[];
   /** WP18 AC1: rejection signatures produced at the capture boundary. */
   rejected: string[];
   /** Node ids deleted here, for the GAP-5 edge cascade + telemetry. */
@@ -2224,6 +2294,28 @@ export class CanvasSync {
   // the intent basis. Constructed with the instance so the capture path always
   // has one, even before any wiring runs.
   private shadow: SurfaceShadow = createSurfaceShadow();
+  // WP94 (C94 AC2) — THE P2/P3 RECEIPT LEDGER, and it lives HERE rather than in
+  // `main.ts`'s `SurfaceStateStore` for two reasons that are both load-bearing.
+  //
+  //   ├── Both of its producers are methods of THIS class (`handleLocalModify`'s
+  //   │      own capture and `noteExternalDiskWrite`), so no new wiring line is
+  //   │      needed in `main.ts` — which BUILD_SPEC §3.1 S11 forbids anyway.
+  //   └── `noteHandover` REPLACES rather than merges, so one structural pass
+  //          whose reload did not land empties P1 for a whole path (S83). Keeping
+  //          P2/P3 in a separate ledger means that revocation cannot reach them.
+  //          It does NOT fix S83, and this comment is not a claim that it does.
+  //
+  // Keyed path → kind → id → the surface the receipt was obtained from.
+  private fileReceipts = new Map<
+    string,
+    { node: Map<string, ReceiptSurface>; edge: Map<string, ReceiptSurface> }
+  >();
+  // WP94 (C94 AC6) — the per-reason withhold counts, per RECORD and not per pass.
+  // The counters are the oracle and the log line is for the human: under S65/S71
+  // the debug log's stamp-to-flush lag is bimodal (~0.5 s, or 60 s under a host
+  // clamp), so a test that greps for the signature has measured nothing until it
+  // proves the watermark advanced.
+  private deleteWithholds: Record<DeleteWithholdReason, number> = emptyWithholdCounts();
   // WP36 (C36 AC1): the doc-level witness ring. In-memory only, bounded, no
   // user text — see {@link TextWriteReceipt}. It exists because AC1 cannot be
   // satisfied by any string read-back: the projected string is identical
@@ -2924,7 +3016,33 @@ export class CanvasSync {
         // doc, so the surface provably holds it. Without this the shadow is empty
         // right after a subscribe and the first Obsidian save replays the whole
         // file as intent, which is precisely the window the cascade starts in.
-        this.advanceShadowFromContent(path, content, false);
+        //
+        // WP94 (C94 AC5) — EXCEPT FOR THE RECORDS IT REFUSED, and that exception
+        // is the repair of a divergence nobody had recorded. `seedFlatSpace`
+        // refuses records and then this line advanced the shadow over the WHOLE
+        // FILE, refusals included, so the shadow claimed `present` for a record
+        // the doc never received. Two consequences, and both are live defects:
+        //
+        //   ├── `applyIntentPlan`'s create branch refuses to create an id the
+        //   │      shadow already holds as `present` (GAP-2 delete-wins), so a
+        //   │      refused record could NEVER be created afterwards — not even
+        //   │      once the user repaired the file, because every field of the
+        //   │      repaired record then read as staleness against the shadow; and
+        //   └── under WP94's widened licence it becomes a delete candidate whose
+        //          tombstone would stamp an id with no `Y.Map`, which the
+        //          resurrect block turns into a PERMANENTLY uncreatable id.
+        //
+        // Fixing the shadow rather than only vetoing the delete is the decision
+        // this WP takes, because it is the one that also restores creatability.
+        // The veto in `applyIntentPlan` stays as defence in depth: it covers the
+        // OTHER routes that advance the shadow from file content with no ingest
+        // check (`noteExternalDiskWrite`, the cold-open seed), which this line
+        // does not reach.
+        const refusedBySeed = this.seedRefusalLedger(path).list();
+        this.advanceShadowFromContent(path, content, false, {
+          node: new Set(refusedBySeed.filter((r) => r.kind === "node").map((r) => r.id)),
+          edge: new Set(refusedBySeed.filter((r) => r.kind === "edge").map((r) => r.id)),
+        });
       }
     }
     // WP7 (US5 AC13/AC17): the GUEST seed is gone from here. `CanvasPersistence`
@@ -3172,6 +3290,72 @@ export class CanvasSync {
     return { ...this.captureDeclines };
   }
 
+  /**
+   * WP94 (C94 AC6) — `DELETE WITHHELD:` (BUILD_SPEC §10). ONE production emitter,
+   * and the only writer of the per-reason counters.
+   *
+   * This exists because S78 survived a whole run of adversarial review by
+   * producing NOTHING: the delete set was computed correctly, discarded for want
+   * of a licence, and reported as a telemetry line reading `-0 node(s)` — which
+   * is byte-identical to "the user deleted nothing". An unlogged silent discard
+   * on a data path is the mechanism by which a data-loss bug becomes undetectable.
+   *
+   * Counted per RECORD, never per pass: a save that withholds thirty deletions
+   * must not report `1`. One line per pass, listing every withheld record, so a
+   * board-wide withhold is one line rather than thirty.
+   *
+   * US6: kinds, ids, reasons and counts only. Never a field value, never node
+   * text, never the file's contents.
+   */
+  private noteDeleteWithholds(path: string, withheld: readonly WithheldDelete[]): void {
+    if (withheld.length === 0) return;
+    for (const entry of withheld) this.deleteWithholds[entry.reason] += 1;
+    const perReason = DELETE_WITHHOLD_REASONS.filter((reason) =>
+      withheld.some((entry) => entry.reason === reason),
+    )
+      .map((reason) => `${reason}=${withheld.filter((e) => e.reason === reason).length}`)
+      .join(" ");
+    this.logger?.debug(
+      "canvas-sync",
+      `DELETE WITHHELD: ${path} ${withheld.length} record(s) absent from the save were not deleted: ` +
+        `${withheld.map((e) => `${e.kind}/${e.id} reason=${e.reason}`).join(", ")} (withheld=${perReason})`,
+    );
+  }
+
+  /**
+   * WP94 (C94 AC6) — the per-reason withhold counts, as state, on the
+   * {@link captureDeclineCounts} precedent.
+   *
+   * A snapshot, so a caller cannot mutate the ledger it is reading. This is the
+   * ORACLE for every withhold assertion: under S65/S71 the debug log's
+   * stamp-to-flush lag is bimodal (~0.5 s normally, 60.00 s ± 0.02 under a host
+   * wake-up clamp), so log absence is never evidence and a grep has measured
+   * nothing until it proves its watermark advanced past the action window.
+   */
+  deleteWithholdCounts(): Record<DeleteWithholdReason, number> {
+    return { ...this.deleteWithholds };
+  }
+
+  /**
+   * WP94 — THE SURFACE EVIDENCE this client would classify a save of `rawPath`
+   * against, as state.
+   *
+   * One accessor, and it is what `handleLocalModify` itself consumes, so a test
+   * reading it is reading the production value rather than a reconstruction of
+   * it. That matters here more than usual: the vacuity risk this whole work
+   * package exists under is a fixture that INJECTS a hand-over set production
+   * cannot reach, and a test can only rule that out by asserting the real one is
+   * empty at the moment of the deleting save.
+   */
+  surfaceEvidenceFor(rawPath: string): SurfaceState {
+    return this.surfaceEvidence(toCanonicalPath(normalizePath(rawPath)));
+  }
+
+  /** The merged P1 + P2/P3 evidence for one canonical path. */
+  private surfaceEvidence(path: string): SurfaceState {
+    return this.surfaceStateProvider(path);
+  }
+
   async handleLocalModify(rawPath: string): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
     // WP91 (C91 AC1) — THE `recentDiskWrites` GATE IS GONE FROM THIS PATH.
@@ -3255,11 +3439,15 @@ export class CanvasSync {
     // why a stale save can no longer be mistaken for intent.
     // WP16: the temporary P1 decode bridge — the capture path still classifies
     // FLAT fields against the Surface-Shadow until WP18 wires the registers.
-    const save = toParsedSave(path, decodeCanvasDataToFlat(parseCanvas(content)));
+    const parsed = parseCanvasReport(content);
+    const save = toParsedSave(path, decodeCanvasDataToFlat(parsed.data));
     const surface = this.surfaceStateProvider(path);
     // WP19 AC2: the resurrect block now reads the doc's real `deleted`
     // container unless a caller injected a view at the seam.
     const tombstones = this.tombstoneView ?? createDocTombstoneView(deletedMap);
+    // WP94 (C94 AC3) — THE COMPLETENESS PROOF, and it is measured BEFORE the
+    // delete rule is allowed to conclude anything from an absence.
+    save.complete = await this.measureCompleteness(path, file, content, parsed, save);
     const plan = this.planCapture(save, surface, tombstones);
     const saved: SaveIndex = {
       node: new Map(save.nodes.map((record) => [record.id, record])),
@@ -3348,6 +3536,14 @@ export class CanvasSync {
       markRecordAbsent(this.shadow, path, del.kind, del.id);
     }
 
+    // WP94 (C94 AC6) — the withhold ledger, from BOTH deciders: the criterion
+    // (`plan.withheld`, per record, before the transaction) and the pass itself
+    // (`applied.deletesWithheld`, the refused-capture veto and the gesture hold,
+    // which are only knowable inside it). Logged OUTSIDE the transaction, on the
+    // same rule as WP18's rejection signatures: a signature is for a human, never
+    // a mechanism, and it must not be able to perturb the write it describes.
+    this.noteDeleteWithholds(path, [...plan.withheld, ...applied.deletesWithheld]);
+
     // WP21: the ECHO baseline advances unconditionally. It used to be withheld
     // whenever the lock seam refused a write, so that the edit the local file
     // still held stayed detectable on the next save. There is no such refusal
@@ -3422,6 +3618,85 @@ export class CanvasSync {
    * delete rule, the resurrect block, the byte echo breaker and the capture-side
    * rounding are untouched by the seam — only the classification changes.
    */
+  /**
+   * WP94 (C94 AC3/AC5) — `Complete(save)`, measured, plus the records the doc
+   * provably never received.
+   *
+   * ⚠ THIS FUNCTION IS THE ONLY THING STANDING BETWEEN A PARTIAL READ AND THE
+   * DESTRUCTION OF A SHARED BOARD, and it is why WP94's commits are ordered the
+   * way they are. `parseCanvas` catches every JSON error and returns
+   * `{nodes:{},edges:{}}`, so a mid-write observation, a half-flushed file, a
+   * zero-byte file and a canvas the user genuinely emptied all reach the delete
+   * rule as `save.nodes = []`. Widen the licence set without this and every
+   * truncated read becomes an instruction to tombstone every record on the board.
+   *
+   * The `Complete` conjuncts, each independently falsifiable:
+   *
+   *   1. the parse DID NOT DEGRADE — `parseCanvasReport.degraded`;
+   *   2. the read is STABLE — the same bytes on a confirming re-read, so a
+   *      mid-write observation is excluded rather than guessed at;
+   *   3. the KIND CONTAINER was present in the source — a `.canvas` with no
+   *      `edges` key is not evidence that every edge was deleted. PER KIND,
+   *      because that ignorance is about one id space and not the other;
+   *   4. (evaluated later, in `applyIntentPlan`, because it is only knowable
+   *      once the capture boundary has ruled) NO RECORD OF THIS SAVE WAS REFUSED
+   *      at ingest — a non-empty `applied.rejected` means the save is not a full
+   *      picture of the writer's intent.
+   *
+   * Conjunct 2 costs a second read, so it is measured ONLY when a deletion is
+   * actually on the table: if the shadow holds no `present` record for this path
+   * that the save omits, completeness cannot change any outcome and the common
+   * case stays at one read. That is an optimisation of the measurement, never of
+   * the verdict — when there IS a candidate, the re-read always happens.
+   */
+  private async measureCompleteness(
+    path: string,
+    file: TFile,
+    content: string,
+    parsed: CanvasParseReport,
+    save: ParsedSave,
+  ): Promise<{ node: boolean; edge: boolean }> {
+    // Conjunct 1 and conjunct 3.
+    const parseOk = !parsed.degraded;
+    const complete = {
+      node: parseOk && parsed.hasNodesKey,
+      edge: parseOk && parsed.hasEdgesKey,
+    };
+    if (!complete.node && !complete.edge) return complete;
+
+    const seen: Record<ShadowRecordKind, Set<string>> = {
+      node: new Set(save.nodes.map((record) => record.id)),
+      edge: new Set(save.edges.map((record) => record.id)),
+    };
+    const pathState = this.shadow.paths.get(path);
+    let anyCandidate = false;
+    if (pathState) {
+      for (const kind of RECORD_KINDS) {
+        for (const [id, record] of pathState[kind]) {
+          if (record.state !== "present") continue;
+          if (seen[kind].has(id)) continue;
+          anyCandidate = true;
+          break;
+        }
+        if (anyCandidate) break;
+      }
+    }
+    if (!anyCandidate) return complete;
+
+    // Conjunct 2 — the STABILITY re-read. A `.canvas` being written by another
+    // process is observable exactly here: two reads of the same file, straddling
+    // no write of ours, that disagree. A read that throws is not a stable read
+    // either — I5 says degrade, never break, and the degradation is "withhold".
+    let confirm: string | null = null;
+    try {
+      confirm = await this.vault.read(file);
+    } catch {
+      confirm = null;
+    }
+    if (confirm !== content) return { node: false, edge: false };
+    return complete;
+  }
+
   private planCapture(
     save: ParsedSave,
     surface: SurfaceState,
@@ -3671,6 +3946,7 @@ export class CanvasSync {
     const applied: AppliedIntent = {
       upserts: [],
       deletes: [],
+      deletesWithheld: [],
       rejected: [],
       deletedNodeIds: [],
       created: [],
@@ -3782,8 +4058,81 @@ export class CanvasSync {
     // taking the stamp up front keeps it a pure function of the state this
     // capture classified against rather than of the order the ids happen to
     // come out of the plan in.
-    const stamp = plan.deletes.length > 0 ? nextTombstoneTime(deletedMap) : 0;
+    // WP94 (C94 AC3, `Complete` conjunct 4) — A PASS THAT REFUSED A RECORD IS NOT
+    // A COMPLETE PICTURE OF THE WRITER'S INTENT, so none of its absences may be
+    // read as deletions. This is the one conjunct that cannot be measured before
+    // the transaction: `applied.rejected` is produced by the upsert loop above,
+    // and the deletes loop below is the first point at which it is final.
+    //
+    // Whole-pass and all-or-nothing rather than per-record on purpose: a refusal
+    // says the save disagrees with the boundary about what a record IS, and that
+    // is evidence about the observation, not about the refused id.
+    const captureRefused = applied.rejected.length > 0;
+
+    // WP94 (C94 AC4) — ONE GESTURE CANNOT HALF-APPLY.
+    //
+    // S82: in a geometry pass an EDGE is `reloaded ? "applied" : "unchanged"` and
+    // is therefore ALWAYS confirmed and always handed, while a NODE goes through
+    // `geometryNodeOutcome`, whose `"interacting"` and `"missing"` are not. So a
+    // user who deletes a card AND its arrow while holding the card gets the edge
+    // tombstoned and the node not — and the card returns from the peer WITHOUT
+    // ITS ARROW. Neither peer asked for that state.
+    //
+    // The repair is at the gesture, not at the licence: an edge delete is held
+    // back whenever a delete of one of its ENDPOINTS was a candidate and was
+    // withheld. That fixes the divergence without inventing a licence for a
+    // record the surface refused to confirm — in particular it leaves WP5 TP05's
+    // T3 exactly as it was: the card the user is holding is still never deleted
+    // by a save it never saw, and now its arrows are not either.
+    //
+    // The withheld edge is charged the reason its ENDPOINT was charged, so the
+    // ledger says why the gesture was refused rather than inventing a fifth
+    // member for the closed reason set.
+    const heldBackNodes = new Map<string, DeleteWithholdReason>();
+    for (const entry of plan.withheld) {
+      if (entry.kind === "node") heldBackNodes.set(entry.id, entry.reason);
+    }
+    const gestureHold = (del: DeleteIntent): DeleteWithholdReason | null => {
+      if (captureRefused) return "incomplete-observation";
+      // WP94 (C94 AC5) — A REFUSAL IS NOT A DELETION, AND THE TWO ARE MIRROR
+      // IMAGES. A deleted record is PRESENT IN THE DOC and ABSENT FROM THE FILE;
+      // a refused one is ABSENT FROM THE DOC and PRESENT IN THE FILE. A repair
+      // keyed on "the doc and the file disagree" collapses them into one action,
+      // and `SEED REFUSED:` stopped being theoretical on 2026-08-07.
+      //
+      // The observable is read from the doc itself rather than from a ledger,
+      // because every route that produces this state produces it the same way:
+      // some path advanced the shadow from FILE CONTENT with no ingest check
+      // (`advanceShadowFromContent`, driven by the host seed and by
+      // `noteExternalDiskWrite`), so the shadow holds `present` for a record the
+      // doc never received. Tombstoning one would stamp an id that has no
+      // `Y.Map`, and the resurrect block would then make it PERMANENTLY
+      // UNCREATABLE.
+      if (maps[del.kind].get(del.id) === undefined) return "refused-at-ingest";
+      if (del.kind !== "edge" || heldBackNodes.size === 0) return null;
+      const record = maps.edge.get(del.id);
+      if (!record) return null;
+      for (const slot of [FROM_KEY, TO_KEY]) {
+        const endpoint = readEndpointNodeId(record, slot);
+        if (endpoint === undefined) continue;
+        const reason = heldBackNodes.get(endpoint);
+        if (reason !== undefined) return reason;
+      }
+      return null;
+    };
+
+    const licensed: DeleteIntent[] = [];
     for (const del of plan.deletes) {
+      const hold = gestureHold(del);
+      if (hold !== null) {
+        applied.deletesWithheld.push({ path: del.path, kind: del.kind, id: del.id, reason: hold });
+        continue;
+      }
+      licensed.push(del);
+    }
+
+    const stamp = licensed.length > 0 ? nextTombstoneTime(deletedMap) : 0;
+    for (const del of licensed) {
       // WP21: neither branch consults a lock any more. A node delete used to be
       // refused while a peer held the node, and an edge delete while a peer held
       // either endpoint; both refusals are gone, so the only thing left to
@@ -3830,6 +4179,13 @@ export class CanvasSync {
     path: string,
     content: string,
     markMissingAbsent: boolean,
+    /**
+     * WP94 AC5 — ids this caller knows the DOC did not receive. A record the doc
+     * refused is present in the FILE and absent from the DOC, which is the exact
+     * mirror of a deletion; recording it as `present` would let a later save's
+     * omission of it read as one.
+     */
+    refused?: { readonly node: ReadonlySet<string>; readonly edge: ReadonlySet<string> },
   ): void {
     // WP16: the temporary P1 decode bridge — the shadow is keyed by flat field
     // names until WP18 wires the registers.
@@ -3837,6 +4193,7 @@ export class CanvasSync {
     for (const kind of RECORD_KINDS) {
       const records = kind === "node" ? data.nodes : data.edges;
       for (const [id, record] of Object.entries(records)) {
+        if (refused?.[kind].has(id)) continue;
         advanceRecord(this.shadow, path, kind, id, record as Record<string, ShadowFieldValue>);
       }
       if (!markMissingAbsent) continue;

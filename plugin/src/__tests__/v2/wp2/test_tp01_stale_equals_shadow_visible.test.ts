@@ -122,7 +122,12 @@ describe("WP2 AC1 — a save field equal to the shadow is discarded staleness", 
     );
 
     expect(plan.upserts).toEqual([]);
-    expect(Object.keys(plan).sort()).toEqual(["deletes", "discarded", "upserts"]);
+    // WP94 (C94 AC6): `withheld` joined the plan as a fourth first-class output
+    // — see the argument in `test_tp06`. The ARITY pin above is untouched and
+    // still holds at 4: WP94 carries its completeness verdict on the SAVE, which
+    // is where a fact about the observation belongs, precisely so that this
+    // contract — no fifth parameter, and above all no CRDT — stays literal.
+    expect(Object.keys(plan).sort()).toEqual(["deletes", "discarded", "upserts", "withheld"]);
   });
 
   it("discards per field, not per record — one changed field does not rescue the rest", () => {
