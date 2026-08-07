@@ -2,6 +2,7 @@ import { MarkdownView, Notice, type TAbstractFile, TFile } from "obsidian";
 
 import type LiveSharePlugin from "../main";
 import { isTextFile } from "../utils";
+import type { MuteConsumingEvent } from "./file-ops";
 
 // ---------------------------------------------------------------------------
 // WP6 / US5 — canvas ownership (BUILD_SPEC § 6.1 state machine).
@@ -115,6 +116,37 @@ export async function subscribeCanvasWithHandover(
   return false;
 }
 
+/**
+ * WP93 (C93 AC3) — THE CONSUMPTION SIGNAL, and it is a report, not a gate.
+ *
+ * The five gates below already decide the same thing WP93 needs to know: this
+ * vault event was suppressed BECAUSE the path is muted, so the echo the mute was
+ * taken for has arrived and the mute has done its job. Saying so lets
+ * `FileOpsManager` release on the event instead of on a `setTimeout` the host is
+ * free to stretch to 60 s (S71).
+ *
+ * It is called ONLY where a gate returns because of the mute. Reporting every
+ * event, muted or not, would release mutes that had not yet suppressed anything.
+ *
+ * Nothing branches on the result and no decision moves here: the WP6/US5
+ * ownership predicate, the order of the gates and every early return are
+ * byte-identical to before. In particular the canvas branch below is UNTOUCHED —
+ * WP91 removed the mute from in front of canvas capture and putting anything
+ * mute-shaped back there is an abort criterion, so a canvas-owned `modify`
+ * reports nothing and `CanvasPersistence`'s mute keeps WP91's `MAX_MUTE_MS` cap.
+ *
+ * Optional-called: several test harnesses build a partial `fileOpsManager`
+ * double with only the members their subject reaches, and this signal must not
+ * turn those into a TypeError.
+ */
+function noteMuteConsumed(
+  plugin: LiveSharePlugin,
+  path: string,
+  kind: MuteConsumingEvent,
+): void {
+  plugin.fileOpsManager.noteVaultEvent?.(path, kind);
+}
+
 export function registerVaultEvents(plugin: LiveSharePlugin): void {
   let pendingRename: Promise<void> | null = null;
   const renamedPaths = new Set<string>();
@@ -137,7 +169,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
     plugin.app.vault.on("create", (file: TAbstractFile) => {
       const originalPath = file.path;
       if (!plugin.manifestManager.isSharedPath(originalPath)) return;
-      if (plugin.fileOpsManager.isPathMuted(originalPath)) return;
+      if (plugin.fileOpsManager.isPathMuted(originalPath)) {
+        noteMuteConsumed(plugin, originalPath, "create");
+        return;
+      }
       if (renamedPaths.has(originalPath)) return;
       void plugin.fileOpsManager.onFileCreate(file);
       if (plugin.settings.role === "host") {
@@ -170,7 +205,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
     plugin.app.vault.on("delete", (file: TAbstractFile) => {
       const run = () => {
         if (!plugin.manifestManager.isSharedPath(file.path)) return;
-        if (plugin.fileOpsManager.isPathMuted(file.path)) return;
+        if (plugin.fileOpsManager.isPathMuted(file.path)) {
+          noteMuteConsumed(plugin, file.path, "delete");
+          return;
+        }
         plugin.fileOpsManager.onFileDelete(file);
         if (plugin.settings.role === "host") {
           plugin.backgroundSync.onFileRemoved(file.path);
@@ -195,8 +233,13 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
       if (
         plugin.fileOpsManager.isPathMuted(file.path) ||
         plugin.fileOpsManager.isPathMuted(oldPath)
-      )
+      ) {
+        // Both endpoints: `applyRemoteOpInner` mutes oldPath AND newPath for a
+        // rename, so one event consumes two armed releases.
+        noteMuteConsumed(plugin, file.path, "rename");
+        noteMuteConsumed(plugin, oldPath, "rename");
         return;
+      }
 
       renamedPaths.add(oldPath);
 
@@ -279,7 +322,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
           }
           return;
         }
-        if (plugin.fileOpsManager.isPathMuted(file.path)) return;
+        if (plugin.fileOpsManager.isPathMuted(file.path)) {
+          noteMuteConsumed(plugin, file.path, "modify");
+          return;
+        }
         // Not canvas-owned: the text path runs exactly as before. For a `.canvas`
         // that means the announced raw-text fallback (US5 AC5) — a canvas synced
         // through character-merge, but exclusively, never alongside CanvasSync.
@@ -289,7 +335,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
         void plugin.backgroundSync.handleLocalTextModify(file.path);
         return;
       }
-      if (plugin.fileOpsManager.isPathMuted(file.path)) return;
+      if (plugin.fileOpsManager.isPathMuted(file.path)) {
+        noteMuteConsumed(plugin, file.path, "modify");
+        return;
+      }
       void plugin.fileOpsManager.onFileModify(file);
       if (plugin.settings.role === "host") {
         void (async () => {

@@ -1,4 +1,5 @@
 import { type FileManager, Notice, type TAbstractFile, TFile, type Vault } from "obsidian";
+import { isCanvasPath } from "../canvas/canvas-epoch";
 import { OfflineQueue } from "../sync/offline-queue";
 import type { FileOp } from "../types";
 import {
@@ -24,6 +25,122 @@ const MAX_FILE_SIZE = 50 * 1024 * 1024;
 const CHUNK_PACING_BATCH = 32;
 const RENAME_RETRY_DELAY_MS = 300;
 const STALE_TRANSFER_MS = 5 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// WP93 (C93) — A CEILING ENFORCED BY A TIMER IS NOT A CEILING ON A PLATFORM
+// THAT CLAMPS TIMERS.
+//
+// S71, measured: the renderer's timers are clamped to 60.00 s ± 0.02 in a
+// 0.7 % tail — two independent timers in two independent modules stretched to a
+// whole minute at the same moments. Every echo-suppression window in this plugin
+// was released by a bare `setTimeout`, so under that clamp a 250 ms mute became
+// a ~60 s mute and no consumer of `isPathMuted` could tell.
+//
+// THE SHAPE IS AN INVERSION, NOT A REPLACEMENT. The release now fires on the
+// FIRST of:
+//
+//   ├── THE CONSUMING EVENT — the vault event the mute was taken to suppress
+//   │   actually arrived and was suppressed at a gate (`vault-events.ts` reports
+//   │   it through `noteVaultEvent`). Socket/file-watcher delivery is not
+//   │   timer-throttled, so this term does not stretch. This is the MECHANISM.
+//   └── THE CEILING — a `setTimeout` at the producer's stated ceiling. It is
+//       still clampable and that is ACCEPTED AND STATED: the alternative to a
+//       clampable safety net is no safety net. This is the SAFETY NET.
+//
+// It cannot be purely lazy. A byte-identical write emits no vault event at all
+// (`background-sync.ts` returns before writing when the bytes match), a delete
+// of a file that is not there emits nothing, and `mutedPaths` has no sweeper and
+// no clock — so a release that only ever fires on an event STRANDS the refcount
+// and drops every vault event for that path for the rest of the session. That is
+// this mechanism's own defect with an infinite window, which is why the ceiling
+// stays.
+//
+// A release that lands later than its own stated ceiling is COUNTED and NAMED
+// (`getMuteReleaseStats`, `MUTE OVERRUN:`), because the clamp reached WP91's
+// ceiling and nothing in the product noticed.
+// ---------------------------------------------------------------------------
+
+/** A vault event kind that can CONSUME a path mute — i.e. one that a gate in
+ * `vault-events.ts` suppresses because the path is muted. */
+export type MuteConsumingEvent = "create" | "modify" | "delete" | "rename";
+
+/**
+ * Clock/scheduler seam so the ceiling is testable without real timers, and so a
+ * fixture can reproduce S71's clamp. Defaults route to the globals — which is
+ * what makes a clamp applied to the globals and a clamp applied to this seam the
+ * same clamp (WP93 AC3(b)).
+ */
+export interface MuteScheduler {
+  now(): number;
+  setTimeout(cb: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+const REAL_MUTE_SCHEDULER: MuteScheduler = {
+  now: () => Date.now(),
+  setTimeout: (cb, ms) => globalThis.setTimeout(cb, ms),
+  clearTimeout: (handle) => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+export interface FileOpsManagerOpts {
+  /** Injected clock/scheduler. Default: the real globals (fake-timer friendly). */
+  scheduler?: MuteScheduler;
+  /**
+   * WP93 AC3 CONTROL SEAM. `false` removes the EVENT term and leaves the ceiling
+   * as the only release — i.e. the pre-WP93 behaviour, expressed through the
+   * post-WP93 code path. AC3's control fixture sets it to show that the event
+   * term, and not the fixture, is what releases the mute. WP91's `maxMuteMs:
+   * Infinity` is the precedent. Production never sets it.
+   */
+  releaseOnConsumingEvent?: boolean;
+}
+
+/** WP93 (C93 AC4) — read-only mute-release accounting. Counts and durations
+ * only: never a path, never file contents. */
+export interface MuteReleaseStats {
+  /** Releases decided by the consuming vault event — the ordinary case. */
+  releasedByEvent: number;
+  /** Releases decided by the ceiling — the safety net, i.e. no event came. */
+  releasedByCeiling: number;
+  /** Releases that landed LATER than their own stated ceiling. */
+  overruns: number;
+  /** Worst observed overshoot BEYOND the ceiling, in ms. */
+  worstOverrunMs: number;
+  /** Overruns broken down by path class. Class, never path. */
+  overrunsByClass: Record<string, number>;
+  /** Armed releases that have not completed yet. */
+  pending: number;
+}
+
+/** One armed release. `openedAt` is stamped on the injected scheduler's clock,
+ * so the held interval and the ceiling are measured against the same clock. */
+interface PendingMuteRelease {
+  path: string;
+  consumes: ReadonlySet<MuteConsumingEvent>;
+  ceilingMs: number;
+  openedAt: number;
+  timer: unknown;
+  done: boolean;
+}
+
+/**
+ * One outbound read in flight. `onFileCreate` / `onFileModify` check the mute,
+ * then `await vault.read`, then check again — and WP93's whole point is that the
+ * second check can now disagree with the first, because the release is no longer
+ * pinned to a 250 ms timer that outlives every read.
+ *
+ * THE DECISION (WP93 AC2): the re-check REFUSES if the path was muted at ANY
+ * point during the read, not merely if it is muted at the instant the read
+ * returns. A mute taken and released inside the read window means a remote apply
+ * landed on this path while we were reading it, so the bytes in hand are the
+ * bytes we just applied and emitting them re-broadcasts our own apply. The old
+ * `isPathMuted` re-check gave that answer only by accident of timer length; this
+ * makes it a property of the interval and immune to release timing.
+ */
+interface OutboundRead {
+  path: string;
+  mutedDuringRead: boolean;
+}
 
 interface ChunkAssembly {
   chunks: string[];
@@ -79,11 +196,34 @@ export class FileOpsManager {
   // the reasoning). It counts refusals only — it is never decremented, and
   // nothing else in this class reads it.
   private refusedSidecarRenames = 0;
+  // --- WP93 (C93) — the inversion and its telltale ---------------------------
+  private readonly scheduler: MuteScheduler;
+  private readonly releaseOnConsumingEvent: boolean;
+  private logger: { warn(category: string, message: string): void } | null = null;
+  /** Armed releases, per normalised path, oldest first. One per taken mute. */
+  private pendingReleases = new Map<string, PendingMuteRelease[]>();
+  /** Outbound reads currently between their entry check and their re-check. */
+  private outboundReads = new Set<OutboundRead>();
+  private muteStats = {
+    releasedByEvent: 0,
+    releasedByCeiling: 0,
+    overruns: 0,
+    worstOverrunMs: 0,
+    overrunsByClass: new Map<string, number>(),
+  };
 
-  constructor(vault: Vault, fileManager: FileManager) {
+  constructor(vault: Vault, fileManager: FileManager, opts: FileOpsManagerOpts = {}) {
     this.vault = vault;
     this.fileManager = fileManager;
+    this.scheduler = opts.scheduler ?? REAL_MUTE_SCHEDULER;
+    this.releaseOnConsumingEvent = opts.releaseOnConsumingEvent ?? true;
     this.staleTimer = setInterval(() => this.purgeStaleTransfers(), 60_000);
+  }
+
+  /** WP93: the single emitter of `MUTE OVERRUN:` needs somewhere to say it.
+   * Wiring only — `main.ts` hands this manager the plugin's debug logger. */
+  setLogger(logger: { warn(category: string, message: string): void } | null): void {
+    this.logger = logger;
   }
 
   destroy(): void {
@@ -91,6 +231,16 @@ export class FileOpsManager {
       clearInterval(this.staleTimer);
       this.staleTimer = null;
     }
+    // WP93: an armed ceiling that outlives the manager would fire against a
+    // cleared refcount. Cancel first, then clear.
+    for (const queue of this.pendingReleases.values()) {
+      for (const entry of queue) {
+        entry.done = true;
+        this.scheduler.clearTimeout(entry.timer);
+      }
+    }
+    this.pendingReleases.clear();
+    this.outboundReads.clear();
     this.outgoingTransfers.clear();
     this.pendingChunks.clear();
     this.offlineQueue.clear();
@@ -204,6 +354,13 @@ export class FileOpsManager {
   mutePathEvents(path: string): void {
     const norm = normalizePath(path);
     this.mutedPaths.set(norm, (this.mutedPaths.get(norm) ?? 0) + 1);
+    // WP93 AC2: any outbound read of this path that is mid-flight has now seen a
+    // remote apply start underneath it, whatever the refcount reads by the time
+    // the read returns. The set holds one entry per in-flight read, so this is a
+    // walk of 0-2 entries in practice.
+    for (const read of this.outboundReads) {
+      if (read.path === norm) read.mutedDuringRead = true;
+    }
   }
 
   unmutePathEvents(path: string): void {
@@ -218,6 +375,183 @@ export class FileOpsManager {
 
   isPathMuted(path: string): boolean {
     return (this.mutedPaths.get(normalizePath(path)) ?? 0) > 0;
+  }
+
+  /**
+   * WP93 (C93 AC3) — arm the release for a mute already taken on `paths`.
+   *
+   * Replaces the `setTimeout(() => unmutePathEvents(p), VAULT_EVENT_SETTLE_MS)`
+   * every producer used to write inline. The mute is released on the FIRST of
+   * the consuming vault event or `ceilingMs`; the ceiling is the safety net for
+   * the case where no event ever comes, which is a real case (a byte-identical
+   * write, a delete of a file that is not there, an op that touches no file at
+   * all) and the case a purely lazy release would strand forever.
+   *
+   * Call it for a mute that HAS been taken and exactly once per take: it owns
+   * the matching `unmutePathEvents`.
+   *
+   * `consumes` may be empty — for a chunk op, which mutates no file and can
+   * therefore never be consumed by an event. Such a mute is released by the
+   * ceiling, which is the honest answer rather than a strand.
+   */
+  armMuteRelease(
+    paths: string | readonly string[],
+    opts: { consumes: readonly MuteConsumingEvent[]; ceilingMs?: number },
+  ): void {
+    const list = typeof paths === "string" ? [paths] : paths;
+    const ceilingMs = opts.ceilingMs ?? VAULT_EVENT_SETTLE_MS;
+    const consumes = new Set(opts.consumes);
+    for (const raw of list) {
+      const path = normalizePath(raw);
+      const entry: PendingMuteRelease = {
+        path,
+        consumes,
+        ceilingMs,
+        openedAt: this.scheduler.now(),
+        timer: undefined,
+        done: false,
+      };
+      entry.timer = this.scheduler.setTimeout(() => {
+        this.completeMuteRelease(entry, "ceiling");
+      }, ceilingMs);
+      const queue = this.pendingReleases.get(path);
+      if (queue) queue.push(entry);
+      else this.pendingReleases.set(path, [entry]);
+    }
+  }
+
+  /**
+   * WP93 (C93 AC3) — a vault event for `path` was SUPPRESSED by the mute, so the
+   * echo the mute was taken for has now arrived and the mute has done its job.
+   *
+   * Called from the five gates in `vault-events.ts` at the point each one
+   * returns, and only there: the signal is "this event was consumed", not "this
+   * event happened". It releases the OLDEST armed release for the path that
+   * declared this event kind, so nested mutes unwind in the order they were
+   * taken. An event with no armed release matching it does nothing — the release
+   * then falls to the ceiling, which is the pre-WP93 behaviour and not a strand.
+   */
+  noteVaultEvent(path: string, kind: MuteConsumingEvent): void {
+    if (!this.releaseOnConsumingEvent) return;
+    const queue = this.pendingReleases.get(normalizePath(path));
+    if (!queue) return;
+    for (const entry of queue) {
+      if (entry.done || !entry.consumes.has(kind)) continue;
+      this.completeMuteRelease(entry, "event");
+      return;
+    }
+  }
+
+  /**
+   * WP93 (C93 AC4) — READ-ONLY mute-release accounting.
+   *
+   * The clamp reached WP91's stated ceiling and nothing in the product noticed.
+   * `SyncManager` measures its own pulse gap on every pulse, which is the only
+   * reason S71 was findable at all; the mute measured nothing. This is the
+   * equivalent, and like WP68's and WP88's counters in this file it is STATE, so
+   * a test can be an oracle over it rather than over a log line.
+   *
+   * It reports that a bound was exceeded. It does NOT attribute that to a host
+   * clamp — the emitter can establish the first and cannot establish the second.
+   */
+  getMuteReleaseStats(): MuteReleaseStats {
+    let pending = 0;
+    for (const queue of this.pendingReleases.values()) {
+      for (const entry of queue) if (!entry.done) pending += 1;
+    }
+    return {
+      releasedByEvent: this.muteStats.releasedByEvent,
+      releasedByCeiling: this.muteStats.releasedByCeiling,
+      overruns: this.muteStats.overruns,
+      worstOverrunMs: this.muteStats.worstOverrunMs,
+      overrunsByClass: Object.fromEntries(this.muteStats.overrunsByClass),
+      pending,
+    };
+  }
+
+  /**
+   * Path CLASS, never the path. A count is a diagnostic; a filename here would
+   * put user data into a value other components may render (S62's lesson, one
+   * subsystem over).
+   *
+   * The extension test is IMPORTED, never re-spelt. A private
+   * `endsWith(".canvas")` here is the exact propagation pattern WP83 pinned a
+   * census against, and it reddened that census the first time this method was
+   * written — `isCanvasPath` is its sanctioned predicate form (canvas-epoch
+   * contract §1: define once, import).
+   */
+  private static muteClass(path: string): string {
+    if (isCanvasPath(path)) return "canvas";
+    return isTextFile(path) ? "text" : "binary";
+  }
+
+  private completeMuteRelease(entry: PendingMuteRelease, source: "event" | "ceiling"): void {
+    if (entry.done) return;
+    entry.done = true;
+    this.scheduler.clearTimeout(entry.timer);
+    const queue = this.pendingReleases.get(entry.path);
+    if (queue) {
+      const at = queue.indexOf(entry);
+      if (at >= 0) queue.splice(at, 1);
+      if (queue.length === 0) this.pendingReleases.delete(entry.path);
+    }
+
+    const held = this.scheduler.now() - entry.openedAt;
+    if (held > entry.ceilingMs) {
+      const cls = FileOpsManager.muteClass(entry.path);
+      this.muteStats.overruns += 1;
+      this.muteStats.overrunsByClass.set(cls, (this.muteStats.overrunsByClass.get(cls) ?? 0) + 1);
+      const overshoot = held - entry.ceilingMs;
+      if (overshoot > this.muteStats.worstOverrunMs) this.muteStats.worstOverrunMs = overshoot;
+      this.logger?.warn(
+        "file-op",
+        `MUTE OVERRUN: ${cls} held=${held}ms ceiling=${entry.ceilingMs}ms ` +
+          `(overruns=${this.muteStats.overruns})`,
+      );
+    }
+    if (source === "event") this.muteStats.releasedByEvent += 1;
+    else this.muteStats.releasedByCeiling += 1;
+
+    this.unmutePathEvents(entry.path);
+  }
+
+  /** WP93 AC2 — open the interval a post-await re-check asks about. */
+  private beginOutboundRead(path: string): OutboundRead {
+    const record: OutboundRead = { path: normalizePath(path), mutedDuringRead: false };
+    this.outboundReads.add(record);
+    return record;
+  }
+
+  /** Close it. Called from a `finally`, so a throwing read cannot leak a record
+   * that {@link mutePathEvents} would then walk forever. */
+  private endOutboundRead(record: OutboundRead): void {
+    this.outboundReads.delete(record);
+  }
+
+  /** The vault event kinds an applied op can produce, and therefore the kinds
+   * that can consume the mute it was applied under. Derived from the branch each
+   * op type actually takes in {@link applyRemoteOpInner} — a `create` whose
+   * target exists is applied with `vault.modify`, and a `rename` onto an
+   * existing destination trashes instead of renaming. */
+  private static consumingEventsFor(op: FileOp): MuteConsumingEvent[] {
+    switch (op.type) {
+      case "create":
+      case "chunk-end":
+        return ["create", "modify"];
+      case "modify":
+        return ["modify"];
+      case "delete":
+        return ["delete"];
+      case "rename":
+        return ["rename", "delete"];
+      case "folder-create":
+        return ["create"];
+      default:
+        // chunk-start / chunk-data / chunk-resume touch no file, so no vault
+        // event can ever consume their mute. The ceiling is the only release,
+        // and saying so is better than pretending an event will arrive.
+        return [];
+    }
   }
 
   clearPendingChunks(): void {
@@ -458,9 +792,19 @@ export class FileOpsManager {
       const opPath = "path" in op ? op.path : "unknown";
       new Notice(`Live Share: failed to apply ${op.type} for ${opPath}`);
     } finally {
-      setTimeout(() => {
-        for (const path of paths) this.unmutePathEvents(path);
-      }, VAULT_EVENT_SETTLE_MS);
+      // WP93 (C93 AC3) — P3, the largest of the nine release sites. Was a bare
+      // `setTimeout(..., VAULT_EVENT_SETTLE_MS)`, i.e. a ceiling enforced by the
+      // one clock the host is free to stretch. `VAULT_EVENT_SETTLE_MS` survives
+      // unchanged as the STATED CEILING; what changed is that it no longer
+      // decides the ordinary case.
+      //
+      // Armed HERE and not beside the `mutePathEvents` above, deliberately: the
+      // apply is finished, so an event arriving from now on is the echo of THIS
+      // op. An event that beat the arm is not credited and the ceiling decides,
+      // which is exactly the pre-WP93 behaviour — a degradation, never a strand.
+      // The 250 ms settle exists because vault events lag the write, so that is
+      // the unusual case rather than the normal one.
+      this.armMuteRelease(paths, { consumes: FileOpsManager.consumingEventsFor(op) });
     }
   }
 
@@ -508,10 +852,14 @@ export class FileOpsManager {
     const tfile = file;
     const task = prev.then(async () => {
       if (!this.sendOp) return;
+      // WP93 AC2 — B2/B3, the two post-await re-checks in this method. See
+      // {@link OutboundRead}: the re-check refuses if the path was muted at any
+      // point during the read, not only if it is still muted when it returns.
+      const read = this.beginOutboundRead(localPath);
       try {
         if (binary) {
           const binaryContent = await this.vault.readBinary(tfile);
-          if (this.isPathMuted(localPath)) return;
+          if (this.isPathMuted(localPath) || read.mutedDuringRead) return;
           if (binaryContent.byteLength > MAX_FILE_SIZE) {
             new Notice(`Live Share: ${localPath} exceeds 50 MB limit, skipping`);
             return;
@@ -519,12 +867,14 @@ export class FileOpsManager {
           this.sendFileContent(wirePath, arrayBufferToBase64(binaryContent), true);
         } else {
           const content = normalizeLineEndings(await this.vault.read(tfile));
-          if (this.isPathMuted(localPath)) return;
+          if (this.isPathMuted(localPath) || read.mutedDuringRead) return;
           this.sendFileContent(wirePath, content, false);
         }
       } catch {
         // File may have been deleted/renamed before we could read it
         new Notice(`Live Share: failed to sync ${localPath}`);
+      } finally {
+        this.endOutboundRead(read);
       }
     });
     this.sendQueues.set(localPath, task);
@@ -543,9 +893,11 @@ export class FileOpsManager {
     const prev = this.sendQueues.get(localPath) ?? Promise.resolve();
     const task = prev.then(async () => {
       if (!this.sendOp) return;
+      // WP93 AC2 — B5, the third post-await re-check. Same decision as B2/B3.
+      const read = this.beginOutboundRead(localPath);
       try {
         const binaryContent = await this.vault.readBinary(tfile);
-        if (this.isPathMuted(localPath)) return;
+        if (this.isPathMuted(localPath) || read.mutedDuringRead) return;
         if (binaryContent.byteLength > MAX_FILE_SIZE) {
           new Notice(`Live Share: ${localPath} exceeds 50 MB limit, skipping`);
           return;

@@ -129,7 +129,6 @@ import { confirmImportFromFile } from "./ui/import-canvas-modal";
 import { ConfirmModal, PromptModal } from "./ui/modals";
 import { LiveShareSettingTab } from "./ui/settings";
 import {
-  VAULT_EVENT_SETTLE_MS,
   ensureFolder,
   hashBuffer,
   hashContent,
@@ -1116,10 +1115,14 @@ export default class LiveSharePlugin extends Plugin {
               await this.app.vault.rename(oldFile, localNew);
               disposition.renamed.push(newPath);
             } finally {
-              setTimeout(() => {
-                this.fileOpsManager.unmutePathEvents(localOld);
-                this.fileOpsManager.unmutePathEvents(localNew);
-              }, VAULT_EVENT_SETTLE_MS);
+              // WP93 (C93 AC3) — P6. Was a bare `setTimeout(...,
+              // VAULT_EVENT_SETTLE_MS)`, which a clamped renderer stretches to
+              // ~60 s. Same stated ceiling, but the vault `rename` this call
+              // just caused now decides the ordinary case. Both endpoints are
+              // muted and one event releases both.
+              this.fileOpsManager.armMuteRelease([localOld, localNew], {
+                consumes: ["rename"],
+              });
             }
             if (isTextFile(oldPath)) {
               this.backgroundSync.onFileRemoved(oldPath);
@@ -1264,6 +1267,10 @@ export default class LiveSharePlugin extends Plugin {
     this.syncManager = new SyncManager(this.settings);
     this.collabManager = new CollabManager();
     this.fileOpsManager = new FileOpsManager(this.app.vault, this.app.fileManager);
+    // WP93 (C93 AC4) — WIRING ONLY. `MUTE OVERRUN:` has exactly one emitter, in
+    // `files/file-ops.ts`; this is the only thing that gives it somewhere to
+    // say it.
+    this.fileOpsManager.setLogger(this.logger);
     this.sessionManager = new SessionManager(this);
     this.manifestManager = new ManifestManager(this.app.vault, this.settings);
     this.authManager = new AuthManager(this);
@@ -1612,7 +1619,10 @@ export default class LiveSharePlugin extends Plugin {
         await this.app.fileManager.trashFile(file);
         trashed.push(file.path);
       } finally {
-        setTimeout(() => this.fileOpsManager.unmutePathEvents(file.path), VAULT_EVENT_SETTLE_MS);
+        // WP93 (C93 AC3) — P7. `trashFile` emits a vault `delete`; a file that
+        // was already gone emits nothing at all, and that is precisely the case
+        // the ceiling still has to catch.
+        this.fileOpsManager.armMuteRelease(file.path, { consumes: ["delete"] });
       }
     }
     const reason = `host ${liveHost.userId} published a manifest of ${manifest.size} entry/entries this session`;
@@ -2588,7 +2598,15 @@ export default class LiveSharePlugin extends Plugin {
       );
       this.surfaceState.noteHandover(canonical, summary.handed);
     } finally {
-      setTimeout(() => this.fileOpsManager.unmutePathEvents(diskPath), VAULT_EVENT_SETTLE_MS);
+      // WP93 (C93 AC3) — P8. A reconcile that reloads the view rewrites the
+      // file, so a vault `modify` follows; a reconcile that changed nothing
+      // emits none and falls to the ceiling. Note that for a CANVAS-OWNED path
+      // the `modify` gate returns through WP91's byte-identity branch, which
+      // does not consult the mute and therefore reports no consumption — such a
+      // mute is released by the ceiling exactly as it was before WP93. Putting
+      // a mute-shaped signal back in front of canvas capture is an abort
+      // criterion, so that is the intended outcome and not an oversight.
+      this.fileOpsManager.armMuteRelease(diskPath, { consumes: ["modify", "create"] });
     }
   }
 
@@ -2702,7 +2720,10 @@ export default class LiveSharePlugin extends Plugin {
         `CANVAS WRITE RELEASED: ${canonical} write FAILED (${String(err)})`,
       );
     } finally {
-      setTimeout(() => this.fileOpsManager.unmutePathEvents(held.diskPath), VAULT_EVENT_SETTLE_MS);
+      // WP93 (C93 AC3) — P9. Same shape and the same canvas-ownership caveat as
+      // P8 above: an adapter write emits a vault `modify` unless the bytes are
+      // identical, in which case the ceiling is the release.
+      this.fileOpsManager.armMuteRelease(held.diskPath, { consumes: ["modify", "create"] });
     }
     // The doc may have advanced during the hold; the writer's own flush is the
     // one thing that knows the current projection.
