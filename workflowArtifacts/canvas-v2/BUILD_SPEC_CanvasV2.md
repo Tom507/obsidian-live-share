@@ -2762,7 +2762,7 @@ Ordered list — this is a valid topological order and is the sequence the Dispa
 | `INGEST REJECTED:` | new | WP18 — a local record refused at a write boundary, with boundary and reason |
 | `SEED REFUSED:` / `SEED RESTORED:` | new | WP63 — file write withheld after a seed refusal / withhold lifted |
 | `SEED REFUSAL STORE:` | new | WP90 — the durable refused set: hydration, quarantine of an unreadable store, and a failed write |
-| `CAPTURE DECLINED:` | new | WP91 — `canvas-sync.ts` `handleLocalModify`. `CAPTURE DECLINED: <path> reason=<echo\|not-subscribed\|read-only\|schema-major\|no-doc> (declines=<n>)`. Path and reason only. **Declined**, not *dropped*: after WP91 there is no drop, only a decision that names itself. |
+| `CAPTURE DECLINED:` | new | WP91 — `canvas-sync.ts` `handleLocalModify`. `CAPTURE DECLINED: <path> reason=<echo\|not-subscribed\|read-only\|schema-major\|no-doc\|no-file> (declines=<n>)`. Path and reason only. **Declined**, not *dropped*: after WP91 there is no drop, only a decision that names itself. |
 | `SIDECAR:` | new | WP24/WP25 — load, compaction, degradation |
 | `EPOCH CONFLICT:` | new | WP28 — with both epoch values |
 | `MODE:` | new | WP31/WP32 — mode announcement and degradation |

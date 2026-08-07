@@ -2569,3 +2569,88 @@ Rule 14 warns against `stash` in a shared tree. It verified the sibling's `vault
 **the isolation run answered the same question afterwards without the stash** — so the risk bought nothing.
 Recorded in its own report so the next batch does not repeat it. **A self-reported near-miss is worth more
 than a clean report**, and this is the second batch to volunteer one.
+
+---
+
+## ✅ WP91 LANDED — the swallow is closed, and the prediction closed with it
+
+**The ceiling measured exactly 750 ms. No third timer.** `MAX_WAIT_MS` 500 + settle 250, measured from the
+recorded `mutePathEvents`/`unmutePathEvents` sequence rather than read off a constant. The S68 twin
+measures 700 ms. **A falsifiable prediction was written down before the work and it held** — that is the
+first time this run has done that, and it is worth more than the number.
+
+**The shape:** the canvas-owned branch is now decided **before** the mute refcount and no longer consults
+`isRecentDiskWrite`; the `recentDiskWrites` gate is gone from `handleLocalModify`; **WP4's byte breaker at
+`:3239` was promoted, not modified.** `isPathMuted` is *not* removed — it moves down to the text and binary
+branches, where it is still the only answer available. `file-ops.ts` and `control-handlers.ts` are
+**byte-identical, verified by `git hash-object` before and after**, including after a falsification break.
+
+### The S71 clamp interacts with this, and the interaction is the argument for the shape
+
+I relayed the 60 s renderer clamp mid-batch. The batch did **not** widen anything to accommodate it, and
+recorded the limitation instead: **its instrument is a virtual clock, so it cannot observe a host clamp by
+construction**, and a ceiling enforced by `setTimeout` cannot be honoured on a platform that clamps
+`setTimeout`. Then the part that matters:
+
+> **After WP91 a 60 s clamp costs LATENCY, not DATA** — the capture path no longer consults the mute at
+> all. **Before WP91 it would have turned a 750 ms silent-destruction window into a ~60 s one, and the
+> ladder would still have gone green.**
+
+**A byte-identity decision is immune to a clamp; a timer-shaped one is not.** That is the strongest
+available argument for building the thing the charter asked for rather than tuning the constants.
+
+### AC4's second step reproduced the destruction B44 could not see
+
+`tp05 T3`: with the swallow re-armed, **one further remote change projects the user's node off their own
+disk.** B44's *"unchanged after 20 s"* was taken with no further remote change, and `flushToDisk` dedups on
+`lastQueuedContent` — **the file survived because nothing tried.** The most serious half of the finding was
+the half nobody had measured.
+
+### 21 breaks, and the one that reddened nothing is the most instructive
+
+**B20 reddened nothing** — and running it anyway is what found that `onFileModify` checks the mute
+**twice**; B20b (both checks) reddens it. The batch's own words: *"had I stopped at B20 I'd have called a
+good test unfalsifiable."* **A break that fails to redden is evidence about the product, not only about the
+test** — this is the second batch in a row to get more out of a break than the break was designed for.
+
+### Gate — re-run by me, not quoted
+
+`tsc` clean · `wp91` **32 rows / 6 files green** · full suite **2603 / 364**, which I re-ran myself.
+**One failure, and it is not WP91's.**
+
+### ⚠ S74 — the gate figure is no longer quotable without a caveat
+
+`wp5/latency.test.ts` **US6 AC1** asserts a wall-clock RTT band of 50–150 ms **while 364 files run in
+parallel**. I measured it: **fails 2 of 3 full-suite runs** (`expected 440 to be less than or equal to
+150`), **green 11/11 in isolation**, and B48 reproduced it with WP91's six files excluded, so it is
+**pre-existing**. Flagged independently by two batches.
+
+**It is the mirror of this run's dominant defect class** — not a test that cannot fail, but a test that
+fails for a reason unrelated to the property it names. **Its real cost is that it puts a red in every
+full-suite run, which is exactly how a genuine regression gets waved through as "just the flaky one".**
+
+### S75 — the timer count on this path has gone 3 → 4 → 5 as each batch looked harder
+
+`vault-events.ts:242` (`backgroundSync.isRecentDiskWrite`, still ahead of the ownership predicate,
+reachable in the ≤250 ms text→canvas handover) and `canvas-sync.ts:4302` (the retired seed writer, still
+arming an **uncapped** 250 ms timer). **Named in neither the charter, the §9 row, nor B44's table.** WP91
+documented them rather than quietly widening its scope, which is the correct call.
+
+### ⚖️ RULING — the lazy release is S71's remedy and is NOT WP91's to take
+
+Releasing the mute at the next event instead of on a timer would hold the ceiling **through** a clamp. But
+it changes *when* the mute lifts for the **five other consumers** of `isPathMuted`, none of which has a
+content baseline to fall back on — and deciding it inside a work package whose instrument **cannot observe
+a clamp by construction** would be deciding it blind. **Charter it against S71, with the five consumers
+enumerated.**
+
+### One enumerated amendment, handled correctly by both sides
+
+`canvas-single-writer.test.ts` "AC6 case 2": one assertion, `handleLocalModify` 0 → 1. It asserted the
+router drops a canvas modify while `isRecentDiskWrite` is true — **the router half of the defect, and a
+fourth green that was hiding it.** Title unchanged, not skipped, the assertion the AC actually owns left
+untouched, amended against an observed red. B46 had reported it as a failure and **attributed it by the
+term rather than to itself**; B48 then amended it properly. That is the collision protocol working.
+
+**BUILD_SPEC §10 corrected:** the registered `CAPTURE DECLINED:` reason set was one member short — the
+implementation emits `no-file`. Added.
