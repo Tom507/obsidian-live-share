@@ -3007,3 +3007,80 @@ The instrument caught its author for the second time this run — which is the w
 half-apply is gone. **S83 untouched** as instructed, blast radius reduced (P2 lives in `CanvasSync`, outside
 `noteHandover`'s replace-not-merge), mechanism intact and asserted *as not repaired* in `test_ac4`.
 **WP94 has had no live arm** — W4 must exercise a real deletion across two vaults before this is called done.
+
+---
+
+## 🔴 B56 / W4 ROUND 2 (`1a3210d`) — S81 CLOSED, and a code-execution surface found on the way
+
+### ✅ S81 — PASS. The oldest open P0 is now demonstrably closed
+
+`SEED REFUSAL STORE: … restored 1 standing refusal(s) from the durable store` — **the first time in the
+project's history** — on a **leaf-less guest with no seed of any kind running**, followed by
+`SEED REFUSED: write WITHHELD`, with the `doc-wins` flush never landing across 120 s on that observable.
+Control in the same session: entry deleted while down → no `restored` line, `CANVAS WRITER: nodes=2 edges=0`,
+projection landed.
+
+**That is WP90's durable branch firing on its own**, not WP63's re-derivation wearing WP90's name. The arm
+was buildable only because B56 found the lever: **launch order does not set the role — `POST /rooms`'s
+`hostUserId` does.** Committed as `liveshare_b56_provision.py`, so the arm is repeatable.
+
+**S92 explains why it took four batches.** `note()` has two callers and **both `reset()` first**, so hydrate
+restores only when no seed ran: **a session that can record cannot restore.** The branch was not merely
+unexercised, it was unreachable from any session that also recorded. No amount of running the old arms
+harder would have found this — only an arm built so that re-derivation was *impossible*.
+
+### 🚨 S94 — WP68's guard is narrower than its own subject, and I accepted the closure
+
+`file-ops.ts:983` refuses an inbound rename on `isSidecarPath`; `SIDECAR_DIR` is **`.obsidian/liveshare/state`**
+(`canvas-sidecar.ts:42`) — **verified by me before chartering.** A peer-injected rename into
+**`.obsidian/plugins/live-share/`** was **ADMITTED and APPLIED** live. That directory holds **`main.js`**
+(the plugin's own code) and **`data.json`** (the user's live credentials).
+
+**This is the most severe defect of the run, above S78.** S78 destroyed a board; this executes a peer's code
+in another user's Obsidian.
+
+**And `seed-refusal-store.ts:42` already says so, in a comment:** *"write under `.obsidian/**` is a
+code-execution surface"*. **The reasoning was in the tree and the predicate did not match it.** WP68 was
+chartered against exactly this subject, closed against a narrower predicate, and **I recorded Tier 1 as
+closed.** Third Dispatcher error of the run, and the same shape as the other two: *I accepted a scope claim
+without checking the predicate that implements it.* WP68's own work stands — the closure claim was mine.
+
+→ **WP95 chartered and dispatched (B58).** Only the **rename** arm is demonstrated; create, modify, delete
+and the chunked binary path are **implications**. AC1 closes that by measurement, because a fix that assumes
+the other arms behave like rename rests on the same reasoning that produced the defect.
+
+### The other verdicts
+
+| item | verdict | note |
+|---|---|---|
+| **WP68 AC2 inbound** | **PASS** for its predicate | control: shared→shared dest **admitted**; plus a delivered no-op frame proving `mutated:false` alone means nothing |
+| **WP93 AC5** | **PASS**, both roles, 8/8 | the *"mute was taken"* column is what stops the row passing for free |
+| **WP93 AC4** | **NOT DEMONSTRATED** | 0 overruns, verdict **UNINFORMATIVE** (`history_hits=0`); 16 pulses, worst 19 s, **0 in the 40–70 s clamp band**; only 4 ops completed under 16-way contention |
+| **S79** | characterised | peer loses `oldPath` in 1.2 s at all three destinations, **zero `file-op` lines** — the manifest arm did it |
+| **S84** | pre-WP94 control | every DELETE uncaptured at 45 s, **ADD captured in 0.0–0.2 s at every delta on the same board** |
+
+**S84's control is the strongest form available** and it arrives at the right moment: B56 built from `1e057e9`,
+**WP94 landed after**, so this is a clean pre-fix profile of exactly what WP94 claims to fix. WP94's live arm
+now has a baseline to beat.
+
+### S84 defeated its own teardown, and that is a finding about recovery
+
+Deletions weren't captured, the doc kept 12 nodes the file lacked, and the next writer attach **projected them
+back onto an owner file**. Recovery needed **sidecar surgery** — a fresh room did *not* clear it. **There is no
+user-reachable gesture that undoes this.** WP94 should close the cause; nothing yet addresses the recovery.
+
+### Four more signals allocated: S92, S93, S95, S96
+
+`S93` — **no leaf-less configuration protects an existing file**; 150 s host-with-no-leaf → nothing, one open
+leaf → store entry in 2 s. Widens `S80` from *needs an attached persistence* to **the protection is a function
+of whether a tab is open**. `S95` — an externally **created** file is never noticed (0 receipts in 90 s) while
+an external **modify** lands in 2.0 s; every prior *"external writes are seen"* claim rests on the modify arm.
+`S96` — a guest is **not subscribed to a shared canvas it already holds**, so its own edits to that file are
+never captured at all.
+
+**B56 allocated none of them itself, and reported its own unseparated confounds** (the S79 `aborted=true` +
+`ENOENT` double reading; the AC5 host-arm delta attributed by role split rather than isolation). Naming what
+you could not separate is the discipline this run has been trying to install.
+
+**Rig at handover:** A = guest `:39431`, B = host `:39432` (**asked, not assumed**), room `314c85ca…`,
+both on bundle `d8818271…`, both vaults back to their pre-run 8 files, both `seed-refusals.json` empty.
