@@ -79,7 +79,7 @@ Open **Settings > Live Share**:
 |---------|---------|-------------|
 | Show canvas cursors | `true` | Other collaborators' live cursors on shared canvases |
 | Show canvas presence | `true` | Highlight cards others are selecting, editing or holding |
-| Canvas sync engine: V2 node-level binding | `false` | Selects between two whole canvas implementations. **ON** — changes sync node by node through the CRDT binding, so two people can drag different cards at once and an edit to one card does not rewrite the whole file. **OFF** — the legacy path, reconciling the entire canvas file on every change. Both directions (local capture and remote apply) follow the flag together. Close and reopen a canvas after changing it. |
+| Canvas sync engine: model-driven capture | `false` | **Does not change the data model** — both settings read and write the same node-level V2 record CRDT. It changes how local intent is captured and how remote deltas are applied. **ON** — captured from the interaction itself (model → CRDT, no file read) and applied per node. **OFF** — the settled default: captured by re-reading and diffing the `.canvas` file, with remote deltas patching the open view as a whole. Both directions follow the flag together. Close and reopen a canvas after changing it. |
 
 ### Advanced
 
@@ -170,7 +170,7 @@ When the host enables presentation mode via **Toggle presentation mode**, every 
 
 - **Text files** (`.md`, `.txt`, `.json`, `.css`, `.js`, `.ts`, `.html`, `.xml`, `.yaml`, `.toml`, `.csv`, etc.): Character-level real-time sync via Yjs
 - **Binary files** (images, PDFs, etc.): Base64 transfer via the control channel with automatic chunking. Max 50 MB per file.
-- **Canvas files** (`.canvas`): Real-time CRDT sync with per-node presence and node-level conflict resolution. Which engine handles them is set by **Canvas sync engine** above.
+- **Canvas files** (`.canvas`): Real-time node-level CRDT sync with per-node presence and conflict resolution. How local edits are captured is set by **Canvas sync engine** above; the record model is the same either way.
 
 ## Cross-Platform Support
 
