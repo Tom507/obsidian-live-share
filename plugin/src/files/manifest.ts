@@ -18,6 +18,7 @@ import {
 import { isSidecarPath } from "./canvas-sidecar";
 import type { ExclusionManager } from "./exclusion";
 import { PUBLICATION_DECISION, decidePublication } from "./manifest-purge-decision";
+import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
 
 export interface FileEntry {
   hash: string;
@@ -436,6 +437,33 @@ export class ManifestManager {
       // likely leak rather than a corner case. Unconditional, in particular NOT
       // gated on `skipText`: only one of the six call sites passes that option.
       if (isSidecarPath(path)) continue;
+      // WP95 — THE MANIFEST-DRIVEN ARM, and it never reached `isSharedPath`.
+      //
+      // This loop's paths are the KEYS OF A PEER-PUBLISHED `Y.Map`. Between them
+      // and `vault.create` / `vault.modify` below stood `isPathSafe` (a
+      // traversal test) and `isSidecarPath` (one directory) — and nothing else.
+      // `isSharedPath` is not consulted anywhere in this method, so the
+      // `ExclusionManager` config-directory pattern that keeps the create arm
+      // out of the Obsidian config tree does not apply here at all. A hostile host
+      //
+      // (The glob form of those two trees is deliberately NOT spelled out in
+      // this comment. `wp83-source-derivation.ts`'s `stripComments` strips
+      // block comments BEFORE line comments and with a non-greedy scan, so the
+      // two-character sequence that opens a doc comment — which is what a
+      // directory glob ends with — opens one HERE, inside a `//` line, and
+      // swallows every line down to the next comment terminator. That silently
+      // ate `syncFromManifest`'s `skipsAutoTextSync` call site 40 lines below
+      // and reddened WP83 AC2. Measured, not guessed.)
+      // publishing an entry for `.obsidian/plugins/live-share/main.js` reaches
+      // the writer at the bottom of this loop directly.
+      //
+      // Placed beside the sidecar skip, ahead of the directory branch: the
+      // directory branch runs `ensureFolder` on a peer-chosen path and would
+      // otherwise create `.git/hooks` for the op that follows it.
+      if (isProtectedPath(path)) {
+        noteProtectedRefusal("manifest-sync", path);
+        continue;
+      }
 
       const diskPath = toLocalPath(path);
       if (entry.directory) {
@@ -708,6 +736,19 @@ export class ManifestManager {
     // one consumer (the line below), so this placement is strictly wider and
     // cannot drift.
     if (isSidecarPath(path)) return false;
+    // WP95 — the same answer as the line above, for the same reason, over a
+    // wider tree. This is NOT redundant with the `exclusionManager` line below
+    // it, and the comment above already says why in the sidecar's case: that
+    // gate excludes `.obsidian/**` only by COINCIDENCE. Three configurations
+    // break the coincidence (no `ExclusionManager` installed — the `?.` on the
+    // next line is not decorative; a `setPatterns` that has not run yet; a
+    // non-default `app.vault.configDir`), and NO configuration of it has ever
+    // excluded `.git/**`. Owned here, unconditionally, so the answer does not
+    // depend on the local user's settings.
+    if (isProtectedPath(path)) {
+      noteProtectedRefusal("shared-path", path);
+      return false;
+    }
     if (this.exclusionManager?.isExcluded(path)) return false;
     if (!this.settings.sharedFolder) return true;
     const folder = normalizePath(

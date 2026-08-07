@@ -1,8 +1,23 @@
 // ---------------------------------------------------------------------------
 // WP86 — A MANIFEST ENTRY DISAPPEARING IS NOT A LICENCE TO DESTROY A LOCAL
 // FILE. A pure core, in the precedent of `files/manifest-purge-decision.ts` and
-// `files/canvas-seed-decision.ts`: ZERO imports. No Obsidian, no filesystem, no
-// clock, no Yjs. Everything it needs arrives as an argument.
+// `files/canvas-seed-decision.ts`. No Obsidian, no filesystem, no clock, no Yjs.
+//
+// WP95 AMENDED THIS HEADER RATHER THAN QUIETLY CONTRADICTING IT. It used to say
+// "ZERO imports", and it now has exactly one: `isProtectedPath` /
+// `protectedRootFor` from `files/protected-paths.ts`, which is itself a
+// zero-import module of pure string predicates. The four things the contract
+// actually forbids — Obsidian, the filesystem, a clock, Yjs — remain absent, and
+// this core is still a total function of its argument.
+//
+// The alternative was to take the answer as an argument (`destinationProtected:
+// boolean`) in the style the next line describes, and it was REJECTED: that puts
+// the predicate at the call site, and a predicate re-decided per call site is
+// the exact shape of the defect WP95 exists to close. The charter's AC2 requires
+// ONE protected-path predicate, tested once, asked by every arm; a boolean
+// parameter would have made this the one arm that asks a different question.
+//
+// Everything else it needs still arrives as an argument.
 //
 // THE DEFECT IT CLOSES. `registerManifestChangeHandler` reacted to every
 // `delete` key in a `Y.Map` event by trashing the corresponding local file —
@@ -63,6 +78,8 @@
  * What this route may do about ONE vanished manifest key. A closed set: there
  * is no fourth outcome and, in particular, no silent one.
  */
+import { isProtectedPath, protectedRootFor } from "./protected-paths";
+
 export const REMOVAL_DECISION = {
   /** Nothing exists at that path on this disk. Nothing to decide, nothing to do. */
   NOTHING_TO_DESTROY: "nothing-to-destroy",
@@ -219,6 +236,40 @@ export function decideManifestRename(knowledge: RenameKnowledge | null | undefin
   const oldPath = asString(probe.oldPath);
   const newPath = asString(probe.newPath);
   const oldKind = asLocalKind(probe.oldKind);
+
+  // ------------------------------------------------------------------ WP95 --
+  // A PROTECTED DESTINATION IS REFUSED FIRST, ahead of every other test.
+  //
+  // This is the manifest-change rename arm: the route's caller holds `oldPath`
+  // and `newPath` from the DIFF OF A PEER-PUBLISHED MANIFEST and, on a `RENAME`
+  // verdict, calls `ensureFolder` on the destination's parent and then
+  // `vault.rename`. Before WP95 the only thing it asked about `newPath` was
+  // `isPathSafe` — a vault-escape test — so a hostile publication that removed a
+  // shared key and added `.obsidian/plugins/live-share/main.js` with the SAME
+  // CONTENT HASH satisfied `hasContentPair` and moved the user's own file into
+  // their plugin directory. The content-pair requirement is not a defence here:
+  // the attacker supplies the hash.
+  //
+  // THE VERDICT IS THE CHOKEPOINT, which is why the refusal is here and not at
+  // the call site. The caller acts only on `RENAME`, so a refusal at this line
+  // is a refusal at every present and future caller of this core, and it needs
+  // no edit to the module that performs the vault call.
+  //
+  // DESTINATION ONLY, exactly like `ManifestManager.renameFile`'s sidecar guard.
+  // A protected `oldPath` cannot arise from a manifest this build published
+  // (`isSharedPath` refuses to admit one), and refusing on the source as well
+  // would block the legitimate reverse direction.
+  if (isProtectedPath(newPath)) {
+    return {
+      oldPath,
+      newPath,
+      verdict: RENAME_DECISION.REFUSED,
+      reason:
+        `the destination lies under the protected tree '${protectedRootFor(newPath)}/**'; ` +
+        "peer-supplied bytes are never placed there, because that tree holds executable " +
+        "plugin code and this user's credentials",
+    };
+  }
 
   if (probe.hasContentPair !== true) {
     return {

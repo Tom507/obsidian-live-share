@@ -135,6 +135,7 @@ import type { SidecarIndex, SidecarStore } from "./canvas-sidecar";
 // value import here would close a cycle.
 import type { SidecarLifecycle } from "./canvas-sidecar-lifecycle";
 import type { FileOpsManager } from "./file-ops";
+import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
 import type { ManifestManager } from "./manifest";
 
 // ---------------------------------------------------------------------------
@@ -4814,6 +4815,14 @@ export class CanvasSync {
   private async writeToDisk(path: string, content: string, expectedSeq?: number): Promise<void> {
     // Final defense-in-depth gate: every disk write funnels through here.
     if (!isPathSafe(path)) return;
+    // WP95 — the canvas doc-driven arm, on the same reasoning as the text
+    // writer's: `path` is a doc key resolved from a peer-published manifest
+    // entry (or its guid), and this method's sink is `vault.adapter.write`.
+    // A `.canvas` under a protected root is not a thing this plugin writes.
+    if (isProtectedPath(path)) {
+      noteProtectedRefusal("canvas-write", path);
+      return;
+    }
     if (this.lastWrittenContent.get(path) === content) return;
     // WP4 (US5 AC1): version/sequence gate. If a remote delta was integrated
     // after this flush snapshotted its content (sequence ADVANCED past the

@@ -18,6 +18,7 @@ import {
 } from "../utils";
 import { isSidecarPath } from "./canvas-sidecar";
 import type { FileOpsManager } from "./file-ops";
+import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
 import type { ManifestManager } from "./manifest";
 
 const DEBOUNCE_MS = 300;
@@ -453,6 +454,21 @@ export class BackgroundSync {
   private writeToDisk(path: string, content: string, expectedSeq?: number): Promise<void> {
     // Final defense-in-depth gate: every disk write funnels through here.
     if (!isPathSafe(path)) return Promise.resolve();
+    // WP95 — the DOC-DRIVEN arm. `path` here is a Y.Doc key, and doc keys are
+    // acquired from peer-published manifest keys (`syncFromManifest`) and from
+    // inbound file-op paths (`onFileAdded` / `onFileRenamed`, called from the
+    // `afterApply` callback in `sync/control-handlers.ts`). So a peer chooses
+    // this path, and `isPathSafe` — a vault-ESCAPE test — is the only thing that
+    // was asked about it. The write below is `vault.adapter.write`, which goes
+    // straight past the `Vault` API's own notions entirely.
+    //
+    // No legitimate write is lost: `skipsAutoTextSync` already keeps sidecar and
+    // canvas paths out of this writer, and nothing under a protected root is a
+    // shared text document.
+    if (isProtectedPath(path)) {
+      noteProtectedRefusal("doc-write", path);
+      return Promise.resolve();
+    }
     if (this.lastWrittenContent.get(path) === content) return Promise.resolve();
     this.writeQueue = this.writeQueue.then(() => this.doWriteToDisk(path, content, expectedSeq));
     return this.writeQueue;

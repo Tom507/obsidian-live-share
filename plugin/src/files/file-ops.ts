@@ -16,6 +16,13 @@ import {
   toLocalPath,
 } from "../utils";
 import { isSidecarPath } from "./canvas-sidecar";
+import {
+  type ProtectedPathRefusals,
+  getProtectedPathRefusals,
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "./protected-paths";
 
 const CHUNK_SIZE = 512 * 1024;
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -289,6 +296,22 @@ export class FileOpsManager {
    */
   getSidecarRenameRefusals(): number {
     return this.refusedSidecarRenames;
+  }
+
+  /**
+   * WP95 (AC5) — READ-ONLY. What every protected-path arm has refused.
+   *
+   * DELEGATES to the process-wide ledger in `protected-paths.ts` rather than
+   * owning a field: the arms that refuse live in five modules and three of them
+   * hold no `FileOpsManager`. This method exists so the ledger has a reader on
+   * an object the E2E surface already resolves, which is the whole of the
+   * "an observable a live validator cannot read is not an observable" lesson
+   * that WP93's `getMuteReleaseStats()` was carrying.
+   *
+   * Counts and classes only: an arm name and a protected ROOT. Never a path.
+   */
+  getProtectedPathRefusals(): ProtectedPathRefusals {
+    return getProtectedPathRefusals();
   }
 
   /**
@@ -605,6 +628,32 @@ export class FileOpsManager {
     if ("path" in op && !this.isPathSafe(op.path)) return;
     if ("oldPath" in op && !this.isPathSafe(op.oldPath)) return;
     if ("newPath" in op && !this.isPathSafe(op.newPath)) return;
+
+    // ----------------------------------------------------------------- WP95 --
+    // THE SECOND, INDEPENDENT REFUSAL — and it is not decoration.
+    //
+    // `sync/control-handlers.ts` refuses the same op at the channel boundary.
+    // This one refuses it again here, for the reason WP68's own comment gave
+    // about the sender-side guard and then did not apply to itself: a guard in
+    // one module constrains the callers that go through that module, and says
+    // nothing about the others. `applyRemoteOp` is public; the E2E control
+    // surface, a future control-message shape and any caller added later reach
+    // this method without passing the channel gate.
+    //
+    // ABOVE `mutePathEvents` (I11): a refusal here takes no mute, so it cannot
+    // strand a refcount and silently freeze the path — and it is above every
+    // vault call in the switch below, so the local bytes at every endpoint are
+    // untouched.
+    //
+    // The counter and the log line are the SHARED ones from `protected-paths.ts`
+    // rather than a private field beside `refusedSidecarRenames`, so a live
+    // reader sees one number across all arms instead of one number per module.
+    for (const candidate of this.getOpPaths(op)) {
+      if (!isProtectedPath(candidate)) continue;
+      noteProtectedRefusal("apply-remote-op", candidate);
+      this.logger?.warn("file-op", protectedRefusalMessage("apply-remote-op", candidate));
+      return;
+    }
 
     const paths = this.getOpPaths(op);
     for (const path of paths) this.mutePathEvents(path);

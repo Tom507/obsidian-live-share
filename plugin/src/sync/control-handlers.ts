@@ -2,6 +2,11 @@ import { minimatch } from "minimatch";
 import { MarkdownView, Notice, TFile } from "obsidian";
 
 import { isSidecarPath } from "../files/canvas-sidecar";
+import {
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "../files/protected-paths";
 import type LiveSharePlugin from "../main";
 import type { ControlMessage, FileOp } from "../types";
 import { ApprovalModal } from "../ui/approval-modal";
@@ -46,6 +51,38 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
       "newPath" in op ? op.newPath : null,
     ].filter(Boolean) as string[];
     if (paths.length === 0) return;
+    // --------------------------------------------------------------- WP95 --
+    // THE PROTECTED-PATH REFUSAL, ABOVE THE OP-TYPE SPLIT.
+    //
+    // This is the line whose ABSENCE was S94. WP68's guard sat inside the
+    // `isRename` branch below, so it constrained ONE of the nine members of the
+    // `FileOp` union; the other eight reached `applyRemoteOp` with only
+    // `isSharedPath` between them and the vault, and `isSharedPath` refuses
+    // `.obsidian/**` only because `ExclusionManager` happens to be configured
+    // with `${configDir}/**` — a coincidence `manifest.ts` had already written
+    // down as a coincidence, and one that holds for no `.git` path at all.
+    //
+    // PLACED ABOVE THE SPLIT so the guard cannot be narrower than the union.
+    // Every op type, every endpoint, one predicate, one test. A tenth member
+    // added to `FileOp` tomorrow is covered on the day it is added, because this
+    // gate never learns the type.
+    //
+    // ALL PATHS, not `.some` — the rename branch below is admitted on
+    // `.some(isSharedPath)`, and that asymmetry is exactly how a hostile
+    // endpoint rode in on its shared partner. A protected endpoint refuses the
+    // whole op no matter what its partner is.
+    //
+    // BEFORE `applyRemoteOp` (I11 — REFUSAL NEVER DESTROYS): no `opQueues` slot
+    // is taken, no `mutePathEvents` is issued and can therefore be stranded, and
+    // NOT ONE vault call is made. Nothing is renamed, trashed, created, modified
+    // or folder-created at any endpoint, and every local file named by the op is
+    // left byte-identical.
+    const protectedPath = paths.find((path) => isProtectedPath(path));
+    if (protectedPath !== undefined) {
+      noteProtectedRefusal("file-op-gate", protectedPath);
+      plugin.logger.warn("file-op", protectedRefusalMessage("file-op-gate", protectedPath));
+      return;
+    }
     const isRename = op.type === "rename";
     if (isRename) {
       // ----------------------------------------------------------- WP68 AC2 --
@@ -139,7 +176,26 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     "file-chunk-resume",
   ] as const) {
     channel.on(chunkType, (msg) => {
-      if (!msg.path || !plugin.manifestManager.isSharedPath(msg.path)) return;
+      if (!msg.path) return;
+      // WP95 — THE CHUNK CHANNEL IS A SEPARATE DOOR AND NEEDS ITS OWN GUARD.
+      //
+      // These four control messages do NOT travel as `file-op`; they are their
+      // own `ControlMessage` types with their own `channel.on` registration, so
+      // the gate above never sees them. `chunk-end` lands
+      // `vault.createBinary` / `vault.modifyBinary` / `vault.create` /
+      // `vault.modify` on `op.path` — the same four sinks the create arm uses,
+      // reached over a channel the create arm's guard does not cover. It is
+      // also the arm by which a >512 KB `main.js` would arrive, because
+      // `sendChunked` is what the producer uses above `CHUNK_SIZE`.
+      //
+      // Ordered ahead of `isSharedPath` deliberately: the refusal must not be a
+      // function of manifest membership or of `ExclusionManager` configuration.
+      if (isProtectedPath(msg.path)) {
+        noteProtectedRefusal("chunk-gate", msg.path);
+        plugin.logger.warn("file-op", protectedRefusalMessage("chunk-gate", msg.path));
+        return;
+      }
+      if (!plugin.manifestManager.isSharedPath(msg.path)) return;
       plugin.fileOpsManager
         .applyRemoteOp({
           ...msg,

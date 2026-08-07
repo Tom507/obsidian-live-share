@@ -748,6 +748,23 @@ export interface E2EControlHost {
    * subject IS those keys, so the discipline is absolute.
    */
   severanceReport?(): unknown;
+  /**
+   * WP93 (C93 AC4), carried in by WP95 — the mute-release accounting, EXPOSED.
+   *
+   * `FileOpsManager.getMuteReleaseStats()` has existed since WP93 and no command
+   * reached it, so WP93 AC4's counter had no live reader and its `MUTE OVERRUN:`
+   * line only appeared when an overrun actually happened. A validator could
+   * therefore not distinguish a genuine zero from a missing instrument at all.
+   * (That sentence is deliberately not phrased with the two states quoted either
+   * side of the word that precedes a module specifier: WP44/WP49/WP72's import
+   * allow-list census is a REGEX over this file's text, not a parse of its AST,
+   * so an ordinary English sentence of that shape is read as an import and reds
+   * three work packages. Measured, not guessed — it did.) An observable a live
+   * validator cannot read is not an observable, and this is the reader.
+   */
+  muteReleaseStats?(): unknown;
+  /** WP95 (AC5) — the protected-path refusal ledger, on the same reasoning. */
+  protectedPathRefusals?(): unknown;
 }
 
 /**
@@ -1063,6 +1080,27 @@ export async function routeCommand(
           throw new Error("session.severance unavailable on this host");
         }
         return ok(host.severanceReport());
+      }
+      // --- WP93 AC4 / WP95 AC5, ADDITIVE --------------------------------------
+      //
+      // Two cases and two optional host methods, on the `session.severance`
+      // precedent directly above. Nothing above changes shape or behaviour.
+      //
+      // Both take NO arguments, deliberately. A counter that accepts a path
+      // would be a second way to ask the predicate, and a live validator that
+      // could ask it per-path would be reading the rig's answer rather than the
+      // product's. These report what the PRODUCT has already refused.
+      case "fileop.muteStats": {
+        if (typeof host.muteReleaseStats !== "function") {
+          throw new Error("fileop.muteStats unavailable on this host");
+        }
+        return ok(host.muteReleaseStats());
+      }
+      case "fileop.protectedRefusals": {
+        if (typeof host.protectedPathRefusals !== "function") {
+          throw new Error("fileop.protectedRefusals unavailable on this host");
+        }
+        return ok(host.protectedPathRefusals());
       }
       // --- `fileop.inject`, ADDITIVE ------------------------------------------
       //
@@ -1464,7 +1502,42 @@ export interface E2EPluginLike {
    * refusal apart from an op that was applied and changed nothing, because
    * `applyRemoteOpInner` takes the mute before it touches the vault.
    */
-  fileOpsManager?: { isPathMuted(path: string): boolean };
+  /**
+   * WP95 / WP93 AC4 — the two READ-ONLY counters beside the mute predicate.
+   *
+   * Optional so every hand-rolled fake plugin in the existing tests stays
+   * structurally valid.
+   *
+   * SPELLED OUT STRUCTURALLY rather than imported as `MuteReleaseStats` /
+   * `ProtectedPathRefusals`, and that is a constraint rather than a preference:
+   * WP49 AC4 and WP72 AC4 freeze this file's import specifier set, and adding
+   * two `import type` lines reds both — a type-only import is erased by the
+   * compiler but not by a regex over the source. The agreement is still
+   * `tsc`-checked and nothing is cast: `buildPluginHost(this)` in `main.ts`
+   * passes the REAL `LiveSharePlugin`, so these shapes are checked structurally
+   * against what `FileOpsManager` actually returns, and a field that changed
+   * name or type there is a compile error at that call site.
+   *
+   * Both are counts and CLASSES only — an arm name, a protected root, a path
+   * class. Neither carries a path or a byte, which is what makes them safe to
+   * render in a live run's output over a vault holding real credentials.
+   */
+  fileOpsManager?: {
+    isPathMuted(path: string): boolean;
+    getMuteReleaseStats?(): {
+      releasedByEvent: number;
+      releasedByCeiling: number;
+      overruns: number;
+      worstOverrunMs: number;
+      overrunsByClass: Record<string, number>;
+      pending: number;
+    };
+    getProtectedPathRefusals?(): {
+      total: number;
+      byArm: Record<string, number>;
+      byRoot: Record<string, number>;
+    };
+  };
   /**
    * WP87 (C87 AC1) — the attribution read, invoked on the plugin that owns the
    * adapter, the deferral queue and the writer maps. Optional so every
@@ -2132,6 +2205,35 @@ export function buildPluginHost(
         throw new Error("session.severance unavailable: no severance report on this host");
       }
       return plugin.severanceReport();
+    },
+
+    // --- WP93 AC4 / WP95 AC5 — the two counters, given a reader -------------
+    //
+    // READ-ONLY and INVOKED ON THE REAL MANAGER. Neither method computes,
+    // derives or reconstructs a statistic: each forwards one production call and
+    // returns what it answered. A rig that recomputed the number would be an
+    // oracle over itself, which is the failure both of these counters exist to
+    // avoid being.
+    muteReleaseStats() {
+      const manager = plugin.fileOpsManager;
+      if (!manager || typeof manager.getMuteReleaseStats !== "function") {
+        throw new Error(
+          "fileop.muteStats unavailable: this instance's file-op manager exposes no " +
+            "mute-release accounting",
+        );
+      }
+      return manager.getMuteReleaseStats();
+    },
+
+    protectedPathRefusals() {
+      const manager = plugin.fileOpsManager;
+      if (!manager || typeof manager.getProtectedPathRefusals !== "function") {
+        throw new Error(
+          "fileop.protectedRefusals unavailable: this instance's file-op manager exposes no " +
+            "protected-path refusal ledger",
+        );
+      }
+      return manager.getProtectedPathRefusals();
     },
 
     // --- `fileop.inject` — the inbound seam --------------------------------
