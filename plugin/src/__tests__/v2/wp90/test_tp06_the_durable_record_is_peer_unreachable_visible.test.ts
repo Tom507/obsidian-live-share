@@ -44,7 +44,7 @@ import {
 import { ExclusionManager } from "../../../files/exclusion";
 import { ManifestManager } from "../../../files/manifest";
 import { SeedRefusalStore } from "../../../files/seed-refusal-store";
-import type { LiveShareSettings } from "../../../types";
+import { DEFAULT_SETTINGS, type LiveShareSettings } from "../../../types";
 import { skipsAutoTextSync } from "../../../utils";
 import { createStoreIO } from "./harness";
 
@@ -52,34 +52,13 @@ const STORE = seedRefusalStorePath();
 
 function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSettings {
   return {
-    serverUrl: "http://localhost:3000",
+    ...DEFAULT_SETTINGS,
     roomId: "test-room",
-    token: "",
-    jwt: "",
-    githubUserId: "",
-    avatarUrl: "",
     displayName: "Test User",
     cursorColor: "#ff0000",
-    sharedFolder: "",
-    allowWholeVaultReconcile: false,
-    lastSessionEndedAt: 0,
     role: "host",
-    encryptionPassphrase: "",
-    encryptionSalt: "",
-    permission: "read-write",
-    requireApproval: false,
-    serverPassword: "",
     clientId: "test-client-id",
-    notificationsEnabled: true,
-    debugLogging: false,
     debugLogPath: "live-share-debug.md",
-    autoReconnect: true,
-    excludePatterns: [],
-    readOnlyPatterns: [],
-    approvalTimeoutSeconds: 60,
-    showCanvasCursors: true,
-    showCanvasPresence: true,
-    useCanvasBinding: false,
     ...overrides,
   };
 }
