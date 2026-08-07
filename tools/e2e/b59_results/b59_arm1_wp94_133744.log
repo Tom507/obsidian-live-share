@@ -1,0 +1,109 @@
+==============================================================================
+B59 / W4 — ARM 1 — WP94's live delete arm   run 133744   2026-08-07 13:37:44
+==============================================================================
+  PINNED bundle 8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+  PINNED commit 2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e
+  bundle A: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  bundle B: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 7, "overruns": 7, "worstOverrunMs": 13, "overrunsByClass": {"canvas": 4, "text": 3}
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 6, "overruns": 6, "worstOverrunMs": 750, "overrunsByClass": {"canvas": 5, "text": 1
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 5 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 7.0s behind wall clock
+    B: newest on-disk log stamp is 7.0s behind wall clock
+  rule-15 control BEFORE the arm: history_hits('DELETE WITHHELD:') = 0
+  (zero means the instrument is UNPROVEN and its silence says nothing —
+   phase 2 exists to make it fire before phase 1's silence is read.)
+
+==============================================================================
+  PHASE 2 — the receipt discriminator on B (host)
+==============================================================================
+    fixture create -> {"ok": true, "result": {"frameBytes": 739, "paths": ["_liveshare-test/b59-wp94-133744.canvas"], "settleMs": 1500, "before": [{"path": "_liveshare-test/b59-wp94-133744.canvas", "localPath": "_liveshare
+    subscribed=True after 0.0s  regime={'hasAdapter': False, 'hasWriter': False, 'adapterAvailable': False}
+      !! WAIT TIMED OUT after 30.0s waiting for: b59-133744-rd-X leaves B's OWN doc
+    P (first local save on this path)      node=b59-133744-rd-X deleted_from_doc=False after=30.0s withheld_lines=0
+    Q (second local save on this path)     node=b59-133744-rd-Y deleted_from_doc=True after=0.3s withheld_lines=0
+
+==============================================================================
+  P1host — the S84 ladder on B (host), board _liveshare-test/wp79-035734-one.canvas
+==============================================================================
+  regime on B: {'hasAdapter': False, 'hasWriter': False, 'adapterAvailable': False}
+  (hasAdapter=True would mean a LEAF IS OPEN — the arm reports the regime
+   it measured rather than assuming the board is closed.)
+    delta=0.3  ADD     captured_in_writer_doc=True after=0.2s  present_in_peer_doc=False  withheld_lines=0
+    delta=0.3  DELETE  captured_in_writer_doc=True after=0.2s  present_in_peer_doc=False  withheld_lines=0
+    delta=1.0  ADD     captured_in_writer_doc=True after=0.3s  present_in_peer_doc=False  withheld_lines=0
+    delta=1.0  DELETE  captured_in_writer_doc=True after=0.2s  present_in_peer_doc=False  withheld_lines=0
+    delta=2.0  ADD     captured_in_writer_doc=True after=0.3s  present_in_peer_doc=False  withheld_lines=0
+    delta=2.0  DELETE  captured_in_writer_doc=True after=0.2s  present_in_peer_doc=False  withheld_lines=0
+
+==============================================================================
+  P3guest — the S84 ladder on A (guest), board _liveshare-test/second-011125.canvas
+==============================================================================
+  regime on A: {'hasAdapter': False, 'hasWriter': True, 'adapterAvailable': False}
+  (hasAdapter=True would mean a LEAF IS OPEN — the arm reports the regime
+   it measured rather than assuming the board is closed.)
+    delta=0.3  ADD     captured_in_writer_doc=True after=0.0s  present_in_peer_doc=True  withheld_lines=0
+    delta=0.3  DELETE  captured_in_writer_doc=True after=0.0s  present_in_peer_doc=False  withheld_lines=0
+    delta=1.0  ADD     captured_in_writer_doc=True after=0.0s  present_in_peer_doc=False  withheld_lines=0
+    delta=1.0  DELETE  captured_in_writer_doc=True after=0.3s  present_in_peer_doc=False  withheld_lines=0
+    delta=2.0  ADD     captured_in_writer_doc=True after=0.2s  present_in_peer_doc=True  withheld_lines=0
+    delta=2.0  DELETE  captured_in_writer_doc=True after=0.0s  present_in_peer_doc=False  withheld_lines=0
+
+  ---- teardown of _liveshare-test/wp79-035734-one.canvas ----
+    both docs are free of this arm's nodes
+
+  ---- teardown of _liveshare-test/second-011125.canvas ----
+    both docs are free of this arm's nodes
+
+  ---- removing the phase-2 scratch board _liveshare-test/b59-wp94-133744.canvas ----
+    removed A:_liveshare-test/b59-wp94-133744.canvas
+    removed B:_liveshare-test/b59-wp94-133744.canvas
+    gone from both after 0.0s: True
+
+arm1  flush_proven=True waited=1.8s
+  [A] 72 lines  W=1786102720.432  W-t_end=+0.2s  sink_failed=False
+  [B] 42 lines  W=1786102720.396  W-t_end=+0.1s  sink_failed=False
+  control 'AWARENESS GAP:'         history_hits=1496   matcher_ok=True
+  control 'CANVAS WRITER:'         history_hits=2057   matcher_ok=True
+  control 'CAPTURE DECLINED:'      history_hits=150    matcher_ok=True
+  control 'DELETE WITHHELD:'       history_hits=0      matcher_ok=True
+  control 'INGEST REJECTED'        history_hits=7      matcher_ok=True
+  control 'MUTE OVERRUN:'          history_hits=0      matcher_ok=True
+  control 'PROTECTED PATH REFUSED:' history_hits=0      matcher_ok=True
+  control 'SEED REFUSAL STORE:'    history_hits=19     matcher_ok=True
+  control 'SEED REFUSED:'          history_hits=5      matcher_ok=True
+  control 'SEED RESTORED:'         history_hits=1      matcher_ok=True
+  control 'local modify '          history_hits=1641   matcher_ok=True
+  control 'refused remote rename'  history_hits=1      matcher_ok=True
+
+  RULE 15 — every signature, with the control that proves it can match.
+  TOOL: Python `substring in line` over the plugin's own debug log; every
+        pattern is a LITERAL (no regex, no metacharacter).
+    'CANVAS WRITER:'             window_hits=11    verdict=PRESENT            history_hits=2057   matcher_ok=True
+    'CAPTURE DECLINED:'          window_hits=9     verdict=PRESENT            history_hits=150    matcher_ok=True
+    'local modify '              window_hits=32    verdict=PRESENT            history_hits=1641   matcher_ok=True
+    'SEED REFUSED:'              window_hits=0     verdict=ABSENT             history_hits=5      matcher_ok=True
+    'SEED RESTORED:'             window_hits=0     verdict=ABSENT             history_hits=1      matcher_ok=True
+    'SEED REFUSAL STORE:'        window_hits=0     verdict=ABSENT             history_hits=19     matcher_ok=True
+    'INGEST REJECTED'            window_hits=0     verdict=ABSENT             history_hits=7      matcher_ok=True
+    'MUTE OVERRUN:'              window_hits=0     verdict=UNINFORMATIVE      history_hits=0      matcher_ok=True
+        ^^ UNINFORMATIVE: no absence claim is admissible here.
+    'AWARENESS GAP:'             window_hits=0     verdict=ABSENT             history_hits=1496   matcher_ok=True
+    'refused remote rename'      window_hits=0     verdict=ABSENT             history_hits=1      matcher_ok=True
+    'PROTECTED PATH REFUSED:'    window_hits=0     verdict=UNINFORMATIVE      history_hits=0      matcher_ok=True
+        ^^ UNINFORMATIVE: no absence claim is admissible here.
+    'DELETE WITHHELD:'           window_hits=2     verdict=PRESENT            history_hits=0      matcher_ok=True
+
+  ---- shared trees, before vs after ----
+    A: added=[] removed=[]
+    B: added=[] removed=[]

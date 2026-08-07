@@ -1,0 +1,76 @@
+==============================================================================
+B59 / W4 — ARM 3 CONTROL — admission at an ordinary shared path   run 135822   2026-08-07 13:58:22
+==============================================================================
+  PINNED bundle 8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+  PINNED commit 2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e
+  bundle A: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  bundle B: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 49, "overruns": 47, "worstOverrunMs": 683, "overrunsByClass": {"canvas": 12, "text"
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 9, "byArm": {"file-op-gate": 9}, "byRoot": {".obsidian": 9}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 1, "releasedByCeiling": 80, "overruns": 80, "worstOverrunMs": 863, "overrunsByClass": {"canvas": 12, "text"
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 36, "byArm": {"file-op-gate": 36}, "byRoot": {".obsidian": 27, ".git": 9}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 5 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 74.0s behind wall clock
+    B: newest on-disk log stamp is 74.0s behind wall clock
+
+  Each row has its OWN fixture, and the oracle is the filesystem.
+    create (fresh path)                delivered=True mutated_field=True DISK=True after=0.0s refusals+0
+    modify (own fixture)               delivered=True mutated_field=True DISK=True after=0.0s refusals+0
+    rename precondition: src exists=True dst exists=False
+      !! WAIT TIMED OUT after 60.0s waiting for: rename (own fixture, DEST oracle): the disk oracle is satisfied
+    rename (own fixture, DEST oracle)  delivered=True mutated_field=False DISK=False after=60.0s refusals+0
+    after rename: src exists=True dst exists=False
+    delete precondition: exists=True
+    delete (own fixture, EXISTS first) delivered=True mutated_field=True DISK=True after=0.0s refusals+0
+
+  ---- teardown ----
+    removed A:_liveshare-test/b59adm-135822-create.md
+    removed B:_liveshare-test/b59adm-135822-create.md
+    removed A:_liveshare-test/b59adm-135822-modify.md
+    removed B:_liveshare-test/b59adm-135822-modify.md
+    removed A:_liveshare-test/b59adm-135822-ren-src.md
+    removed B:_liveshare-test/b59adm-135822-ren-src.md
+
+  ---- clearing the doc-only residue left by arms 4/5/6 ----
+    A: doc holds ['b59-134725-s96-sub']
+    B: doc holds ['b59-134725-s96-sub']
+    on disk: {'A': [], 'B': []}  (empty on both — the residue is DOC-ONLY)
+    A simulateEdit removeNodes -> {"ok": true, "result": {"applied": true}}
+    B simulateEdit removeNodes -> {"ok": true, "result": {"applied": true}}
+    residue cleared: True after 0.0s
+    doc after: {'A': [], 'B': []}   disk node counts after: {'A': 1, 'B': 1}
+
+==============================================================================
+  FINAL STATE CENSUS — what B59 leaves behind
+==============================================================================
+  vault A: role=guest connected=True room=314c85ca-4eb6-491f-9c47-2a5bda4ea75c
+    bundle sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+    sharedFolder='_liveshare-test'  8 files: ['hello.md', 'second-011125.canvas', 'smoke.canvas', 'wp37probe-031340.canvas', 'wp79-035734-diverged.canvas', 'wp79-035734-one.canvas', 'wp79-035734-three.canvas', 'wp79-035734-two.canvas']
+    seed-refusals paths=[] (empty list = the store is empty)
+    data.json sha256=a01071398d2123bdba22dce17724c3a5f2e2bcc1485b2c815efc9114ad4465a1
+    sidecar state files=394
+    muteStats={"releasedByEvent": 0, "releasedByCeiling": 51, "overruns": 49, "worstOverrunMs": 683, "overrunsByClass": {"canvas": 12, "text": 37}, "pending": 0}
+    protectedRefusals={"total": 9, "byArm": {"file-op-gate": 9}, "byRoot": {".obsidian": 9}}
+  vault B: role=host connected=True room=314c85ca-4eb6-491f-9c47-2a5bda4ea75c
+    bundle sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+    sharedFolder='_liveshare-test'  9 files: ['Properties.md', 'hello.md', 'second-011125.canvas', 'smoke.canvas', 'wp37probe-031340.canvas', 'wp79-035734-diverged.canvas', 'wp79-035734-one.canvas', 'wp79-035734-three.canvas', 'wp79-035734-two.canvas']
+    seed-refusals paths=[] (empty list = the store is empty)
+    data.json sha256=e0db07b65624dfa9faa9b350670cbf04850fcc8d9b91cd353dfc074cd0ad534d
+    sidecar state files=381
+    muteStats={"releasedByEvent": 1, "releasedByCeiling": 89, "overruns": 89, "worstOverrunMs": 863, "overrunsByClass": {"canvas": 12, "text": 77}, "pending": 0}
+    protectedRefusals={"total": 36, "byArm": {"file-op-gate": 36}, "byRoot": {".obsidian": 27, ".git": 9}}
+
+  S71 clamp, one last time:
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 54.1s behind wall clock
+    B: newest on-disk log stamp is 54.1s behind wall clock
+
+  ADMISSION CONTROL: 3 of 4 op kinds were ADMITTED AND APPLIED at an ordinary shared path, refusals+0 on every row.

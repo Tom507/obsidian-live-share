@@ -1,0 +1,52 @@
+==============================================================================
+B59 / W4 — ARM 5 FOLLOW-UP — is the dropped create a CANVAS create?   run 135615   2026-08-07 13:56:15
+==============================================================================
+  PINNED bundle 8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+  PINNED commit 2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e
+  bundle A: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  bundle B: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 43, "overruns": 41, "worstOverrunMs": 14, "overrunsByClass": {"canvas": 10, "text":
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 9, "byArm": {"file-op-gate": 9}, "byRoot": {".obsidian": 9}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 1, "releasedByCeiling": 73, "overruns": 73, "worstOverrunMs": 863, "overrunsByClass": {"canvas": 9, "text":
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 36, "byArm": {"file-op-gate": 36}, "byRoot": {".obsidian": 27, ".git": 9}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 3 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 67.0s behind wall clock
+    B: newest on-disk log stamp is 67.0s behind wall clock
+
+  ---- clearing the leftover node from arms 4/5/6 ----
+    stale ids found: ['b59-134725-s96-sub']
+    NOT fully cleared: {"A": {"doc": ["b59-134725-s96-sub"], "disk": []}, "B": {"doc": ["b59-134725-s96-sub"], "disk": []}}
+
+  ---- EXTERNAL create, .md: _liveshare-test/b59c-135615-ext.md ----
+    written STRAIGHT TO DISK by this process (no plugin call at all)
+    peer holds it on disk: True after 0.2s
+
+  ---- EXTERNAL create, .canvas: _liveshare-test/b59c-135615-ext.canvas ----
+    written STRAIGHT TO DISK by this process (no plugin call at all)
+    peer holds it on disk: True after 0.2s
+    doc node counts: {'A': 1, 'B': 1}
+
+  ---- INBOUND create, .md: _liveshare-test/b59c-135615-in.md ----
+    created through fileop.inject: mutated=True
+    peer holds it on disk: True after 0.0s
+
+  ---- INBOUND create, .canvas: _liveshare-test/b59c-135615-in.canvas ----
+    created through fileop.inject: mutated=True
+    peer holds it on disk: True after 0.0s
+    doc node counts: {'A': 1, 'B': 1}
+
+  ---- the 2x2 ----
+                          EXTERNAL      INBOUND       
+    .md                   True @0.2s    True @0.0s    
+    .canvas               True @0.2s    True @0.0s    
+
+  ---- teardown ----
+    leftovers: []

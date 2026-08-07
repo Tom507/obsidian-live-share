@@ -1,0 +1,281 @@
+{
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "host": "B",
+  "guest": "A",
+  "bundles": {
+    "A": "8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a",
+    "B": "8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a"
+  },
+  "pinned": [
+    "8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a",
+    "2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e"
+  ],
+  "boards": {
+    "second-011125.canvas": {
+      "rel": "_liveshare-test/second-011125.canvas",
+      "A": {
+        "on_disk": true,
+        "disk_nodes": 1,
+        "hasAdapter": false,
+        "hasWriter": true,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 1
+      },
+      "B": {
+        "on_disk": true,
+        "disk_nodes": 1,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 1
+      }
+    },
+    "smoke.canvas": {
+      "rel": "_liveshare-test/smoke.canvas",
+      "A": {
+        "on_disk": true,
+        "disk_nodes": 9,
+        "hasAdapter": true,
+        "hasWriter": true,
+        "adapterAvailable": true,
+        "doc_ok": true,
+        "doc_nodes": 9
+      },
+      "B": {
+        "on_disk": true,
+        "disk_nodes": 9,
+        "hasAdapter": true,
+        "hasWriter": true,
+        "adapterAvailable": true,
+        "doc_ok": true,
+        "doc_nodes": 9
+      }
+    },
+    "wp37probe-031340.canvas": {
+      "rel": "_liveshare-test/wp37probe-031340.canvas",
+      "A": {
+        "on_disk": true,
+        "disk_nodes": 2,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 0
+      },
+      "B": {
+        "on_disk": true,
+        "disk_nodes": 2,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 2
+      }
+    },
+    "wp79-035734-diverged.canvas": {
+      "rel": "_liveshare-test/wp79-035734-diverged.canvas",
+      "A": {
+        "on_disk": true,
+        "disk_nodes": 2,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 0
+      },
+      "B": {
+        "on_disk": true,
+        "disk_nodes": 2,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 2
+      }
+    },
+    "wp79-035734-one.canvas": {
+      "rel": "_liveshare-test/wp79-035734-one.canvas",
+      "A": {
+        "on_disk": true,
+        "disk_nodes": 2,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 0
+      },
+      "B": {
+        "on_disk": true,
+        "disk_nodes": 2,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 2
+      }
+    },
+    "wp79-035734-three.canvas": {
+      "rel": "_liveshare-test/wp79-035734-three.canvas",
+      "A": {
+        "on_disk": true,
+        "disk_nodes": 1,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 0
+      },
+      "B": {
+        "on_disk": true,
+        "disk_nodes": 1,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 1
+      }
+    },
+    "wp79-035734-two.canvas": {
+      "rel": "_liveshare-test/wp79-035734-two.canvas",
+      "A": {
+        "on_disk": true,
+        "disk_nodes": 1,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 0
+      },
+      "B": {
+        "on_disk": true,
+        "disk_nodes": 1,
+        "hasAdapter": false,
+        "hasWriter": false,
+        "adapterAvailable": false,
+        "doc_ok": true,
+        "doc_nodes": 1
+      }
+    }
+  },
+  "pre_tree": {
+    "A": {
+      "hello.md": [
+        98,
+        "b431059d31a2be0878e077d2002becf7bf8433377cc5a3eda3f1aa5e3b1227ba"
+      ],
+      "Properties.md": [
+        411,
+        "acb35610fc456df416072fdfa225e0ee041003189013170f2a3449744594a09a"
+      ],
+      "second-011125.canvas": [
+        125,
+        "da6b20b02fa82cebfe61d6e86e408ac30c9b0cbd11dad0a1adf0204c2fbd8913"
+      ],
+      "smoke.canvas": [
+        2241,
+        "78869de6411da8b1e8d53eae9fc6325b9fcf95f66b7b3fdacc834fe657f4c67d"
+      ],
+      "wp37probe-031340.canvas": [
+        192,
+        "788790eebfe9c68d5357d7fca14d62c8af31855be14d92a06393618259350e36"
+      ],
+      "wp79-035734-diverged.canvas": [
+        228,
+        "88c300e4e1a292447295e24809fe53b033f88455176c278fb048e089835c2b41"
+      ],
+      "wp79-035734-one.canvas": [
+        249,
+        "ed8fe1fb39c847c3cb48d21bbedf7f8f7cd54655d1ac3fcf184578a2e51e8689"
+      ],
+      "wp79-035734-three.canvas": [
+        119,
+        "ea971ea87ce0b559aadb6c74b6b1d6413ab7a4398059f595cc0a505f61250dcb"
+      ],
+      "wp79-035734-two.canvas": [
+        119,
+        "7f2f748235f7d2ea2f7996c0a024bdc0c59081b6b123cfa807e2dd5378c1b59c"
+      ]
+    },
+    "B": {
+      "hello.md": [
+        49,
+        "2f368d43e923fee4d3a7742a1257cf6510a389afd5178b0d79c7e970fb5b1caf"
+      ],
+      "Properties.md": [
+        429,
+        "31da596052aa2b88c27b8a6b40e9a81ef67b7fc198786973d839290c5b20a072"
+      ],
+      "second-011125.canvas": [
+        165,
+        "38b1e6e990eb187945d0f88e2c61dd7b09a9e4b09f58cf04bf1a1f7be6b48362"
+      ],
+      "smoke.canvas": [
+        2241,
+        "78869de6411da8b1e8d53eae9fc6325b9fcf95f66b7b3fdacc834fe657f4c67d"
+      ],
+      "wp37probe-031340.canvas": [
+        323,
+        "65b012b67435fcd8cd266096237d31b62a89b985f68fbf197afe1a41ea783485"
+      ],
+      "wp79-035734-diverged.canvas": [
+        381,
+        "2663c06417b7c4a8a353c0aa6b373f0dc178dba46c913737c15f81449c1a8792"
+      ],
+      "wp79-035734-one.canvas": [
+        345,
+        "3c71bdb8e49e27df937e6f82e29c8fa8c546f56217d185c276e05274a5e2ef6b"
+      ],
+      "wp79-035734-three.canvas": [
+        159,
+        "e8a05ddbd8f2ce24042e3ccad216e4aad3527ae1795adce6cf7e67252b7c1f4e"
+      ],
+      "wp79-035734-two.canvas": [
+        159,
+        "b71784fa5232ffa1aaefc37e9ef96c16b6c76ac2b8a9b21a8383ad94510c7b95"
+      ]
+    }
+  },
+  "baseline": {
+    "A": {
+      "muteStats": {
+        "releasedByEvent": 0,
+        "releasedByCeiling": 6,
+        "overruns": 6,
+        "worstOverrunMs": 13,
+        "overrunsByClass": {
+          "canvas": 3,
+          "text": 3
+        },
+        "pending": 0
+      },
+      "protectedRefusals": {
+        "total": 0,
+        "byArm": {},
+        "byRoot": {}
+      }
+    },
+    "B": {
+      "muteStats": {
+        "releasedByEvent": 0,
+        "releasedByCeiling": 4,
+        "overruns": 4,
+        "worstOverrunMs": 750,
+        "overrunsByClass": {
+          "canvas": 3,
+          "text": 1
+        },
+        "pending": 0
+      },
+      "protectedRefusals": {
+        "total": 0,
+        "byArm": {},
+        "byRoot": {}
+      }
+    }
+  }
+}
