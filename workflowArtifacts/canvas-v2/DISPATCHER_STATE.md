@@ -2847,3 +2847,57 @@ not the name.
   §3.1's *"eleven decisions"* does not match its own seven-row table. Recorded, not quietly fixed.
 - **Both §7b live arms are NOT discharged and the report says so plainly.** AC4's live overrun counter and
   AC5's real-editor gates are owed to W4.
+
+---
+
+## ⛔ SECOND SPEND-LIMIT STOP — clean resume point at `1e057e9`
+
+**B55 (WP94) and B56 (W4 round 2) both died on the monthly spend limit at their FIRST tool call.** Neither
+wrote anything. **Nothing to rescue this time** — verified: `git status` shows only `canvas-sidecar.ts`
+with an **empty diff** (an autocrlf stat-cache artefact, not a change).
+
+**That is worth contrasting with the first stop.** Then, two workers died *mid-package* and left finished
+analysis uncommitted in the shared tree, where `git log` could not see it and only `git status` could. The
+rule stands: **a worker that dies leaves its work in the tree, not in a branch** — it simply did not apply
+this time, and I checked rather than assumed.
+
+### State at the stop — all verified by me, not quoted
+
+| | |
+|---|---|
+| **HEAD** | `1e057e9`, branch `fix-bugs-and-raceconditions`, **working tree clean** |
+| **Gate** | `tsc -noEmit -skipLibCheck` **clean** · **2653 / 2653 tests, 370 / 370 files, ZERO failures** |
+| **Baseline quotable** | **yes** — first time this stretch, no *"except the flaky one"* caveat (S74 closed) |
+| **Register** | `check_signal_register.py` clean; next free **S90** |
+| **BUILD_SPEC** | **93 live** (WP1–WP83, WP85–WP94; WP84 withdrawn, number not re-used) |
+
+⚠ **The gate figure carries one caveat that is not a hedge: S88.** `v2/wp93/`'s census tests read the
+**live working copy** of `file-ops.ts` and `vault-events.ts`, so *"zero failures"* is **transiently
+violable while any batch is editing those files**. The tree is quiet now, so the figure above is real.
+
+### What landed this stretch
+
+**Five work packages:** WP68 (Tier 1, the peer-reachable `.obsidian/**` write), WP90, WP91, WP93, plus the
+S74 instrument repair and `fileop.inject`. **Three chartered and unbuilt:** WP92, WP94, WP89 (revised).
+
+**Four defects that reach a user, closed:** the ~0.8 s capture swallow (WP91 — **and its destruction step
+reproduced live on a real pre-fix control**), the rename door into `.obsidian/**` (WP68), the withhold that
+expired with the session (WP90, **with S81 outstanding**), and the mute ceiling that no timer could hold
+(WP93).
+
+### The two things I would want done first on resume
+
+1. **WP94 — the delete licence.** A user deletes a card, it vanishes locally, and it stays on every peer.
+   Chartered (`e9558df`), diagnosed to one line, **unbuilt**. `Complete` must land **before** the widening:
+   the licence gate is currently the only barrier between a partial read and total destruction of a board.
+2. **S81 — the arm where re-derivation cannot rescue WP90.** Every live session so far re-derived the
+   verdict from the host seed; the durable branch **has never fired**. Until a guest-side or leaf-less arm
+   runs, **the oldest open P0 is not demonstrably closed** — what has been shown live is WP63's
+   re-derivation, which already worked.
+
+### Environment — still modified, restorable in one command
+
+`obsidian-git` **disabled in both vaults**; both running an instrumented e2e bundle; `sharedFolder` scoped
+to `_liveshare-test` (**load-bearing — leave it**); **roles have swapped, A is guest / B is host**;
+**twelve** repo copies under `H:\tmp` (seven registered worktrees, five snapshots git does not know about).
+Undo with `python H:\tmp\liveshare_smoke_setup.py --restore`, which refuses to run while Obsidian is open.
