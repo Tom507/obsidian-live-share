@@ -16,6 +16,19 @@ import {
   toLocalPath,
 } from "../utils";
 import { isSidecarPath } from "./canvas-sidecar";
+import {
+  CONFLICT_PRESERVATION,
+  conflictCopyPath,
+  decideConflictPreservation,
+  isConflictsPath,
+  noteConflictCopy,
+  noteConflictCopyFailure,
+} from "./conflict-copy";
+import {
+  EMPTY_WRITE_DECISION,
+  decideEmptyWrite,
+  noteEmptyWriteRefusal,
+} from "./empty-write-guard";
 import type { ExclusionManager } from "./exclusion";
 import { PUBLICATION_DECISION, decidePublication } from "./manifest-purge-decision";
 import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
@@ -155,6 +168,18 @@ export class ManifestManager {
   private docHandle: DocHandle | null = null;
   private manifest: Y.Map<FileEntry> | null = null;
   private observer: ((events: Y.YMapEvent<FileEntry>) => void) | null = null;
+
+  /**
+   * S125 AC10 — how many local versions the most recent `syncFromManifest`
+   * preserved. Reported alongside the "synced N file(s)" notice, which on its
+   * own read as unambiguous success while it was quietly replacing the user's
+   * edits.
+   *
+   * A field rather than a widened return type: `syncFromManifest` has six
+   * callers, and changing its signature to carry one diagnostic would touch
+   * every one of them for no benefit at five of the six.
+   */
+  private lastSyncConflictCopies = 0;
 
   /** D2 — the attestation map, and the baseline against which it is judged. */
   private meta: Y.Map<ManifestPublication> | null = null;
@@ -520,6 +545,10 @@ export class ManifestManager {
     if (!this.manifest || !this.syncManager) return 0;
 
     let synced = 0;
+    // S125 AC10 — counted per call, so the JOIN NOTICE can say it. The module
+    // ledger counts the whole session; this counts this pass.
+    let conflictCopies = 0;
+    this.lastSyncConflictCopies = 0;
     const entries = Array.from(this.manifest.entries());
 
     for (const [path, entry] of entries) {
@@ -617,6 +646,16 @@ export class ManifestManager {
       if (!needsSync) continue;
 
       if (entry.binary) {
+        // S125 AC11 — BINARIES ARE COVERED. The actual bytes arrive later, over
+        // the chunked transfer, and land through `FileOpsManager` rather than
+        // here — but the DECISION to replace this file is taken on this line,
+        // and the local version still exists at this instant. Preserving it
+        // here is both correct and the only place in this arm where the old
+        // bytes are still readable. A user's replaced image is the same loss as
+        // a replaced note.
+        if (localFile && (await this.preserveLocalVersion(path, localFile, "binary"))) {
+          conflictCopies++;
+        }
         requestBinary?.(path);
         synced++;
         continue;
@@ -629,6 +668,48 @@ export class ManifestManager {
         await this.syncManager.waitForSync(path);
 
         const content = tempHandle.text.toString();
+
+        // S119 — THE FLOOR. `waitForSync` resolving does NOT mean the document
+        // has arrived: `SyncManager.handleSubscribed` flips a doc to synced the
+        // instant the relay reports `peerCount === 0`, which happens BEFORE the
+        // stored replay batch lands. This read then returns `""`, and the write
+        // below used to truncate the user's note to zero bytes. That is exactly
+        // what emptied every `.md` in a live shared folder on three clients.
+        //
+        // The evidence is already on the wire and costs nothing extra to check:
+        // `entry.hash` is the HOST'S OWN hash for this path. If the host really
+        // does hold an empty file, `entry.hash` is the hash of `""` and the
+        // write proceeds (that legitimate case must keep working). If the doc is
+        // empty while the host says the file hashes to something else, this peer
+        // is holding an absence, not a fact.
+        //
+        // Checked against the hash rather than merely against emptiness because
+        // the hash is strictly stronger: it also refuses a half-replayed
+        // document, which is the same failure one notch less visible.
+        const verdict = decideEmptyWrite({
+          incoming: content,
+          existing: localFile ? normalizeLineEndings(await this.vault.read(localFile)) : null,
+          intentional: (await hashContent(content)) === entry.hash,
+          evidenceLabel: "the host's published hash for this path",
+        });
+        if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {
+          noteEmptyWriteRefusal("manifest-sync");
+          console.warn(`[live-share] empty-write refused for ${path}: ${verdict.reason}`);
+          continue;
+        }
+
+        // S125 AC6 — PRESERVE, and note the ORDER. The empty-write floor above
+        // has already had its say: if it refused, we `continue`d and never got
+        // here, so a refusal writes no copy. Nothing is being destroyed on that
+        // branch and littering the vault with copies on every refusal would be
+        // its own defect.
+        //
+        // Only the destructive branch copies. A file that does not exist
+        // locally is being CREATED, which destroys nothing; a file whose hash
+        // already matched never reached this loop body at all.
+        if (localFile && (await this.preserveLocalVersion(path, localFile, "text"))) {
+          conflictCopies++;
+        }
 
         const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
         if (parentDir) await ensureFolder(this.vault, parentDir);
@@ -651,7 +732,13 @@ export class ManifestManager {
       }
     }
 
+    this.lastSyncConflictCopies = conflictCopies;
     return synced;
+  }
+
+  /** S125 AC10 — local versions preserved by the most recent sync pass. */
+  getLastSyncConflictCopies(): number {
+    return this.lastSyncConflictCopies;
   }
 
   setManifestChangeHandler(
@@ -872,8 +959,65 @@ export class ManifestManager {
       noteProtectedRefusal("shared-path", path);
       return false;
     }
+    // S125 AC7 — THE CONFLICTS FOLDER IS NEVER SHARED, and this is where that
+    // is owned.
+    //
+    // Placed beside `isSidecarPath` and `isProtectedPath` for their reason,
+    // which applies here with more force: a conflict copy is BY CONSTRUCTION
+    // different from the host's content, so if one ever counted as shared it
+    // would be published, come back as a permanent `needsSync`, and be
+    // re-conflicted on every join — copies multiplying without bound.
+    //
+    // Not delegated to `ExclusionManager` (the user can reconfigure it away)
+    // and not left to the folder's sibling POSITION, which does not exist in
+    // the whole-vault case: when `sharedFolder` is empty the conflicts root
+    // sits at the vault root, which is inside the share by definition. A
+    // positional exclusion cannot express this; an owned one can.
+    if (isConflictsPath(path, this.settings.sharedFolder)) return false;
     if (this.exclusionManager?.isExcluded(path)) return false;
     return true;
+  }
+
+  /**
+   * S125 — copy the guest's about-to-be-overwritten version beside the share.
+   *
+   * NEVER THROWS. Preservation is strictly additive to the sync: a vault that
+   * refuses the copy (permissions, a name collision, a full disk) must still
+   * receive the host's content, because failing the sync would turn a
+   * best-effort safety net into a new outage. The failure is counted instead,
+   * so it is visible rather than silent.
+   */
+  private async preserveLocalVersion(
+    path: string,
+    localFile: TFile,
+    arm: "text" | "binary",
+  ): Promise<boolean> {
+    // S125 AC6a — only what the GUEST changed while offline. Most divergences
+    // are staleness (the host edited while we were away), and copying those
+    // would fill the folder with versions the user never touched until nobody
+    // read it. Every uncertain input resolves to PRESERVE — see the decision.
+    const verdict = decideConflictPreservation({
+      mtime: localFile.stat?.mtime,
+      lastSessionEndedAt: this.settings.lastSessionEndedAt,
+    });
+    if (verdict.decision === CONFLICT_PRESERVATION.DISCARD) return false;
+    try {
+      const target = conflictCopyPath(path, this.settings.sharedFolder, new Date());
+      const parent = target.substring(0, target.lastIndexOf("/"));
+      if (parent) await ensureFolder(this.vault, parent);
+      if (arm === "binary") {
+        const bytes = await this.vault.readBinary(localFile);
+        await this.vault.createBinary(target, bytes);
+      } else {
+        await this.vault.create(target, await this.vault.read(localFile));
+      }
+      noteConflictCopy(arm);
+      return true;
+    } catch (err) {
+      noteConflictCopyFailure();
+      console.warn(`[live-share] could not preserve local version of ${path}`, err);
+      return false;
+    }
   }
 
   isSharedPath(rawPath: string): boolean {

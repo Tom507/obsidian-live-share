@@ -201,6 +201,15 @@ export interface LiveShareSettings {
    * destructive should be revocable in the same place it was granted.
    */
   allowWholeVaultReconcile: boolean;
+  /**
+   * S125 — the moment THIS peer's session last ended, by this machine's clock.
+   *
+   * The only input to "did the guest edit this file while offline?", compared
+   * against the local file's mtime. `0` means "never recorded", which is one of
+   * the several unknowns that all resolve to PRESERVE — see
+   * `decideConflictPreservation`.
+   */
+  lastSessionEndedAt: number;
   role: SessionRole;
   encryptionPassphrase: string;
   encryptionSalt: string;
@@ -237,6 +246,8 @@ export const DEFAULT_SETTINGS: LiveShareSettings = {
   sharedFolder: "",
   // S116 — ships REFUSING. The permissive value has to be chosen by a human.
   allowWholeVaultReconcile: false,
+  // S125 — 0 is "unknown", and unknown preserves.
+  lastSessionEndedAt: 0,
   role: null,
   encryptionPassphrase: "",
   encryptionSalt: "",

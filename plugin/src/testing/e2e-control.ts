@@ -771,6 +771,10 @@ export interface E2EControlHost {
   muteReleaseStats?(): unknown;
   /** WP95 (AC5) — the protected-path refusal ledger, on the same reasoning. */
   protectedPathRefusals?(): unknown;
+  /** S119 AC5 — refused empty writes, by arm. */
+  emptyWriteRefusals?(): unknown;
+  /** S125 AC10 — conflict copies written, by arm. */
+  conflictCopies?(): unknown;
 }
 
 /**
@@ -1107,6 +1111,21 @@ export async function routeCommand(
           throw new Error("fileop.protectedRefusals unavailable on this host");
         }
         return ok(host.protectedPathRefusals());
+      }
+      // S119 AC5 — refused empty writes. Same shape and same reason as the
+      // protected-path ledger beside it: a refusal leaves no other trace.
+      // S125 AC10 — local versions preserved before a host overwrite.
+      case "sync.conflictCopies": {
+        if (typeof host.conflictCopies !== "function") {
+          throw new Error("sync.conflictCopies unavailable on this host");
+        }
+        return ok(host.conflictCopies());
+      }
+      case "sync.emptyWriteRefusals": {
+        if (typeof host.emptyWriteRefusals !== "function") {
+          throw new Error("sync.emptyWriteRefusals unavailable on this host");
+        }
+        return ok(host.emptyWriteRefusals());
       }
       // --- `fileop.inject`, ADDITIVE ------------------------------------------
       //
@@ -1484,6 +1503,10 @@ export interface E2EPluginLike {
   demoteToGuest?: () => Promise<void>;
   /** WP81 AC1 — the debug sink's own state, read from the logger, not from settings. */
   logger?: { getSinkState?: () => unknown };
+  /** S119 AC5 — the empty-write refusal ledger. Optional, like every capability here. */
+  getEmptyWriteRefusals?: () => { total: number; byArm: Record<string, number> };
+  /** S125 AC10 — the conflict-copy ledger. */
+  getConflictCopies?: () => { total: number; byArm: Record<string, number>; failed: number };
   /**
    * WP82 (AC2/AC3) — the real per-link report and the real break seam, invoked.
    * All three are optional so every hand-rolled fake plugin in the existing
@@ -2240,6 +2263,24 @@ export function buildPluginHost(
         );
       }
       return manager.getMuteReleaseStats();
+    },
+
+    conflictCopies() {
+      if (typeof plugin.getConflictCopies !== "function") {
+        throw new Error(
+          "sync.conflictCopies unavailable: this instance exposes no conflict-copy ledger",
+        );
+      }
+      return plugin.getConflictCopies();
+    },
+
+    emptyWriteRefusals() {
+      if (typeof plugin.getEmptyWriteRefusals !== "function") {
+        throw new Error(
+          "sync.emptyWriteRefusals unavailable: this instance exposes no empty-write ledger",
+        );
+      }
+      return plugin.getEmptyWriteRefusals();
     },
 
     protectedPathRefusals() {

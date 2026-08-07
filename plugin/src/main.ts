@@ -38,6 +38,8 @@ import {
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
+import { conflictsRootFor, getConflictCopies } from "./files/conflict-copy";
+import { getEmptyWriteRefusals } from "./files/empty-write-guard";
 import {
   type CanvasPersistence,
   type PersistenceIO,
@@ -1443,6 +1445,15 @@ export default class LiveSharePlugin extends Plugin {
   // teardown stays ABOVE the first await and therefore still runs synchronously
   // — the await is appended, never interleaved.
   async onunload() {
+    // S125 AC6c — the THIRD session-end path. `onunload` does not call
+    // `cleanupSession()`, so without this line a normal Obsidian quit during an
+    // active session would leave the stamp stale and the next join would
+    // preserve every divergent file. Safe, but it would make the gate inert —
+    // the S116 B14 lesson, which was exactly a feature that looked wired and
+    // was not. Guarded on an ACTIVE session: stamping on an ordinary quit with
+    // no session would move the timestamp forward and start classifying real
+    // offline edits as stale, which is the unsafe direction.
+    if (this.sessionManager?.isActive) this.stampSessionEnd();
     this.testControlHandle?.close();
     this.testControlHandle = null;
     this.logger.destroy();
@@ -1583,6 +1594,36 @@ export default class LiveSharePlugin extends Plugin {
         this.settings.showCanvasPresence,
       );
     }
+  }
+
+  /**
+   * S119 AC5 — the empty-write refusal ledger, exposed so a live validator can
+   * read it. A refusal by construction leaves NO other trace: the file is
+   * unchanged, which is indistinguishable from "nothing happened" from outside.
+   * Routed through the plugin rather than imported by the e2e module, whose
+   * import allow-list is frozen on purpose.
+   */
+  getEmptyWriteRefusals(): { total: number; byArm: Record<string, number> } {
+    return getEmptyWriteRefusals();
+  }
+
+  /**
+   * S125 AC10 — the join notice, which used to read "synced N file(s)" while
+   * quietly replacing the user's own edits with the host's. If any local
+   * version was preserved, the notice says how many and where; a user who is
+   * not told a copy was made cannot go and find it.
+   */
+  private joinSyncNotice(syncedCount: number): string {
+    const copies = this.manifestManager.getLastSyncConflictCopies();
+    const base = `Live Share: joined session, synced ${syncedCount} file(s)`;
+    if (copies === 0) return base;
+    const root = conflictsRootFor(this.settings.sharedFolder);
+    return `${base}. ${copies} local version(s) differed and were preserved in "${root}"`;
+  }
+
+  /** S125 AC10 — the conflict-copy ledger, for a live validator. */
+  getConflictCopies(): { total: number; byArm: Record<string, number>; failed: number } {
+    return getConflictCopies();
   }
 
   notify(msg: string): void {
@@ -1869,7 +1910,28 @@ export default class LiveSharePlugin extends Plugin {
     };
   }
 
+  /**
+   * S125 AC6c — stamp the moment this peer's session ended.
+   *
+   * The whole set of session-end paths is THREE, and it is three rather than
+   * two because `onunload` does NOT call `cleanupSession()` — verified by
+   * reading it, and pinned by a source-derivation test rather than left to a
+   * later reader to rediscover. `cleanupSession()` itself covers `endSession`
+   * and `abortSession`, which are its only two callers.
+   *
+   * Fire-and-forget on the save: if the write does not land (a crash, a kill),
+   * the stamp stays old or absent, and an absent stamp PRESERVES. The failure
+   * mode of this method is therefore extra copies, never lost work.
+   */
+  private stampSessionEnd(): void {
+    this.settings.lastSessionEndedAt = Date.now();
+    void this.saveSettings();
+  }
+
   cleanupSession() {
+    // S125 — the two callers of this method are `endSession` and
+    // `abortSession`; both are genuine session ends.
+    this.stampSessionEnd();
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView) {
       const cmView = getCmView(activeView);
@@ -2007,7 +2069,7 @@ export default class LiveSharePlugin extends Plugin {
           this.armCanvasMirrorPass();
           this.onActiveFileChange();
           this.logger.log("session", `joined, room=${this.settings.roomId}`);
-          this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
+          this.notify(this.joinSyncNotice(syncedCount));
         } catch {
           this.logger.error("session", "failed to join session");
           await this.abortSession("Live Share: failed to join session");
@@ -2046,7 +2108,7 @@ export default class LiveSharePlugin extends Plugin {
           this.armCanvasMirrorPass();
           this.onActiveFileChange();
           this.logger.log("session", `joined via link, room=${this.settings.roomId}`);
-          this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
+          this.notify(this.joinSyncNotice(syncedCount));
         } catch {
           this.logger.error("session", "failed to join via link");
           await this.abortSession("Live Share: failed to join session");

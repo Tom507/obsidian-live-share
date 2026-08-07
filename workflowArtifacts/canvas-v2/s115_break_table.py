@@ -19,12 +19,17 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 PLUGIN = ROOT / "plugin"
 MAIN = PLUGIN / "src" / "main.ts"
 MANIFEST = PLUGIN / "src" / "files" / "manifest.ts"
+BGSYNC = PLUGIN / "src" / "files" / "background-sync.ts"
+CONFLICT = PLUGIN / "src" / "files" / "conflict-copy.ts"
 
 TESTS = [
     "src/__tests__/v2/ux01/test_s115_stale_reconcile_is_scoped_by_the_host.test.ts",
     "src/__tests__/v2/ux01/test_s115_guest_stale_reconcile_candidate_set.test.ts",
     "src/__tests__/dataloss/test_stale_reconcile_evidence_gate.test.ts",
     "src/__tests__/v2/ux01/test_s116_a_guest_only_trashes_what_the_session_gave_it.test.ts",
+    "src/__tests__/dataloss/test_s119_empty_text_write_truncates_a_note.test.ts",
+    "src/__tests__/dataloss/test_s119_empty_write_floor.test.ts",
+    "src/__tests__/dataloss/test_s125_the_guests_version_is_preserved.test.ts",
 ]
 
 # (id, acceptance criterion, description, [(file, old, new), ...])
@@ -159,6 +164,115 @@ BREAKS = [
           "        // S116 — BEFORE the first reconcile and before `syncFromManifest`.\n        this.captureVaultBaseline();\n",
           "")],
     ),
+    # ---- S119 / WP99 : the empty-write floor ----
+    (
+        "B15",
+        "S119 AC3",
+        "the manifest writer's empty-write floor is removed (THE INCIDENT)",
+        [(MANIFEST,
+          '        if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {\n          noteEmptyWriteRefusal("manifest-sync");',
+          '        if (false) {\n          noteEmptyWriteRefusal("manifest-sync");')],
+    ),
+    (
+        "B16",
+        "S119 AC3",
+        "the background-sync writer's empty-write floor is removed (the amplifier)",
+        [(BGSYNC,
+          '        if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {\n          noteEmptyWriteRefusal("doc-write");',
+          '        if (false) {\n          noteEmptyWriteRefusal("doc-write");')],
+    ),
+    (
+        "B17",
+        "S119 AC3",
+        "the manifest evidence weakens from the host's hash to a bare emptiness test",
+        [(MANIFEST,
+          "          intentional: (await hashContent(content)) === entry.hash,",
+          "          intentional: content.length === 0,")],
+    ),
+    (
+        "B18",
+        "S119 AC4",
+        "background-sync evidence is always true (the floor becomes inert)",
+        [(BGSYNC,
+          "          intentional: this.observedNonEmpty.has(path),",
+          "          intentional: true,")],
+    ),
+    (
+        "B19",
+        "S119 AC4",
+        "evidence is never recorded, so select-all-and-delete stops propagating",
+        [(BGSYNC,
+          "    if (content.length > 0) this.observedNonEmpty.add(path);",
+          "    if (false) this.observedNonEmpty.add(path);")],
+    ),
+    (
+        "B20",
+        "S119 AC5",
+        "refusals stop being counted, so the floor becomes unobservable",
+        [(BGSYNC,
+          '          noteEmptyWriteRefusal("doc-write");',
+          '          noteEmptyWriteRefusal("doc-write-NOT-COUNTED");')],
+    ),
+    # ---- S125 / WP99 part 2 : preserve the guest's version ----
+    (
+        "B21",
+        "S125 AC7 (worst blast radius)",
+        "the conflicts folder is placed INSIDE the shared folder",
+        [(CONFLICT,
+          "  return trimmed ? `${trimmed}${CONFLICTS_SUFFIX}` : WHOLE_VAULT_CONFLICTS_ROOT;",
+          "  return trimmed ? `${trimmed}/conflicts` : WHOLE_VAULT_CONFLICTS_ROOT;")],
+    ),
+    (
+        "B22",
+        "S125 AC6b (worst consequence)",
+        "an absent or malformed timestamp DISCARDS instead of preserving",
+        # NOTE: the anchor is the DECISION line plus the reason line that
+        # follows it, so this cannot accidentally match the other three
+        # PRESERVE branches in the same function.
+        [(CONFLICT,
+          '      decision: CONFLICT_PRESERVATION.PRESERVE,\n      reason: "no usable record',
+          '      decision: CONFLICT_PRESERVATION.DISCARD,\n      reason: "no usable record')],
+    ),
+    (
+        "B23",
+        "S125 AC6a",
+        "the staleness gate is removed, so every divergent file is copied",
+        [(MANIFEST,
+          "    if (verdict.decision === CONFLICT_PRESERVATION.DISCARD) return false;",
+          "    if (false) return false;")],
+    ),
+    (
+        "B24",
+        "S125 AC7",
+        "the owned exclusion is removed, so conflict copies become shareable",
+        [(MANIFEST,
+          "    if (isConflictsPath(path, this.settings.sharedFolder)) return false;",
+          "    if (false) return false;")],
+    ),
+    (
+        "B25",
+        "S125 AC9",
+        "the filename stamp is dropped, so a second conflict overwrites the first",
+        [(CONFLICT,
+          "  const stamped = `${stem} (${conflictStamp(when)})${ext}`;",
+          "  const stamped = `${stem}${ext}`;")],
+    ),
+    (
+        "B26",
+        "S125 AC6c",
+        "onunload stops stamping, making the gate inert after a normal quit",
+        [(MAIN,
+          "    if (this.sessionManager?.isActive) this.stampSessionEnd();\n",
+          "")],
+    ),
+    (
+        "B27",
+        "S125 AC10",
+        "copies stop being counted, so the join notice never mentions them",
+        [(MANIFEST,
+          "      noteConflictCopy(arm);",
+          "      noteConflictCopy(`${arm}-NOT-COUNTED`);")],
+    ),
 ]
 
 
@@ -189,7 +303,15 @@ def clean_summary(clean):
 
 
 def main():
-    targets = {MAIN, MANIFEST}
+    # Test names in this suite carry emoji and em-dashes. Under redirection
+    # Windows hands us a cp1252 stdout, which raises on them and killed a run
+    # mid-table — after the break was applied. The restore is in a `finally` so
+    # nothing was left broken, but the table was lost. Force UTF-8 here.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT}
     baseline_sha = {p: sha256(p) for p in targets}
 
     print("=== BASELINE (no break) ===")

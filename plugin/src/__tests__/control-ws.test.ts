@@ -52,6 +52,7 @@ function createSettings(overrides?: Partial<LiveShareSettings>): LiveShareSettin
     cursorColor: "#000",
     sharedFolder: "shared",
     allowWholeVaultReconcile: false,
+    lastSessionEndedAt: 0,
     role: "host",
     encryptionPassphrase: "",
     encryptionSalt: "",
