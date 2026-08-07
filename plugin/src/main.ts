@@ -50,7 +50,11 @@ import {
   type ImportFromFileResult,
   runImportFromFile,
 } from "./files/canvas-import";
-import { mirrorSharedCanvases } from "./files/canvas-mirror";
+import {
+  CANVAS_RECORD_MAPS,
+  type CanvasMirrorReport,
+  mirrorSharedCanvases,
+} from "./files/canvas-mirror";
 import {
   type CanvasSidecarWiring,
   createVaultSidecarIO,
@@ -1956,6 +1960,13 @@ export default class LiveSharePlugin extends Plugin {
     this.presenceManager = null;
     this.removeScrollListener();
     this.remoteUsers.clear();
+    // S123 — a watcher describes ONE session's docs. Leaving them observing a
+    // doc that is about to be destroyed would re-arm a mirror pass for a
+    // session that has ended.
+    for (const path of Array.from(this.canvasRecordWatchers.keys())) {
+      this.unwatchCanvasForRecords(path);
+    }
+    this.lastCanvasMirrorReport = null;
     // S116 — a baseline describes ONE session. Carrying it into the next one
     // would license deletions against a vault snapshot taken before a different
     // host's share; `null` makes the next reconcile refuse until it is retaken.
@@ -3169,18 +3180,78 @@ export default class LiveSharePlugin extends Plugin {
    * pass deliberately does not use `subscribeCanvasWithHandover` — see the
    * header of `files/canvas-mirror.ts`.
    */
+  /**
+   * S123 — one-shot watchers on canvas docs whose records had not arrived when
+   * the mirror pass last asked. Keyed by path so a path cannot accumulate
+   * observers across repeated passes.
+   */
+  private canvasRecordWatchers = new Map<string, () => void>();
+
+  /** S123 AC5 — what the last mirror pass decided, per path. Previously discarded. */
+  private lastCanvasMirrorReport: CanvasMirrorReport | null = null;
+
+  /**
+   * S123 — re-ask the mirror when this doc actually gains records.
+   *
+   * The defect was a readiness signal that did not mean what it said, answered
+   * by polling once. This replaces the poll with the event it was trying to
+   * approximate: observe the two record maps, and the first time either becomes
+   * non-empty, re-run the pass. No timer, no backoff, no retry budget — a
+   * wall-clock retry would close this race only on the runs where it happened
+   * to be fast enough, which is what "one guest got it in 23 s and the other
+   * never did" already looks like.
+   */
+  private watchCanvasForRecords(path: string): void {
+    if (this.canvasRecordWatchers.has(path)) return;
+    const doc = this.canvasSync?.getCanvasDocHandle(path)?.doc;
+    if (!doc) return;
+    const maps = CANVAS_RECORD_MAPS.map((name) => doc.getMap(name));
+    let fired = false;
+    const onChange = () => {
+      if (fired) return;
+      if (!maps.some((map) => map.size > 0)) return;
+      fired = true;
+      this.unwatchCanvasForRecords(path);
+      this.logger.log("canvas-mirror", `records arrived for ${path}; re-running the mirror pass`);
+      this.armCanvasMirrorPass();
+    };
+    for (const map of maps) map.observe(onChange);
+    this.canvasRecordWatchers.set(path, () => {
+      for (const map of maps) map.unobserve(onChange);
+    });
+    // The records may have landed between the pass's probe and this line.
+    onChange();
+  }
+
+  private unwatchCanvasForRecords(path: string): void {
+    const dispose = this.canvasRecordWatchers.get(path);
+    if (!dispose) return;
+    this.canvasRecordWatchers.delete(path);
+    try {
+      dispose();
+    } catch {
+      /* an unobserve on a destroyed doc is not an error worth surfacing */
+    }
+  }
+
+  /** S123 AC5 — the last mirror pass's per-path verdicts, for a live validator. */
+  getLastCanvasMirrorReport(): CanvasMirrorReport | null {
+    return this.lastCanvasMirrorReport;
+  }
+
   private armCanvasMirrorPass(): void {
     this.canvasMirrorQueue = this.canvasMirrorQueue
       .then(async () => {
         const canvasSync = this.canvasSync;
         if (!canvasSync) return;
-        await mirrorSharedCanvases({
+        this.lastCanvasMirrorReport = await mirrorSharedCanvases({
           role: this.settings.role === "host" ? "host" : "guest",
           listManifestPaths: () => this.manifestManager.getEntries().keys(),
           localFileExists: (path) => this.app.vault.adapter.exists(toLocalPath(path)),
           guidForPath: (path) => this.manifestManager.getCanvasGuid(path),
           canvasSync,
           materialise: (path) => this.attachCanvasWriter(path),
+          watchForRecords: (path) => this.watchCanvasForRecords(path),
           logger: this.logger,
         });
       })

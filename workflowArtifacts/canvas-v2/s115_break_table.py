@@ -21,6 +21,7 @@ MAIN = PLUGIN / "src" / "main.ts"
 MANIFEST = PLUGIN / "src" / "files" / "manifest.ts"
 BGSYNC = PLUGIN / "src" / "files" / "background-sync.ts"
 CONFLICT = PLUGIN / "src" / "files" / "conflict-copy.ts"
+MIRROR = PLUGIN / "src" / "files" / "canvas-mirror.ts"
 
 TESTS = [
     "src/__tests__/v2/ux01/test_s115_stale_reconcile_is_scoped_by_the_host.test.ts",
@@ -30,6 +31,7 @@ TESTS = [
     "src/__tests__/dataloss/test_s119_empty_text_write_truncates_a_note.test.ts",
     "src/__tests__/dataloss/test_s119_empty_write_floor.test.ts",
     "src/__tests__/dataloss/test_s125_the_guests_version_is_preserved.test.ts",
+    "src/__tests__/v2/wp101/test_s123_canvas_mirror_race.test.ts",
 ]
 
 # (id, acceptance criterion, description, [(file, old, new), ...])
@@ -273,6 +275,31 @@ BREAKS = [
           "      noteConflictCopy(arm);",
           "      noteConflictCopy(`${arm}-NOT-COUNTED`);")],
     ),
+    # ---- S123 / WP101 : the canvas mirror race ----
+    (
+        "B28",
+        "S123 AC3/AC4",
+        "the mirror stops re-asking when records arrive (the race returns)",
+        [(MIRROR,
+          "      deps.watchForRecords?.(path);",
+          "      void path;")],
+    ),
+    (
+        "B29",
+        "S123 AC4 (the real watcher)",
+        "the production watcher never fires, so the re-arm is inert",
+        [(MAIN,
+          "      if (!maps.some((map) => map.size > 0)) return;",
+          "      return;")],
+    ),
+    (
+        "B30",
+        "S123 AC3",
+        "a settled skip also installs a watcher (a leak, and a wrong re-arm)",
+        [(MIRROR,
+          "      post.identityResolves === true &&",
+          "      true &&")],
+    ),
 ]
 
 
@@ -311,7 +338,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT}
+    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT, MIRROR}
     baseline_sha = {p: sha256(p) for p in targets}
 
     print("=== BASELINE (no break) ===")

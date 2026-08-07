@@ -775,6 +775,8 @@ export interface E2EControlHost {
   emptyWriteRefusals?(): unknown;
   /** S125 AC10 — conflict copies written, by arm. */
   conflictCopies?(): unknown;
+  /** S123 AC5 — the last canvas mirror pass's per-path verdicts. */
+  canvasMirror?(): unknown;
 }
 
 /**
@@ -1114,6 +1116,15 @@ export async function routeCommand(
       }
       // S119 AC5 — refused empty writes. Same shape and same reason as the
       // protected-path ledger beside it: a refusal leaves no other trace.
+      // S123 AC5 — WHY a canvas did or did not materialise on THIS peer, per
+      // path. The report already existed and was discarded at the call site;
+      // W4 spent two rounds unable to see past "timed out at 45 s".
+      case "canvas.mirror": {
+        if (typeof host.canvasMirror !== "function") {
+          throw new Error("canvas.mirror unavailable on this host");
+        }
+        return ok(host.canvasMirror());
+      }
       // S125 AC10 — local versions preserved before a host overwrite.
       case "sync.conflictCopies": {
         if (typeof host.conflictCopies !== "function") {
@@ -1507,6 +1518,8 @@ export interface E2EPluginLike {
   getEmptyWriteRefusals?: () => { total: number; byArm: Record<string, number> };
   /** S125 AC10 — the conflict-copy ledger. */
   getConflictCopies?: () => { total: number; byArm: Record<string, number>; failed: number };
+  /** S123 AC5 — the last canvas mirror report, or null if no pass has run. */
+  getLastCanvasMirrorReport?: () => unknown;
   /**
    * WP82 (AC2/AC3) — the real per-link report and the real break seam, invoked.
    * All three are optional so every hand-rolled fake plugin in the existing
@@ -2263,6 +2276,13 @@ export function buildPluginHost(
         );
       }
       return manager.getMuteReleaseStats();
+    },
+
+    canvasMirror() {
+      if (typeof plugin.getLastCanvasMirrorReport !== "function") {
+        throw new Error("canvas.mirror unavailable: this instance exposes no mirror report");
+      }
+      return plugin.getLastCanvasMirrorReport() ?? { role: null, considered: 0, entries: [] };
     },
 
     conflictCopies() {
