@@ -1,0 +1,43 @@
+{
+	"nodes": [
+		{
+			"id": "n1",
+			"type": "text",
+			"x": 0,
+			"y": 0,
+			"width": 200,
+			"height": 100,
+			"text": "alpha"
+		},
+		{
+			"id": "n2",
+			"type": "text",
+			"x": 400,
+			"y": 0,
+			"width": 200,
+			"height": 100,
+			"text": "beta"
+		}
+	],
+	"edges": [
+		{
+			"id": "e1",
+			"fromNode": "n1",
+			"toNode": "n2"
+		},
+		{
+			"id": "e2",
+			"fromNode": "n1",
+			"fromSide": "right",
+			"fromEnd": "none",
+			"toNode": "n2",
+			"toSide": "left"
+		},
+		{
+			"id": "e3",
+			"fromNode": "n2",
+			"toNode": "n1",
+			"toSide": "top"
+		}
+	]
+}

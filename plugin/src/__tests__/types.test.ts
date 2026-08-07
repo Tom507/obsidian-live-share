@@ -12,7 +12,12 @@ describe("types", () => {
     expect(DEFAULT_SETTINGS.serverPassword).toBe("");
     expect(DEFAULT_SETTINGS.notificationsEnabled).toBe(true);
     expect(DEFAULT_SETTINGS.debugLogging).toBe(false);
-    expect(DEFAULT_SETTINGS.debugLogPath).toBe("live-share-debug.md");
+    // Pre-existing red, not this batch's: commit 7754ac6 ("keep the debug log out
+    // of the vault root") deliberately moved the default under `.obsidian/` so
+    // Obsidian stops indexing the log, and this assertion was not updated with it.
+    // Corrected to the shipped value rather than left failing — a red baseline
+    // makes any later RED/GREEN evidence unreadable.
+    expect(DEFAULT_SETTINGS.debugLogPath).toBe(".obsidian/live-share-debug.md");
     expect(DEFAULT_SETTINGS.autoReconnect).toBe(true);
     expect(DEFAULT_SETTINGS.readOnlyPatterns).toEqual([]);
   });

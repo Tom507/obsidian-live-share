@@ -1,0 +1,144 @@
+==============================================================================
+B59 / W4 — ARMS 4/5/6 — S93, S95, S96   run 134725   2026-08-07 13:47:25
+==============================================================================
+  PINNED bundle 8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+  PINNED commit 2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e
+  bundle A: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  bundle B: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 34, "overruns": 33, "worstOverrunMs": 14, "overrunsByClass": {"canvas": 6, "text": 
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 9, "byArm": {"file-op-gate": 9}, "byRoot": {".obsidian": 9}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 1, "releasedByCeiling": 65, "overruns": 65, "worstOverrunMs": 755, "overrunsByClass": {"canvas": 7, "text":
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 36, "byArm": {"file-op-gate": 36}, "byRoot": {".obsidian": 27, ".git": 9}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 6 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 0.9s behind wall clock
+    B: newest on-disk log stamp is 0.9s behind wall clock
+
+==============================================================================
+  ARM 4 / S93 — what protects an EXISTING file with no leaf open?
+==============================================================================
+    fixture create on B: mutated=True
+    on both disks: True after 0.0s
+
+  STATE 1 — no leaf anywhere. The file exists on both sides.
+    A (guest): {'hasAdapter': False, 'hasWriter': True, 'adapterAvailable': False, 'disk_nodes': 2, 'doc_nodes': 2}
+    B (host): {'hasAdapter': False, 'hasWriter': False, 'adapterAvailable': False, 'disk_nodes': 2, 'doc_nodes': 2}
+
+  STATE 1 probe — 90 s with no leaf. Does ANY refusal or store entry appear,
+  and does the file change at all?
+      !! WAIT TIMED OUT after 90.0s waiting for: a seed-refusal store entry appears for this board on EITHER side
+    store entry appeared: False after 90.0s
+    file unchanged on both after the 90 s: {'A': True, 'B': True}
+    (elapsed 90s)
+
+  STATE 2 — the ONLY variable changes: a leaf opens on the GUEST.
+  Opened with `canvas.typeInNode{open:true}` (S45) — never `canvas.open`,
+  which would subscribe the doc as a side effect and answer the question
+  by asking it.
+    typeInNode -> {"ok": true, "result": {"ok": true, "path": "_liveshare-test/b59-s93-134725.canvas", "nodeId": "b59-134725-s93-a", "canvasOpen": true, "opened": true, "nodeFound": true, "liveNodeIds": ["b59-134725-s93-a", "b59-134725-s93-b"], "editingStarted": true, "editingR
+    adapter attached on A: True after 0.0s
+    A (guest): {'hasAdapter': True, 'hasWriter': True, 'adapterAvailable': True, 'disk_nodes': 2, 'doc_nodes': 2}
+    B (host): {'hasAdapter': False, 'hasWriter': False, 'adapterAvailable': False, 'disk_nodes': 2, 'doc_nodes': 2}
+      !! WAIT TIMED OUT after 60.0s waiting for: a seed-refusal store entry appears now that a leaf is open
+    store entry appeared: False after 60.0s
+    file unchanged vs state 1: {'A': True, 'B': True}
+    nodes on disk after: {'A': 2, 'B': 2} (fixture had 2)
+    teardown: _liveshare-test/b59-s93-134725.canvas removed from both vaults
+
+==============================================================================
+  ARM 5 / S95 — an externally CREATED file vs an externally MODIFIED one
+==============================================================================
+
+  (i) EXTERNAL CREATE — written straight to disk by this process, never
+      through the plugin's inbound path.
+    peer has it: True after 0.2s
+    host manifest names the path: before=False after=True (manifest entry count -1 -> -1)
+
+  (ii) THE CONTROL — the SAME file, now EXTERNALLY MODIFIED. Same process,
+       same folder, same watcher, minutes apart. If this does not land
+       either, the instance is not watching and (i) says nothing.
+       The file is first put on BOTH sides through the plugin's own
+       inbound path, so the modify has an existing shared file to act on.
+    seeded through fileop.inject: mutated=True
+    peer holds the seed: True after 0.0s
+    peer sees the external modify: True after 0.5s
+
+  (iii) SAME PATH, SAME BYTES, THROUGH THE PLUGIN'S INBOUND PATH — the
+        discriminator between 'creates do not propagate' and 'externally
+        made creates are not NOTICED'.
+    peer has it: True after 0.0s
+    teardown: all three probe files removed from both vaults
+
+==============================================================================
+  ARM 6 / S96 — a guest is not subscribed to a canvas it already holds
+==============================================================================
+
+  regimes on the GUEST before anything is touched:
+    _liveshare-test/wp79-035734-three.canvas: {'hasAdapter': False, 'hasWriter': False, 'adapterAvailable': False, 'disk_nodes': 1, 'doc_nodes': 0}
+    _liveshare-test/second-011125.canvas: {'hasAdapter': True, 'hasWriter': True, 'adapterAvailable': True, 'disk_nodes': 1, 'doc_nodes': 1}
+
+  (i) the guest edits the board it holds but is NOT subscribed to.
+      !! WAIT TIMED OUT after 45.0s waiting for: b59-134725-s96-unsub reaches the GUEST'S OWN doc
+      !! WAIT TIMED OUT after 20.0s waiting for: b59-134725-s96-unsub reaches the HOST'S doc
+    captured into the guest's own doc: False after 45.0s
+    reached the host's doc:            False after 20.0s
+
+  (ii) THE CONTROL — the identical gesture by the identical instance in
+       the same minute, on the board where it DOES hold a writer.
+    captured into the guest's own doc: True after 0.2s
+    reached the host's doc:            True after 0.0s
+
+  (iii) the reach-around: open a leaf on the unsubscribed board (S45 form)
+    typeInNode -> {"ok": true, "result": {"ok": true, "path": "_liveshare-test/wp79-035734-three.canvas", "nodeId": "b59-134725-s96-unsub", "canvasOpen": true, "opened": true, "nodeFound": true, "liveNodeIds": ["q1", "b59-134725-s96-unsub
+      !! WAIT TIMED OUT after 60.0s waiting for: b59-134725-s96-unsub reaches the guest's doc once a leaf is open
+    now captured locally: False after 60.0s   regime={'hasAdapter': True, 'hasWriter': True, 'adapterAvailable': True, 'disk_nodes': 1, 'doc_nodes': 1}
+
+  ---- teardown ----
+    _liveshare-test/wp79-035734-three.canvas: b59-134725-s96-unsub removed = True
+      !! WAIT TIMED OUT after 15.0s waiting for: b59-134725-s96-sub gone from both docs and both disks
+      !! WAIT TIMED OUT after 15.0s waiting for: b59-134725-s96-sub gone from both docs and both disks
+      !! WAIT TIMED OUT after 15.0s waiting for: b59-134725-s96-sub gone from both docs and both disks
+      !! WAIT TIMED OUT after 15.0s waiting for: b59-134725-s96-sub gone from both docs and both disks
+    _liveshare-test/second-011125.canvas: b59-134725-s96-sub removed = False
+
+arms456  flush_proven=False waited=90.2s
+  [A] 137 lines  W=1786103589.787  W-t_end=-9.2s  sink_failed=False
+  [B] 54 lines  W=1786103589.788  W-t_end=-9.2s  sink_failed=False
+  control 'AWARENESS GAP:'         history_hits=1496   matcher_ok=True
+  control 'CANVAS WRITER:'         history_hits=2064   matcher_ok=True
+  control 'CAPTURE DECLINED:'      history_hits=154    matcher_ok=True
+  control 'DELETE WITHHELD:'       history_hits=3      matcher_ok=True
+  control 'INGEST REJECTED'        history_hits=7      matcher_ok=True
+  control 'MUTE OVERRUN:'          history_hits=0      matcher_ok=True
+  control 'PROTECTED PATH REFUSED:' history_hits=45     matcher_ok=True
+  control 'SEED REFUSAL STORE:'    history_hits=19     matcher_ok=True
+  control 'SEED REFUSED:'          history_hits=5      matcher_ok=True
+  control 'SEED RESTORED:'         history_hits=1      matcher_ok=True
+  control 'local modify '          history_hits=1653   matcher_ok=True
+  control 'refused remote rename'  history_hits=1      matcher_ok=True
+
+  RULE 15 — every signature, with the control that proves it can match.
+  TOOL: Python `substring in line` over the plugin's own debug log; every
+        pattern is a LITERAL (no regex, no metacharacter).
+    'CANVAS WRITER:'             window_hits=5     verdict=PRESENT            history_hits=2064   matcher_ok=True
+    'CAPTURE DECLINED:'          window_hits=2     verdict=PRESENT            history_hits=154    matcher_ok=True
+    'local modify '              window_hits=6     verdict=PRESENT            history_hits=1653   matcher_ok=True
+    'SEED REFUSED:'              window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=5      matcher_ok=True
+    'SEED RESTORED:'             window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=1      matcher_ok=True
+    'SEED REFUSAL STORE:'        window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=19     matcher_ok=True
+    'INGEST REJECTED'            window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=7      matcher_ok=True
+    'MUTE OVERRUN:'              window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=0      matcher_ok=True
+    'AWARENESS GAP:'             window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=1496   matcher_ok=True
+    'refused remote rename'      window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=1      matcher_ok=True
+    'PROTECTED PATH REFUSED:'    window_hits=0     verdict=FLUSH-NOT-PROVEN   history_hits=45     matcher_ok=True
+    'DELETE WITHHELD:'           window_hits=1     verdict=PRESENT            history_hits=3      matcher_ok=True
+
+    tree A: added=[] removed=[]
+    tree B: added=[] removed=[]

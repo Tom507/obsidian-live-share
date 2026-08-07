@@ -1,0 +1,252 @@
+{
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "host": "B",
+  "guest": "A",
+  "overrun_signature_history_hits": 0,
+  "before": {
+    "A": {
+      "releasedByEvent": 0,
+      "releasedByCeiling": 9,
+      "overruns": 9,
+      "worstOverrunMs": 13,
+      "overrunsByClass": {
+        "canvas": 5,
+        "text": 4
+      },
+      "pending": 0
+    },
+    "B": {
+      "releasedByEvent": 0,
+      "releasedByCeiling": 9,
+      "overruns": 9,
+      "worstOverrunMs": 750,
+      "overrunsByClass": {
+        "canvas": 7,
+        "text": 2
+      },
+      "pending": 0
+    }
+  },
+  "drive_host": {
+    "created": [
+      {
+        "path": "_liveshare-test/b59-134029-mute-0.md",
+        "mutated": true
+      },
+      {
+        "path": "_liveshare-test/b59-134029-mute-1.md",
+        "mutated": true
+      },
+      {
+        "path": "_liveshare-test/b59-134029-mute-2.md",
+        "mutated": true
+      },
+      {
+        "path": "_liveshare-test/b59-134029-mute-3.md",
+        "mutated": true
+      },
+      {
+        "path": "_liveshare-test/b59-134029-mute-4.md",
+        "mutated": true
+      },
+      {
+        "path": "_liveshare-test/b59-134029-mute-5.md",
+        "mutated": true
+      },
+      {
+        "path": "_liveshare-test/b59-134029-mute-6.md",
+        "mutated": true
+      },
+      {
+        "path": "_liveshare-test/b59-134029-mute-7.md",
+        "mutated": true
+      }
+    ]
+  },
+  "after_drive": {
+    "A": {
+      "releasedByEvent": 0,
+      "releasedByCeiling": 9,
+      "overruns": 9,
+      "worstOverrunMs": 13,
+      "overrunsByClass": {
+        "canvas": 5,
+        "text": 4
+      },
+      "pending": 0
+    },
+    "B": {
+      "releasedByEvent": 0,
+      "releasedByCeiling": 25,
+      "overruns": 25,
+      "worstOverrunMs": 750,
+      "overrunsByClass": {
+        "canvas": 7,
+        "text": 18
+      },
+      "pending": 0
+    }
+  },
+  "reader_moved": true,
+  "deltas": {
+    "releases": 16,
+    "overruns": 16,
+    "text_overruns": 16,
+    "releasedByEvent": 0,
+    "releasedByCeiling": 16,
+    "ops_driven": 16
+  },
+  "burst": {
+    "before": {
+      "releasedByEvent": 0,
+      "releasedByCeiling": 25,
+      "overruns": 25,
+      "worstOverrunMs": 750,
+      "overrunsByClass": {
+        "canvas": 7,
+        "text": 18
+      },
+      "pending": 0
+    },
+    "after": {
+      "releasedByEvent": 0,
+      "releasedByCeiling": 37,
+      "overruns": 37,
+      "worstOverrunMs": 755,
+      "overrunsByClass": {
+        "canvas": 7,
+        "text": 30
+      },
+      "pending": 0
+    },
+    "pending_drained": true,
+    "drain_s": 0.0
+  },
+  "held_census": {
+    "A": {
+      "n": 0,
+      "max_held_ms": null,
+      "min_held_ms": null,
+      "in_40_70s_clamp_band": 0,
+      "over_1s": 0,
+      "sample": []
+    },
+    "B": {
+      "n": 0,
+      "max_held_ms": null,
+      "min_held_ms": null,
+      "in_40_70s_clamp_band": 0,
+      "over_1s": 0,
+      "sample": []
+    }
+  },
+  "held_census_window": {
+    "A": {
+      "n": 0,
+      "max_held_ms": null,
+      "min_held_ms": null,
+      "in_40_70s_clamp_band": 0,
+      "over_1s": 0,
+      "sample": []
+    },
+    "B": {
+      "n": 0,
+      "max_held_ms": null,
+      "min_held_ms": null,
+      "in_40_70s_clamp_band": 0,
+      "over_1s": 0,
+      "sample": []
+    }
+  },
+  "cleanup_leftovers": [],
+  "rule15": {
+    "CANVAS WRITER:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 2057,
+      "matcher_ok": true
+    },
+    "CAPTURE DECLINED:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 150,
+      "matcher_ok": true
+    },
+    "local modify ": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 1641,
+      "matcher_ok": true
+    },
+    "SEED REFUSED:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 5,
+      "matcher_ok": true
+    },
+    "SEED RESTORED:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 1,
+      "matcher_ok": true
+    },
+    "SEED REFUSAL STORE:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 19,
+      "matcher_ok": true
+    },
+    "INGEST REJECTED": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 7,
+      "matcher_ok": true
+    },
+    "MUTE OVERRUN:": {
+      "window_hits": 0,
+      "verdict": "UNINFORMATIVE",
+      "history_hits": 0,
+      "matcher_ok": true
+    },
+    "AWARENESS GAP:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 1496,
+      "matcher_ok": true
+    },
+    "refused remote rename": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 1,
+      "matcher_ok": true
+    },
+    "PROTECTED PATH REFUSED:": {
+      "window_hits": 0,
+      "verdict": "UNINFORMATIVE",
+      "history_hits": 0,
+      "matcher_ok": true
+    },
+    "DELETE WITHHELD:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 2,
+      "matcher_ok": true
+    }
+  },
+  "overrun_lines_in_window": [],
+  "tree_delta": {
+    "A": {
+      "added": [],
+      "removed": [
+        "Properties.md"
+      ]
+    },
+    "B": {
+      "added": [],
+      "removed": []
+    }
+  }
+}

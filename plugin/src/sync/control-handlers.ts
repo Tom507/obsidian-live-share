@@ -1,6 +1,12 @@
 import { minimatch } from "minimatch";
 import { MarkdownView, Notice, TFile } from "obsidian";
 
+import { isSidecarPath } from "../files/canvas-sidecar";
+import {
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "../files/protected-paths";
 import type LiveSharePlugin from "../main";
 import type { ControlMessage, FileOp } from "../types";
 import { ApprovalModal } from "../ui/approval-modal";
@@ -45,11 +51,107 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
       "newPath" in op ? op.newPath : null,
     ].filter(Boolean) as string[];
     if (paths.length === 0) return;
+    // --------------------------------------------------------------- WP95 --
+    // THE PROTECTED-PATH REFUSAL, ABOVE THE OP-TYPE SPLIT.
+    //
+    // This is the line whose ABSENCE was S94. WP68's guard sat inside the
+    // `isRename` branch below, so it constrained ONE of the nine members of the
+    // `FileOp` union; the other eight reached `applyRemoteOp` with only
+    // `isSharedPath` between them and the vault, and `isSharedPath` refuses
+    // `.obsidian/**` only because `ExclusionManager` happens to be configured
+    // with `${configDir}/**` — a coincidence `manifest.ts` had already written
+    // down as a coincidence, and one that holds for no `.git` path at all.
+    //
+    // PLACED ABOVE THE SPLIT so the guard cannot be narrower than the union.
+    // Every op type, every endpoint, one predicate, one test. A tenth member
+    // added to `FileOp` tomorrow is covered on the day it is added, because this
+    // gate never learns the type.
+    //
+    // ALL PATHS, not `.some` — the rename branch below is admitted on
+    // `.some(isSharedPath)`, and that asymmetry is exactly how a hostile
+    // endpoint rode in on its shared partner. A protected endpoint refuses the
+    // whole op no matter what its partner is.
+    //
+    // BEFORE `applyRemoteOp` (I11 — REFUSAL NEVER DESTROYS): no `opQueues` slot
+    // is taken, no `mutePathEvents` is issued and can therefore be stranded, and
+    // NOT ONE vault call is made. Nothing is renamed, trashed, created, modified
+    // or folder-created at any endpoint, and every local file named by the op is
+    // left byte-identical.
+    const protectedPath = paths.find((path) => isProtectedPath(path));
+    if (protectedPath !== undefined) {
+      noteProtectedRefusal("file-op-gate", protectedPath);
+      plugin.logger.warn("file-op", protectedRefusalMessage("file-op-gate", protectedPath));
+      return;
+    }
     const isRename = op.type === "rename";
     if (isRename) {
-      if (!paths.some((path) => plugin.manifestManager.isSharedPath(path))) return;
+      // ----------------------------------------------------------- WP68 AC2 --
+      // THE RECEIVER REFUSES INDEPENDENTLY OF THE SENDER.
+      //
+      // The rename branch is the ONLY file-op admitted on `.some(isShared)`
+      // rather than on the strict all-paths form below, and that is exactly what
+      // made this reachable: with C26 landed `isSharedPath` answers `false` for a
+      // sidecar path, so a rename straddling the boundary was admitted on the
+      // strength of its SHARED endpoint alone. The op then reached
+      // `applyRemoteOpInner`'s `"rename"` case, which finds this peer's own file
+      // at `oldPath`, calls `ensureFolder` for the destination's parent and moves
+      // it — a peer-driven write into this process's own `.obsidian/**`.
+      //
+      // No sender-side guard is in the picture here on purpose. The outbound
+      // guard in `files/file-ops.ts` constrains what THIS peer produces; it says
+      // nothing about an older build, a differently-configured vault or a
+      // hostile one, and those are precisely the cases this gate has to survive.
+      //
+      // BEFORE `applyRemoteOp`, not inside it (AC3, AC4): refusing here means no
+      // `opQueues` slot is taken, no `mutePathEvents` is issued and therefore
+      // none can be stranded, and — the criterion that matters most — NOT ONE
+      // vault call is made. Nothing is renamed, trashed, created, modified or
+      // folder-created at either endpoint, and the file at `oldPath` is left
+      // exactly as it was. A refusal that degraded into a delete would be the
+      // I11 failure this criterion exists to forbid.
+      //
+      // The membership test is `isSidecarPath` from `files/canvas-sidecar.ts` —
+      // imported, never re-spelt (C26 AC3). NOT `skipsAutoTextSync`: an ordinary
+      // `.canvas` must keep passing this boundary, exactly as it does through
+      // `isSharedPath`.
+      //
+      // Per-path and non-fatal (I5): one refused rename does not throw, does not
+      // touch the session and does not affect any other path or op type.
+      if (paths.some((path) => isSidecarPath(path))) {
+        plugin.logger.warn(
+          "file-op",
+          `refused remote rename touching the sidecar directory (${paths.length} paths)`,
+        );
+        return;
+      }
+      if (!paths.some((path) => plugin.manifestManager.isSharedPath(path))) {
+        // S105 — THE ONLY REFUSAL ON THIS GATE AN ORDINARY PATH CAN TAKE, and
+        // until now the only one that said nothing. The two above it — sidecar
+        // and protected — both log and the protected one also bumps a counter,
+        // so a live run can see them. This one was a bare `return`, which is
+        // why "delivered=true, refusals+0, nothing happened" was a complete
+        // description of two live reproductions and named no branch.
+        //
+        // `debug`, not `warn`: a peer sharing a different folder makes this the
+        // ORDINARY outcome for its traffic, and a warn-level line would be a
+        // steady stream rather than a signal. It is diagnostic only — the
+        // `return` below it is unchanged, so nothing is admitted that was not
+        // admitted before.
+        plugin.logger.debug(
+          "file-op",
+          `rename dropped: no endpoint is a shared path (${paths.join(" -> ")})`,
+        );
+        return;
+      }
     } else {
-      if (paths.some((path) => !plugin.manifestManager.isSharedPath(path))) return;
+      if (paths.some((path) => !plugin.manifestManager.isSharedPath(path))) {
+        // S105 — the same drop for the other eight op types, same reasoning.
+        plugin.logger.debug(
+          "file-op",
+          `${op.type} dropped: an endpoint is not a shared path (${paths.join(" -> ")})`,
+        );
+        return;
+      }
     }
     plugin.fileOpsManager
       .applyRemoteOp(op, async () => {
@@ -99,7 +201,26 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     "file-chunk-resume",
   ] as const) {
     channel.on(chunkType, (msg) => {
-      if (!msg.path || !plugin.manifestManager.isSharedPath(msg.path)) return;
+      if (!msg.path) return;
+      // WP95 — THE CHUNK CHANNEL IS A SEPARATE DOOR AND NEEDS ITS OWN GUARD.
+      //
+      // These four control messages do NOT travel as `file-op`; they are their
+      // own `ControlMessage` types with their own `channel.on` registration, so
+      // the gate above never sees them. `chunk-end` lands
+      // `vault.createBinary` / `vault.modifyBinary` / `vault.create` /
+      // `vault.modify` on `op.path` — the same four sinks the create arm uses,
+      // reached over a channel the create arm's guard does not cover. It is
+      // also the arm by which a >512 KB `main.js` would arrive, because
+      // `sendChunked` is what the producer uses above `CHUNK_SIZE`.
+      //
+      // Ordered ahead of `isSharedPath` deliberately: the refusal must not be a
+      // function of manifest membership or of `ExclusionManager` configuration.
+      if (isProtectedPath(msg.path)) {
+        noteProtectedRefusal("chunk-gate", msg.path);
+        plugin.logger.warn("file-op", protectedRefusalMessage("chunk-gate", msg.path));
+        return;
+      }
+      if (!plugin.manifestManager.isSharedPath(msg.path)) return;
       plugin.fileOpsManager
         .applyRemoteOp({
           ...msg,
@@ -112,7 +233,38 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
   }
 
   channel.on("presence-update", (msg) => {
+    // D2 — a guest may only delete against a manifest a live host published
+    // DURING ITS SESSION, so somebody has to publish once the guest is listening.
+    // A guest that joins a long-running session would otherwise hold only the
+    // relay's replayed manifest, never obtain the evidence, and never clean up —
+    // safe, but permanently useless. The arrival of a peer we have not seen
+    // before is exactly the moment the host learns there is a new consumer.
+    //
+    // Computed here rather than inside PresenceManager because the newness test
+    // must happen BEFORE `handlePresenceUpdate` inserts the user.
+    const isNewPeer = !!msg.userId && !plugin.remoteUsers.has(msg.userId);
     plugin.presenceManager?.handlePresenceUpdate(msg);
+    if (isNewPeer && plugin.settings.role === "host") {
+      // WP80 call site 4 of 4 (new-peer republish). Wiring only — the purge is a
+      // REQUEST here as everywhere else, and `ManifestManager` decides whether
+      // to grant it. This site matters because it REPEATS whatever state site 3
+      // (`promoteToHost`) left behind: without the producing-side gate a wrong
+      // purge would be re-asserted with a fresh `seq` on every new peer and
+      // could never age out.
+      void plugin.manifestManager
+        .publishManifest({ purge: true })
+        .then((decision) => {
+          plugin.logger.log(
+            "manifest",
+            `publish[new-peer] verdict=${decision.verdict} purged=${decision.purged} ` +
+              `entries=${decision.entries} deleted=${decision.deleted.length} ` +
+              `unaccounted=${decision.unaccounted.length} — ${decision.reason}`,
+          );
+        })
+        .catch((err) => {
+          plugin.logger.error("manifest", "republish for new peer failed", err);
+        });
+    }
   });
 
   channel.on("presence-leave", (msg) => {
@@ -141,6 +293,75 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
   });
 
   channel.on("join-response", (msg) => {
+    // ---------------------------------------------------------------- D1 ----
+    // ROOT CAUSE OF THE 2026-08-05 DATA LOSS, and the reason a session could end
+    // up with NO host at all.
+    //
+    // The server is authoritative about who hosts a room, and it tells every
+    // client its verdict in `join-response.isHost`. This handler used to apply
+    // that verdict in ONE DIRECTION ONLY: `isHost === false` demoted a local
+    // host to guest, but `isHost === true` did nothing whatsoever to a local
+    // guest. Every disagreement between server and client therefore moved
+    // monotonically towards "guest", and never back. A role could be lost but
+    // never regained.
+    //
+    // How that turns into destruction, measured on this host:
+    //
+    //   1. The host's Obsidian is closed. `control-handler.ts:568-591` sees the
+    //      host's socket close with peers still in the room, auto-elects the
+    //      remaining guest, and REWRITES `room.hostUserId` to that guest's id.
+    //   2. The elected guest is being shut down at the same moment (one process
+    //      serves both vaults), so the `host-transfer-complete` that would have
+    //      promoted it is never processed and never persisted. The server now
+    //      believes the guest is host; the guest's `data.json` still says guest.
+    //   3. On relaunch the original host no longer matches `room.hostUserId`,
+    //      is told `isHost: false`, and demotes — correctly, by its own lights.
+    //      The elected guest is told `isHost: true` and, before this fix,
+    //      IGNORED IT.
+    //   4. Result: two guests, zero hosts, nobody publishing a manifest — and a
+    //      guest that reads "not in the manifest" as "deleted". Vault B lost
+    //      `hello.md` and `second.canvas` this way.
+    //
+    // The fix is to make the reconciliation symmetric. `isHost === true` is a
+    // POSITIVE ASSERTION from the authority that already enforces the
+    // single-host invariant (`determineHostStatus` demotes every other client
+    // before answering), so adopting it cannot create a second host — while
+    // refusing to adopt it demonstrably creates a session with none.
+    // ---------------------------------------------------------------- WP82 --
+    // THE LATCH, HOISTED OUT OF THE ROLE BRANCHES.
+    //
+    // This marking used to live at the BOTTOM of this handler, past the
+    // `role !== "guest"` return below, and it was the second of only two sites
+    // in the whole tree that could ever set it. The other one
+    // (`main.ts`, the ControlChannel `connected` callback) was gated on
+    // `role === "host"`. The two were MUTUALLY EXCLUSIVE BY ROLE, and a peer
+    // that resumed as guest and was then promoted by the relay's verdict fell
+    // between both: the host gate was false at socket-open, and the promotion
+    // branch below `return`ed before ever reaching the marking. That peer was
+    // `connected: false` for the life of the session while both of its sockets
+    // were open, every file operation it performed went into an unbounded
+    // `OfflineQueue` that nothing would drain, and its status bar read
+    // `Live Share: hosting`. Measured on a live vault: `resuming as guest` →
+    // `control channel connected` → `promoted to host`, 106 ms, then permanent.
+    //
+    // Receiving a `join-response` AT ALL is proof that this peer's control
+    // socket delivered a frame — a fact about the LINK, which is true under
+    // every ordering of {socket open, join-response, promotion, demotion} and
+    // under every role. So it is marked here, once, before any branch.
+    //
+    // This is NOT the "set the latch unconditionally" mistake the charter names
+    // as the most likely wrong implementation: the marking is a BELIEF, and
+    // `plugin.controlConnected` is no longer that belief. It is now derived by
+    // the pure definer (`sync/link-state.ts`) from the socket's live
+    // `readyState`, so a genuinely dead control link cannot report healthy no
+    // matter what is marked here.
+    plugin.controlConnected = true;
+    plugin.updateOnlineState();
+
+    if (msg.isHost === true && plugin.settings.role === "guest") {
+      void plugin.promoteToHost();
+      return;
+    }
     if (msg.isHost === false && plugin.settings.role === "host") {
       void plugin.demoteToGuest();
       return;
@@ -162,8 +383,11 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
         .filter((p) => msg.readOnlyPatterns?.some((pat) => minimatch(p, pat)));
       plugin.explorerIndicators?.update(readOnlyPaths);
     }
-    plugin.controlConnected = true;
-    plugin.updateOnlineState();
+    // WP82 — the marking that used to be here is now HOISTED above the role
+    // branches (see the long note at the top of this handler). Left as a
+    // pointer rather than deleted silently, because "the connected marking
+    // moved" is exactly the kind of change that is invisible in a diff read
+    // bottom-up.
     plugin.presenceManager?.broadcastPresence();
   });
 
@@ -250,20 +474,11 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     ).open();
   });
 
+  // D1 — routed through the SAME promotion as the `join-response` verdict.
+  // These were two hand-rolled copies of "become the host"; keeping one of them
+  // is how the server-verdict direction came to be missing in the first place.
   channel.on("host-transfer-complete", () => {
-    plugin.settings.role = "host";
-    plugin.settings.permission = "read-write";
-    void plugin
-      .saveSettings()
-      .then(() => plugin.backgroundSync.startAll("host"))
-      .then(() => plugin.manifestManager.publishManifest({ purge: true }))
-      .then(() => {
-        plugin.presenceManager?.broadcastPresence();
-        plugin.updateStatusBar();
-        plugin.refreshPresenceView();
-        new Notice("Live Share: you are now the host");
-        plugin.logger.log("session", "became host via transfer");
-      });
+    void plugin.promoteToHost("host transfer accepted");
   });
 
   channel.on("host-transfer-decline", (msg) => {

@@ -1,0 +1,51 @@
+==============================================================================
+B59 / W4 — SURVEY (the one provisioning step for six arms)   run 133503   2026-08-07 13:35:03
+==============================================================================
+  PINNED bundle 8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+  PINNED commit 2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e
+  bundle A: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  bundle B: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 5, "overruns": 5, "worstOverrunMs": 6, "overrunsByClass": {"canvas": 3, "text": 2},
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 3, "overruns": 3, "worstOverrunMs": 6, "overrunsByClass": {"canvas": 3}, "pending":
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 8 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 4.1s behind wall clock
+    B: newest on-disk log stamp is 4.1s behind wall clock
+
+  ---- board survey: which regime is each shared canvas in? ----
+    second-011125.canvas
+      A (guest): disk=True disk_nodes=1 hasAdapter=False hasWriter=True doc_ok=True doc_nodes=1
+      B (host ): disk=True disk_nodes=1 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=1
+    smoke.canvas
+      A (guest): disk=True disk_nodes=9 hasAdapter=True hasWriter=True doc_ok=True doc_nodes=9
+      B (host ): disk=True disk_nodes=9 hasAdapter=True hasWriter=True doc_ok=True doc_nodes=9
+    wp37probe-031340.canvas
+      A (guest): disk=True disk_nodes=2 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=0
+      B (host ): disk=True disk_nodes=2 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=2
+    wp79-035734-diverged.canvas
+      A (guest): disk=True disk_nodes=2 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=0
+      B (host ): disk=True disk_nodes=2 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=2
+    wp79-035734-one.canvas
+      A (guest): disk=True disk_nodes=2 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=0
+      B (host ): disk=True disk_nodes=2 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=2
+    wp79-035734-three.canvas
+      A (guest): disk=True disk_nodes=1 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=0
+      B (host ): disk=True disk_nodes=1 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=1
+    wp79-035734-two.canvas
+      A (guest): disk=True disk_nodes=1 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=0
+      B (host ): disk=True disk_nodes=1 hasAdapter=False hasWriter=False doc_ok=True doc_nodes=1
+
+  ---- baseline counters (both instances) ----
+    A: muteStats={'releasedByEvent': 0, 'releasedByCeiling': 6, 'overruns': 6, 'worstOverrunMs': 13, 'overrunsByClass': {'canvas': 3, 'text': 3}, 'pending': 0}
+    A: protectedRefusals={'total': 0, 'byArm': {}, 'byRoot': {}}
+    B: muteStats={'releasedByEvent': 0, 'releasedByCeiling': 4, 'overruns': 4, 'worstOverrunMs': 750, 'overrunsByClass': {'canvas': 3, 'text': 1}, 'pending': 0}
+    B: protectedRefusals={'total': 0, 'byArm': {}, 'byRoot': {}}

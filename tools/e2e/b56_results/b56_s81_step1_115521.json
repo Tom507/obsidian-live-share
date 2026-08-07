@@ -1,0 +1,60 @@
+{
+  "tag": "115521",
+  "rel": "_liveshare-test/b56-s81-115521.canvas",
+  "recorder": "A",
+  "other": "B",
+  "roles_step1": {
+    "A": "host",
+    "B": "guest"
+  },
+  "bundle": {
+    "A": "d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4",
+    "B": "d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4"
+  },
+  "step1": {
+    "store_entry_recorded": false,
+    "store_entry": null,
+    "host_doc_refused_edge": true,
+    "guest_copy_destroyed": false,
+    "guest_destroyed_after_s": null,
+    "files": {
+      "A": {
+        "exists": true,
+        "sha256": "c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad",
+        "nodes": [
+          "b56-s81-115521-N1",
+          "b56-s81-115521-N2"
+        ],
+        "edges": [
+          "b56-s81-115521-BADEDGE"
+        ],
+        "bad_edge_on_disk": true
+      },
+      "B": {
+        "exists": true,
+        "sha256": "c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad",
+        "nodes": [
+          "b56-s81-115521-N1",
+          "b56-s81-115521-N2"
+        ],
+        "edges": [
+          "b56-s81-115521-BADEDGE"
+        ],
+        "bad_edge_on_disk": true
+      }
+    },
+    "store_host": {
+      "__absent__": true
+    },
+    "store_guest": {
+      "version": 1,
+      "paths": {}
+    },
+    "log_lines": {
+      "A": [
+        "2026-08-07T09:55:31.714Z [WARN] [canvas-sync] INGEST REJECTED signature: boundary=host-seed refused edge b56-s81-115521-BADEDGE (MISSING_TO)"
+      ],
+      "B": []
+    }
+  }
+}

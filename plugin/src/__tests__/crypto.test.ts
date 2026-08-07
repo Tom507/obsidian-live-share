@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { E2ECrypto } from "../sync/crypto";
+import { E2ECrypto, generateSaltB64 } from "../sync/crypto";
 
 describe("E2ECrypto", () => {
   it("is not enabled before init()", () => {
@@ -92,6 +92,46 @@ describe("E2ECrypto", () => {
     const encrypted = await e2e.encryptString(unicode);
     const decrypted = await e2e.decryptString(encrypted);
     expect(decrypted).toBe(unicode);
+  });
+
+  it("generateSaltB64 returns a fresh random salt each call", () => {
+    const a = generateSaltB64();
+    const b = generateSaltB64();
+    expect(a).not.toBe(b);
+    // 16 random bytes base64-encode to a non-trivial string
+    expect(a.length).toBeGreaterThan(16);
+  });
+
+  it("peers sharing passphrase + salt (from the invite) can decrypt each other", async () => {
+    const salt = generateSaltB64();
+    const host = new E2ECrypto("shared-secret", salt);
+    const guest = new E2ECrypto("shared-secret", salt);
+    await host.init();
+    await guest.init();
+
+    const encrypted = await host.encryptString("via random salt");
+    expect(await guest.decryptString(encrypted)).toBe("via random salt");
+  });
+
+  it("same passphrase but different random salts derive different keys", async () => {
+    const host = new E2ECrypto("shared-secret", generateSaltB64());
+    const other = new E2ECrypto("shared-secret", generateSaltB64());
+    await host.init();
+    await other.init();
+
+    const encrypted = await host.encryptString("secret");
+    // Different salt => different AES key => cannot decrypt.
+    await expect(other.decryptString(encrypted)).rejects.toThrow();
+  });
+
+  it("legacy invites without a salt still round-trip (deterministic fallback)", async () => {
+    const alice = new E2ECrypto("legacy-secret");
+    const bob = new E2ECrypto("legacy-secret");
+    await alice.init();
+    await bob.init();
+
+    const encrypted = await alice.encryptString("legacy path");
+    expect(await bob.decryptString(encrypted)).toBe("legacy path");
   });
 
   it("produces different ciphertext for the same plaintext (random IV)", async () => {

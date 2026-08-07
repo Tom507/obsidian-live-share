@@ -494,6 +494,35 @@ describe("FileOpsManager", () => {
     });
   });
 
+  describe("chunk pacing (Bug L5)", () => {
+    it("emits a complete, correctly-ordered chunk sequence for a large paced send", async () => {
+      const CHUNK_SIZE = 512 * 1024;
+      // >32 chunks so the pacing yields kick in, exercising the async loop.
+      const content = "x".repeat(CHUNK_SIZE * 40 + 7);
+
+      await (manager as any).sendChunked("big.bin", content, true);
+
+      const starts = sentOps.filter((o) => o.type === "chunk-start");
+      const datas = sentOps.filter((o) => o.type === "chunk-data") as Array<{
+        index: number;
+        data: string;
+      }>;
+      const ends = sentOps.filter((o) => o.type === "chunk-end");
+
+      expect(starts).toHaveLength(1);
+      expect(ends).toHaveLength(1);
+      expect(datas).toHaveLength(Math.ceil(content.length / CHUNK_SIZE));
+
+      // No chunk is lost and reassembly reproduces the original content exactly.
+      const joined = datas
+        .slice()
+        .sort((a, b) => a.index - b.index)
+        .map((d) => d.data)
+        .join("");
+      expect(joined).toBe(content);
+    });
+  });
+
   describe("op-queue serialization", () => {
     it("serializes concurrent ops on the same path", async () => {
       const log: string[] = [];

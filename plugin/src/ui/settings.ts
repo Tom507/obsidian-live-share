@@ -1,5 +1,34 @@
-import { type App, PluginSettingTab, SettingGroup } from "obsidian";
+import { type App, Notice, PluginSettingTab, SettingGroup } from "obsidian";
 import type LiveSharePlugin from "../main";
+import { DEFAULT_SETTINGS } from "../types";
+import { FolderSuggest } from "./folder-suggest";
+
+/**
+ * What an empty "Shared folder" field means, stated once so the settings UI and
+ * `main.ts`'s session-start check cannot drift apart.
+ *
+ * `ManifestManager.isInSharedFolder` answers `return true` for EVERY path when
+ * `sharedFolder` is empty (`manifest.ts:753`). Empty is not "unset" and it is not
+ * "nothing shared" — it is *the entire vault*, which is also the shipped default.
+ */
+export function sharesEntireVault(sharedFolder: string): boolean {
+  return sharedFolder.trim() === "";
+}
+
+export const ENTIRE_VAULT_WARNING =
+  "⚠ Empty = your ENTIRE vault is shared. Guests see every note, and their " +
+  "deletions, renames and moves apply to your vault. Pick a folder to limit it.";
+
+/**
+ * WP81 AC5 — what an emptied "Debug log file" field resolves to.
+ *
+ * Extracted so the relationship can be asserted as a relationship: the fallback
+ * IS `DEFAULT_SETTINGS.debugLogPath`, read at call time, not a second literal
+ * that happens to agree with it today. Perturb the default and this follows.
+ */
+export function resolveDebugLogPath(value: string): string {
+  return value.trim() || DEFAULT_SETTINGS.debugLogPath;
+}
 
 export class LiveShareSettingTab extends PluginSettingTab {
   private plugin: LiveSharePlugin;
@@ -127,6 +156,22 @@ export class LiveShareSettingTab extends PluginSettingTab {
             void sessionManager.copyInvite();
           }),
         );
+        // WP88 (AC3) — the second reachable surface for the re-arm. The command
+        // palette entry (`rearm-session`) is the primary one; this is here
+        // because a user whose peer has given up is far more likely to open
+        // this panel than to remember a command name. Both call the SAME
+        // production method — there is no second re-arm.
+        setting.addButton((button) =>
+          button
+            .setButtonText("Retry connection")
+            .setTooltip(
+              "Re-arm sharing after a peer gave up: re-publishes the manifest and " +
+                "re-subscribes every shared file, without ending the session.",
+            )
+            .onClick(() => {
+              void this.plugin.rearmSharing().then(() => this.display());
+            }),
+        );
         if (settings.role === "host") {
           setting.addButton((button) =>
             button
@@ -168,19 +213,43 @@ export class LiveShareSettingTab extends PluginSettingTab {
 
     session
       .addSetting((setting) => {
-        setting
-          .setName("Shared folder")
-          .setDesc("Only share a subfolder instead of the whole vault")
-          .addText((text) => {
-            text
-              .setPlaceholder("Entire vault")
-              .setValue(settings.sharedFolder)
-              .onChange(async (value) => {
-                settings.sharedFolder = value.replace(/^[./\\]+/, "").replace(/\.\./g, "");
-                await this.plugin.saveSettings();
-              });
-            if (active) text.setDisabled(true);
+        setting.setName("Shared folder");
+        // The description is the ONLY place the empty case is visible before a
+        // session starts. It is recomputed on every keystroke rather than
+        // written once at render, because the dangerous state is one the user
+        // reaches BY EDITING (clearing the field), not one they arrive at.
+        const describe = (value: string) =>
+          setting.setDesc(
+            sharesEntireVault(value)
+              ? ENTIRE_VAULT_WARNING
+              : `Only “${value}” and everything inside it is shared. The rest of the vault stays private.`,
+          );
+        describe(settings.sharedFolder);
+        setting.addText((text) => {
+          text
+            .setPlaceholder("Entire vault (everything)")
+            .setValue(settings.sharedFolder)
+            .onChange(async (value) => {
+              // S114 — trim BEFORE storing, not only when reading. `"   "` used
+              // to be stored verbatim and read as a scoped folder that matches
+              // nothing, so the session shared not one file and said nothing.
+              settings.sharedFolder = value
+                .trim()
+                .replace(/^[./\\]+/, "")
+                .replace(/\.\./g, "");
+              describe(settings.sharedFolder);
+              await this.plugin.saveSettings();
+            });
+          // Picking from the vault's real folders instead of typing one: a
+          // folder that does not exist shares NOTHING and reports nothing,
+          // which presents as a broken session rather than as a typo.
+          new FolderSuggest(this.app, text.inputEl, (path) => {
+            settings.sharedFolder = path;
+            describe(path);
+            void this.plugin.saveSettings();
           });
+          if (active) text.setDisabled(true);
+        });
       })
       .addSetting((setting) => {
         setting
@@ -226,7 +295,18 @@ export class LiveShareSettingTab extends PluginSettingTab {
       .addSetting((setting) => {
         setting
           .setName("Auto-reconnect")
-          .setDesc("Automatically rejoin the previous session when Obsidian starts")
+          // WP82 (AC5) — the description states the setting's ACTUAL scope. Its
+          // NAME misled a diagnosis this week into recording "autoReconnect was
+          // true and never fired" as a finding: it is read in exactly one place
+          // outside this settings UI (`main.ts`, the `onLayoutReady` auto-resume
+          // gate), and NEITHER retry loop consults it. Turning it off does not
+          // stop a live session from reconnecting, and turning it on does not
+          // make a dead one retry.
+          .setDesc(
+            "Automatically rejoin the previous session when Obsidian starts. " +
+              "This governs startup only — reconnect attempts during a running " +
+              "session are always made and are not controlled by this setting.",
+          )
           .addToggle((toggle) =>
             toggle.setValue(settings.autoReconnect).onChange(async (value) => {
               settings.autoReconnect = value;
@@ -236,28 +316,143 @@ export class LiveShareSettingTab extends PluginSettingTab {
       });
 
     new SettingGroup(containerEl)
-      .setHeading("Debug")
+      .setHeading("Canvas")
       .addSetting((setting) => {
         setting
-          .setName("Debug logging")
-          .setDesc("Write timestamped debug logs to a file in your vault")
+          .setName("Show canvas cursors")
+          .setDesc("Display other collaborators' live cursors on shared canvases")
           .addToggle((toggle) =>
-            toggle.setValue(settings.debugLogging).onChange(async (value) => {
-              settings.debugLogging = value;
+            toggle.setValue(settings.showCanvasCursors).onChange(async (value) => {
+              settings.showCanvasCursors = value;
               await this.plugin.saveSettings();
             }),
           );
       })
       .addSetting((setting) => {
         setting
+          .setName("Show canvas presence")
+          .setDesc("Highlight cards other collaborators are selecting, editing, or holding")
+          .addToggle((toggle) =>
+            toggle.setValue(settings.showCanvasPresence).onChange(async (value) => {
+              settings.showCanvasPresence = value;
+              await this.plugin.saveSettings();
+            }),
+          );
+      })
+      .addSetting((setting) => {
+        // This flag is not a preference — it selects between TWO WHOLE canvas
+        // sync implementations, in both directions:
+        //   OFF → remote deltas run `reconcileLiveCanvas` (main.ts:1974) and
+        //         local edits are captured by re-reading the .canvas file
+        //         (`canvasSync.handleLocalModify`, vault-events.ts:319).
+        //   ON  → a per-canvas `CanvasBinding` over the model bridge owns both
+        //         directions (main.ts:3150); no file re-read, node-level intent.
+        // The old description called it "experimental — leave OFF", which is
+        // why the redesign it gates had never been exercised by this vault's
+        // owner. Say what it switches, and say which one is which.
+        setting
+          .setName("Canvas sync engine: V2 node-level binding")
+          .setDesc(
+            "ON — canvas changes sync node by node through the CRDT binding: two people " +
+              "can drag different cards at once, and an edit to one card no longer rewrites " +
+              "the whole file. OFF — the legacy path, which reconciles the entire canvas " +
+              "file on every change. Close and reopen any canvas after changing this.",
+          )
+          .addToggle((toggle) =>
+            toggle.setValue(settings.useCanvasBinding).onChange(async (value) => {
+              settings.useCanvasBinding = value;
+              await this.plugin.saveSettings();
+            }),
+          );
+      });
+
+    new SettingGroup(containerEl)
+      .setHeading("Debug")
+      .addSetting((setting) => {
+        setting
+          .setName("Open status console")
+          .setDesc("Open the live Live Share log / status console in the sidebar")
+          .addButton((button) =>
+            button.setButtonText("Open console").onClick(() => {
+              void this.plugin.activateLogView();
+            }),
+          );
+      })
+      .addSetting((setting) => {
+        setting
+          .setName("Debug logging")
+          .setDesc(
+            "Write timestamped debug logs to a file. The file lives inside your " +
+              "vault's configuration folder, NOT among your notes — so it does not " +
+              "appear in the file explorer, search, the graph or Quick Switcher.",
+          )
+          .addToggle((toggle) =>
+            toggle.setValue(settings.debugLogging).onChange(async (value) => {
+              settings.debugLogging = value;
+              await this.plugin.saveSettings();
+              this.display();
+            }),
+          );
+      })
+      // The owner went looking for this file and did not find it: `7754ac6`
+      // moved it out of the vault root (where Obsidian indexed an unbounded log
+      // as an ordinary note) into the config folder, and NOTHING in the UI said
+      // so. A path the user cannot reach from Obsidian has to be readable HERE,
+      // together with whether it is actually being written — an enabled sink
+      // that is silently failing looks exactly like an empty log.
+      .addSetting((setting) => {
+        const sink = this.plugin.logger.getSinkState();
+        setting.setName("Debug log location");
+        if (!sink.enabled) {
+          setting.setDesc(`Disabled. When enabled it will write to: ${sink.path}`);
+        } else if (sink.lastError) {
+          setting.setDesc(
+            `⚠ CANNOT WRITE to ${sink.path} — ${sink.lastError.message} ` +
+              `(${sink.failureCount} consecutive failures)`,
+          );
+        } else {
+          setting.setDesc(
+            `${sink.path} — ${sink.linesWritten} lines written this session` +
+              (sink.linesPending > 0 ? `, ${sink.linesPending} pending` : ""),
+          );
+        }
+        setting.addButton((button) =>
+          button
+            .setButtonText("Copy path")
+            .setTooltip("Copy the log file's vault-relative path to the clipboard")
+            .onClick(() => {
+              void navigator.clipboard.writeText(sink.path).then(
+                () => new Notice(`Live Share: copied ${sink.path}`),
+                () => new Notice(`Live Share: log file is at ${sink.path}`),
+              );
+            }),
+        );
+        setting.addExtraButton((button) =>
+          button
+            .setIcon("refresh-cw")
+            .setTooltip("Refresh")
+            .onClick(() => this.display()),
+        );
+      })
+      .addSetting((setting) => {
+        setting
           .setName("Debug log file")
-          .setDesc("Path within your vault for the debug log")
+          .setDesc(
+            `Vault-relative path for the debug log. Leave empty for the default (${DEFAULT_SETTINGS.debugLogPath}).`,
+          )
           .addText((text) => {
             text.setValue(settings.debugLogPath).onChange(async (value) => {
-              settings.debugLogPath = value.trim() || "live-share-debug.md";
+              // WP81: the fallback IS the default, by reference. It used to be a
+              // second, independent path literal pointing at the vault root, so
+              // clearing this field silently moved the log back there — the
+              // location `7754ac6` moved it out of, and where Obsidian indexes it
+              // into the graph, search and Quick Switcher. Two literals that
+              // agreed on the day they were written is the defect; a reference
+              // cannot diverge from the default again.
+              settings.debugLogPath = resolveDebugLogPath(value);
               await this.plugin.saveSettings();
             });
-            text.inputEl.placeholder = "live-share-debug.md";
+            text.inputEl.placeholder = DEFAULT_SETTINGS.debugLogPath;
           });
       });
 
@@ -266,7 +461,12 @@ export class LiveShareSettingTab extends PluginSettingTab {
     exclusions.addSetting((setting) => {
       setting
         .setName("Excluded patterns")
-        .setDesc("Glob patterns for files to exclude from sharing.");
+        .setDesc(
+          "Glob patterns for files to keep out of the session, e.g. drafts/** or *.tmp. " +
+            "Your configuration folder and .trash/** are always excluded, and inbound " +
+            "writes into any .obsidian/ or .git/ folder are always refused — you do not " +
+            "need patterns for those.",
+        );
       setting.addButton((button) =>
         button
           .setButtonText("Add exclusion")
@@ -306,7 +506,11 @@ export class LiveShareSettingTab extends PluginSettingTab {
     readOnly.addSetting((setting) => {
       setting
         .setName("Read-only patterns")
-        .setDesc("Glob patterns for files that guests cannot edit.");
+        .setDesc(
+          "Glob patterns for files guests can see but not edit, e.g. journal/** or " +
+            "README.md. Shared normally; edits are refused. Per-person overrides are " +
+            "set from the collaborators panel.",
+        );
       setting.addButton((button) =>
         button
           .setButtonText("Add pattern")

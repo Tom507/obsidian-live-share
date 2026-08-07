@@ -1,0 +1,35 @@
+{
+  "run": "033056",
+  "rows": [
+    {
+      "arm": "inside",
+      "valid": true,
+      "src": "_liveshare-test/wp68a-033056-inside.md",
+      "dst": "_liveshare-test/wp68a-033056-inside-moved.md",
+      "A_dst_exists": true,
+      "A_dst_bytes_unchanged": true,
+      "peer_src_kept": false,
+      "peer_dst_exists": true
+    },
+    {
+      "arm": "root",
+      "valid": true,
+      "src": "_liveshare-test/wp68a-033056-root.md",
+      "dst": "wp68a-033056-root.md",
+      "A_dst_exists": true,
+      "A_dst_bytes_unchanged": true,
+      "peer_src_kept": false,
+      "peer_dst_exists": false
+    },
+    {
+      "arm": "sidecar",
+      "valid": true,
+      "src": "_liveshare-test/wp68a-033056-sidecar.md",
+      "dst": ".obsidian/liveshare/state/wp68a-033056-sidecar.md",
+      "A_dst_exists": true,
+      "A_dst_bytes_unchanged": true,
+      "peer_src_kept": false,
+      "peer_dst_exists": false
+    }
+  ]
+}

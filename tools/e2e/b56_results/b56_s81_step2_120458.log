@@ -1,0 +1,103 @@
+==============================================================================
+B56 / W4 - S81 step 2 - A returns as a LEAF-LESS GUEST
+==============================================================================
+  A file before: {"exists": true, "sha256": "c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad", "nodes": ["b56-s81-115521-N1", "b56-s81-115521-N2"], "edges": ["b56-s81-115521-BADEDGE"], "bad_edge_on_disk": true}
+  A store entry before: [{"boundary": "host-seed", "kind": "edge", "id": "b56-s81-115521-BADEDGE", "reason": "MISSING_TO"}]
+  B file before: {"exists": true, "sha256": "c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad", "nodes": ["b56-s81-115521-N1", "b56-s81-115521-N2"], "edges": ["b56-s81-115521-BADEDGE"], "bad_edge_on_disk": true}
+  B store entry before: null
+  the subject: A's own seed wrote [{"boundary": "host-seed", "kind": "edge", "id": "b56-s81-115521-BADEDGE", "reason": "MISSING_TO"}]
+  provisioning a room with HOST=B so A comes back a GUEST
+    | provisioning a room with HOST=B  GUEST=A
+    | stopping Obsidian — data.json is rewritten on quit
+    |   processes now: 0
+    | snapshot A: 9 entries -> H:\tmp\b56_room_snapshot\20260807_120502\A
+    | snapshot B: 9 entries -> H:\tmp\b56_room_snapshot\20260807_120502\B
+    |   encryptionPassphrase: A=8cafcf6cf72d B=8cafcf6cf72d match=True
+    |   encryptionSalt: A=280e7cd15462 B=280e7cd15462 match=True
+    |   serverPassword: A=3570f8bd7e1f B=3570f8bd7e1f match=True
+    |   sharedFolder: both '_liveshare-test'
+    |   old room ca1d24e9-2b40-4283-a849-545fce645ed9
+    |   created room 0f5557ed-8099-489d-adc3-5c860dfe44d4  token sha256=6f995d7c835a
+    |   guest join accepted (200)
+    | vault B: role=host room=0f5557ed-8099-489d-adc3-5c860dfe44d4 sharedFolder='_liveshare-test' port=39432
+    | vault A: role=guest room=0f5557ed-8099-489d-adc3-5c860dfe44d4 sharedFolder='_liveshare-test' port=39431
+    | 
+    | room provisioned.
+  Obsidian stopped
+  removed A:_liveshare-test/b56-s81-115521.canvas so the guest mirror pass can materialise it
+  A store entry still present: [{"boundary": "host-seed", "kind": "edge", "id": "b56-s81-115521-BADEDGE", "reason": "MISSING_TO"}]
+
+  ---- RESTART both instances — S81 step 2 ----
+    | bundle: 4692730 bytes  sha256=d8818271c5b3e228…
+    |   digest matches LS_EXPECT_SHA256 — this is the bundle you built
+    | Obsidian not running
+    | vault A: installed and verified (d8818271c5b3e228…), e2eControlPort=39431
+    | vault B: installed and verified (d8818271c5b3e228…), e2eControlPort=39432
+    | 
+    | relaunching…
+    |   vault A opened (4 processes)
+    |   vault B opened (5 processes)
+    | 
+    | waiting for the control servers…
+    |   both answering after 4s
+    |     vault A: vaultId=703aa794cc73a117 role=guest
+    |     vault B: vaultId=55a4253eb7a90dde role=host
+    | 
+    | REMOTE CONTROL IS LIVE.
+  both connected after 0.1s — roles now A=guest, B=host
+==============================================================================
+B56 / W4 — S81 step 2 - the RESTORE arm   run 120458   2026-08-07 12:05:35
+==============================================================================
+  bundle A: sha256=d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4  size=4692730
+  bundle B: sha256=d8818271c5b3e228101d6d34e531fe47e5dee852afa9071a2984261a2b9659c4  size=4692730
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 4 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 7.7s behind wall clock
+    B: newest on-disk log stamp is 4.0s behind wall clock
+  A doc after 0.0s: nodes=['b56-s81-115521-N1', 'b56-s81-115521-N2']
+      !! WAIT TIMED OUT after 120.0s waiting for: the projection LANDS on A's disk (i.e. the withhold FAILED)
+
+  ---- THE DECIDING LINES, on A (the recorder, now a leaf-less guest) ----
+    restored N standing        : 1
+        2026-08-07T10:05:23.643Z [WARN] [canvas-persistence] SEED REFUSAL STORE: _liveshare-test/b56-s81-115521.canvas restored 1 standing refusal(s) from the durable store — edge b56-s81-115521-BADEDGE (MISSING_TO)
+    adopted (re-derived)       : 1
+        2026-08-07T10:02:33.902Z [DEBUG] [canvas-persistence] SEED REFUSAL STORE: _liveshare-test/b56-s81-115521.canvas adopted this session's seed verdict (1 refused) — the stored set is re-derived, not restored
+    SEED REFUSED / withheld    : 2
+        2026-08-07T10:02:33.912Z [WARN] [canvas-persistence] SEED REFUSED: _liveshare-test/b56-s81-115521.canvas write WITHHELD — 1 refused: edge b56-s81-115521-BADEDGE (MISSING_TO)
+        2026-08-07T10:05:23.647Z [WARN] [canvas-persistence] SEED REFUSED: _liveshare-test/b56-s81-115521.canvas write WITHHELD — 1 refused: edge b56-s81-115521-BADEDGE (MISSING_TO)
+    cold-open-seed refusal     : 0
+    host-seed refusal          : 1
+        2026-08-07T09:55:31.714Z [WARN] [canvas-sync] INGEST REJECTED signature: boundary=host-seed refused edge b56-s81-115521-BADEDGE (MISSING_TO)
+    CANVAS WRITER attach       : 2
+        2026-08-07T10:02:33.913Z [INFO] [canvas] CANVAS WRITER: _liveshare-test/b56-s81-115521.canvas owner=CanvasPersistence attached (coldOpen=doc-wins)
+        2026-08-07T10:05:23.648Z [INFO] [canvas] CANVAS WRITER: _liveshare-test/b56-s81-115521.canvas owner=CanvasPersistence attached (coldOpen=doc-wins)
+    CANVAS MIRROR (last 3)     : 3
+        2026-08-07T10:05:23.548Z [INFO] [canvas-mirror] CANVAS MIRROR: role=guest considered=8 published=0 materialised=0 skipped(local-file)=7 skipped(no-source)=1 failed=0
+        2026-08-07T10:05:23.595Z [INFO] [canvas-mirror] CANVAS MIRROR: role=guest considered=8 published=0 materialised=0 skipped(local-file)=7 skipped(no-source)=1 failed=0
+        2026-08-07T10:05:23.651Z [INFO] [canvas-mirror] CANVAS MIRROR: role=guest considered=8 published=0 materialised=0 skipped(local-file)=7 skipped(no-source)=0 failed=1
+
+  RULE 15 — every signature, with the control that proves it can match.
+  TOOL: Python `substring in line` over the plugin's own debug log; every
+        pattern is a LITERAL (no regex, no metacharacter).
+    'CANVAS WRITER:'           window_hits=0     verdict=ABSENT             history_hits=2014   matcher_ok=True
+    'CAPTURE DECLINED:'        window_hits=0     verdict=ABSENT             history_hits=126    matcher_ok=True
+    'local modify '            window_hits=0     verdict=ABSENT             history_hits=1568   matcher_ok=True
+    'SEED REFUSED:'            window_hits=0     verdict=ABSENT             history_hits=5      matcher_ok=True
+    'SEED RESTORED:'           window_hits=0     verdict=ABSENT             history_hits=1      matcher_ok=True
+    'SEED REFUSAL STORE:'      window_hits=0     verdict=ABSENT             history_hits=16     matcher_ok=True
+    'INGEST REJECTED'          window_hits=0     verdict=ABSENT             history_hits=6      matcher_ok=True
+    'MUTE OVERRUN:'            window_hits=0     verdict=UNINFORMATIVE      history_hits=0      matcher_ok=True
+        ^^ UNINFORMATIVE: no absence claim is admissible here.
+    'AWARENESS GAP:'           window_hits=0     verdict=ABSENT             history_hits=1411   matcher_ok=True
+    'refused remote rename'    window_hits=0     verdict=UNINFORMATIVE      history_hits=0      matcher_ok=True
+        ^^ UNINFORMATIVE: no absence claim is admissible here.
+  A file after: {"exists": false, "sha256": null, "nodes": [], "edges": [], "bad_edge_on_disk": false}
+  B file after: {"exists": true, "sha256": "c66b1fc1802e14a03c7767632494432d8c674184d25cc131ac10934eff540fad", "nodes": ["b56-s81-115521-N1", "b56-s81-115521-N2"], "edges": ["b56-s81-115521-BADEDGE"], "bad_edge_on_disk": true}
+
+  STEP 2 VERDICT: restored_branch_fired=True  adopted=True  cold_open_seed_ran=False  writer_attached=True  projection_landed=False

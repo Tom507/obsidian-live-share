@@ -8,3 +8,6 @@ result/
 .env
 .envrc
 main.js
+
+__pycache__/
+*.pyc

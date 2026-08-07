@@ -1,0 +1,92 @@
+==============================================================================
+B59 / W4 — ARM 2 — WP93 AC4, the mute-release ceiling   run 134029   2026-08-07 13:40:29
+==============================================================================
+  PINNED bundle 8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+  PINNED commit 2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e
+  bundle A: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  bundle B: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 8, "overruns": 8, "worstOverrunMs": 13, "overrunsByClass": {"canvas": 5, "text": 3}
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 8, "overruns": 8, "worstOverrunMs": 750, "overrunsByClass": {"canvas": 7, "text": 1
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 3 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 8.0s behind wall clock
+    B: newest on-disk log stamp is 8.0s behind wall clock
+
+  rule-15 control, BEFORE anything is driven:
+    history_hits('MUTE OVERRUN:') over the retained log = 0
+    (>0 means the signature is PROVEN able to match this product's output,
+     so a later silence is admissible. =0 means it is not, and no absence
+     claim over it may be made — which is exactly where B56 had to stop.)
+
+  ---- Q1/Q3: does the reader MOVE, and does the right CLASS move? ----
+    A before: {"releasedByEvent": 0, "releasedByCeiling": 9, "overruns": 9, "worstOverrunMs": 13, "overrunsByClass": {"canvas": 5, "text": 4}, "pending": 0}
+    B before: {"releasedByEvent": 0, "releasedByCeiling": 9, "overruns": 9, "worstOverrunMs": 750, "overrunsByClass": {"canvas": 7, "text": 2}, "pending": 0}
+    driving 8 inbound file-ops on B (host), gap=0.4s
+    counter advanced by >= 8: True after 0.0s
+    A after drive: {"releasedByEvent": 0, "releasedByCeiling": 9, "overruns": 9, "worstOverrunMs": 13, "overrunsByClass": {"canvas": 5, "text": 4}, "pending": 0}
+    B after drive: {"releasedByEvent": 0, "releasedByCeiling": 25, "overruns": 25, "worstOverrunMs": 750, "overrunsByClass": {"canvas": 7, "text": 18}, "pending": 0}
+
+    Q1 releases  on B: +16  (drove 16 ops)
+    Q2 overruns  on B: +16  worst now 750ms
+    Q3 class 'text' overruns on B: +16   (the ops driven were .md, so 'text' is the class that had to move)
+    Q4 releasedByEvent on B: +0   releasedByCeiling: +16
+
+  ---- a CONTENDED burst: the same ops with no gap at all ----
+    12 ops issued back-to-back in 11.6s
+    pending drained: True after 0.0s
+    burst before: {"releasedByEvent": 0, "releasedByCeiling": 25, "overruns": 25, "worstOverrunMs": 750, "overrunsByClass": {"canvas": 7, "text": 18}, "pending": 0}
+    burst after : {"releasedByEvent": 0, "releasedByCeiling": 37, "overruns": 37, "worstOverrunMs": 755, "overrunsByClass": {"canvas": 7, "text": 30}, "pending": 0}
+
+  ---- Q2 continued: the held-time census over the emitter's OWN number ----
+    A: {"n": 0, "max_held_ms": null, "min_held_ms": null, "in_40_70s_clamp_band": 0, "over_1s": 0, "sample": []}
+    A (this arm's window only): {"n": 0, "max_held_ms": null, "min_held_ms": null, "in_40_70s_clamp_band": 0, "over_1s": 0, "sample": []}
+    B: {"n": 0, "max_held_ms": null, "min_held_ms": null, "in_40_70s_clamp_band": 0, "over_1s": 0, "sample": []}
+    B (this arm's window only): {"n": 0, "max_held_ms": null, "min_held_ms": null, "in_40_70s_clamp_band": 0, "over_1s": 0, "sample": []}
+  cleanup leftovers: []
+
+arm2  flush_proven=True waited=9.1s
+  [A] 144 lines  W=1786102885.724  W-t_end=+7.9s  sink_failed=False
+  [B] 87 lines  W=1786102885.740  W-t_end=+8.0s  sink_failed=False
+  control 'AWARENESS GAP:'         history_hits=1496   matcher_ok=True
+  control 'CANVAS WRITER:'         history_hits=2057   matcher_ok=True
+  control 'CAPTURE DECLINED:'      history_hits=150    matcher_ok=True
+  control 'DELETE WITHHELD:'       history_hits=2      matcher_ok=True
+  control 'INGEST REJECTED'        history_hits=7      matcher_ok=True
+  control 'MUTE OVERRUN:'          history_hits=0      matcher_ok=True
+  control 'PROTECTED PATH REFUSED:' history_hits=0      matcher_ok=True
+  control 'SEED REFUSAL STORE:'    history_hits=19     matcher_ok=True
+  control 'SEED REFUSED:'          history_hits=5      matcher_ok=True
+  control 'SEED RESTORED:'         history_hits=1      matcher_ok=True
+  control 'local modify '          history_hits=1641   matcher_ok=True
+  control 'refused remote rename'  history_hits=1      matcher_ok=True
+
+  RULE 15 — every signature, with the control that proves it can match.
+  TOOL: Python `substring in line` over the plugin's own debug log; every
+        pattern is a LITERAL (no regex, no metacharacter).
+    'CANVAS WRITER:'             window_hits=0     verdict=ABSENT             history_hits=2057   matcher_ok=True
+    'CAPTURE DECLINED:'          window_hits=0     verdict=ABSENT             history_hits=150    matcher_ok=True
+    'local modify '              window_hits=0     verdict=ABSENT             history_hits=1641   matcher_ok=True
+    'SEED REFUSED:'              window_hits=0     verdict=ABSENT             history_hits=5      matcher_ok=True
+    'SEED RESTORED:'             window_hits=0     verdict=ABSENT             history_hits=1      matcher_ok=True
+    'SEED REFUSAL STORE:'        window_hits=0     verdict=ABSENT             history_hits=19     matcher_ok=True
+    'INGEST REJECTED'            window_hits=0     verdict=ABSENT             history_hits=7      matcher_ok=True
+    'MUTE OVERRUN:'              window_hits=0     verdict=UNINFORMATIVE      history_hits=0      matcher_ok=True
+        ^^ UNINFORMATIVE: no absence claim is admissible here.
+    'AWARENESS GAP:'             window_hits=0     verdict=ABSENT             history_hits=1496   matcher_ok=True
+    'refused remote rename'      window_hits=0     verdict=ABSENT             history_hits=1      matcher_ok=True
+    'PROTECTED PATH REFUSED:'    window_hits=0     verdict=UNINFORMATIVE      history_hits=0      matcher_ok=True
+        ^^ UNINFORMATIVE: no absence claim is admissible here.
+    'DELETE WITHHELD:'           window_hits=0     verdict=ABSENT             history_hits=2      matcher_ok=True
+  'MUTE OVERRUN:' lines inside this arm's window: 0
+
+    tree A: added=[] removed=['Properties.md']
+    tree B: added=[] removed=[]

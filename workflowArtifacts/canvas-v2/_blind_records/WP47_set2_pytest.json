@@ -1,0 +1,15 @@
+{
+  "wp": "47",
+  "set": "set2",
+  "framework": "pytest",
+  "files_staged": 11,
+  "tests_collected": 114,
+  "tests_passed": 112,
+  "tests_failed": 2,
+  "exit_code": 1,
+  "verdict": "FAIL",
+  "reason": "2 of 114 tests failed",
+  "package": "",
+  "depth": null,
+  "detail": "================================== FAILURES ===================================\n_______ test_the_inner_context_manager_unwinds_before_teardown_finishes _______\n\nvault = WindowsPath('C:/Users/tschm/AppData/Local/Temp/pytest-of-tschm/pytest-338/test_the_inner_context_manager0/ObsidianOrga')\n\n    def test_the_inner_context_manager_unwinds_before_teardown_finishes(vault: Path) -> None:\n        log: list[str] = []\n>       with pytest.raises(RigFailure):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE <class 'test_tp04_teardown_exit_paths_blind2.RigFailure'>\n\nworkflowArtifacts\\canvas-v2\\tests\\blind_set2\\WP47\\test_tp04_teardown_exit_paths_blind2.py:116: Failed\n________ test_forty_notes_are_all_still_there_after_an_interrupted_run ________\n\nvault = WindowsPath('C:/Users/tschm/AppData/Local/Temp/pytest-of-tschm/pytest-338/test_forty_notes_are_all_still0/ObsidianOrga')\n\n    def test_forty_notes_are_all_still_there_after_an_interrupted_run(vault: Path) -> None:\n>       with pytest.raises(KeyboardInterrupt):\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nE       Failed: DID NOT RAISE <class 'KeyboardInterrupt'>\n\nworkflowArtifacts\\canvas-v2\\tests\\blind_set2\\WP47\\test_tp04_teardown_exit_paths_blind2.py:122: Failed\n- generated xml file: H:\\Developement\\_NeuralAngels\\liveshareCollab\\obsidian-live-share\\workflowArtifacts\\canvas-v2\\_blind_records\\_raw\\WP47_set2_pytest.xml -\n=========================== short test summary info ===========================\nFAILED workflowArtifacts/canvas-v2/tests/blind_set2/WP47/test_tp04_teardown_exit_paths_blind2.py::test_the_inner_context_manager_unwinds_before_teardown_finishes\nFAILED workflowArtifacts/canvas-v2/tests/blind_set2/WP47/test_tp04_teardown_exit_paths_blind2.py::test_forty_notes_are_all_still_there_after_an_interrupted_run\n2 failed, 112 passed in 6.73s"
+}

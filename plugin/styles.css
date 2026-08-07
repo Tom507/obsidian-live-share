@@ -262,3 +262,162 @@
   background-color: rgba(255, 200, 0, 0.2);
   border-bottom: 1px dashed rgba(255, 200, 0, 0.6);
 }
+
+/* ---- Canvas presence overlay (WP2/WP3) --------------------------------- */
+
+/* Screen-space overlay mounted inside the canvas wrapperEl. Sits above the
+   transformed node layer and never intercepts pointer events. */
+.ls-canvas-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 20;
+}
+
+/* A single remote cursor marker, positioned via left/top in wrapper-relative
+   screen coords; translate centers the hotspot on the point. */
+.ls-canvas-cursor {
+  position: absolute;
+  transform: translate(-4px, -4px);
+  pointer-events: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  white-space: nowrap;
+  will-change: left, top;
+}
+
+.ls-canvas-cursor-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--background-primary);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
+  flex-shrink: 0;
+}
+
+.ls-canvas-cursor-label {
+  margin-top: -2px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #fff;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.ls-canvas-cursor.is-typing .ls-canvas-cursor-label {
+  font-style: italic;
+}
+
+/* Per-node held ring: applied directly to the Obsidian canvas node card
+   (node.nodeEl). Purely visual — never persisted to the .canvas file. The
+   holder color is injected as the --ls-hold-color custom property. */
+.ls-canvas-held-ring {
+  outline: 2px solid var(--ls-hold-color, var(--interactive-accent));
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--ls-hold-color, #7c3aed) 35%, transparent);
+  border-radius: 6px;
+  position: relative;
+}
+
+.ls-canvas-held-tag {
+  position: absolute;
+  top: -18px;
+  left: -2px;
+  padding: 0 6px;
+  height: 16px;
+  line-height: 16px;
+  font-size: 10px;
+  color: #fff;
+  border-radius: 6px 6px 6px 0;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 21;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+/* ---- Status console (LogView) ------------------------------------------ */
+
+.live-share-log-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 6px;
+}
+
+.live-share-log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  flex-shrink: 0;
+}
+
+.live-share-log-level {
+  flex-shrink: 0;
+}
+
+.live-share-log-clear {
+  margin-left: auto;
+}
+
+.live-share-log-list {
+  flex: 1;
+  overflow-y: auto;
+  font-family: var(--font-monospace);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.live-share-log-empty {
+  opacity: 0.6;
+  padding: 8px;
+  text-align: center;
+}
+
+.live-share-log-row {
+  display: flex;
+  gap: 6px;
+  padding: 1px 2px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.live-share-log-ts {
+  color: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.live-share-log-lvl {
+  flex-shrink: 0;
+  font-weight: 600;
+  width: 42px;
+}
+
+.live-share-log-cat {
+  color: var(--text-accent);
+  flex-shrink: 0;
+}
+
+.live-share-log-row.mod-debug .live-share-log-lvl {
+  color: var(--text-muted);
+}
+.live-share-log-row.mod-info .live-share-log-lvl {
+  color: var(--text-normal);
+}
+.live-share-log-row.mod-warn {
+  background-color: rgba(255, 200, 0, 0.08);
+}
+.live-share-log-row.mod-warn .live-share-log-lvl {
+  color: var(--text-warning, #d19a00);
+}
+.live-share-log-row.mod-error {
+  background-color: rgba(255, 0, 0, 0.08);
+}
+.live-share-log-row.mod-error .live-share-log-lvl {
+  color: var(--text-error);
+}

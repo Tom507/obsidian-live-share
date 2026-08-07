@@ -1,0 +1,27 @@
+{
+  "delta": 0.3,
+  "bundles": {
+    "A": "7922d277940881ecc9d57bbac09531c4bb79961dab5030f1fd244a6e9dceb43f",
+    "B": "7922d277940881ecc9d57bbac09531c4bb79961dab5030f1fd244a6e9dceb43f"
+  },
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "marker_arrived": true,
+  "step1_bytes_on_disk": true,
+  "step1_captured": true,
+  "step1_capture_after": 0.0,
+  "step2_projection_written": true,
+  "user_survives_on_B_disk": true,
+  "user_on_A_disk": true,
+  "verdict": "GREEN \u2014 captured, nothing to destroy",
+  "B_capture_declined": [
+    "CAPTURE DECLINED: _liveshare-test/smoke.canvas reason=echo (declines=2)",
+    "CAPTURE DECLINED: _liveshare-test/smoke.canvas reason=echo (declines=3)",
+    "CAPTURE DECLINED: _liveshare-test/smoke.canvas reason=echo (declines=4)",
+    "CAPTURE DECLINED: _liveshare-test/smoke.canvas reason=echo (declines=5)",
+    "CAPTURE DECLINED: _liveshare-test/smoke.canvas reason=echo (declines=6)"
+  ],
+  "B_local_modify": 7
+}

@@ -35,6 +35,7 @@ function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSe
     sharedFolder: "",
     role: "host",
     encryptionPassphrase: "",
+    encryptionSalt: "",
     permission: "read-write",
     requireApproval: false,
     serverPassword: "",
@@ -46,6 +47,9 @@ function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSe
     excludePatterns: [],
     readOnlyPatterns: [],
     approvalTimeoutSeconds: 60,
+    showCanvasCursors: true,
+    showCanvasPresence: true,
+    useCanvasBinding: false,
     ...overrides,
   };
 }
@@ -436,7 +440,12 @@ describe("Regression: collabBoundFile prevents backgroundSync skip", () => {
     vi.useRealTimers();
   });
 
-  it("writes remote change to disk when yCollab is NOT bound (collabBoundFile unset)", async () => {
+  it("does NOT disk-write the active file even when collabBoundFile is unset (single-writer invariant)", async () => {
+    // Single-writer invariant: the active shared text file is owned exclusively by
+    // yCollab. background-sync must never disk-echo it — gated on activeFile identity,
+    // not the racy collabBoundFile — so a disk-originated frontmatter edit is never
+    // doubled/raced by background-sync. During the brief pre-bind activation window,
+    // yCollab renders Y.Text into the editor on bind and persists on the next save.
     const entries = new Map([["active.md", { hash: "abc", size: 5, mtime: 1 }]]);
     manifestManager = createManifestManager(entries);
     vault.getAbstractFileByPath.mockReturnValue(mockFile("active.md"));
@@ -460,12 +469,12 @@ describe("Regression: collabBoundFile prevents backgroundSync skip", () => {
     Y.applyUpdate(doc, Y.encodeStateAsUpdate(remoteDoc));
     remoteDoc.destroy();
 
-    // Debounce fires
+    // Debounce would fire, but the activeFile gate suppresses the disk write
     vi.advanceTimersByTime(1100);
     await vi.advanceTimersByTimeAsync(0);
 
-    // Change IS written to disk because yCollab is not handling it
-    expect(vault.adapter.write).toHaveBeenCalledWith("active.md", "remote change");
+    // Active file is yCollab-owned: background-sync must NOT write it to disk
+    expect(vault.adapter.write).not.toHaveBeenCalled();
   });
 
   it("does NOT write remote change to disk when yCollab IS bound", async () => {

@@ -1,0 +1,166 @@
+==============================================================================
+B59 / W4 — ARM 3 — WP95's protected-path guard, live   run 134402   2026-08-07 13:44:02
+==============================================================================
+  PINNED bundle 8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a
+  PINNED commit 2c8ea074a7b98ddefbaf4304e0b9ab51d9dd0c9e
+  bundle A: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  bundle B: sha256=8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a  size=4862249
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 31, "overruns": 30, "worstOverrunMs": 14, "overrunsByClass": {"canvas": 6, "text": 
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 57, "overruns": 57, "worstOverrunMs": 755, "overrunsByClass": {"canvas": 7, "text":
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 4 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 6.1s behind wall clock
+    B: newest on-disk log stamp is 6.1s behind wall clock
+
+  rule-15 control BEFORE the arm: history_hits('PROTECTED PATH REFUSED:') = 0
+  safety copy A: data.json -> data.json.b59-pre (sha256 a01071398d2123bdba22dce17724c3a5f2e2bcc1485b2c815efc9114ad4465a1); the bytes never leave this directory
+  safety copy B: data.json -> data.json.b59-pre (sha256 e0db07b65624dfa9faa9b350670cbf04850fcc8d9b91cd353dfc074cd0ad534d); the bytes never leave this directory
+
+  ---- CONTROL: the same op kinds at an ORDINARY shared path on B ----
+    create     delivered=True mutated=True (expected True)  refusals+0
+    modify     delivered=True mutated=True (expected True)  refusals+0
+    rename     delivered=True mutated=False (expected True)  refusals+0
+    delete     delivered=True mutated=False (expected True)  refusals+0
+    cleanup removed A:_liveshare-test/b59-134402-control.md
+    cleanup removed B:_liveshare-test/b59-134402-control.md
+  !! THE ADMISSION CONTROL DID NOT HOLD — every refusal below would be
+     a statement about the injector, not about the guard. Reported as
+     such and NOT scored as a pass.
+
+  ---- HOST / data.json: nine op kinds at .obsidian/plugins/live-share/data.json on B (host) ----
+    create                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    modify                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    delete                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-INTO-protected    delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-OUT-of-protected  delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    folder-create            delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-start              delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-data               delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-end                delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+
+  ---- HOST / main.js: nine op kinds at .obsidian/plugins/live-share/main.js on B (host) ----
+    create                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    modify                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    delete                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-INTO-protected    delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-OUT-of-protected  delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    folder-create            delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-start              delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-data               delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-end                delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+
+  ---- HOST / .git hook: nine op kinds at .git/hooks/pre-commit on B (host) ----
+    create                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    modify                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    delete                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-INTO-protected    delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-OUT-of-protected  delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    folder-create            delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-start              delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-data               delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-end                delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+
+  ---- GUEST / data.json: nine op kinds at .obsidian/plugins/live-share/data.json on A (guest) ----
+    create                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    modify                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    delete                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-INTO-protected    delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-OUT-of-protected  delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    folder-create            delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-start              delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-data               delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-end                delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+
+  ---- HOST / sidecar look-alike: nine op kinds at .obsidian/liveshare/stateful/b59-lookalike.canvas on B (host) ----
+    create                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    modify                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    delete                   delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-INTO-protected    delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    rename-OUT-of-protected  delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    folder-create            delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-start              delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-data               delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+    chunk-end                delivered=True mutated=False refusals+1 arms={'file-op-gate': 1} data.json_sha_unchanged=True main.js_sha_unchanged=True
+
+  ---- HALF (b): does B still write its OWN sidecar? ----
+    sidecar dir before: 375 files
+    edit reached the doc: True after 0.2s
+    sidecar census changed: True after 0.0s (1 entries differ)
+      30510797e8bbc98998153d96202b77a9.yhistory: 0 -> 210
+    probe node removed from both docs: True
+
+  ---- HALF (b): does A still write its OWN sidecar? ----
+    sidecar dir before: 388 files
+    edit reached the doc: True after 0.3s
+    sidecar census changed: True after 0.0s (1 entries differ)
+      3331c5c94630e3cca00047bdea7ce79d.yhistory: 0 -> 202
+    probe node removed from both docs: True
+
+  ---- restore ----
+    A: data.json sha256 before=a01071398d2123bdba22dce17724c3a5f2e2bcc1485b2c815efc9114ad4465a1
+    A: data.json sha256 after =a01071398d2123bdba22dce17724c3a5f2e2bcc1485b2c815efc9114ad4465a1  IDENTICAL=True
+    A: safety copy removed
+    B: data.json sha256 before=e0db07b65624dfa9faa9b350670cbf04850fcc8d9b91cd353dfc074cd0ad534d
+    B: data.json sha256 after =e0db07b65624dfa9faa9b350670cbf04850fcc8d9b91cd353dfc074cd0ad534d  IDENTICAL=True
+    B: safety copy removed
+  seed-refusals paths at end: {'A': [], 'B': []}
+
+arm3  flush_proven=True waited=0.5s
+  [A] 29 lines  W=1786103093.648  W-t_end=+0.1s  sink_failed=False
+  [B] 58 lines  W=1786103093.747  W-t_end=+0.2s  sink_failed=False
+  control 'AWARENESS GAP:'         history_hits=1496   matcher_ok=True
+  control 'CANVAS WRITER:'         history_hits=2058   matcher_ok=True
+  control 'CAPTURE DECLINED:'      history_hits=151    matcher_ok=True
+  control 'DELETE WITHHELD:'       history_hits=2      matcher_ok=True
+  control 'INGEST REJECTED'        history_hits=7      matcher_ok=True
+  control 'MUTE OVERRUN:'          history_hits=0      matcher_ok=True
+  control 'PROTECTED PATH REFUSED:' history_hits=0      matcher_ok=True
+  control 'SEED REFUSAL STORE:'    history_hits=19     matcher_ok=True
+  control 'SEED REFUSED:'          history_hits=5      matcher_ok=True
+  control 'SEED RESTORED:'         history_hits=1      matcher_ok=True
+  control 'local modify '          history_hits=1646   matcher_ok=True
+  control 'refused remote rename'  history_hits=1      matcher_ok=True
+
+  RULE 15 — every signature, with the control that proves it can match.
+  TOOL: Python `substring in line` over the plugin's own debug log; every
+        pattern is a LITERAL (no regex, no metacharacter).
+    'CANVAS WRITER:'             window_hits=1     verdict=PRESENT            history_hits=2058   matcher_ok=True
+    'CAPTURE DECLINED:'          window_hits=1     verdict=PRESENT            history_hits=151    matcher_ok=True
+    'local modify '              window_hits=5     verdict=PRESENT            history_hits=1646   matcher_ok=True
+    'SEED REFUSED:'              window_hits=0     verdict=ABSENT             history_hits=5      matcher_ok=True
+    'SEED RESTORED:'             window_hits=0     verdict=ABSENT             history_hits=1      matcher_ok=True
+    'SEED REFUSAL STORE:'        window_hits=0     verdict=ABSENT             history_hits=19     matcher_ok=True
+    'INGEST REJECTED'            window_hits=0     verdict=ABSENT             history_hits=7      matcher_ok=True
+    'MUTE OVERRUN:'              window_hits=0     verdict=UNINFORMATIVE      history_hits=0      matcher_ok=True
+        ^^ UNINFORMATIVE: no absence claim is admissible here.
+    'AWARENESS GAP:'             window_hits=0     verdict=ABSENT             history_hits=1496   matcher_ok=True
+    'refused remote rename'      window_hits=0     verdict=ABSENT             history_hits=1      matcher_ok=True
+    'PROTECTED PATH REFUSED:'    window_hits=45    verdict=PRESENT            history_hits=0      matcher_ok=True
+    'DELETE WITHHELD:'           window_hits=0     verdict=ABSENT             history_hits=2      matcher_ok=True
+  'PROTECTED PATH REFUSED:' lines in this arm's window: 45
+    2026-08-07T11:44:34.810Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=1) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:35.773Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=2) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:36.695Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=3) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:37.660Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=4) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:38.586Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=5) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:39.520Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=6) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:40.456Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=7) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:41.408Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=8) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:42.356Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=9) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:07.807Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=1) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:08.804Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=2) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:09.813Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=3) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:10.826Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=4) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:11.789Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=5) — a peer operation targeting a protected tree was refused before any byte was written
+    2026-08-07T11:44:12.802Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=6) — a peer operation targeting a protected tree was refused before any byte was written
+    tree A: added=[] removed=[]
+    tree B: added=[] removed=[]

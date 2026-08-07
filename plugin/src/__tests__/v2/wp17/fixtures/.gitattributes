@@ -1,0 +1,5 @@
+# WP17 AC5 byte-identity fixtures: the serializer emits `\n`, so these files must
+# be checked out with `\n` on every host. `core.autocrlf=true` on a Windows clone
+# would otherwise rewrite them to CRLF and make a byte-identity test fail for a
+# reason that has nothing to do with the serializer.
+*.canvas -text

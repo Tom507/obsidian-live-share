@@ -1,12 +1,73 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as awarenessProtocol from "y-protocols/awareness";
+import * as Y from "yjs";
 import {
+  MUX_AWARENESS,
+  MUX_PING,
+  MUX_PONG,
   MUX_SUBSCRIBE,
   MUX_SYNC_ENCRYPTED,
+  MUX_SYNC_REQUEST,
   decodeMuxMessage,
   encodeMuxMessage,
 } from "../sync/mux-protocol";
-import { SyncManager } from "../sync/sync";
+import {
+  AWARENESS_GAP_WARN_MS,
+  AWARENESS_HEARTBEAT_INTERVAL_MS,
+  AWARENESS_PULSE_DEADLINE_MS,
+  AWARENESS_TICK_INTERVAL_MS,
+  SyncManager,
+} from "../sync/sync";
 import type { LiveShareSettings } from "../types";
+
+/** Pull the raw awareness-update payloads for a doc out of a mock socket's sends. */
+function awarenessFrames(ws: MockWebSocket, docId: string): Uint8Array[] {
+  return ws.sent
+    .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+    .filter((msg) => msg.msgType === MUX_AWARENESS && msg.docId === docId)
+    .map((msg) => msg.payload);
+}
+
+/** Decode awareness frames the way a remote peer would, returning the applied states. */
+function decodeRemoteStates(frames: Uint8Array[]): Record<string, unknown>[] {
+  const doc = new Y.Doc();
+  const aw = new awarenessProtocol.Awareness(doc);
+  aw.setLocalState(null); // drop the default local {} so only applied states remain
+  for (const frame of frames) {
+    awarenessProtocol.applyAwarenessUpdate(aw, frame, "remote");
+  }
+  return [...aw.getStates().values()] as Record<string, unknown>[];
+}
+
+/**
+ * Structural logger spy matching the SyncManager logger seam (US6 AC2). Every
+ * awareness pulse writes exactly ONE line: the gap debug below the warn
+ * threshold, or the `AWARENESS GAP:` warn above it — so counting those lines
+ * counts pulses without depending on y-protocols' own internal clock renewal.
+ */
+function makeLoggerSpy() {
+  const records: { level: "debug" | "warn"; category: string; message: string }[] = [];
+  return {
+    records,
+    debug(category: string, message: string): void {
+      records.push({ level: "debug", category, message });
+    },
+    warn(category: string, message: string): void {
+      records.push({ level: "warn", category, message });
+    },
+    reset(): void {
+      records.length = 0;
+    },
+    pulses() {
+      return records.filter(
+        (r) => r.message.startsWith("awareness pulse:") || r.message.startsWith("AWARENESS GAP:"),
+      );
+    },
+    gapWarns() {
+      return records.filter((r) => r.level === "warn" && r.message.startsWith("AWARENESS GAP:"));
+    },
+  };
+}
 
 class MockWebSocket {
   static readonly CONNECTING = 0;
@@ -72,6 +133,7 @@ function makeSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSett
     cursorColor: "#000",
     sharedFolder: "",
     encryptionPassphrase: "",
+    encryptionSalt: "",
     autoReconnect: false,
     notificationsEnabled: false,
     debugLogging: false,
@@ -79,6 +141,9 @@ function makeSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSett
     excludePatterns: [] as string[],
     requireApproval: false,
     approvalTimeoutSeconds: 60,
+    showCanvasCursors: true,
+    showCanvasPresence: true,
+    useCanvasBinding: false,
     permission: "read-write" as const,
     readOnlyPatterns: [] as string[],
     ...overrides,
@@ -273,6 +338,538 @@ describe("SyncManager", () => {
     // The doc should remain uncorrupted
     expect(handle.text.toString()).toBe("clean");
 
+    sm.destroy();
+  });
+
+  // Bug A: an existing peer must re-emit its local (static) awareness when the
+  // server relays a SYNC_REQUEST for a newly-subscribing client.
+  it("re-emits local awareness on MUX_SYNC_REQUEST so a newcomer sees the cursor", () => {
+    const sm = new SyncManager(makeSettings());
+    sm.connect();
+
+    const handle = sm.getDoc("notes/test.md")!;
+    const ws = mockWsInstances[0];
+    ws.simulateOpen();
+
+    // Host sets its caret once (static awareness state).
+    handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+
+    // Ignore everything sent so far (subscribe + the initial awareness broadcast).
+    ws.sent = [];
+
+    // Server relays a SYNC_REQUEST to us because a new peer just subscribed.
+    const syncReq = encodeMuxMessage("notes/test.md", MUX_SYNC_REQUEST);
+    ws.onmessage?.({
+      data: (syncReq.buffer as ArrayBuffer).slice(
+        syncReq.byteOffset,
+        syncReq.byteOffset + syncReq.byteLength,
+      ),
+    });
+
+    const awarenessMsgs = ws.sent
+      .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+      .filter((msg) => msg.msgType === MUX_AWARENESS && msg.docId === "notes/test.md");
+    expect(awarenessMsgs.length).toBeGreaterThan(0);
+
+    sm.destroy();
+  });
+
+  it("does not re-emit awareness on SYNC_REQUEST when local state was cleared", () => {
+    const sm = new SyncManager(makeSettings());
+    sm.connect();
+
+    const handle = sm.getDoc("notes/test.md")!;
+    const ws = mockWsInstances[0];
+    ws.simulateOpen();
+    // Explicitly clear the default {} local state so getLocalState() is null.
+    handle.awareness.setLocalState(null);
+    ws.sent = [];
+
+    const syncReq = encodeMuxMessage("notes/test.md", MUX_SYNC_REQUEST);
+    ws.onmessage?.({
+      data: (syncReq.buffer as ArrayBuffer).slice(
+        syncReq.byteOffset,
+        syncReq.byteOffset + syncReq.byteLength,
+      ),
+    });
+
+    const awarenessMsgs = ws.sent
+      .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+      .filter((msg) => msg.msgType === MUX_AWARENESS);
+    expect(awarenessMsgs.length).toBe(0);
+
+    sm.destroy();
+  });
+
+  // Bug H: MUX liveness — periodic ping + pong deadline.
+  it("sends a MUX_PING heartbeat after the interval elapses", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+      ws.sent = [];
+
+      vi.advanceTimersByTime(15_000);
+
+      const pings = ws.sent
+        .map((buf) => decodeMuxMessage(new Uint8Array(buf)))
+        .filter((msg) => msg.msgType === MUX_PING);
+      expect(pings.length).toBe(1);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes the socket when no MUX_PONG arrives before the deadline", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      vi.advanceTimersByTime(15_000); // ping sent, pong deadline armed
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+
+      vi.advanceTimersByTime(10_000); // pong deadline expires
+      expect(ws.readyState).toBe(MockWebSocket.CLOSED);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the socket open when a MUX_PONG answers the ping", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      vi.advanceTimersByTime(15_000); // ping sent, pong deadline armed
+
+      const pong = encodeMuxMessage("", MUX_PONG);
+      ws.onmessage?.({
+        data: (pong.buffer as ArrayBuffer).slice(
+          pong.byteOffset,
+          pong.byteOffset + pong.byteLength,
+        ),
+      });
+
+      vi.advanceTimersByTime(10_000); // deadline would have fired — but pong cleared it
+      expect(ws.readyState).toBe(MockWebSocket.OPEN);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ---- WP1: Awareness latency-resistance ----
+
+  // AC3/AC4 + US4 AC2: the heartbeat re-emits the FULL local state (incl.
+  // lockedNodes) on a fixed cadence < 30 s even with zero local edits.
+  it("heartbeat re-emits full local awareness (incl. lockedNodes) under 30 s with no edits", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      // A static caret plus a held lock — no further local edits after this.
+      handle.awareness.setLocalState({
+        user: { name: "Host", color: "#f00" },
+        cursor: { anchor: 0, head: 0 },
+        lockedNodes: { nodeA: { color: "#f00", name: "Host" } },
+      });
+      ws.sent = [];
+
+      // The heartbeat cadence must be under the 30 s y-protocols prune window.
+      expect(AWARENESS_HEARTBEAT_INTERVAL_MS).toBeLessThan(30_000);
+
+      vi.advanceTimersByTime(AWARENESS_HEARTBEAT_INTERVAL_MS);
+
+      const frames = awarenessFrames(ws, "notes/test.md");
+      expect(frames.length).toBeGreaterThan(0);
+
+      const states = decodeRemoteStates(frames);
+      const held = states.find((s) => (s as { lockedNodes?: unknown }).lockedNodes);
+      expect(held).toBeDefined();
+      expect((held as { lockedNodes: Record<string, unknown> }).lockedNodes.nodeA).toEqual({
+        color: "#f00",
+        name: "Host",
+      });
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // AC2/AC4: a static (non-moving) caret keeps being broadcast past 30 s and is
+  // never short-circuited by a "no recent movement" bail.
+  it("keeps broadcasting a static caret past 30 s without local movement", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+
+      const staticState = { user: { name: "Host" }, cursor: { anchor: 3, head: 3 } };
+      handle.awareness.setLocalState(staticState);
+      ws.sent = [];
+
+      // Simulate 36 s of a completely idle, non-moving caret.
+      vi.advanceTimersByTime(36_000);
+
+      const frames = awarenessFrames(ws, "notes/test.md");
+      expect(frames.length).toBeGreaterThan(0);
+
+      // The caret never moved — cursor position is unchanged.
+      expect(handle.awareness.getLocalState()).toMatchObject({ cursor: { anchor: 3, head: 3 } });
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // AC4: a manual heartbeat pulse re-emits a static caret (no-bail seam usable by
+  // the WP5 latency harness).
+  it("pulseAwarenessHeartbeat re-emits a static caret (does not bail)", () => {
+    const sm = new SyncManager(makeSettings());
+    sm.connect();
+    const handle = sm.getDoc("notes/test.md")!;
+    const ws = mockWsInstances[0];
+    ws.simulateOpen();
+
+    handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+    ws.sent = [];
+
+    sm.pulseAwarenessHeartbeat();
+
+    expect(awarenessFrames(ws, "notes/test.md").length).toBeGreaterThan(0);
+    sm.destroy();
+  });
+
+  // AC5/AC6: on reconnect the awareness clock ticks (caret re-renders on peers)
+  // and the client keeps a single stable identity — no ghost duplicate.
+  it("reconnect ticks the awareness clock and keeps a single stable identity", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings({ autoReconnect: true }));
+      const onReconnect = vi.fn();
+      sm.onReconnect(onReconnect);
+      sm.connect();
+
+      const ws1 = mockWsInstances[0];
+      ws1.simulateOpen(); // first connect — no reconnect tick
+
+      const handle = sm.getDoc("notes/test.md")!;
+      const clientIdBefore = handle.doc.clientID;
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 1, head: 1 } });
+
+      // Drop the socket; the reconnect backoff should schedule a new attempt.
+      // Advance by a bounded amount (first backoff is 100 ms) rather than
+      // runAllTimers — the y-protocols Awareness keeps an internal interval alive
+      // that would otherwise trip vitest's infinite-timer guard.
+      ws1.close();
+      vi.advanceTimersByTime(500);
+
+      expect(mockWsInstances.length).toBeGreaterThanOrEqual(2);
+      const ws2 = mockWsInstances[mockWsInstances.length - 1];
+      ws2.sent = [];
+      ws2.simulateOpen();
+
+      // Caret re-renders on peers without typing → an awareness frame is emitted.
+      expect(awarenessFrames(ws2, "notes/test.md").length).toBeGreaterThan(0);
+      // WP3 reconnect seam fired with the active doc ids.
+      expect(onReconnect).toHaveBeenCalledTimes(1);
+      expect(onReconnect.mock.calls[0][0]).toContain("notes/test.md");
+
+      // Single stable identity: same clientID, exactly one local awareness entry.
+      const handleAfter = sm.getDoc("notes/test.md")!;
+      expect(handleAfter.doc.clientID).toBe(clientIdBefore);
+      expect(handleAfter.awareness.getStates().size).toBe(1);
+      expect(handleAfter.awareness.getStates().has(clientIdBefore)).toBe(true);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // ---- WP2: awareness keep-alive deadline (US4 AC1-AC8) ----
+
+  // US4 AC3: the constant relationship the "structurally impossible" claim rests
+  // on — worst-case gap while ticks fire on schedule is T + D, and it must stay
+  // under y-protocols' 30 s prune window. The warn threshold sits between the
+  // healthy worst case and the prune window.
+  it("US4 AC3: T + D stays under the 30 s prune window and the warn threshold sits below it", () => {
+    expect(AWARENESS_TICK_INTERVAL_MS).toBeLessThan(AWARENESS_PULSE_DEADLINE_MS);
+    expect(AWARENESS_TICK_INTERVAL_MS + AWARENESS_PULSE_DEADLINE_MS).toBeLessThan(30_000);
+    // Still exported for existing importers, and still the T + D bound.
+    expect(AWARENESS_HEARTBEAT_INTERVAL_MS).toBe(
+      AWARENESS_TICK_INTERVAL_MS + AWARENESS_PULSE_DEADLINE_MS,
+    );
+    expect(AWARENESS_GAP_WARN_MS).toBeLessThan(30_000);
+    expect(AWARENESS_GAP_WARN_MS).toBeGreaterThan(AWARENESS_HEARTBEAT_INTERVAL_MS);
+  });
+
+  // US4 AC1: the keep-alive is deadline-driven, not fixed-period — a tick that
+  // arrives before the deadline does NOT pulse, the one at the deadline does.
+  it("US4 AC1: a tick before the deadline does not pulse, the tick at the deadline does", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      const logs = makeLoggerSpy();
+      sm.setLogger(logs);
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+      logs.reset();
+
+      vi.advanceTimersByTime(AWARENESS_TICK_INTERVAL_MS);
+      expect(logs.pulses()).toHaveLength(0);
+
+      vi.advanceTimersByTime(AWARENESS_PULSE_DEADLINE_MS - AWARENESS_TICK_INTERVAL_MS);
+      expect(logs.pulses()).toHaveLength(1);
+
+      // US4 AC5: every pulse logs the measured gap; below the threshold it is a
+      // debug line and NOT the AWARENESS GAP warn (US6 AC5).
+      expect(logs.pulses()[0].message).toContain(`gap ${AWARENESS_PULSE_DEADLINE_MS}ms`);
+      expect(logs.gapWarns()).toHaveLength(0);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // US4 AC2: the tick is a directly callable method, and it is idempotent within
+  // one deadline window — a second immediate call does not pulse again.
+  it("US4 AC2: tickAwarenessKeepAlive is directly callable and pulses once per deadline", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      const logs = makeLoggerSpy();
+      sm.setLogger(logs);
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+      logs.reset();
+
+      expect(sm.tickAwarenessKeepAlive()).toBe(false); // deadline not reached yet
+
+      vi.setSystemTime(new Date(Date.now() + AWARENESS_PULSE_DEADLINE_MS));
+      expect(sm.tickAwarenessKeepAlive()).toBe(true);
+      expect(sm.tickAwarenessKeepAlive()).toBe(false); // deadline just reset
+      expect(logs.pulses()).toHaveLength(1);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // US4 AC7: both entry points stay a no-op while the socket is not OPEN.
+  it("US4 AC7: neither the deadline tick nor a manual pulse emits while the socket is not OPEN", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      const logs = makeLoggerSpy();
+      sm.setLogger(logs);
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0]; // still CONNECTING
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+      logs.reset();
+
+      vi.setSystemTime(new Date(Date.now() + 70_000));
+      expect(sm.tickAwarenessKeepAlive()).toBe(false);
+      sm.pulseAwarenessHeartbeat();
+
+      expect(logs.pulses()).toHaveLength(0);
+      expect(awarenessFrames(ws, "notes/test.md")).toHaveLength(0);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // US4 AC6. A throttled/occluded window is simulated as a CLOCK JUMP with the
+  // interval suppressed: vi.setSystemTime moves the wall clock WITHOUT firing any
+  // timer. 66 000 ms of suppressed timers + exactly one tick = a 70 000 ms gap,
+  // which must produce one pulse and one gap warn naming the measured gap.
+  it("US4 AC6: a 70 s clock jump then one tick emits one pulse and one AWARENESS GAP warn", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      const logs = makeLoggerSpy();
+      sm.setLogger(logs);
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen(); // arms the deadline baseline
+
+      handle.awareness.setLocalState({
+        user: { name: "Host" },
+        cursor: { anchor: 0, head: 0 },
+        lockedNodes: { nodeA: { color: "#f00", name: "Host" } },
+      });
+      logs.reset();
+      ws.sent = [];
+
+      vi.setSystemTime(new Date(Date.now() + (70_000 - AWARENESS_TICK_INTERVAL_MS)));
+      vi.advanceTimersByTime(AWARENESS_TICK_INTERVAL_MS);
+
+      expect(logs.pulses()).toHaveLength(1);
+      const warns = logs.gapWarns();
+      expect(warns).toHaveLength(1);
+      expect(warns[0].message).toContain("70000ms");
+
+      // The pulse re-emitted the FULL local state, held lock included.
+      const states = decodeRemoteStates(awarenessFrames(ws, "notes/test.md"));
+      expect(
+        states.some((s) =>
+          Boolean((s as { lockedNodes?: Record<string, unknown> }).lockedNodes?.nodeA),
+        ),
+      ).toBe(true);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // US4 AC4: socket delivery is not timer-throttled, so every inbound framed
+  // message evaluates the deadline. Deadline expired + NO interval tick at all
+  // -> exactly one pulse.
+  it("US4 AC4: one inbound MUX message with the deadline expired emits exactly one pulse", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      const logs = makeLoggerSpy();
+      sm.setLogger(logs);
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+      logs.reset();
+      ws.sent = [];
+
+      // The deadline expires with every timer suppressed — nothing fires.
+      vi.setSystemTime(new Date(Date.now() + AWARENESS_PULSE_DEADLINE_MS));
+
+      const pong = encodeMuxMessage("", MUX_PONG);
+      ws.onmessage?.({
+        data: (pong.buffer as ArrayBuffer).slice(
+          pong.byteOffset,
+          pong.byteOffset + pong.byteLength,
+        ),
+      });
+
+      expect(logs.pulses()).toHaveLength(1);
+      expect(awarenessFrames(ws, "notes/test.md")).toHaveLength(1);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // US4 AC4, frame-level and using NO new API — the behavioural RED at HEAD: a
+  // suppressed-timer clock jump means the keep-alive interval never fires, so HEAD
+  // re-emits nothing at all and this expects 1 frame instead of 0.
+  it("US4 AC4: a clock jump plus one inbound message re-emits awareness with no timer firing", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+      ws.sent = [];
+
+      // 70 s of wall clock with every timer suppressed, then one inbound frame.
+      vi.setSystemTime(new Date(Date.now() + 70_000));
+      const pong = encodeMuxMessage("", MUX_PONG);
+      ws.onmessage?.({
+        data: (pong.buffer as ArrayBuffer).slice(
+          pong.byteOffset,
+          pong.byteOffset + pong.byteLength,
+        ),
+      });
+
+      expect(awarenessFrames(ws, "notes/test.md")).toHaveLength(1);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("US4 AC4: an inbound MUX message before the deadline does not pulse", () => {
+    vi.useFakeTimers();
+    try {
+      const sm = new SyncManager(makeSettings());
+      const logs = makeLoggerSpy();
+      sm.setLogger(logs);
+      sm.connect();
+      const handle = sm.getDoc("notes/test.md")!;
+      const ws = mockWsInstances[0];
+      ws.simulateOpen();
+      handle.awareness.setLocalState({ user: { name: "Host" }, cursor: { anchor: 0, head: 0 } });
+      logs.reset();
+      ws.sent = [];
+
+      vi.setSystemTime(new Date(Date.now() + AWARENESS_PULSE_DEADLINE_MS - 1));
+
+      const pong = encodeMuxMessage("", MUX_PONG);
+      ws.onmessage?.({
+        data: (pong.buffer as ArrayBuffer).slice(
+          pong.byteOffset,
+          pong.byteOffset + pong.byteLength,
+        ),
+      });
+
+      expect(logs.pulses()).toHaveLength(0);
+      expect(awarenessFrames(ws, "notes/test.md")).toHaveLength(0);
+
+      sm.destroy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // AC5: the reconnect clock-tick does NOT fire on the very first connect.
+  it("does not fire the reconnect seam on the first connect", () => {
+    const sm = new SyncManager(makeSettings());
+    const onReconnect = vi.fn();
+    sm.onReconnect(onReconnect);
+    sm.connect();
+
+    sm.getDoc("notes/test.md");
+    mockWsInstances[0].simulateOpen();
+
+    expect(onReconnect).not.toHaveBeenCalled();
     sm.destroy();
   });
 });

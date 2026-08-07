@@ -1,6 +1,6 @@
 {
   "name": "live-share",
-  "version": "0.5.2",
+  "version": "0.6.1",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -9,7 +9,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "biome check .",
-    "format": "biome check --write ."
+    "format": "biome check --write .",
+    "build:e2e": "node esbuild.config.mjs e2e"
   },
   "dependencies": {
     "lib0": "^0.2.97",

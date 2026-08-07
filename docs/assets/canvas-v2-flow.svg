@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">Canvas V2 bidirectional data flow</title>
+  <desc id="desc">Local canvas edits are compared with the Surface Shadow, validated, written to Yjs and synchronized; remote changes are planned, safely applied to the live view, receipted, and serialized by a single writer.</desc>
+  <defs>
+    <linearGradient id="bg2" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#0f172a"/><stop offset="1" stop-color="#172554"/></linearGradient>
+    <filter id="s"><feDropShadow dx="0" dy="6" stdDeviation="8" flood-opacity=".3"/></filter>
+    <marker id="a" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#93c5fd"/></marker>
+    <marker id="b" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#f0abfc"/></marker>
+    <style>.t{font:700 30px system-ui,sans-serif;fill:#fff}.st{font:400 16px system-ui,sans-serif;fill:#cbd5e1}.h{font:700 17px system-ui,sans-serif;fill:#fff}.p{font:400 13px system-ui,sans-serif;fill:#dbeafe}.tag{font:700 13px system-ui,sans-serif;fill:#0f172a}</style>
+  </defs>
+  <rect width="1200" height="700" rx="24" fill="url(#bg2)"/>
+  <text x="55" y="62" class="t">Canvas CRDT V2 data flow</text>
+  <text x="55" y="92" class="st">Intent in one direction · safe projection in the other · receipts connect both</text>
+
+  <rect x="55" y="126" width="170" height="74" rx="16" fill="#1d4ed8" filter="url(#s)"/><text x="80" y="157" class="h">Obsidian canvas</text><text x="80" y="180" class="p">view or file save</text>
+  <rect x="275" y="126" width="180" height="74" rx="16" fill="#1e40af" filter="url(#s)"/><text x="300" y="157" class="h">Surface Shadow</text><text x="300" y="180" class="p">last accepted surface</text>
+  <rect x="505" y="126" width="180" height="74" rx="16" fill="#3730a3" filter="url(#s)"/><text x="534" y="157" class="h">Intent planner</text><text x="534" y="180" class="p">create · update · delete</text>
+  <rect x="735" y="126" width="180" height="74" rx="16" fill="#6d28d9" filter="url(#s)"/><text x="762" y="157" class="h">Ingest boundary</text><text x="762" y="180" class="p">validate · quarantine</text>
+  <rect x="965" y="126" width="180" height="74" rx="16" fill="#7e22ce" filter="url(#s)"/><text x="1020" y="157" class="h">Y.Doc</text><text x="989" y="180" class="p">maps · Y.Text · tombstones</text>
+
+  <path d="M225 163 H275" stroke="#93c5fd" stroke-width="4" marker-end="url(#a)"/><path d="M455 163 H505" stroke="#93c5fd" stroke-width="4" marker-end="url(#a)"/>
+  <path d="M685 163 H735" stroke="#93c5fd" stroke-width="4" marker-end="url(#a)"/><path d="M915 163 H965" stroke="#93c5fd" stroke-width="4" marker-end="url(#a)"/>
+  <rect x="405" y="225" width="390" height="42" rx="21" fill="#bfdbfe"/><text x="445" y="252" class="tag">LOCAL: compare with shadow, never with absence alone</text>
+
+  <rect x="965" y="370" width="180" height="74" rx="16" fill="#7e22ce" filter="url(#s)"/><text x="1020" y="401" class="h">Y.Doc</text><text x="1003" y="424" class="p">remote delta arrives</text>
+  <rect x="735" y="370" width="180" height="74" rx="16" fill="#86198f" filter="url(#s)"/><text x="769" y="401" class="h">Reconcile plan</text><text x="759" y="424" class="p">geometry · structural</text>
+  <rect x="505" y="370" width="180" height="74" rx="16" fill="#9d174d" filter="url(#s)"/><text x="542" y="401" class="h">Editing guard</text><text x="530" y="424" class="p">apply now or defer</text>
+  <rect x="275" y="370" width="180" height="74" rx="16" fill="#be123c" filter="url(#s)"/><text x="325" y="401" class="h">Receipt</text><text x="305" y="424" class="p">delivered · outcome</text>
+  <rect x="55" y="370" width="170" height="74" rx="16" fill="#c2410c" filter="url(#s)"/><text x="80" y="401" class="h">Live canvas view</text><text x="83" y="424" class="p">preserve active edit</text>
+
+  <path d="M965 407 H915" stroke="#f0abfc" stroke-width="4" marker-end="url(#b)"/><path d="M735 407 H685" stroke="#f0abfc" stroke-width="4" marker-end="url(#b)"/>
+  <path d="M505 407 H455" stroke="#f0abfc" stroke-width="4" marker-end="url(#b)"/><path d="M275 407 H225" stroke="#f0abfc" stroke-width="4" marker-end="url(#b)"/>
+  <rect x="420" y="492" width="360" height="42" rx="21" fill="#f5d0fe"/><text x="459" y="519" class="tag">REMOTE: apply safely, then advance from receipt</text>
+
+  <path d="M365 444 V568 H275" stroke="#fbbf24" stroke-width="3" fill="none" marker-end="url(#a)"/>
+  <rect x="275" y="564" width="220" height="74" rx="16" fill="#92400e" filter="url(#s)"/><text x="320" y="595" class="h">Shadow advance</text><text x="302" y="618" class="p">only what the surface took</text>
+  <rect x="705" y="564" width="220" height="74" rx="16" fill="#065f46" filter="url(#s)"/><text x="744" y="595" class="h">Single writer</text><text x="737" y="618" class="p">canonical .canvas bytes</text>
+  <path d="M1055 444 V601 H925" stroke="#6ee7b7" stroke-width="3" fill="none" marker-end="url(#a)"/>
+  <text x="55" y="672" class="st">A replica may converge and still be wrong. Canvas V2 therefore proves intent preservation, completeness, and authorization separately.</text>
+</svg>

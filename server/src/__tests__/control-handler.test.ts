@@ -1574,4 +1574,148 @@ describe("Control WebSocket handler", () => {
     expect(reconnectResponse.approved).toBe(true);
     expect(reconnectResponse.isHost).toBe(false);
   });
+
+  it("does not rate-limit chunked file-transfer frames (Bug L5)", async () => {
+    const room = await createRoom("ctrl-chunk-exempt");
+
+    const host = await connectControl(room.id, room.token);
+    await delay(50);
+    sendJSON(host.ws, {
+      type: "join-request",
+      userId: "host-1",
+      displayName: "Host",
+    });
+    await delay(50);
+
+    let closed = false;
+    host.ws.on("close", () => {
+      closed = true;
+    });
+
+    // Far exceed the 100/10s limit using chunk frames — must NOT self-trip.
+    for (let i = 0; i < 250; i++) {
+      sendJSON(host.ws, {
+        type: "file-chunk-data",
+        path: "big.bin",
+        index: i,
+        data: "x",
+        transferId: "t1",
+      });
+    }
+
+    await delay(300);
+    expect(closed).toBe(false);
+    expect(host.ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("still rate-limits non-chunk control traffic", async () => {
+    const room = await createRoom("ctrl-nonchunk-limit");
+
+    const client = await connectControl(room.id, room.token);
+    await delay(50);
+
+    const closedPromise = new Promise<number>((resolve) => {
+      client.ws.on("close", (code: number) => resolve(code));
+    });
+
+    for (let i = 0; i < 101; i++) {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        sendJSON(client.ws, { type: "presence-update", userId: "u", displayName: "U" });
+      }
+    }
+
+    const closeCode = await closedPromise;
+    expect(closeCode).toBe(1008);
+  });
+
+  it("records the elected guest as room host even when unverified (Bug I)", async () => {
+    const room = await createRoom("ctrl-election-hostid");
+
+    const { getRoom } = await import("../rooms.js");
+    const serverRoom = getRoom(room.id);
+    expect(serverRoom).toBeDefined();
+    expect(serverRoom!.hostUserId).toBeUndefined();
+
+    const host = await connectControl(room.id, room.token);
+    await delay(50);
+    sendJSON(host.ws, {
+      type: "join-request",
+      userId: "host-1",
+      displayName: "Host",
+    });
+    await delay(50);
+
+    const guest = await connectControl(room.id, room.token);
+    await delay(50);
+    sendJSON(guest.ws, {
+      type: "join-request",
+      userId: "guest-1",
+      displayName: "Guest",
+    });
+    await delay(50);
+
+    // Host leaves → guest is auto-elected. hostUserId must now track the
+    // electee, otherwise the original host could re-match and split-brain.
+    guest.messages.length = 0;
+    const hostClosed = new Promise<void>((resolve) => {
+      host.ws.on("close", () => resolve());
+    });
+    host.ws.close();
+    await hostClosed;
+    // Wait for the election broadcast so hostUserId has been assigned server-side.
+    await waitForMessages(guest.messages, 1);
+
+    expect(serverRoom!.hostUserId).toBe("guest-1");
+  });
+
+  it("reconnecting original host cannot act as host after election (Bug I)", async () => {
+    const room = await createRoom("ctrl-split-brain");
+
+    const host = await connectControl(room.id, room.token);
+    await delay(50);
+    sendJSON(host.ws, {
+      type: "join-request",
+      userId: "host-1",
+      displayName: "Host",
+    });
+    await delay(50);
+
+    const guest = await connectControl(room.id, room.token);
+    await delay(50);
+    sendJSON(guest.ws, {
+      type: "join-request",
+      userId: "guest-1",
+      displayName: "Guest",
+    });
+    await delay(50);
+
+    const hostClosed = new Promise<void>((resolve) => {
+      host.ws.on("close", () => resolve());
+    });
+    host.ws.close();
+    await hostClosed;
+    await waitForMessages(guest.messages, 1);
+    guest.messages.length = 0;
+
+    // Original host reconnects and re-joins.
+    const rehost = await connectControl(room.id, room.token);
+    await delay(50);
+    sendJSON(rehost.ws, {
+      type: "join-request",
+      userId: "host-1",
+      displayName: "Host",
+    });
+
+    await waitForMessages(rehost.messages, 1);
+    const resp = JSON.parse(rehost.messages[0]);
+    expect(resp.type).toBe("join-response");
+    expect(resp.isHost).toBe(false);
+
+    // It is no longer host, so a host-only kick must be ignored (single host).
+    sendJSON(rehost.ws, { type: "kick", userId: "guest-1" });
+    await delay(300);
+    const kicked = guest.messages.find((m) => JSON.parse(m).type === "kicked");
+    expect(kicked).toBeUndefined();
+    expect(guest.ws.readyState).toBe(WebSocket.OPEN);
+  });
 });

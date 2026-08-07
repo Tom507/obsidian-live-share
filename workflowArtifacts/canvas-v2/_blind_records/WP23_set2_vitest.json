@@ -1,0 +1,15 @@
+{
+  "wp": "23",
+  "set": "set2",
+  "framework": "vitest",
+  "files_staged": 5,
+  "tests_collected": 9,
+  "tests_passed": 9,
+  "tests_failed": 0,
+  "exit_code": 0,
+  "verdict": "PASS",
+  "reason": "9 of 9 tests passed",
+  "package": "plugin",
+  "depth": 3,
+  "detail": ""
+}

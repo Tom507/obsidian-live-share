@@ -19,9 +19,14 @@ interface JWTPayload {
 
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID || "";
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || "";
+// Only trust JWTs when a real secret is configured. Without this flag the
+// server would verify tokens against a well-known default secret, letting an
+// attacker forge a JWT whose `sub` matches the host's GitHub id and take over
+// the room (kick/set-permission/session-end). See docs/security.md.
+const JWT_SECRET_CONFIGURED = Boolean(process.env.JWT_SECRET);
 const JWT_SECRET = process.env.JWT_SECRET || "change-me-in-production";
 
-if (!process.env.JWT_SECRET) {
+if (!JWT_SECRET_CONFIGURED) {
   if (process.env.REQUIRE_GITHUB_AUTH === "true") {
     console.error(
       "[auth] REQUIRE_GITHUB_AUTH is true but JWT_SECRET is not set. " +
@@ -30,15 +35,17 @@ if (!process.env.JWT_SECRET) {
     process.exit(1);
   } else {
     console.warn(
-      "[auth] JWT_SECRET is not set, using insecure default. " +
-        "Set JWT_SECRET to a strong random value in production",
+      "[auth] JWT_SECRET is not set; JWT-based identity is disabled. " +
+        "Set JWT_SECRET to a strong random value to enable verified host identity",
     );
   }
 }
 
 export function verifyJWT(token: string): JWTPayload | null {
+  // Never trust a token verified against the insecure default secret.
+  if (!JWT_SECRET_CONFIGURED) return null;
   try {
-    return jwt.verify(token, JWT_SECRET) as JWTPayload;
+    return jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] }) as JWTPayload;
   } catch {
     return null;
   }

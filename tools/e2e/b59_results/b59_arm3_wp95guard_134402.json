@@ -1,0 +1,912 @@
+{
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "host": "B",
+  "guest": "A",
+  "refusal_signature_history_before": 0,
+  "data_json_sha_before": {
+    "A": "a01071398d2123bdba22dce17724c3a5f2e2bcc1485b2c815efc9114ad4465a1",
+    "B": "e0db07b65624dfa9faa9b350670cbf04850fcc8d9b91cd353dfc074cd0ad534d"
+  },
+  "control": {
+    "rows": [
+      {
+        "op": "create",
+        "delivered": true,
+        "mutated": true,
+        "expected_mutated": true,
+        "refusals_delta": 0
+      },
+      {
+        "op": "modify",
+        "delivered": true,
+        "mutated": true,
+        "expected_mutated": true,
+        "refusals_delta": 0
+      },
+      {
+        "op": "rename",
+        "delivered": true,
+        "mutated": false,
+        "expected_mutated": true,
+        "refusals_delta": 0
+      },
+      {
+        "op": "delete",
+        "delivered": true,
+        "mutated": false,
+        "expected_mutated": true,
+        "refusals_delta": 0
+      }
+    ],
+    "control_holds": false
+  },
+  "census_host_data_json": {
+    "target": ".obsidian/plugins/live-share/data.json",
+    "rows": [
+      {
+        "op": "create",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "modify",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "delete",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-INTO-protected",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-OUT-of-protected",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "folder-create",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-start",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-data",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-end",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      }
+    ]
+  },
+  "census_host_main_js": {
+    "target": ".obsidian/plugins/live-share/main.js",
+    "rows": [
+      {
+        "op": "create",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "modify",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "delete",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-INTO-protected",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-OUT-of-protected",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "folder-create",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-start",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-data",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-end",
+        "target": ".obsidian/plugins/live-share/main.js",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      }
+    ]
+  },
+  "census_host_git_hook": {
+    "target": ".git/hooks/pre-commit",
+    "rows": [
+      {
+        "op": "create",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "modify",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "delete",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-INTO-protected",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-OUT-of-protected",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "folder-create",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-start",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-data",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-end",
+        "target": ".git/hooks/pre-commit",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      }
+    ]
+  },
+  "census_guest_data_json": {
+    "target": ".obsidian/plugins/live-share/data.json",
+    "rows": [
+      {
+        "op": "create",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "modify",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "delete",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-INTO-protected",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-OUT-of-protected",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "folder-create",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-start",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-data",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-end",
+        "target": ".obsidian/plugins/live-share/data.json",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": true,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      }
+    ]
+  },
+  "census_near_miss": {
+    "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+    "rows": [
+      {
+        "op": "create",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "modify",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "delete",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-INTO-protected",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "rename-OUT-of-protected",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "folder-create",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-start",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-data",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      },
+      {
+        "op": "chunk-end",
+        "target": ".obsidian/liveshare/stateful/b59-lookalike.canvas",
+        "delivered": true,
+        "mutated": false,
+        "reason": null,
+        "changed": [],
+        "data_json_sha_unchanged": true,
+        "main_js_sha_unchanged": true,
+        "target_exists_after": false,
+        "refusals_delta": 1,
+        "arms_delta": {
+          "file-op-gate": 1
+        }
+      }
+    ]
+  },
+  "sidecar_half_host": {
+    "measurable": true,
+    "edit_reached_doc": true,
+    "sidecar_changed": true,
+    "after_s": 0.0,
+    "entries_differing": 1,
+    "diff_sample": {
+      "30510797e8bbc98998153d96202b77a9.yhistory": [
+        0,
+        210
+      ]
+    },
+    "probe_removed": true
+  },
+  "sidecar_half_guest": {
+    "measurable": true,
+    "edit_reached_doc": true,
+    "sidecar_changed": true,
+    "after_s": 0.0,
+    "entries_differing": 1,
+    "diff_sample": {
+      "3331c5c94630e3cca00047bdea7ce79d.yhistory": [
+        0,
+        202
+      ]
+    },
+    "probe_removed": true
+  },
+  "data_json_sha_after": {
+    "A": "a01071398d2123bdba22dce17724c3a5f2e2bcc1485b2c815efc9114ad4465a1",
+    "B": "e0db07b65624dfa9faa9b350670cbf04850fcc8d9b91cd353dfc074cd0ad534d"
+  },
+  "data_json_identical": {
+    "A": true,
+    "B": true
+  },
+  "seed_refusal_paths": {
+    "A": [],
+    "B": []
+  },
+  "rule15": {
+    "CANVAS WRITER:": {
+      "window_hits": 1,
+      "verdict": "PRESENT",
+      "history_hits": 2058,
+      "matcher_ok": true
+    },
+    "CAPTURE DECLINED:": {
+      "window_hits": 1,
+      "verdict": "PRESENT",
+      "history_hits": 151,
+      "matcher_ok": true
+    },
+    "local modify ": {
+      "window_hits": 5,
+      "verdict": "PRESENT",
+      "history_hits": 1646,
+      "matcher_ok": true
+    },
+    "SEED REFUSED:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 5,
+      "matcher_ok": true
+    },
+    "SEED RESTORED:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 1,
+      "matcher_ok": true
+    },
+    "SEED REFUSAL STORE:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 19,
+      "matcher_ok": true
+    },
+    "INGEST REJECTED": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 7,
+      "matcher_ok": true
+    },
+    "MUTE OVERRUN:": {
+      "window_hits": 0,
+      "verdict": "UNINFORMATIVE",
+      "history_hits": 0,
+      "matcher_ok": true
+    },
+    "AWARENESS GAP:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 1496,
+      "matcher_ok": true
+    },
+    "refused remote rename": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 1,
+      "matcher_ok": true
+    },
+    "PROTECTED PATH REFUSED:": {
+      "window_hits": 45,
+      "verdict": "PRESENT",
+      "history_hits": 0,
+      "matcher_ok": true
+    },
+    "DELETE WITHHELD:": {
+      "window_hits": 0,
+      "verdict": "ABSENT",
+      "history_hits": 2,
+      "matcher_ok": true
+    }
+  },
+  "refusal_lines": [
+    "2026-08-07T11:44:34.810Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=1) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:35.773Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=2) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:36.695Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=3) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:37.660Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=4) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:38.586Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=5) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:39.520Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=6) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:40.456Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=7) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:41.408Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=8) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:42.356Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=9) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:07.807Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=1) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:08.804Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=2) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:09.813Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=3) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:10.826Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=4) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:11.789Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=5) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:12.802Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=6) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:13.856Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=7) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:14.805Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=8) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:15.799Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=9) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:16.817Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=10) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:17.862Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=11) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:18.838Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=12) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:19.849Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=13) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:20.841Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=14) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:21.839Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=15) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:22.864Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=16) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:23.864Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=17) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:24.843Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=18) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:25.831Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=19) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:26.830Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=20) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:27.823Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=21) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:28.841Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=22) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:29.820Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=23) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:30.828Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=24) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:31.789Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=25) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:32.833Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=26) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:33.843Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.git/** (total=27) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:43.305Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=28) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:44.815Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=29) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:45.838Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=30) \u2014 a peer operation targeting a protected tree was refused before any byte was written",
+    "2026-08-07T11:44:46.805Z [WARN] [file-op] PROTECTED PATH REFUSED: arm=file-op-gate root=.obsidian/** (total=31) \u2014 a peer operation targeting a protected tree was refused before any byte was written"
+  ],
+  "tree_delta": {
+    "A": {
+      "added": [],
+      "removed": []
+    },
+    "B": {
+      "added": [],
+      "removed": []
+    }
+  }
+}

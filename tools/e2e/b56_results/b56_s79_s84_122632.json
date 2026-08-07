@@ -1,0 +1,111 @@
+{
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "host": "B",
+  "guest": "A",
+  "s79_from_host": {
+    "vault_root": {
+      "src": "_liveshare-test/b56-s79-122632-vault_root.canvas",
+      "dest": "b56-s79-122632-root.canvas",
+      "peer_lost_old_path": true,
+      "peer_lost_after_s": 1.25,
+      "peer_has_destination": false,
+      "mover_lines": [],
+      "peer_lines": []
+    },
+    "sidecar": {
+      "src": "_liveshare-test/b56-s79-122632-sidecar.canvas",
+      "dest": ".obsidian/liveshare/state/b56-s79-122632-sc.canvas",
+      "peer_lost_old_path": true,
+      "peer_lost_after_s": 1.25,
+      "peer_has_destination": false,
+      "mover_lines": [],
+      "peer_lines": []
+    },
+    "inside_tree": {
+      "src": "_liveshare-test/b56-s79-122632-inside_tree.canvas",
+      "dest": "_liveshare-test/b56-s79-122632-moved.canvas",
+      "peer_lost_old_path": true,
+      "peer_lost_after_s": 1.25,
+      "peer_has_destination": true,
+      "mover_lines": [],
+      "peer_lines": []
+    }
+  },
+  "s84": {
+    "board_open_on_writer": false,
+    "rows": [
+      {
+        "delta": 0.3,
+        "shape": "ADD",
+        "valid": true,
+        "node": "b56-122632-s84-add-03",
+        "captured": true,
+        "after_s": 0.2,
+        "present_in_peer_doc": false,
+        "on_writer_disk": true
+      },
+      {
+        "delta": 0.3,
+        "shape": "DELETE",
+        "valid": false,
+        "why": "precondition: node never reached both docs"
+      },
+      {
+        "delta": 1.0,
+        "shape": "ADD",
+        "valid": true,
+        "node": "b56-122632-s84-add-10",
+        "captured": true,
+        "after_s": 0.2,
+        "present_in_peer_doc": false,
+        "on_writer_disk": true
+      },
+      {
+        "delta": 1.0,
+        "shape": "DELETE",
+        "valid": false,
+        "why": "precondition: node never reached both docs"
+      },
+      {
+        "delta": 2.0,
+        "shape": "ADD",
+        "valid": true,
+        "node": "b56-122632-s84-add-20",
+        "captured": true,
+        "after_s": 0.2,
+        "present_in_peer_doc": false,
+        "on_writer_disk": true
+      },
+      {
+        "delta": 2.0,
+        "shape": "DELETE",
+        "valid": false,
+        "why": "precondition: node never reached both docs"
+      }
+    ],
+    "left_over": {
+      "A": [],
+      "B": [
+        "b56-122632-s84-add-03",
+        "b56-122632-s84-add-10",
+        "b56-122632-s84-add-20",
+        "b56-122632-s84-delete-03",
+        "b56-122632-s84-delete-10",
+        "b56-122632-s84-delete-20"
+      ]
+    }
+  },
+  "tree_delta": {
+    "A": {
+      "added": [],
+      "removed": []
+    },
+    "B": {
+      "added": [],
+      "removed": []
+    }
+  }
+}

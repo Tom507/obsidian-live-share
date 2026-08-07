@@ -144,10 +144,23 @@ export function createControlWSS(options?: ControlWSSOptions) {
     room: ControlRoom,
     serverRoom: ReturnType<typeof getRoom>,
   ): void {
-    if (client.verifiedUserId && serverRoom?.hostUserId) {
-      client.isHost = client.verifiedUserId === serverRoom.hostUserId;
+    // A client's host claim is its verified (JWT) id when present, otherwise its
+    // self-reported userId. The room's designated hostUserId is authoritative
+    // for BOTH: comparing unverified clients against it too prevents a stale
+    // JWT host from re-matching after an unverified guest was elected (Bug I).
+    const claimedId = client.verifiedUserId ?? (client.userId || null);
+    if (serverRoom?.hostUserId && claimedId) {
+      client.isHost = claimedId === serverRoom.hostUserId;
     } else {
       client.isHost = !getHostClient(room);
+    }
+    // Enforce the single-host invariant: if this client is (re)admitted as the
+    // designated host, demote any other client that still thinks it is host so
+    // we never end up with two isHost=true clients (Bug I split-brain).
+    if (client.isHost) {
+      for (const other of room.clients.values()) {
+        if (other !== client && other.isHost) other.isHost = false;
+      }
     }
   }
 
@@ -186,16 +199,6 @@ export function createControlWSS(options?: ControlWSSOptions) {
     });
 
     ws.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
-      const now = Date.now();
-      client.msgTimestamps.push(now);
-      while (client.msgTimestamps.length > 0 && client.msgTimestamps[0] < now - MSG_RATE_WINDOW) {
-        client.msgTimestamps.shift();
-      }
-      if (client.msgTimestamps.length > MSG_RATE_LIMIT) {
-        ws.close(1008, "rate limit exceeded");
-        return;
-      }
-
       const data =
         raw instanceof ArrayBuffer
           ? Buffer.from(raw)
@@ -216,6 +219,27 @@ export function createControlWSS(options?: ControlWSSOptions) {
           console.warn(`[control] dropped unknown type from ${client.userId}:`, msg.type);
         }
         return;
+      }
+
+      // Rate limit — but exempt chunked file-transfer frames. A large binary
+      // (>~51 MB = >100 chunks) or a burst of file-ops would otherwise trip the
+      // limit and hard-close the client mid-transfer (Bug L5). Presence and all
+      // other control traffic stay rate-limited.
+      const rateExempt =
+        msg.type === "file-chunk-start" ||
+        msg.type === "file-chunk-data" ||
+        msg.type === "file-chunk-end" ||
+        msg.type === "file-chunk-resume";
+      if (!rateExempt) {
+        const now = Date.now();
+        client.msgTimestamps.push(now);
+        while (client.msgTimestamps.length > 0 && client.msgTimestamps[0] < now - MSG_RATE_WINDOW) {
+          client.msgTimestamps.shift();
+        }
+        if (client.msgTimestamps.length > MSG_RATE_LIMIT) {
+          ws.close(1008, "rate limit exceeded");
+          return;
+        }
       }
 
       touchRoom(roomId);
@@ -555,9 +579,15 @@ export function createControlWSS(options?: ControlWSSOptions) {
         }
         if (newHost) {
           newHost.isHost = true;
-          if (newHost.verifiedUserId && serverRoom) {
-            serverRoom.hostUserId = newHost.verifiedUserId;
-            touchRoom(roomId);
+          // Record the electee as the room's host even when unverified. Leaving
+          // hostUserId pointing at the departed host let the original JWT host
+          // re-match on reconnect and become a second host (Bug I split-brain).
+          if (serverRoom) {
+            const electedHostId = newHost.verifiedUserId ?? newHost.userId;
+            if (electedHostId) {
+              serverRoom.hostUserId = electedHostId;
+              touchRoom(roomId);
+            }
           }
           void appendLog(roomId, {
             timestamp: Date.now(),

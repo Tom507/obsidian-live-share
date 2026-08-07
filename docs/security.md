@@ -13,12 +13,14 @@ When a host starts a session, a random 128-bit passphrase is generated and embed
 - Control message metadata (message types, presence info)
 
 **Key derivation:**
-1. Salt derived from passphrase via SHA-256 (first 16 bytes)
-2. PBKDF2 derives a 256-bit AES-GCM key
-3. All peers with the same passphrase derive the same key
+1. The host generates a random 16-byte salt and embeds it in the invite link
+   alongside the passphrase (`k` field). Older invites without a salt fall back
+   to a legacy salt derived from the passphrase via SHA-256.
+2. PBKDF2 (100,000 iterations, SHA-256) derives a 256-bit AES-GCM key
+3. All peers with the same passphrase and salt derive the same key
 4. Each encryption uses a random 12-byte IV prepended to ciphertext
 
-The passphrase is in the invite link and never sent to the server.
+The passphrase and salt are in the invite link and never sent to the server.
 
 ## Authentication
 
@@ -29,6 +31,8 @@ Each room has a random 24-character token (nanoid). Compared using `crypto.timin
 ### GitHub OAuth (Optional)
 
 When enabled, all WebSocket connections require a valid JWT (7-day expiry). The server uses JWT-verified identity for host determination.
+
+JWTs are only trusted when `JWT_SECRET` is explicitly configured. If it is unset, the server refuses to verify any token (rather than falling back to a well-known default secret) so that forged tokens cannot be used to claim host identity; host determination then falls back to first-connected. Set `JWT_SECRET` to a strong random value in production.
 
 ## Server-Side Enforcement
 

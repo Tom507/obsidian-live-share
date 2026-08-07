@@ -17,6 +17,7 @@ function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSe
     sharedFolder: "",
     role: "host",
     encryptionPassphrase: "",
+    encryptionSalt: "",
     permission: "read-write",
     requireApproval: false,
     serverPassword: "",
@@ -28,6 +29,9 @@ function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSe
     excludePatterns: [],
     readOnlyPatterns: [],
     approvalTimeoutSeconds: 60,
+    showCanvasCursors: true,
+    showCanvasPresence: true,
+    useCanvasBinding: false,
     ...overrides,
   };
 }

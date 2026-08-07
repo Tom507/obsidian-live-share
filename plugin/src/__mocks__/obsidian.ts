@@ -71,9 +71,45 @@ export class TFile {
   path = "";
   stat = { size: 0, mtime: 0, ctime: 0 };
 }
-export class TFolder {}
+export class TFolder {
+  path = "";
+  // The real `TFolder.isRoot()` is `this.path === "/"`. `FolderSuggest` relies
+  // on it to keep the vault root out of the menu, so a mock that always
+  // answered `false` would make that exclusion untestable — the test would
+  // pass while asserting nothing about the case it exists for.
+  isRoot() {
+    return this.path === "/";
+  }
+}
 export class TAbstractFile {
   path = "";
+}
+
+/**
+ * Stand-in for the real type-ahead base class. Deliberately keeps the two
+ * behaviours `FolderSuggest` actually depends on — the input element it was
+ * constructed over, and `setValue` writing through to it — so a test can
+ * observe a selection rather than only that a method was called.
+ */
+export class AbstractInputSuggest<T> {
+  limit = 100;
+  app: any;
+  closed = false;
+  protected textInputEl: any;
+  constructor(app: any, textInputEl: any) {
+    this.app = app;
+    this.textInputEl = textInputEl;
+  }
+  setValue(value: string) {
+    if (this.textInputEl) this.textInputEl.value = value;
+  }
+  getValue(): string {
+    return this.textInputEl?.value ?? "";
+  }
+  selectSuggestion(_value: T, _evt?: any) {}
+  close() {
+    this.closed = true;
+  }
 }
 
 export const Platform = {

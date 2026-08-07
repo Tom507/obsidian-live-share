@@ -1,0 +1,170 @@
+{
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "host": "B",
+  "guest": "A",
+  "rows": [
+    {
+      "row": "create (fresh path)",
+      "op": "create",
+      "delivered": true,
+      "mutated_field": true,
+      "disk_oracle": true,
+      "after_s": 0.0,
+      "refusals_delta": 0,
+      "reason": null
+    },
+    {
+      "row": "modify (own fixture)",
+      "op": "modify",
+      "delivered": true,
+      "mutated_field": true,
+      "disk_oracle": true,
+      "after_s": 0.0,
+      "refusals_delta": 0,
+      "reason": null
+    },
+    {
+      "row": "rename (own fixture, DEST oracle)",
+      "op": "rename",
+      "delivered": true,
+      "mutated_field": false,
+      "disk_oracle": false,
+      "after_s": 60.0,
+      "refusals_delta": 0,
+      "reason": null
+    },
+    {
+      "row": "delete (own fixture, EXISTS first)",
+      "op": "delete",
+      "delivered": true,
+      "mutated_field": true,
+      "disk_oracle": true,
+      "after_s": 0.0,
+      "refusals_delta": 0,
+      "reason": null
+    }
+  ],
+  "leftovers": [],
+  "residue": {
+    "found": {
+      "A": [
+        "b59-134725-s96-sub"
+      ],
+      "B": [
+        "b59-134725-s96-sub"
+      ]
+    },
+    "disk_before": {
+      "A": [],
+      "B": []
+    },
+    "cleared": true,
+    "doc_after": {
+      "A": [],
+      "B": []
+    },
+    "disk_nodes_after": {
+      "A": 1,
+      "B": 1
+    }
+  },
+  "final_state": {
+    "A": {
+      "role": "guest",
+      "connected": true,
+      "roomId": "314c85ca-4eb6-491f-9c47-2a5bda4ea75c",
+      "vaultId": "703aa794cc73a117",
+      "bundle_sha256": "8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a",
+      "bundle_size": 4862249,
+      "sharedFolder": "_liveshare-test",
+      "shared_files": [
+        "hello.md",
+        "second-011125.canvas",
+        "smoke.canvas",
+        "wp37probe-031340.canvas",
+        "wp79-035734-diverged.canvas",
+        "wp79-035734-one.canvas",
+        "wp79-035734-three.canvas",
+        "wp79-035734-two.canvas"
+      ],
+      "shared_file_count": 8,
+      "seed_refusal_paths": [],
+      "data_json_sha256": "a01071398d2123bdba22dce17724c3a5f2e2bcc1485b2c815efc9114ad4465a1",
+      "sidecar_state_file_count": 394,
+      "muteStats": {
+        "releasedByEvent": 0,
+        "releasedByCeiling": 51,
+        "overruns": 49,
+        "worstOverrunMs": 683,
+        "overrunsByClass": {
+          "canvas": 12,
+          "text": 37
+        },
+        "pending": 0
+      },
+      "protectedRefusals": {
+        "total": 9,
+        "byArm": {
+          "file-op-gate": 9
+        },
+        "byRoot": {
+          ".obsidian": 9
+        }
+      }
+    },
+    "B": {
+      "role": "host",
+      "connected": true,
+      "roomId": "314c85ca-4eb6-491f-9c47-2a5bda4ea75c",
+      "vaultId": "55a4253eb7a90dde",
+      "bundle_sha256": "8abdf0e2168765f591d286c31cf601a2941985e9d44a7d437596d407b53c6f6a",
+      "bundle_size": 4862249,
+      "sharedFolder": "_liveshare-test",
+      "shared_files": [
+        "Properties.md",
+        "hello.md",
+        "second-011125.canvas",
+        "smoke.canvas",
+        "wp37probe-031340.canvas",
+        "wp79-035734-diverged.canvas",
+        "wp79-035734-one.canvas",
+        "wp79-035734-three.canvas",
+        "wp79-035734-two.canvas"
+      ],
+      "shared_file_count": 9,
+      "seed_refusal_paths": [],
+      "data_json_sha256": "e0db07b65624dfa9faa9b350670cbf04850fcc8d9b91cd353dfc074cd0ad534d",
+      "sidecar_state_file_count": 381,
+      "muteStats": {
+        "releasedByEvent": 1,
+        "releasedByCeiling": 89,
+        "overruns": 89,
+        "worstOverrunMs": 863,
+        "overrunsByClass": {
+          "canvas": 12,
+          "text": 77
+        },
+        "pending": 0
+      },
+      "protectedRefusals": {
+        "total": 36,
+        "byArm": {
+          "file-op-gate": 36
+        },
+        "byRoot": {
+          ".obsidian": 27,
+          ".git": 9
+        }
+      }
+    },
+    "clamp": {
+      "A": 54.14763379096985,
+      "B": 54.14763379096985
+    }
+  },
+  "admitted_rows": 3,
+  "total_rows": 4
+}

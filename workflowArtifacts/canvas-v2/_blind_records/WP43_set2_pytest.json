@@ -1,0 +1,15 @@
+{
+  "wp": "43",
+  "set": "set2",
+  "framework": "pytest",
+  "files_staged": 8,
+  "tests_collected": 12,
+  "tests_passed": 12,
+  "tests_failed": 0,
+  "exit_code": 0,
+  "verdict": "PASS",
+  "reason": "12 of 12 tests passed",
+  "package": "",
+  "depth": null,
+  "detail": ""
+}
