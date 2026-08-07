@@ -3575,3 +3575,31 @@ seed, and you are told the document is new.*
   and are overwritten on every config-panel save. Four authored rules were found living only in the generated
   copies and were ported to the templates (`0bd5768`). **Author process rules in the template, never the
   generated file.** `workflow_obsidian_liveshare.md` is *not* generated and is safe.
+
+## ▶ 2026-08-08 — WP109 + WP110 DISPATCHED (`ed0307c` charters · `b3d5704` triage)
+
+The live validation round closed. `TRIAGE_STOPLINE.md` is revised: **stop-line item 1 is MET** — the first
+clean live run of the battery happened, S123/S125/S126 are confirmed in real vaults and S127 is CLOSED.
+It also produced seven new signals, two of which outrank everything that was left.
+
+**Two fresh workers, chartered up front, one batch each** (Rule 13 — no resumption for new packages):
+
+| Worker | Package | Signals | Charter |
+|---|---|---|---|
+| **W3c** | WP109 | **S134 (P0)** | `TaskCharter_WP109_ANoteBornInASessionIsNeverSubscribed.md` |
+| **W3d** | WP110 | **S135** + **S137** | `TaskCharter_WP110_AMoveIsARenameTheShareNeverHears.md` |
+
+**Why this split.** S134 is large and structural — a document that is published but never subscribed, plus
+a bind that lies about it — and gets a worker to itself. S135 and S137 both live under `plugin/src/files/`
+and are both about an event that happens and leaves no usable trace, so they share one brief. S122 (guest
+canvas creation, owner-required) and S136 are the next round, deliberately **not** bolted onto these two.
+
+**Both charters forbid rebuilding or deploying.** The live rig stays pinned at `d8f98603ad6ddb1c`; these
+are code + unit/harness packages. Neither worker touches the vaults.
+
+**Base for both:** `26581d2`, clean tree, gate **3000 tests / 407 files**, `tsc` clean, register exit 0.
+
+**The WP108 rescue at `H:/tmp/wp108_rescue/` is superseded** — that work landed at `23fdf01`.
+
+**Live re-validation is queued behind both**: S134 and S135 were *found* live and their fixes cannot be
+called done on unit evidence alone.
