@@ -258,7 +258,7 @@ The S68 twin measures 700 ms at 100 ms sampling granularity — the same bound, 
 
 ### 6.1 THE CEILING HOLDS ONLY WHILE THE HOST IS NOT CLAMPING, and that is a property of the shape, not a tuning problem
 
-Handed to this batch by the Dispatcher from **B49's S65 audit**, taken as a given and **not re-measured here** (confirming it needs a window-focus change on a shared rig, which is not this batch's to take):
+Handed to this batch by the Dispatcher from **B49's S65 audit**, and allocated as **S71** at `148c83c` while this batch was writing — whose register entry names WP91's settle-window ceiling as exposed, in those words. Taken as a given and **not re-measured here** (confirming it needs a window-focus change on a shared rig, which is not this batch's to take):
 
 > `setTimeout` / `setInterval` in the renderer are clamped to **60.00 s ± 0.02**. Measured over 84 logger flush batches across both live vaults: min 0.011 s, median 0.988 s, **p90 59.986 s**, max 60.823 s — 44.0 % in the 0.50–0.60 s band (matching `FLUSH_DELAY_MS = 500` to the millisecond) and **26.2 % in the 40–61 s band**. The mechanism is not the logger: `SyncManager`'s independent `setInterval(4000)` awareness tick stretches to the same whole minute at the same moments and says so — `AWARENESS GAP: 59998ms … source=tick`. Two unrelated timers clamped simultaneously to 60.00 s is a **host wake-up clamp on the renderer**. Historically ~0.7 % of 18 600 pulses: a fat tail, not the steady state.
 
@@ -308,9 +308,9 @@ So the clamp does not merely fail to threaten this fix — **it is the case that
 
 4. **`CanvasSync.isRecentDiskWrite` now has no production consumer.** It is still correct, still maintained, still bounded (AC5) and still used by tests as a window observable. Removing a public accessor is not this WP's business.
 
-5. **A timer-enforced ceiling is not clamp-proof, and a lazy one would be.** See §6.1. Releasing the mute at the next event that finds the window older than `MAX_MUTE_MS`, rather than on a `setTimeout`, would hold the stated ceiling through a renderer wake-up clamp. Not chartered, not built, and after WP91 it buys latency rather than correctness. **Needs a signal number and a decision.**
+5. **A timer-enforced ceiling is not clamp-proof, and a lazy one would be — a design answer to S71, not a new signal.** See §6.1. Releasing the mute at the next event that finds the window older than `MAX_MUTE_MS`, rather than on a `setTimeout`, would hold the stated ceiling through a renderer wake-up clamp. Not chartered, not built, and under WP91's shape it buys latency rather than correctness. **Offered to the Dispatcher as the remedy S71 asks for on this mechanism; it needs a decision, not a number.**
 
-6. **`wp5/latency.test.ts:141` asserts a wall-clock RTT band and reds under load.** See §5.1. 4 red / 8 full-suite runs on this host, reproduced with WP91's files excluded, green 11/11 in isolation. **Needs a signal number.**
+6. **`wp5/latency.test.ts:141` asserts a wall-clock RTT band and reds under load.** See §5.1. 4 red / 8 full-suite runs on this host, reproduced with WP91's files excluded, green 11/11 in isolation. Plausibly S71's class one order of magnitude down, but **measured at 402-440 ms rather than at the 60 s clamp, so it is not S71 and I do not fold it in. Needs a signal number** (next free is S74; I do not allocate).
 
 ---
 
