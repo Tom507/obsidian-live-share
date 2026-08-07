@@ -135,7 +135,9 @@ function confirmReload(cs: CanvasSync, store: ReturnType<typeof createSurfaceSta
     cs.getSurfaceShadow(),
     buildApplyReceipt({ path, desired: data, plan: "structural", reloaded: true }),
   );
-  store.noteHandover(path, summary.handed);
+  // S83: both halves, as `main.ts` forwards them — `handed` grants,
+  // `summary.revoked` revokes, and silence changes nothing.
+  store.noteHandover(path, summary.handed, summary.revoked);
   return summary;
 }
 
@@ -272,7 +274,7 @@ describe("WP5 — the reconcile receipt supplies the capture path's surface stat
       p.cs.getSurfaceShadow(),
       buildApplyReceipt({ path: PATH, desired: data, plan: "geometry", nodeOutcomes: outcomes }),
     );
-    p.store.noteHandover(PATH, summary.handed);
+    p.store.noteHandover(PATH, summary.handed, summary.revoked);
 
     // Obsidian saves a picture that has neither card. Only the handed one may go.
     p.vault.files.set(PATH, canvasJson([N3]));

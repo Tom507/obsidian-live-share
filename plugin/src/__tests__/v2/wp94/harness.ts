@@ -194,7 +194,9 @@ export function confirmReload(peer: Peer, reloaded = true) {
     peer.cs.getSurfaceShadow(),
     buildApplyReceipt({ path: PATH, desired: docRecords(peer.doc), plan: "structural", reloaded }),
   );
-  peer.store.noteHandover(PATH, summary.handed);
+  // S83: both halves, exactly as `main.ts` forwards them. `handed` grants and
+  // `summary.revoked` revokes; a record in neither keeps the licence it had.
+  peer.store.noteHandover(PATH, summary.handed, summary.revoked);
   return summary;
 }
 
@@ -210,7 +212,9 @@ export function confirmGeometry(peer: Peer, nodeOutcomes: Map<string, ApplyOutco
       nodeOutcomes,
     }),
   );
-  peer.store.noteHandover(PATH, summary.handed);
+  // S83: both halves, exactly as `main.ts` forwards them. `handed` grants and
+  // `summary.revoked` revokes; a record in neither keeps the licence it had.
+  peer.store.noteHandover(PATH, summary.handed, summary.revoked);
   return summary;
 }
 

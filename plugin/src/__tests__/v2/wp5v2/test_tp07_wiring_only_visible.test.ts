@@ -112,7 +112,14 @@ function wire(deps: {
     deps.shadow,
     buildApplyReceipt({ path: deps.path, desired: deps.data, plan, reloaded, nodeOutcomes }),
   );
-  deps.store.noteHandover(deps.path, summary.handed);
+  // S83: the model forwards BOTH halves of the receipt, because production
+  // does. `handed` grants, `summary.revoked` (an `"interacting"` refusal, or
+  // the `exhaustive` absent sweep) revokes, and a record named by neither keeps
+  // the licence it had. A `wire()` that forwarded `handed` alone would model the
+  // pre-repair `noteHandover`, which REPLACED — and T2 below would then be
+  // green for the wrong reason: it would read the held card's lost licence off
+  // wholesale revocation rather than off the refusal that actually justifies it.
+  deps.store.noteHandover(deps.path, summary.handed, summary.revoked);
   return plan;
 }
 

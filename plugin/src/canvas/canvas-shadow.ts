@@ -941,6 +941,33 @@ export interface RecordApplyResult {
   id: string;
   outcome: ApplyOutcome;
   fields: Readonly<Record<string, ShadowFieldValue>>;
+  /**
+   * S82 — THE SECOND QUESTION, SPLIT OUT OF `outcome`.
+   *
+   * `outcome` answers *"does the surface hold the desired VALUES for this
+   * record?"*. That is the field-advance question, and it is the only one the
+   * shadow needs. `delivered` answers a different one: *"did THIS PASS put this
+   * record on the open view?"* — which is what a `"view"` receipt means
+   * ({@link SurfaceState.handedToView}) and therefore what the C4 delete rule is
+   * gated on.
+   *
+   * They are not the same question and they diverge in the geometry branch:
+   *
+   *   ├── a geometry pass calls `applyNodeGeometry` per NODE, so each node's
+   *   │      answer is a fresh measurement against the live view; but
+   *   └── no EDGE is touched at all unless the endpoint reflow reload lands. An
+   *          edge's `"unchanged"` is derived from `planReconcile`'s comparison
+   *          against `lastApplied`, and `lastApplied` is `shadowToCanvasRecords`
+   *          — a shadow that `advanceShadowFromContent` fills from DISK CONTENT
+   *          (the host seed, `noteExternalDiskWrite`) with no view involved. So
+   *          `"unchanged"` is a true statement about the values and a false one
+   *          about the view, and reading a view receipt off it mints a licence
+   *          for a record no view apply ever handed over.
+   *
+   * Deriving both from one `isConfirmed` test is what made "delete a card and
+   * its arrow while holding the card" tombstone the arrow and keep the card.
+   */
+  delivered: boolean;
 }
 
 /** What one reconcile pass handed to one surface, and what came back. */
@@ -1033,6 +1060,13 @@ function geometryNodeOutcome(
  *          only returns `"geometry"` when every edge already equals the basis,
  *          so `"unchanged"` is literally true); `exhaustive` is always `false`,
  *          because a geometry pass proves nothing about membership.
+ *
+ * S82 — EVERY LINE CARRIES TWO ANSWERS AND THEY ARE COMPUTED SEPARATELY.
+ * `outcome` is about the VALUES (may the shadow advance?) and `delivered` is
+ * about the VIEW (did this pass hand the record over?). They agree on every
+ * structural pass and on every geometry NODE; they part company on a geometry
+ * EDGE, where the values are unchanged and nothing was handed over. Deriving
+ * one from the other is the defect — see {@link RecordApplyResult.delivered}.
  */
 export function buildApplyReceipt(pass: ReconcilePass): ApplyReceipt {
   const structural = pass.plan === "structural";
@@ -1055,14 +1089,33 @@ export function buildApplyReceipt(pass: ReconcilePass): ApplyReceipt {
       // matched against the shadow, so it is not describable in a receipt.
       if (typeof id !== "string" || id.length === 0) continue;
       let outcome: ApplyOutcome;
+      // S82: computed BESIDE `outcome`, never derived from it. See
+      // {@link RecordApplyResult.delivered} for why the two answers differ.
+      let delivered: boolean;
       if (structural) {
+        // `setData` REPLACES the surface's membership, so a landed structural
+        // reload delivered every record it carried and an unlanded one
+        // delivered none. Here the two questions genuinely share an answer.
         outcome = reloaded ? "applied" : "failed";
+        delivered = reloaded;
       } else if (kind === "node") {
         outcome = geometryNodeOutcome(pass.nodeOutcomes?.get(id), reloaded);
+        // A per-node answer, measured against the live view by
+        // `applyNodeGeometry` in this pass: `"applied"` moved a card that was
+        // there, `"unchanged"` found it already there holding those values.
+        // `"interacting"`, `"missing"` and `"unsupported"` are all "this pass
+        // did not put it there".
+        delivered = isConfirmed(outcome);
       } else {
+        // The values are literally unchanged (`planReconcile` only returns
+        // `"geometry"` when every edge already equals the basis), so the field
+        // half is right — but NOTHING WAS HANDED TO THE VIEW. A geometry pass
+        // touches nodes only; the sole route by which an edge reaches the
+        // surface in this branch is the endpoint reflow reload.
         outcome = reloaded ? "applied" : "unchanged";
+        delivered = reloaded;
       }
-      records.push({ kind, id, outcome, fields: toReceiptFields(record) });
+      records.push({ kind, id, outcome, delivered, fields: toReceiptFields(record) });
     }
   };
 
@@ -1086,7 +1139,49 @@ export interface ReceiptSummary {
   advanced: FieldAdvance[];
   unconfirmed: Array<{ kind: ShadowRecordKind; id: string; outcome: ApplyOutcome }>;
   markedAbsent: Array<{ kind: ShadowRecordKind; id: string }>;
+  /** Licences this pass GRANTS. Never the whole licence set — see `revoked`. */
   handed: { node: Set<string>; edge: Set<string> };
+  /**
+   * S83 — licences this pass REVOKES, and a pass may only revoke on PROOF.
+   *
+   * `handed` and `revoked` are separate sets because a pass that hands nothing
+   * over has not thereby proved anything is gone. Before this existed
+   * `noteHandover` took `handed` alone and REPLACED the path's licences with
+   * it, so a structural reload that did not land — every line `"failed"`,
+   * `handed` empty, an outcome nobody classifies as an error — silently voided
+   * the delete licence of every record on the board. That is I11 inverted at
+   * the licence seam: a refusal destroying the user's ability to delete their
+   * own card. The rule is now the one {@link advanceFromReceipt}'s FIELD half
+   * has always applied — a skip is a DEFERRAL, not an erase.
+   *
+   * EXACTLY TWO THINGS ARE PROOF, and the distinction that separates them from
+   * the rest is whether the outcome is a statement about the RECORD or about
+   * the PASS:
+   *
+   *   ├── `sweepAbsent` — a LANDED structural reload replaced the surface's
+   *   │      membership and this record was not in it. Proof of absence.
+   *   └── `"interacting"` — the surface positively REFUSED this pass's values
+   *          for this record (`applyNodeGeometry`, or WP37's held set). The
+   *          view's picture of that record provably diverges from ours, so its
+   *          absences about that record are not attributable to the user and
+   *          the licence is suspended until a later pass lands. This is WP5
+   *          TP05 T3 and TP07 T2, kept exactly: the card the user is holding is
+   *          never deleted by a save it never saw.
+   *
+   * `"failed"` is deliberately NOT proof: it is what every line of an unlanded
+   * structural pass carries, and it says our reload did not run — a fact about
+   * the pass, not about any record. Reading it per-record IS S83.
+   *
+   * `"missing"` and `"unsupported"` are deliberately NOT proof either, and the
+   * reason is the same family of defect one level down: `geometryNodeOutcome`
+   * degrades an id with NO entry to `"missing"`, and the per-node loop skips
+   * any record without four numeric geometry keys — so `"missing"` conflates
+   * *"the live view does not have this card"* with *"this pass never asked"*.
+   * Revoking on a value that can mean silence would rebuild S83 in miniature.
+   * Their licences expire the honest way instead: the next landed structural
+   * reload sweeps them, or the view closes and `clearPath` voids the path.
+   */
+  revoked: { node: Set<string>; edge: Set<string> };
 }
 
 export interface ApplyReceiptOptions {
@@ -1145,7 +1240,9 @@ function advanceConfirmedLine(
       value: fields[field],
     });
   }
-  summary.handed[line.kind].add(line.id);
+  // S82: the hand-over is NO LONGER decided here. This function answers the
+  // field question only; `advanceFromReceipt` asks the view question of
+  // `line.delivered` separately.
 }
 
 /**
@@ -1241,6 +1338,11 @@ function sweepAbsent(
       // map while calling it is safe.
       markRecordAbsent(shadow, receipt.path, kind, id);
       summary.markedAbsent.push({ kind, id });
+      // S83: the ONE proof that revokes a licence. This pass replaced the
+      // surface's membership and the record is not in it, so its `"view"`
+      // receipt is now false and must go. Nothing else revokes: silence does
+      // not, and a pass that confirmed nothing certainly does not.
+      summary.revoked[kind].add(id);
     }
   }
 }
@@ -1297,6 +1399,7 @@ export function advanceFromReceipt(
     unconfirmed: [],
     markedAbsent: [],
     handed: { node: new Set<string>(), edge: new Set<string>() },
+    revoked: { node: new Set<string>(), edge: new Set<string>() },
   };
 
   if (opts?.perFieldReceipt === false) {
@@ -1304,14 +1407,44 @@ export function advanceFromReceipt(
   }
 
   for (const line of receipt.records) {
-    if (!isConfirmed(line.outcome)) {
+    // S82 — THE TWO QUESTIONS, ASKED SEPARATELY, OF TWO DIFFERENT FIELDS.
+    //
+    // Question 1, `outcome`: does the surface hold the desired VALUES? If so
+    // the shadow may advance to them.
+    // Question 2, `delivered`: did THIS PASS hand the record to the open view?
+    // If so the record earns a `"view"` receipt and the C4 delete rule may read
+    // its later absence as a deletion.
+    //
+    // A geometry EDGE answers yes to the first and no to the second. Both
+    // answers used to come out of `isConfirmed`, which is why an arrow could be
+    // tombstoned by a pass that never touched the surface it was drawn on.
+    if (isConfirmed(line.outcome)) {
+      advanceConfirmedLine(shadow, receipt.path, line, summary);
+    } else {
       // Rule 2: no field advances, nothing is handed over, and the record's
       // existing knowledge is left EXACTLY as it was. A skip is a deferral, not
       // an erase and not a hole — the next pass re-delivers the same delta.
       summary.unconfirmed.push({ kind: line.kind, id: line.id, outcome: line.outcome });
-      continue;
     }
-    advanceConfirmedLine(shadow, receipt.path, line, summary);
+    // `delivered` ALONE, and the missing `&& isConfirmed(...)` is deliberate.
+    //
+    // It was there in the first cut of this repair, and break B5 — flipping the
+    // geometry NODE branch to `delivered = true` — reddened NOTHING across all
+    // 387 files, because `delivered` for a node is *defined* as
+    // `isConfirmed(outcome)` and the conjunct then made the flip unobservable.
+    // That is S101's shape exactly: a guard behind another guard, unfalsifiable
+    // by construction. `delivered` already encodes "the surface took our values
+    // AND this pass put them there" on every branch, so the conjunct added no
+    // safety and only hid a wrong answer. With it gone, every branch of
+    // `delivered` is reachable by a test that can fail.
+    if (line.delivered) {
+      summary.handed[line.kind].add(line.id);
+    } else if (line.outcome === "interacting") {
+      // S83's counterpart — the one PER-RECORD refusal, and therefore the only
+      // outcome that revokes. See {@link ReceiptSummary.revoked} for why
+      // `"failed"`, `"missing"` and `"unsupported"` do not.
+      summary.revoked[line.kind].add(line.id);
+    }
   }
 
   sweepAbsent(shadow, receipt, summary);
@@ -1332,10 +1465,32 @@ export function advanceFromReceipt(
  * the cascade window V1 opened at `main.ts:1029`.
  */
 export interface SurfaceStateStore {
-  /** REPLACES the previous receipt for that path — it never accumulates. */
+  /**
+   * S83 — MERGES. `handed` GRANTS, `revoked` REVOKES, and a record named by
+   * neither keeps exactly the licence it had.
+   *
+   * ⚠ This REPLACED wholesale until 2026-08-07, and the replacement was a
+   * licence-voiding defect rather than a bookkeeping choice. `handed` is what
+   * ONE pass confirmed, not the licence set: a structural reload that did not
+   * land gives every line `"failed"`, so `handed` is empty, and writing that
+   * empty set over the path's licences revoked every delete licence on the
+   * board — on a pass nobody classifies as an error. The user's own card, which
+   * they had already handed over and then deleted, came back.
+   *
+   * That is I11 (REFUSAL NEVER DESTROYS) inverted at the licence seam, and the
+   * repair is to apply the rule {@link advanceFromReceipt}'s FIELD half already
+   * applied: an unconfirmed line changes nothing, in either direction. The only
+   * thing that revokes is proof — `sweepAbsent` on a landed structural reload,
+   * which is the one pass that can show a record is not on the surface — and
+   * {@link SurfaceStateStore.clearPath}, where the surface itself is gone.
+   *
+   * `revoked` is optional so a caller with no receipt behind it (a test fixture
+   * seeding a licence set) cannot revoke by accident.
+   */
   noteHandover(
     path: string,
     handed: { node: ReadonlySet<string>; edge: ReadonlySet<string> },
+    revoked?: { node: ReadonlySet<string>; edge: ReadonlySet<string> },
   ): void;
   /** view closed / teardown: drops the hand-over for that path ONLY. */
   clearPath(path: string): void;
@@ -1347,13 +1502,26 @@ export interface SurfaceStateStore {
 export function createSurfaceStateStore(
   isViewOpen: (path: string) => boolean,
 ): SurfaceStateStore {
-  const handovers = new Map<string, { node: ReadonlySet<string>; edge: ReadonlySet<string> }>();
+  const handovers = new Map<string, { node: Set<string>; edge: Set<string> }>();
   return {
-    noteHandover(path, handed) {
+    noteHandover(path, handed, revoked) {
       // Copy on the way in: the summary's sets belong to the caller, and a
       // receipt that is later mutated must not retro-actively widen what we
       // claim was handed over.
-      handovers.set(path, { node: new Set(handed.node), edge: new Set(handed.edge) });
+      let held = handovers.get(path);
+      if (!held) {
+        held = { node: new Set<string>(), edge: new Set<string>() };
+        handovers.set(path, held);
+      }
+      for (const kind of RECORD_KINDS) {
+        for (const id of handed[kind]) held[kind].add(id);
+        // Revocation runs SECOND on purpose. A record cannot be both handed
+        // over and proved absent by one pass — `sweepAbsent` only visits ids
+        // the receipt did NOT carry — so the order is not load-bearing for the
+        // production caller, and putting proof last keeps it that way for any
+        // other one.
+        if (revoked) for (const id of revoked[kind]) held[kind].delete(id);
+      }
     },
     clearPath(path) {
       handovers.delete(path);
@@ -1365,7 +1533,13 @@ export function createSurfaceStateStore(
       const handed = handovers.get(path);
       return {
         viewOpen: isViewOpen(path),
-        handedToView: handed ?? { node: new Set<string>(), edge: new Set<string>() },
+        // Copy on the way OUT as well, now that the stored sets are mutated in
+        // place by the merge above. Handing the live set out would let a state
+        // a caller read before a pass change under it afterwards.
+        handedToView: {
+          node: new Set(handed?.node ?? []),
+          edge: new Set(handed?.edge ?? []),
+        },
       };
     },
   };

@@ -22,11 +22,16 @@
 
 import { describe, expect, it } from "vitest";
 
-import { type ApplyOutcome } from "../../../canvas/canvas-shadow";
+import {
+  type ApplyOutcome,
+  advanceFromReceipt,
+  buildApplyReceipt,
+} from "../../../canvas/canvas-shadow";
 import {
   PATH,
   canvasJson,
   confirmGeometry,
+  confirmReload,
   edge,
   inDoc,
   isDeleted,
@@ -143,17 +148,39 @@ describe("WP94 AC4 — edge, node and combined deletion", () => {
       confirmGeometry(peer, outcomes);
 
       const evidence = peer.cs.surfaceEvidenceFor(PATH);
-      // S82 ITSELF, as a measured fact: the edge is handed and the held card is
-      // not. If this ever stops being true the arm below is testing nothing.
+      // ⭐ CONVERTED 2026-08-07 (B60) — S82 IS REPAIRED AT THE LICENCE AND THIS
+      // ASSERTION IS INVERTED, DELIBERATELY. It read:
+      //
+      //     expect(evidence.handedToView.edge.has("ab"),
+      //       "the geometry branch stopped handing edges over — S82 is gone and
+      //        this arm is vacuous").toBe(true);
+      //
+      // and it said in as many words what would make it wrong. That is what
+      // happened: `buildApplyReceipt` now carries `delivered` beside `outcome`,
+      // and a geometry EDGE is `delivered: false` because a geometry pass
+      // touches nodes only — no edge reaches the surface unless the endpoint
+      // reflow reload lands. The edge's `"unchanged"` remains true about the
+      // VALUES and no longer mints a `"view"` receipt about the SURFACE.
+      //
+      // The arm below is NOT vacuous as a result, and that is the point worth
+      // keeping: it now measures the same user-visible outcome — the card and
+      // its arrow survive together — with BOTH halves unlicensed for their own
+      // honest reasons instead of the arrow being rescued by WP94's gesture
+      // rule. The gesture rule stays; it is simply no longer the only thing
+      // standing between a held card and an orphaned arrow.
       expect(
         evidence.handedToView.edge.has("ab"),
-        "the geometry branch stopped handing edges over — S82 is gone and this arm is vacuous",
-      ).toBe(true);
+        "a geometry pass minted a view receipt for an edge it never handed to the view (S82)",
+      ).toBe(false);
       expect(
         evidence.handedToView.node.has("b"),
         "the card the user is holding was handed over",
       ).toBe(false);
+      // The PER-KIND split the original assertion pair existed to pin is kept:
+      // a node the pass really did apply is still licensed, so "no divergence"
+      // is not true for free by everything failing for one reason.
       expect(evidence.handedToView.node.has("a")).toBe(true);
+      expect(evidence.handedToView.node.has("c")).toBe(true);
 
       const before = peer.cs.deleteWithholdCounts();
       // One gesture: the held card and its arrow.
@@ -180,33 +207,142 @@ describe("WP94 AC4 — edge, node and combined deletion", () => {
     });
   });
 
-  it("S83, ADJACENT AND NOT REPAIRED HERE: a failed structural reload voids P1 wholesale", async () => {
-    // Reported as an interaction, not fixed: `noteHandover` REPLACES rather than
-    // merges, so a structural pass whose reload did not land gives every line
-    // `"failed"`, `summary.handed` is empty, and that empty set is written over
-    // the licence set for the WHOLE PATH — on a pass nobody classifies as an
-    // error. Whatever WP94 widens, this can revoke.
-    //
-    // What this test pins is the BLAST RADIUS, which WP94 does change: P2 lives in
-    // `CanvasSync`'s own ledger, so `noteHandover`'s wholesale replacement cannot
-    // reach it. That is a consequence of where the ledger was put, NOT a repair of
-    // S83, and it is asserted here so a later reader does not mistake it for one.
-    const peer = await makePeer(BOARD);
-    await save(peer, TOUCHED); // P2 receipts, surface "view"
-    expect(peer.cs.surfaceEvidenceFor(PATH).receipts?.node.get("b")).toBe("view");
+  // ⭐ CONVERTED 2026-08-07 (B60) — S83 IS REPAIRED, AND THE TEST THAT SAID SO
+  // COULD NOT HAVE SEEN IT EITHER WAY.
+  //
+  // The previous test was titled "ADJACENT AND NOT REPAIRED HERE" and asserted
+  // that a failed pass leaves P1 empty. It did that by reading
+  // `handedToView.node.size === 0` after a pass that confirmed nothing — but
+  // P1 WAS ALREADY EMPTY when the test started. `makePeer` subscribes and seeds;
+  // it never runs a reconcile, and `save()` issues P2 receipts, not P1. So the
+  // assertion had no BEFORE: it read zero, zero was the initial value, and it
+  // would have read zero on a tree where `noteHandover` merged perfectly. It
+  // also drove `confirmGeometry`, i.e. a GEOMETRY pass, while its prose
+  // described a structural one — so the mechanism it named was not the
+  // mechanism it exercised.
+  //
+  // What replaces it establishes the licence set first, from the one production
+  // producer, and then asserts it SURVIVES. That is the regression S83 needs:
+  // it is red on the pre-repair tree and green on this one, and the arm that
+  // makes it red is the user-visible one — a card the user handed over and then
+  // deleted comes back, because an unrelated reload did not land.
+  describe("S83 — a pass that confirms nothing revokes nothing", () => {
+    it("a failed structural reload leaves every licence on the board standing", async () => {
+      const peer = await makePeer(BOARD);
+      // THE BEFORE, and it comes from the only production producer of P1:
+      // `advanceFromReceipt` -> `noteHandover`, on a reload that LANDED.
+      const granted = confirmReload(peer);
+      expect([...granted.handed.node].sort()).toEqual(["a", "b", "c"]);
+      const before = peer.cs.surfaceEvidenceFor(PATH);
+      expect([...before.handedToView.node].sort()).toEqual(["a", "b", "c"]);
+      expect([...before.handedToView.edge].sort()).toEqual(["ab", "bc"]);
 
-    // A structural pass whose reload did NOT land.
-    const summary = confirmGeometry(peer, new Map(), false);
-    expect(summary.handed.node.size, "the failed pass handed something over").toBe(0);
+      // A STRUCTURAL pass whose reload did not land. Every line is `"failed"`,
+      // which is a fact about the PASS — our `setData` did not run — and not a
+      // fact about any record on the board.
+      const failed = confirmReload(peer, false);
+      expect(failed.handed.node.size, "a failed reload handed something over").toBe(0);
+      expect(failed.handed.edge.size).toBe(0);
+      expect(
+        failed.revoked.node.size + failed.revoked.edge.size,
+        "a pass that proved nothing revoked something",
+      ).toBe(0);
+      expect(failed.markedAbsent, "an unlanded reload is not exhaustive").toEqual([]);
 
-    // P1 is now empty for the whole path...
-    expect(peer.cs.surfaceEvidenceFor(PATH).handedToView.node.size).toBe(0);
-    // ...and P2 is untouched, so the user's own deletion still lands.
-    expect(peer.cs.surfaceEvidenceFor(PATH).receipts?.node.get("b")).toBe("view");
-    await save(peer, canvasJson([A, C], []));
-    expect(
-      isDeleted(peer.doc, "b"),
-      "a failed reload nobody classified as an error revoked the user's own licence too",
-    ).toBe(true);
+      // ...and the licence set is exactly what it was.
+      const after = peer.cs.surfaceEvidenceFor(PATH);
+      expect(
+        [...after.handedToView.node].sort(),
+        "a reload nobody classified as an error voided the board's node licences",
+      ).toEqual(["a", "b", "c"]);
+      expect(
+        [...after.handedToView.edge].sort(),
+        "a reload nobody classified as an error voided the board's edge licences",
+      ).toEqual(["ab", "bc"]);
+    });
+
+    it("THE USER-VISIBLE HALF: the deletion the user makes after that pass still lands", async () => {
+      // `b` holds a P1 licence and NOTHING ELSE — no `save()` has run, so
+      // `CanvasSync`'s own P2 ledger is empty for this path and cannot stand in
+      // for the revoked licence the way it does in the arm above. Whether the
+      // user's delete is honoured therefore depends on P1 alone, which is what
+      // makes this the discriminating arm.
+      const peer = await makePeer(BOARD);
+      confirmReload(peer);
+      expect(peer.cs.surfaceEvidenceFor(PATH).receipts?.node.get("b")).toBeUndefined();
+
+      confirmReload(peer, false); // the reload that did not land
+
+      const withheldBefore = peer.cs.deleteWithholdCounts();
+      await save(peer, canvasJson([A, C], [BC]));
+
+      expect(
+        isDeleted(peer.doc, "b"),
+        "a reload that did not land revoked the user's own licence and their deletion was lost",
+      ).toBe(true);
+      expect(projection(peer.doc).nodes.sort()).toEqual(["a", "c"]);
+      expect(
+        peer.cs.deleteWithholdCounts()["no-receipt"] - withheldBefore["no-receipt"],
+        "the delete was charged as unlicensed",
+      ).toBe(0);
+    });
+
+    it("PROOF still revokes: a landed reload that no longer carries a record voids ITS licence only", async () => {
+      // The other half of the repair, and the half that keeps "merge" from
+      // meaning "licences are immortal". A LANDED structural reload replaced
+      // the surface's membership, so a record it did not carry is provably not
+      // on that surface and its `"view"` receipt is now false.
+      const peer = await makePeer(BOARD);
+      confirmReload(peer);
+      expect([...peer.cs.surfaceEvidenceFor(PATH).handedToView.node].sort()).toEqual([
+        "a",
+        "b",
+        "c",
+      ]);
+
+      // A peer removed `b`, so the next landed reload carries `a` and `c` only.
+      // Driven through the receipt seam with an explicit `desired` rather than
+      // by deleting locally first: a locally honoured delete already marks the
+      // shadow record `absent`, and `sweepAbsent` skips anything not `present`
+      // — the sweep would then be a no-op and this arm would measure nothing.
+      const swept = advanceFromReceipt(
+        peer.cs.getSurfaceShadow(),
+        buildApplyReceipt({
+          path: PATH,
+          desired: { nodes: [A, C], edges: [BC] },
+          plan: "structural",
+          reloaded: true,
+        }),
+      );
+      peer.store.noteHandover(PATH, swept.handed, swept.revoked);
+
+      expect([...swept.revoked.node], "the sweep proved `b` absent and did not say so").toEqual([
+        "b",
+      ]);
+      expect(swept.markedAbsent).toContainEqual({ kind: "node", id: "b" });
+      const evidence = peer.cs.surfaceEvidenceFor(PATH);
+      expect(
+        evidence.handedToView.node.has("b"),
+        "a record the surface provably no longer holds kept its view licence",
+      ).toBe(false);
+      // ...and ONLY its own. The merge is not an excuse to keep everything, and
+      // proof is not an excuse to drop everything.
+      expect([...evidence.handedToView.node].sort()).toEqual(["a", "c"]);
+    });
+
+    it("what WP94 already bought is kept: P2 was never reachable by the revocation", async () => {
+      // The original test's one sound half, preserved. P2 lives in
+      // `CanvasSync`'s own ledger rather than behind `noteHandover`, so it was
+      // out of the blast radius before this repair and still is.
+      const peer = await makePeer(BOARD);
+      await save(peer, TOUCHED);
+      expect(peer.cs.surfaceEvidenceFor(PATH).receipts?.node.get("b")).toBe("view");
+
+      confirmReload(peer, false);
+
+      expect(peer.cs.surfaceEvidenceFor(PATH).receipts?.node.get("b")).toBe("view");
+      await save(peer, canvasJson([A, C], []));
+      expect(isDeleted(peer.doc, "b")).toBe(true);
+    });
   });
 });

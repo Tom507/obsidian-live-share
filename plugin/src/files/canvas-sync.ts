@@ -2278,6 +2278,21 @@ export class CanvasSync {
   // delta is integrated, carrying the full post-delta canvas data so main.ts can
   // patch the OPEN Obsidian canvas view (which ignores external file writes). Null
   // until wired. `path` is canonical.
+  //
+  // WP89-CORRECTED — "which ignores external file writes" IS FALSE. WP87 measured
+  // the opposite on both instances: an external write to a `.canvas` REBUILDS the
+  // open view, and it does so for a change to ANY card
+  // (`ImplementationReport_WP87.md` §10, and the corrected statement is carried at
+  // `canvas/canvas-editing-deferral.ts:324` and `main.ts:3053`, which are this
+  // census's positive controls and are not reworded). The sentence is kept above
+  // rather than deleted because three work packages reasoned from it.
+  //
+  // The code beneath it is not merely still right — it is right for a STRONGER
+  // reason. Patching the open view directly is not a workaround for a view that
+  // would otherwise stay stale; it is how the delta reaches the surface WITHOUT
+  // the rebuild. The alternative the false premise implies (let the file write
+  // catch the view up) is exactly the rebuild that destroys an inline editor
+  // mid-word and is what WP37 and WP87 exist to prevent.
   private onRemoteCanvasUpdate:
     | ((path: string, data: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] }) => void)
     | null = null;
@@ -2539,6 +2554,15 @@ export class CanvasSync {
   // the observer only fires on SUBSEQUENT remote deltas — never the seed). Returns
   // null when not subscribed, no doc, or the shared doc is still empty (nothing
   // authoritative to apply yet → keep the local view untouched).
+  //
+  // WP89-CORRECTED — the parenthesis has TWO clauses and only the SECOND survives.
+  // "Obsidian's open canvas ignores external .canvas writes" is FALSE (WP87
+  // measured the rebuild on both instances; see `canvas-editing-deferral.ts:324`).
+  // "the observer only fires on SUBSEQUENT remote deltas — never the seed" is TRUE
+  // and is the ONLY load-bearing half: this accessor exists because a freshly
+  // mounted view has missed every delta that predates it, not because a file write
+  // would fail to reach it. Nothing below changes; what changes is which clause a
+  // future reader is entitled to reason from.
   getCanvasSnapshot(
     rawPath: string,
   ): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } | null {
@@ -3103,6 +3127,14 @@ export class CanvasSync {
       // REMOTE delta: patch the OPEN canvas view directly — Obsidian ignores
       // external .canvas writes while the view is open, so a file-only sync leaves
       // the view stale/scattered until a full reload.
+      // WP89-CORRECTED — the premise is FALSE and the conclusion holds anyway.
+      // WP87 measured that a file-only sync does NOT leave the view stale: the
+      // write rebuilds it, for a change to any card. Patching directly is still
+      // the right call, for the opposite reason to the one stated — the rebuild
+      // is not a fallback, it is the damage. It reseats every card, which is what
+      // throws away an inline editor's unflushed text and is precisely what
+      // `planCanvasDiskWrite` withholds a write for. Do not "simplify" this by
+      // deleting the direct patch and relying on the file.
       if (this.onRemoteCanvasUpdate) {
         try {
           this.onRemoteCanvasUpdate(livePath, buildCanvasData(nodesMap, edgesMap, deletedMap));
@@ -4603,6 +4635,43 @@ export class CanvasSync {
     // but the content omits becomes known-ABSENT. With the view OPEN the shadow
     // is not touched at all — an open canvas ignores external file writes, so
     // only a confirmed apply is a receipt there, and that is WP5's mechanism.
+    //
+    // WP89-CORRECTED — THE PREMISE IS FALSE, THE BRANCH IS CORRECT, AND THE REAL
+    // REASON HAS NOTHING TO DO WITH THE PREMISE.
+    //
+    // "an open canvas ignores external file writes" is false: WP87 measured that
+    // the write REBUILDS the open view. The branch below survives that unchanged
+    // because `viewOpen` is NOT "is a leaf open". Measured at this commit, by
+    // symbol:
+    //
+    //   ├── `main.ts:206-208` builds the store as
+    //   │      `createSurfaceStateStore((path) =>
+    //   │       this.canvasAdapters.get(path)?.isAvailable() === true)`, and
+    //   │      `canvas-shadow.ts:1535` is the ONLY line that computes the field
+    //   │      (`viewOpen: isViewOpen(path)`), so `viewOpen` ≡ "there is an
+    //   │      AVAILABLE CanvasAdapter for this path"; and
+    //   └── `reconcileLiveCanvas` early-returns on the SAME predicate
+    //          (`main.ts:2443`, `if (!adapter || !adapter.isAvailable()) return;`).
+    //
+    // So the two receipt routes are complementary BY CONSTRUCTION and this is a
+    // ROUTE SELECTOR, not a claim about Obsidian's reload behaviour: adapter
+    // available ⇒ the reconcile pass runs and the shadow advances through
+    // `buildApplyReceipt`/`advanceFromReceipt`; adapter absent or unavailable ⇒
+    // the reconcile pass returns early and the shadow advances from the written
+    // content. Exactly one route is live at any moment, keyed on one predicate.
+    //
+    // Flipping this to advance unconditionally is a MEASURED regression, not a
+    // hypothetical: with an adapter available the written content holds a peer's
+    // value for a record the surface may deliberately not have taken, and
+    // advancing to it is `ImplementationReport_WP87.md` §2.3 (S57) rebuilt from
+    // the other side. The wiring above is pinned by
+    // `__tests__/v2/wp89/test_ac3_route_selector_wiring_visible.test.ts`.
+    //
+    // ⚠ SETTLED STATICALLY AND STRUCTURALLY, NOT LIVE. WP89 AC1's three-surface-
+    // state live reproduction was NOT run (B60: a sibling batch held the shared
+    // vaults, and the charter's own ordering rule forbids a live row with another
+    // suite in flight). State (b) — an open leaf whose adapter is absent — is
+    // therefore UNMEASURED, not confirmed.
     if (this.surfaceStateProvider(path).viewOpen === false) {
       this.advanceShadowFromContent(path, content, true);
       // WP94 (C94 AC2) — ⚠ P3 IS DELIBERATELY **NOT** A DELETE LICENCE, AND THAT

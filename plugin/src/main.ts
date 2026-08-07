@@ -182,6 +182,14 @@ export default class LiveSharePlugin extends Plugin {
   // WP-scatter: live Canvas adapters keyed by canonical path, so remote deltas can
   // patch the OPEN canvas view (Obsidian ignores external .canvas writes). Kept in
   // lockstep with canvasPresences (same mount/teardown sites).
+  //
+  // WP89-CORRECTED — "Obsidian ignores external .canvas writes" is FALSE; WP87
+  // measured the rebuild on both instances (`canvas-editing-deferral.ts:324` and
+  // `main.ts:3053` carry the corrected statement and are this census's positive
+  // controls). The map is right anyway, and for a stronger reason: patching
+  // through an adapter is how a delta reaches the surface WITHOUT the rebuild
+  // that reseats every card. ⚠ This site is NOT in the WP89 charter's §3 table of
+  // seven — it was DERIVED from the tree, which is what AC2 exists for.
   private canvasAdapters = new Map<string, CanvasAdapter>();
   // WP37 (C37) — the per-record deferral queue for view applies withheld while an
   // inline editor is focused. Constructed here and INJECTED; every rule about what
@@ -2433,6 +2441,28 @@ export default class LiveSharePlugin extends Plugin {
   // (cards "scattered") until a full reload. Geometry-only changes are applied
   // per-node via moveAndResize (smooth, never interrupts an active drag);
   // structural changes (node/edge add/remove) fall back to a full setData reload.
+  //
+  // WP89-CORRECTED — "Obsidian's open canvas is authoritative over its file and
+  // ignores our external .canvas writes" is FALSE, and this is the DOC COMMENT
+  // OF THE METHOD THE WHOLE BRANCH LIVES IN, so it is the site most likely to be
+  // read as a map. WP87 measured that an external write rebuilds the open view
+  // for a change to ANY card.
+  //
+  // ⚠ This site is in NEITHER the WP89 charter's §3 table of seven NOR the set a
+  // fixed-string grep for the charter's own pins returns — it says "ignores our
+  // external .canvas writes", with an extra word. It was found only because AC2's
+  // deriver matches the SHAPE of the claim instead of its wording, which is the
+  // difference between a census and a hand list, and it is why the filed item's
+  // `grep -F "external write"` reported zero and concluded the class was closed.
+  //
+  // The method is right anyway, and for a stronger reason: it exists so the
+  // delta reaches the surface WITHOUT the rebuild, not because the rebuild would
+  // fail to happen. The trailing rebuild is the damage — it reseats every card,
+  // which is what discards an inline editor's unflushed text. And note the third
+  // sentence is now doubly wrong as written: "never interrupts an active drag"
+  // is true of `moveAndResize`, but the `defer-drag` arm below leaves the DISK
+  // WRITE running, and that write does rebuild the view. See that arm's own
+  // WP89 note; it is traced, not measured, and it is not repaired here.
   private reconcileLiveCanvas(
     path: string,
     data: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] },
@@ -2440,6 +2470,16 @@ export default class LiveSharePlugin extends Plugin {
   ): void {
     const canonical = toCanonicalPath(normalizePath(path));
     const adapter = this.canvasAdapters.get(canonical);
+    // WP89-CORRECTED — "file sync suffices" is right about the OUTCOME and wrong
+    // about the mechanism, and the difference matters because the condition is
+    // broader than the comment reads. This early return also fires for an OPEN
+    // LEAF WITH NO ADAPTER (the S56 guest race, and the documented
+    // private-API-unavailable banner). In that state "file sync suffices" means
+    // "the file write rebuilds the view" — which WP87 measured to be TRUE, and
+    // which is a far stronger statement than the comment intends. It is also the
+    // exact predicate `noteExternalDiskWrite` selects its receipt route on, so
+    // the two are complementary by construction rather than by coincidence; see
+    // that method's WP89 note and `wp89/test_ac3_route_selector_wiring_visible`.
     if (!adapter || !adapter.isAvailable()) return; // canvas not open → file sync suffices
     // WP5 (C5 AC1): the ONE shared Surface-Shadow, obtained fresh from CanvasSync
     // at every use site. It is both the classifier basis below and the capture
@@ -2459,6 +2499,27 @@ export default class LiveSharePlugin extends Plugin {
       // Never reconcile mid-drag; the trailing disk write keeps data safe and the
       // next delta (or a manual reload) will catch the view up once idle.
       // UNCHANGED from HEAD, deliberately: WP37 adds an arm, it does not touch this one.
+      //
+      // WP89-CORRECTED — "the trailing disk write keeps data safe" is TRUE about
+      // the DATA and FALSE about the VIEW, and the second half is a live exposure
+      // this comment reads as if it had ruled out.
+      //
+      // The disk write is NOT withheld for a drag: `planCanvasDiskWrite`
+      // (`canvas/canvas-editing-deferral.ts:365-415`) withholds only for a
+      // POSITIVELY IDENTIFIED inline editor, and a drag is `isBusy()`, not
+      // `editingNodeId`. So this arm refuses to touch the surface and the writer
+      // touches it ~200 ms later — and under WP87's measurement an external write
+      // rebuilds the open view for a change to any card. That is R-C with a drag
+      // instead of an editor.
+      //
+      // ⚠ TRACED, NOT MEASURED. WP89 AC4 owns the live row and B60 did NOT run it
+      // (a sibling batch held the shared vaults). Whether Obsidian's drag gesture
+      // survives the rebuild is UNKNOWN, not benign. The disposition is fixed
+      // either way: it is carried up with its receipt, NOT repaired here —
+      // extending the withhold to drags inverts `planCanvasDiskWrite`'s
+      // deliberate fail-open direction, against which WP87 §4.2 has a measured
+      // counter-example (an over-reporting signal withheld a write and left a
+      // stale node in a `.canvas`).
       this.logger.debug("canvas", `reconcile ${canonical}: deferred (user dragging)`);
       return;
     }
@@ -2520,6 +2581,13 @@ export default class LiveSharePlugin extends Plugin {
       // Nothing reaches the surface, and — this is the half today's drag gate
       // never had — nothing is LOST either: the queue is drained at blur, at view
       // close and at teardown. The disk write is untouched and keeps converging.
+      // WP89-CORRECTED — "untouched and keeps converging" is stated
+      // UNCONDITIONALLY and it is only conditionally true. WP87's write hold
+      // covers this arm when an editor is FOCUSED; with no focused editor the
+      // write runs, and under WP87's measurement it rebuilds the open view — so
+      // on that sub-case the sentence describes the drag exposure above rather
+      // than a safe convergence. Recorded, not repaired: same disposition and
+      // same reason as the `defer-drag` arm.
       this.logger.debug(
         "canvas",
         `reconcile ${canonical}: ${deferral.reason} ` +
@@ -2643,7 +2711,13 @@ export default class LiveSharePlugin extends Plugin {
           nodeOutcomes,
         }),
       );
-      this.surfaceState.noteHandover(canonical, summary.handed);
+      // S83: `handed` GRANTS and `summary.revoked` (the `exhaustive` absent
+      // sweep) REVOKES. `noteHandover` merges the two, so a pass that confirmed
+      // nothing — a structural reload that did not land, every line `"failed"`
+      // — leaves the path's existing licences exactly where they were instead
+      // of voiding the whole board. Both arguments come straight out of the one
+      // receipt; `main.ts` still decides nothing (BUILD_SPEC §3.1 S11).
+      this.surfaceState.noteHandover(canonical, summary.handed, summary.revoked);
     } finally {
       // WP93 (C93 AC3) — P8. A reconcile that reloads the view rewrites the
       // file, so a vault `modify` follows; a reconcile that changed nothing
