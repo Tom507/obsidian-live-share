@@ -1,7 +1,21 @@
 # TaskCharter WP95 — The guard is narrower than the surface it names
 
-**Phase:** P2 · **Severity:** **P0, and the highest of the run** · **Signal:** `S94`
+**Phase:** P2 · **Severity:** ~~P0, and the highest of the run~~ → **DOWNGRADED by the owner** · **Signal:** `S94`
 **Chartered by:** Dispatcher, from B56/W4's live finding · **Supersedes the Tier 1 closure claim of WP68**
+
+> **⚖️ OWNER'S RULING, 2026-08-07 — read this before §1's framing.** *"That is fine, I'm not working with
+> malicious actors."* This is a personal-use collaboration plugin over a **trusted share**, so the
+> code-execution framing below is **not the operative risk** and this package is **not a release blocker**.
+> The ruling is the owner's to make and is accepted without argument.
+>
+> **The package still runs**, for two reasons that do not depend on severity: a correct protected-path
+> predicate is cheap and right, and **AC1's arm census is valuable on its own** — nobody has yet counted a
+> set of these arms correctly on the first attempt (`S89`).
+>
+> **In fairness to the ruling, my ranking was too strong.** The accidental path is weak: an organic Obsidian
+> rename does not target `.obsidian/plugins/`, and the live reproduction used a **crafted injected op**. This
+> should not have jumped the queue on my severity call alone. §1 below is left as originally written so the
+> reasoning that produced the misranking stays legible.
 
 ---
 
@@ -70,7 +84,7 @@ op kinds behave like rename is a fix built on the same reasoning that produced t
 4. **Rule 5** — re-verify every line number before editing; cite what you found, not what this charter says.
 5. **Never print, log, or copy a credential.** `data.json` holds live ones. Comparisons are **sha256-of-bytes
    only**. Naming a key is fine; naming a value is not. This applies to your tests and your report.
-6. **Signal numbers: next free is S97, and you allocate none.** Describe findings; the Dispatcher numbers them.
+6. **Signal numbers: next free is S97, and you allocate none.** Describe findings; the Dispatcher numbers them. <!-- signal-register: meta -->
 
 ## 5. Carried in from B56's revision request
 

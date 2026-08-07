@@ -216,5 +216,18 @@ eight surfaces, and a checker written to police the bookkeeping is the last plac
 ❌  S62 — <anything>                                (not allocated; ask the Dispatcher)
 ```
 
+**The recurring one — declaring the next free number.** Every charter says *"next free is S<n>"*, and that
+is a citation of an unallocated number **by definition**, so it trips the UNKNOWN class every single time.
+The Dispatcher has now been caught by this **three times**. It is not a checker defect: the line really is
+about the numbers. **Canonical form — the marker is part of the sentence, not an afterthought:**
+
+```text
+6. **Signal numbers: next free is S<n>, and you allocate none.** <!-- signal-register: meta -->
+```
+
+It is deliberately *not* auto-exempted by matching the phrase "next free". An exemption that the checker
+grants silently is a tolerance; an exemption written into the line is a decision on record — and that
+distinction is the whole reason this file has an instrument instead of a paragraph.
+
 To write about an ambiguous number as a *number* — as this file and the reports do — mark the line
 `<!-- signal-register: meta -->` or put it inside a fenced block. Both are exempt.
