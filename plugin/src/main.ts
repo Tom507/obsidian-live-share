@@ -1638,7 +1638,7 @@ export default class LiveSharePlugin extends Plugin {
   public async cleanupStaleFiles(): Promise<StaleReconcileDecision> {
     const refuse = (reason: string): StaleReconcileDecision => {
       this.logger.log("manifest", `stale reconcile refused: ${reason}`);
-      return { ran: false, reason, candidates: 0, trashed: [] };
+      return { ran: false, reason, candidates: 0, trashed: [], scope: null };
     };
 
     if (this.settings.role === "host") {
@@ -1669,10 +1669,32 @@ export default class LiveSharePlugin extends Plugin {
       return refuse("the freshly published manifest is empty; refusing to empty the shared folder");
     }
 
+    // Condition 4 (S115) — WHAT RANGE DID THE HOST ACTUALLY SPEAK ABOUT?
+    //
+    // This filter used to be `isSharedPath`, i.e. the LOCAL peer's
+    // `sharedFolder`. That field ships EMPTY and empty means "the whole vault",
+    // so a guest who never opened the setting selected its entire vault and
+    // then removed everything the host's manifest — which describes only the
+    // host's subfolder — failed to mention. Private notes were not an edge
+    // case of that; they were the bulk of it.
+    //
+    // "What do I publish?" and "what does the host govern?" are two questions.
+    // Only the second one may scope a deletion, and only the host can answer
+    // it, so it is read off the host's own attestation.
+    const scope = this.manifestManager.getHostSharedScope();
+    if (!scope.known) {
+      // I11 — REFUSAL NEVER DESTROYS. There is no safe fallback to guess here:
+      // the natural default for a shared folder is `""`, which means the entire
+      // vault, so guessing wrong in the permissive direction is precisely the
+      // data loss. An older host that publishes no scope is a real deployment
+      // and it lands here, on purpose, doing nothing at all.
+      return refuse(`the host's shared folder is unknown: ${scope.reason}`);
+    }
+
     const manifestPaths = new Set(manifest.keys());
     const localFiles = this.app.vault
       .getFiles()
-      .filter((file) => this.manifestManager.isSharedPath(file.path));
+      .filter((file) => this.manifestManager.isWithinSharedRoot(file.path, scope.root));
     const stale = localFiles.filter(
       (file) => !manifestPaths.has(toCanonicalPath(normalizePath(file.path))),
     );
@@ -1690,11 +1712,22 @@ export default class LiveSharePlugin extends Plugin {
         this.fileOpsManager.armMuteRelease(file.path, { consumes: ["delete"] });
       }
     }
-    const reason = `host ${liveHost.userId} published a manifest of ${manifest.size} entry/entries this session`;
-    if (trashed.length > 0) {
-      this.logger.log("manifest", `stale reconcile trashed ${trashed.length} file(s): ${reason}`);
-    }
-    return { ran: true, reason, candidates: stale.length, trashed };
+    const scopeLabel = scope.root === "" ? "<entire vault>" : scope.root;
+    const reason =
+      `host ${liveHost.userId} published a manifest of ${manifest.size} entry/entries this ` +
+      `session, scoped to ${scopeLabel}`;
+    // S115 AC5 — UNCONDITIONAL. This used to fire only when something was
+    // trashed, which made the two outcomes that matter most indistinguishable:
+    // "I ran and selected nothing" and "I ran and selected your whole vault but
+    // every file happened to be in the manifest" both logged silence. The scope
+    // and the size of the candidate set are exactly what a reviewer needs to see
+    // BEFORE the count of what was destroyed, so both are stated every time.
+    this.logger.log(
+      "manifest",
+      `stale reconcile ran: scope=${scopeLabel} candidates=${stale.length} ` +
+        `trashed=${trashed.length} — ${reason}`,
+    );
+    return { ran: true, reason, candidates: stale.length, trashed, scope: scope.root };
   }
 
   cleanupSession() {

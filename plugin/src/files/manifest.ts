@@ -73,7 +73,43 @@ export interface ManifestPublication {
   seq: number;
   /** Publisher wall clock. DIAGNOSTICS ONLY. Never gate anything on this. */
   publishedAt: number;
+  /**
+   * S115 — THE SCOPE THIS ENTRY SET DESCRIBES: the publisher's own
+   * `sharedFolder`, trimmed. `""` means "the whole vault", exactly as it does
+   * in {@link ManifestManager.isSharedPath}.
+   *
+   * Why it lives ON the attestation rather than in a second `meta` key: a
+   * consumer of this manifest is about to decide which of ITS files the
+   * publisher failed to mention, and "not mentioned" is only meaningful
+   * relative to the range the publisher was speaking about. Entry set and
+   * range are one statement, so they ride one `set` inside one transaction —
+   * the same argument that put the attestation in the entries' transaction one
+   * level up, applied to the attestation's own fields.
+   *
+   * OPTIONAL, and it must stay optional. A host running an older build
+   * publishes an attestation without this field; that is a real deployment and
+   * it must be SAFE, not merely tolerated. It is deliberately NOT validated in
+   * {@link ManifestManager.getPublication} — freshness must keep working for
+   * such a host (it still proves a live host exists), while the scope question
+   * answers "unknown" and every destructive consumer refuses. Widening
+   * `getPublication`'s shape check would conflate the two and turn an old host
+   * into a peer that appears absent.
+   */
+  sharedRoot?: string;
 }
+
+/**
+ * S115 — the answer to "what range does the host actually govern?", as a closed
+ * two-state value rather than a `string | null` the caller has to interpret.
+ *
+ * `null` would have been ambiguous against the one value that legitimately
+ * means "everything": the empty string. A guest that cannot tell "the host
+ * shares the whole vault" from "I could not find out what the host shares"
+ * deletes the wrong vault. Naming the states removes the choice.
+ */
+export type HostSharedScope =
+  | { known: true; root: string }
+  | { known: false; root: null; reason: string };
 
 /** The Yjs map holding {@link ManifestPublication}, beside the `files` map. */
 const META_MAP = "meta";
@@ -88,6 +124,25 @@ async function hashBuffer(buf: ArrayBuffer): Promise<string> {
 
 function hashContent(content: string): Promise<string> {
   return hashBuffer(new TextEncoder().encode(content).buffer);
+}
+
+/**
+ * S115 — "is this canonical path inside `root`?", with `""` meaning the whole
+ * vault. THE one place that answers it, for the local setting and for a host's
+ * published root alike, so the two arms cannot drift apart.
+ *
+ * S114's trim is here rather than at either call site, for S114's own reason:
+ * `"  "` is truthy, so an untrimmed whitespace value takes the scoped branch
+ * and builds the prefix `"   /"`, which nothing matches — a scope that shares
+ * NOTHING, silently. That failure is merely useless when it comes from the
+ * local settings box; arriving from a remote peer it would be a scope this
+ * peer could not act on at all, so the trim has to be common to both.
+ */
+function matchesSharedRoot(canonicalPath: string, root: string): boolean {
+  const trimmed = root.trim();
+  if (!trimmed) return true;
+  const folder = normalizePath(trimmed.endsWith("/") ? trimmed : `${trimmed}/`);
+  return canonicalPath.startsWith(folder) || canonicalPath === normalizePath(trimmed);
 }
 
 /** WP27 — carry an existing entry's guid onto a freshly rebuilt one. */
@@ -238,6 +293,41 @@ export class ManifestManager {
     if (pub.seq <= this.seqAtConnect) return false;
     if (excludeUserId && pub.hostId === excludeUserId) return false;
     return true;
+  }
+
+  /**
+   * S115 — WHAT RANGE THE HOST GOVERNS, or an explicit "I don't know".
+   *
+   * The only correct input to a consumer's destructive reconcile. A guest's own
+   * `sharedFolder` answers "what would I publish?" — a different question, and
+   * the one that made `cleanupStaleFiles` propose the guest's entire vault for
+   * the trash whenever the two settings disagreed (which they do by default:
+   * the field ships empty, and empty means everything).
+   *
+   * Reads the attestation, so the scope this returns is the scope of the SAME
+   * publication `hasFreshPublication` vouches for — a scope can never be
+   * carried over from an older host than the entries it is applied to.
+   *
+   * Answers `known: false` when nobody has published, and when the publisher
+   * did not state a scope (an older build). Both are "I don't know", and I11
+   * says an unknown must refuse, never guess: there is no default that is safe
+   * here, because the natural default — "" — means the whole vault.
+   */
+  getHostSharedScope(): HostSharedScope {
+    const pub = this.getPublication();
+    if (!pub) {
+      return { known: false, root: null, reason: "no host has published a manifest for this room" };
+    }
+    if (typeof pub.sharedRoot !== "string") {
+      return {
+        known: false,
+        root: null,
+        reason:
+          `host ${pub.hostId} published manifest seq=${pub.seq} without stating its shared ` +
+          "folder (a build older than S115), so the range it describes is unknown",
+      };
+    }
+    return { known: true, root: pub.sharedRoot.trim() };
   }
 
   /** D2 — fires whenever the attestation changes, i.e. whenever a host publishes. */
@@ -399,6 +489,14 @@ export class ManifestManager {
         hostId: this.localUserId,
         seq: (previous?.seq ?? 0) + 1,
         publishedAt: Date.now(),
+        // S115 — the range this entry set was built over, stated by the only
+        // peer that knows it. `getSharedFiles()` above filtered the vault with
+        // `isSharedPath`, i.e. with THIS setting; publishing it makes the
+        // manifest self-describing instead of leaving every consumer to guess
+        // with its own copy of the field. Trimmed at the source for the same
+        // reason `isSharedPath` trims (S114): `"  "` is truthy and would
+        // otherwise cross the wire as a scope matching nothing.
+        sharedRoot: this.settings.sharedFolder.trim(),
       });
     });
 
@@ -716,8 +814,33 @@ export class ManifestManager {
     return new Map(this.manifest.entries());
   }
 
-  isSharedPath(rawPath: string): boolean {
+  /**
+   * S115 — is `rawPath` inside `root`, where `""` means the whole vault?
+   *
+   * THE ROOT IS A PARAMETER, and that is the entire point. The local safety
+   * floors below (sidecar, protected, exclusions) are properties of THIS vault
+   * and stay local no matter whose root is being applied — a remote peer must
+   * never be able to talk this peer into touching `.obsidian/`, `.git/` or the
+   * sidecar directory by naming them as its shared folder. Only the range is
+   * taken from the argument.
+   *
+   * {@link isSharedPath} is this function partially applied to the LOCAL
+   * setting, which is the correct question for "what do I publish?" and the
+   * wrong one for "what did the host govern?".
+   */
+  isWithinSharedRoot(rawPath: string, root: string): boolean {
     const path = toCanonicalPath(normalizePath(rawPath));
+    if (!this.passesLocalSafetyFloors(path)) return false;
+    return matchesSharedRoot(path, root);
+  }
+
+  /**
+   * S115 — the three refusals that are true of a path regardless of any shared
+   * folder, local or remote. Extracted verbatim from `isSharedPath`, whose
+   * comments (retained below) are the reasons each one is owned here rather
+   * than delegated to `ExclusionManager`. Takes an ALREADY-CANONICAL path.
+   */
+  private passesLocalSafetyFloors(path: string): boolean {
     // WP26 AC1 — the SECOND, independent gate: manifest MEMBERSHIP. This is the
     // only thing standing between a local sidecar file and `publishManifest` /
     // `updateFile` / `addFolder`, and it is a different question from the
@@ -750,6 +873,12 @@ export class ManifestManager {
       return false;
     }
     if (this.exclusionManager?.isExcluded(path)) return false;
+    return true;
+  }
+
+  isSharedPath(rawPath: string): boolean {
+    const path = toCanonicalPath(normalizePath(rawPath));
+    if (!this.passesLocalSafetyFloors(path)) return false;
     // S114 — TRIM FIRST, and trim ONCE for both branches.
     //
     // This used to read `if (!this.settings.sharedFolder) return true;` against
@@ -765,10 +894,11 @@ export class ManifestManager {
     // backslashes — it does not trim, so no downstream call was going to
     // rescue this. Trimming at the single point where "is a folder configured"
     // is decided keeps the two branches from disagreeing about what empty is.
-    const sharedFolder = this.settings.sharedFolder.trim();
-    if (!sharedFolder) return true;
-    const folder = normalizePath(sharedFolder.endsWith("/") ? sharedFolder : `${sharedFolder}/`);
-    return path.startsWith(folder) || path === normalizePath(sharedFolder);
+    //
+    // S115 — the trim and the prefix test now live in `matchesSharedRoot` so
+    // that the remote-root arm cannot drift from this one; the local setting is
+    // simply the argument this call site supplies.
+    return matchesSharedRoot(path, this.settings.sharedFolder);
   }
 
   destroy(): void {

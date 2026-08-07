@@ -51,6 +51,8 @@ interface StaleReconcileDecision {
   reason: string;
   candidates: number;
   trashed: string[];
+  /** S115 — the HOST's shared root the candidate set was scoped to; `null` on a refusal. */
+  scope: string | null;
 }
 
 /**
@@ -1461,6 +1463,13 @@ export interface E2EPluginLike {
     publishManifest(options?: { purge?: boolean }): Promise<ManifestPublishDecision>;
     /** WP80 — the decision the last REAL publication produced. */
     getLastPublishDecision?(): ManifestPublishDecision | null;
+    /**
+     * S115 — the HOST's shared root, as this peer resolved it. Optional so the
+     * hand-rolled fakes in the existing tests stay structurally valid.
+     */
+    getHostSharedScope?():
+      | { known: true; root: string }
+      | { known: false; root: null; reason: string };
   };
   remoteUsers?: Map<string, { userId: string; isHost?: boolean }>;
   cleanupStaleFiles?: () => Promise<StaleReconcileDecision>;
@@ -2064,6 +2073,10 @@ export function buildPluginHost(
         paths: Array.from(entries.keys()),
         publication: mm.getPublication(),
         freshPublication: mm.hasFreshPublication(ownId),
+        // S115 — the fourth fact the deletion decision now turns on, readable
+        // WITHOUT running the destructive operation to find out. `null` only if
+        // this host predates the capability entirely.
+        hostSharedScope: mm.getHostSharedScope?.() ?? null,
         hostPeers: Array.from(plugin.remoteUsers?.values() ?? [])
           .filter((user) => user.isHost)
           .map((user) => user.userId),

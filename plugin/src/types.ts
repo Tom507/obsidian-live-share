@@ -19,6 +19,18 @@ export interface StaleReconcileDecision {
   candidates: number;
   /** Vault-relative paths actually sent to the trash. Empty on a refusal. */
   trashed: string[];
+  /**
+   * S115 — the HOST'S shared root that scoped the candidate set, as published
+   * on the manifest attestation. `""` means the host shares its whole vault;
+   * `null` means the reconcile refused before a scope was established.
+   *
+   * Reported as a field rather than only inside `reason` so a live validator
+   * can assert on it without parsing prose — an observable a validator cannot
+   * read is not an observable. Never the local `sharedFolder`: that value is
+   * the answer to a different question and reading it here is the defect this
+   * field exists to make visible.
+   */
+  scope: string | null;
 }
 
 /**

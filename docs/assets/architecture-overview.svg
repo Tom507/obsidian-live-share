@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Obsidian Live Share runtime architecture</title>
+  <desc id="desc">Two Obsidian clients communicate through separate Yjs multiplex and control WebSocket channels with a content-blind relay.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#1e1b4b"/></linearGradient>
+    <linearGradient id="client" x1="0" x2="1"><stop stop-color="#312e81"/><stop offset="1" stop-color="#4c1d95"/></linearGradient>
+    <linearGradient id="relay" x1="0" x2="1"><stop stop-color="#0f766e"/><stop offset="1" stop-color="#047857"/></linearGradient>
+    <filter id="shadow"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-opacity=".28"/></filter>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#c4b5fd"/></marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#6ee7b7"/></marker>
+    <style>
+      .title{font:700 30px system-ui,sans-serif;fill:#f9fafb}.subtitle{font:400 16px system-ui,sans-serif;fill:#cbd5e1}
+      .boxTitle{font:700 21px system-ui,sans-serif;fill:#fff}.label{font:500 15px system-ui,sans-serif;fill:#e5e7eb}
+      .small{font:400 13px system-ui,sans-serif;fill:#cbd5e1}.pill{font:700 13px system-ui,sans-serif;fill:#111827}
+    </style>
+  </defs>
+  <rect width="1200" height="650" rx="24" fill="url(#bg)"/>
+  <text x="60" y="65" class="title">Obsidian Live Share</text>
+  <text x="60" y="94" class="subtitle">Client-owned correctness · content-blind relay · two independent channels</text>
+
+  <g filter="url(#shadow)">
+    <rect x="55" y="140" width="340" height="420" rx="22" fill="url(#client)" stroke="#8b5cf6"/>
+    <rect x="805" y="140" width="340" height="420" rx="22" fill="url(#client)" stroke="#8b5cf6"/>
+    <rect x="465" y="225" width="270" height="250" rx="22" fill="url(#relay)" stroke="#34d399"/>
+  </g>
+
+  <text x="85" y="184" class="boxTitle">Obsidian client A</text>
+  <text x="835" y="184" class="boxTitle">Obsidian client B</text>
+  <text x="515" y="270" class="boxTitle">Live Share relay</text>
+
+  <g class="label">
+    <text x="88" y="230">Markdown + CodeMirror binding</text><text x="88" y="267">Canvas V2 capture + reconcile</text>
+    <text x="88" y="304">Surface Shadow + receipts</text><text x="88" y="341">Manifest + file operations</text>
+    <text x="88" y="378">Presence + awareness</text><text x="88" y="415">Session + link state</text>
+    <text x="838" y="230">Markdown + CodeMirror binding</text><text x="838" y="267">Canvas V2 capture + reconcile</text>
+    <text x="838" y="304">Surface Shadow + receipts</text><text x="838" y="341">Manifest + file operations</text>
+    <text x="838" y="378">Presence + awareness</text><text x="838" y="415">Session + link state</text>
+  </g>
+  <g class="small">
+    <text x="515" y="314">Fans out opaque frames</text><text x="515" y="345">Room + role coordination</text>
+    <text x="515" y="376">Permission enforcement</text><text x="515" y="407">Optional blob checkpoints</text>
+    <text x="515" y="438">No canvas semantics</text>
+  </g>
+
+  <path d="M395 275 C430 275 435 275 465 275" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M735 275 C765 275 770 275 805 275" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M805 322 C770 322 765 322 735 322" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M465 322 C435 322 430 322 395 322" stroke="#c4b5fd" stroke-width="4" fill="none" marker-end="url(#arrowPurple)"/>
+  <path d="M395 405 C430 405 435 405 465 405" stroke="#6ee7b7" stroke-width="4" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M735 405 C765 405 770 405 805 405" stroke="#6ee7b7" stroke-width="4" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M805 452 C770 452 765 452 735 452" stroke="#6ee7b7" stroke-width="4" fill="none" marker-end="url(#arrowGreen)"/>
+  <path d="M465 452 C435 452 430 452 395 452" stroke="#6ee7b7" stroke-width="4" fill="none" marker-end="url(#arrowGreen)"/>
+
+  <rect x="470" y="156" width="260" height="34" rx="17" fill="#ddd6fe"/><text x="493" y="179" class="pill">MUX · Yjs + awareness</text>
+  <rect x="472" y="512" width="256" height="34" rx="17" fill="#a7f3d0"/><text x="493" y="535" class="pill">CONTROL · files + session</text>
+  <text x="60" y="610" class="small">Each client applies local intent immediately. The relay transports state; it does not decide what canvas content means.</text>
+</svg>

@@ -1,361 +1,397 @@
-# BUILD_SPEC — ObsidianLiveShare (Round 2: Latency-Resistance, Canvas Presence & Per-Card Locking)
+# BUILD SPEC — Obsidian Live Share
 
-> Authoritative architecture document for Phase A of Round 2. Drives the WP breakdown,
-> acceptance criteria, and the W4 validation gate. User stories + their ACs live in
-> `USER_STORIES.md` (this file references them, does not repeat them).
->
-> **Graph basis:** none — Graphify disabled for this workflow; grounded on `PLAN.md`
-> discovery grounding (file:line refs) + Round-1 code (`BUG_ANALYSIS.md`). All file paths
-> below are confirmed present in-tree; none invented.
+> **Status:** authoritative current-state specification
+> **As-of:** 2026-08-07, branch `fix-bugs-and-raceconditions`, settled committed feature baseline through WP95
+> **Authority rule:** this file is the single source of truth for intended behaviour, implemented feature level, release gates, and open product risks. `workflowArtifacts/canvas-v2/DISPATCHER_STATE.md`, `SIGNAL_REGISTER.md`, task charters, implementation reports, validation reports, development reports, `CONCEPT_V2.md`, and `BUILD_SPEC_CanvasV2.md` remain evidence and historical working documents. They do not override this file.
+> **Active-investigation boundary:** S104–S113 are recorded in Section 1.1 as active-work notes. Their entries preserve the current investigation subjects but do not alter the settled feature, risk, or release verdicts elsewhere in this specification until the active batches finish.
 
----
+## 1. Evidence and verdict policy
 
-## 1. Project Overview
+A statement is marked **implemented** only when the current tree contains the implementation and the associated test evidence is green. A statement is marked **live-verified** only when it was exercised through the two real Obsidian instances and the real relay or a deliberately local relay named by the test. Headless evidence alone is not described as live proof.
 
-- **Project name:** ObsidianLiveShare (repo `obsidian-live-share`, fork pinned `f5fe736`; client `plugin/src/`, relay `server/src/`).
-- **Target vision:** Make Obsidian multiplayer reliable under **real network latency** — text carets always visible and persistent, canvases with live cursors + presence, and per-card locking that prevents same-card clobber and never strands a lock.
-- **Primary user group / consumers:** Collaborators (host + guests) editing shared Obsidian notes and canvases over a real internet link via the NeuralAngels relay.
-- **Non-goals (Phase A):**
-  - Phase B items: OIDC primary auth, headless persistent host, admin web UI, in-Obsidian status console (deferred; see PLAN.md Appendix).
-  - Server-enforced (mutual-exclusion) locking — impossible given Yjs delta opacity; locking is advisory + presence only.
-  - True fencing tokens (GAP-7) — out of scope; bounded LWW risk accepted.
-  - Re-fixing already-fixed Round-1 bugs (ghost-caret, per-key canvas diff — "Bug C/D" stale).
-  - Relay redeploy for on-join awareness transfer (resolved client-side — see §5).
-- **UI language / locale:** English (Obsidian plugin UI); code + comments English.
+The accepted verdict vocabulary is:
 
----
+- **Implemented:** present in the current code and covered by passing automated checks.
+- **Live-verified:** demonstrated through the real product path.
+- **Partial:** some acceptance criteria are met, but named criteria remain unmeasured or failed.
+- **Open:** reproduced or statically established and not closed.
+- **Deferred:** intentionally outside the current release decision.
+- **Withdrawn:** the alleged product defect was falsified; no product fix is required for that claim.
+- **Unverified:** plausible or argued, but not accepted as a fact.
 
-## 2. Scope and Deliverables
+Historical suite totals are evidence only for the exact clean commit on which they were measured. The latest fully bracketed clean-tree gate recorded for WP95 was **2792/2792 tests in 387/387 files, TypeScript clean, zero failures**, at commit `baa9aa0`. Later packages reported their own green gates, including B60 at **2805/2805 in 389/389 files**, but the present working tree contains unrelated uncommitted UI changes and therefore has no new authoritative whole-tree figure in this document.
 
-- **User stories:** see `USER_STORIES.md` (US1–US6).
-- **Must-have requirements (P0):**
-  - Symmetric, persistent text caret visibility incl. static-caret survival past 30 s and reconnect re-visibility (US1 / WP1).
-  - Canvas cursors + here/typing indicator on the canvas-doc awareness channel + DOM overlay (US2 / WP2).
-  - Per-card advisory locking with deterministic lowest-`clientID` tiebreak, delete-wins/no-resurrect, `canWriteNode`/`canDeleteNode`, colored held highlight (US3 / WP3).
-  - Crash-safe auto-release + idle-holder lock survival + reconnect no-split-lock (US4 / WP1+WP3). **Non-negotiable: crash-safe auto-release.**
-  - Version/sequence-gated flush, drop-unflushed-on-remote-lock, edge cascade-prune, single-writer invariant intact (US5 / WP4).
-  - Deterministic 50–150 ms RTT two-client harness reproducing every targeted race red-first (US6 / WP5).
-- **Should-have requirements (P1):**
-  - Optional lock-epoch/Lamport counter mitigating GAP-7 stale resumed-holder writes (US3 AC9).
-  - Private-Canvas-API acquisition path (best UX) alongside the mandatory diff-inferred fallback.
-- **Nice-to-have requirements (P2):**
-  - Server-side awareness on-join replay (only if client-side hardening proves insufficient — see §5 Open-Question resolution).
-- **Explicitly out of scope:** everything under §1 Non-goals; all Phase B; unrelated Round-1 latency limiters (L1–L7) except where a WP already touches the same seam.
+### 1.1 Active work sidebar — S104–S113
 
----
+> **Provisional by design.** This table records what the active bug-fix work is investigating. It is not a second status register, does not promote a provisional mechanism to fact, and does not change the release blockers in Section 13. When a batch settles, its reproduced and qualified verdict must be promoted into the applicable normative section and this sidebar entry retired or rewritten as historical context.
 
-## 3. System Architecture
+| Signal | Active-work note |
+|---|---|
+| **S104** | Logger wiring order: `FileOpsManager` received `this.logger` before the logger was constructed, leaving optional logger calls silent. Active work is verifying the production `onload()` wiring and the real sink rather than a manually wired test double. |
+| **S105** | **Withdrawn product hypothesis:** ordinary inbound rename was injected with the wrong operation shape. The declared `{oldPath, newPath}` shape applies. Follow-up belongs to the instrument, not the rename implementation. |
+| **S106** | Field relevance of WP93's lazy mute release: live observations showed the event-driven release rarely deciding before the ceiling. Active work is separating an implemented headless mechanism from its actual live contribution. |
+| **S107** | Guest-held, pre-existing canvas participation: a guest edit was observed not reaching the host and later disappearing from disk. Data loss is reproduced; active work must establish the mechanism without inferring it from adjacency. |
+| **S108** | **Burned signal number:** the alleged collision artefact was the owner's own file, not a product defect. It remains recorded so the withdrawn attribution and operator error cannot be silently reused or forgotten. |
+| **S109** | Rename diagnostics could not name rename endpoints because they looked only for `path`; the outer catch also swallowed before a downstream catch could report. Diagnostic repair is recorded separately from functional rename behaviour. |
+| **S110** | The debug file sink depends on `debugLogging`; live absence claims must first establish that the setting and sink are active. This is an evidence precondition, not by itself a product-functionality verdict. |
+| **S111** | Harness wiring can hide production wiring-order defects: tests that call `setLogger` directly do not prove `onload()` constructs and attaches dependencies in the correct order. Active work is using the real lifecycle seam. |
+| **S112** | The E2E file-operation endpoint reader accepts fields the production operation type ignores. A malformed rename therefore looked valid to the instrument and manufactured S105. Active work is tightening the instrument to the declared discriminated operation types. |
+| **S113** | A bounded log poll ended before the measured renderer/flush clamp. Later lines existed on disk, so the in-arm silence was not evidence. Active work must use a proven watermark/flush horizon and positive control before interpreting absence. |
 
-- **Graph basis:** none — Graphify disabled; grounded on PLAN.md discovery grounding + Round-1 `BUG_ANALYSIS.md`. Build date of grounding: 2026-07-17.
-- **Frontend stack (client / plugin):** TypeScript Obsidian plugin (`plugin/src/`); CodeMirror 6 editor integration (`yCollab`); Yjs CRDT + y-protocols awareness; canvas presence is **net-new DOM overlay** against Obsidian's private Canvas view API.
-- **Backend stack (relay / server):** TypeScript Node WebSocket relay (`server/src/`). Stateless / host-authoritative; per-doc read-only enforcement only (cannot decode a Yjs delta to a single node).
-- **Data storage:** No DB for this scope. State is Yjs Y.Docs (per-file `content` Y.Text; per-canvas `__canvas__:path` with per-node `Y.Map`s) + on-disk `.md`/`.canvas` vault files. Lock/presence state is **ephemeral awareness** (never persisted — that is what makes it crash-safe).
-- **External integrations:** NeuralAngels relay over two WebSocket transports per session — **MUX** (`/ws-mux`, Yjs sync + awareness, `sync.ts ⇄ ws-handler.ts`) and **CONTROL** (`/control`, file ops/presence/perms). This round works almost entirely on MUX + client-side canvas code.
-- **Runtime environment:** Client = Obsidian (Electron). Relay = container in the NeuralAngels server stack. **No relay redeploy required for Phase A** (on-join awareness resolved client-side).
-- **Key subsystems:**
-  - Awareness lifecycle (`sync.ts`): outbound emit, join re-emit, heartbeat, reconnect clock-tick.
-  - Editor cursor rendering (`collab.ts`, yCollab) — text carets.
-  - Canvas sync + per-node diff/enforcement seam (`canvas-sync.ts`).
-  - Canvas presence overlay (net-new file) + activation branch (`main.ts`).
-  - Latency-tolerant disk flush (`background-sync.ts` text, `canvas-sync.ts` canvas).
-- **Key architecture decisions (with rationale):**
-  1. **One shared canvas-presence subsystem** — cursors, held-highlight, and lock state ride the *same* canvas-doc awareness channel + one new DOM overlay, built together. Rationale: they share the awareness field and overlay DOM; splitting them would triplicate wiring and re-introduce the file-conflict churn Round 1 hit.
-  2. **Advisory client-side locking, not server mutual exclusion.** Rationale: the relay is stateless/host-authoritative and cannot decode a Yjs delta to one node; enforcement must live in the existing per-node diff path (`canvas-sync.ts:284-318`) via `canWriteNode`/`canDeleteNode`.
-  3. **Lock rides Yjs awareness (auto-release on disconnect), not a persistent map.** Rationale: crash-safety is non-negotiable; a persistent lock map would strand locks forever on a crash.
-  4. **Deterministic lowest-`clientID` tiebreak instead of a central arbiter (GAP-1/3).** Rationale: no server orders claims, so two clients can grab a card within one RTT; a deterministic client-side rule (lowest clientID / lowest Lamport clock wins, loser reverts) needs no server and is reproducible.
-  5. **Delete-wins / never resurrect a remote-deleted node (GAP-2).** Rationale: matches mature-editor practice (Figma) and prevents a held card zombie-ing back forever.
-  6. **Awareness hardening over symptom-patching (GAP-4/6).** Rationale: a full-state <30 s heartbeat + reconnect clock-tick + on-join full-state transfer fixes text *and* canvas cursor flakiness *and* keeps locks from stranding/splitting — one mechanism, many symptoms.
-  7. **Hybrid lock acquisition (private Canvas API → diff-inferred fallback).** Rationale: private API gives best UX (lock on drag/edit-start) but is untyped/unstable, so the diff-inferred path (lock on first key change) must be a real, tested fallback.
+## 2. Product purpose and supported deployment
 
----
+Obsidian Live Share is a self-hosted Obsidian plugin and relay for real-time collaboration on Markdown files, canvases, file operations, presence, and session state.
 
-## 4. Data Architecture
+The supported deployment is the NeuralAngels-hosted relay at `liveshare.neuralangels.de` with this access model:
 
-- **Primary data sources:** Yjs Y.Docs over MUX; on-disk vault `.md` / `.canvas` files; ephemeral y-protocols awareness state (text-doc awareness for carets; canvas-doc awareness for canvas presence/locks).
-- **Core data models / schemas:**
-  - **Canvas awareness field (new, single shared shape):**
-    `{ canvasPath: string, nodeId: string | null, x: number, y: number, lockedNodes: { [nodeId: string]: { color: string, name: string } } }`
-    Optionally extended with a lock-epoch: `lockedNodes[nodeId] = { color, name, epoch?: number }` (GAP-7 mitigation, P1).
-  - **Canvas node:** existing per-node `Y.Map` keyed by node id (`canvas-sync.ts:182-183`) — the lock key.
-  - **Canvas edge:** references two endpoint node ids — must never dangle after §US5 AC3 pruning.
-  - **Text awareness:** existing yCollab caret/selection state (per-file Y.Text awareness).
-- **Normalisation rules:** per-property (per-key) LWW on canvas node maps (already in-tree) — never whole-object overwrite. Presence (lossy) is kept separate from document data (ordered).
-- **Consistency and integrity rules:**
-  - Single deterministic lock holder per node after settle (no dual ownership).
-  - Delete wins over concurrent edit; no resurrect of a remote-deleted node.
-  - No edge may reference a non-existent node (prune on delete + on serialize).
-  - Single-writer text invariant for the active file preserved (Round-1 `collabBoundFile`/active-file gating).
-  - Awareness state is ephemeral and auto-clears on disconnect (crash-safe locks).
-- **Data flow:** local edit/drag → optimistic lock claim on canvas awareness → ~1 RTT settle (tiebreak) → committed per-node CRDT write via diff path gated by `canWriteNode` → remote apply → overlay/highlight render from awareness. Disk flush is version/sequence-gated to yield to in-flight remote deltas.
+- The credential landing page is protected by NeuralAngels Access.
+- Obsidian connects directly to the WebSocket relay because Electron does not carry the browser SSO cookie.
+- The relay authenticates the connection with the Live Share server password.
+- Session payloads can use AES-GCM-256 with a PBKDF2-derived key carried by the session invite.
+- The relay does not parse encrypted room payloads.
+- The deployment is a trusted-share collaboration model, not Byzantine-peer protection.
 
----
+The shared server password is a deployment credential, not a per-user authorization token. Credential values, vault `data.json` contents, encryption material, and tokens must never be printed, logged, copied into fixtures, or passed through an agent tool.
 
-## 5. Component Map
+## 3. Product invariants
 
-### sync.ts (awareness lifecycle)
-- Change type: modify
-- Responsibility: emit/join-re-emit/heartbeat/reconnect-tick of awareness for text (and plumbing reused by canvas awareness).
-- Interfaces:
-  - Input: local awareness state changes; MUX subscribe/sync-request events; reconnect events.
-  - Output: MUX awareness frames (full local state incl. `lockedNodes`) at < 30 s cadence; on-join awareness transfer; clock-tick on reconnect.
-- User stories: US1, US4
-- Assigned to WP: WP1
-- Anchors: create+outbound `sync.ts:132-157`; join/re-emit race `sync.ts:354-402` (fix null/static bail at `:392-402`); inbound apply `sync.ts:423-427`.
+These invariants govern every implementation and test. A later work package may strengthen them but must not weaken them silently.
 
-### collab.ts (editor caret rendering)
-- Change type: modify (if needed for full-state/idle caret rendering)
-- Responsibility: render remote text carets via yCollab.
-- Interfaces: Input awareness state; Output CM6 caret decorations.
-- User stories: US1
-- Assigned to WP: WP1
-- Anchors: editor-only cursor rendering `collab.ts:104-122`.
+### I1 — One semantic owner per surface
 
-### server/ws-handler.ts + server/mux-protocol.ts + plugin/sync/mux-protocol.ts
-- Change type: modify **only if** on-join replay is done server-side (P2, not planned for Phase A — see Open-Question resolution below).
-- Responsibility: relay awareness/sync frames.
-- Interfaces: MUX frames.
-- User stories: US1
-- Assigned to WP: WP1 (optional server path only)
-- Anchors: relay per-doc read-only `ws-handler.ts:155-177,381-395`; disconnect awareness-removal already correct `ws-handler.ts:220-250`; ghost-caret fix live at `ws-handler.ts:236-237` (`lastClock+1`) — do not disturb.
+- An open Markdown editor owns its active text surface.
+- Canvas synchronization uses an explicit surface state, adapter lifecycle, and writer lifecycle.
+- A remote apply must not overwrite an actively edited canvas record.
+- A deferred apply must have a bounded, observable drain path.
 
-### main.ts (activation + canvas branch)
-- Change type: modify
-- Responsibility: branch activation to `CanvasView` (today hard-returns for non-`MarkdownView`); wire canvas presence overlay.
-- Interfaces: Input Obsidian view activation; Output canvas presence subscription + overlay mount.
-- User stories: US2, US3
-- Assigned to WP: WP2 (owns), WP3 (shares)
-- Anchors: activation gated to MarkdownView `main.ts:749-802`; canvas subscribe already wired `main.ts:694-700`.
+### I2 — Convergence is necessary but not sufficient
 
-### canvas-presence overlay (NEW FILE — net-new)
-- Change type: create
-- Responsibility: DOM overlay rendering remote canvas cursors, here/typing indicators, and per-node held-highlight; reads canvas-doc awareness.
-- Interfaces: Input canvas awareness state (`{ canvasPath, nodeId, x, y, lockedNodes }`); Output DOM markers/highlights on the canvas surface.
-- User stories: US2, US3
-- Assigned to WP: WP2 (owns), WP3 (held-highlight shares)
-- Anchors: no canvas-view DOM code exists today — net-new against Obsidian's private Canvas API. (File path chosen by W3 within `plugin/src/`; not pre-invented here.)
+Equal replicas are not proof if both replicas converged after deleting valid user intent. Tests must distinguish convergence, preservation, and authorization.
 
-### canvas-sync.ts (per-node diff/enforcement + lock + latency)
-- Change type: modify
-- Responsibility: expose canvas-doc awareness; per-node diff path is the lock-enforcement seam (`canWriteNode`/`canDeleteNode`); delete-wins/no-resurrect; version-gated flush.
-- Interfaces:
-  - Input local `.canvas` modifications; remote deltas; awareness lock state.
-  - Output gated per-node CRDT writes; edge-prune on delete/serialize.
-- User stories: US3, US4, US5
-- Assigned to WP: WP2 (expose awareness), WP3 (lock gates + delete-wins), WP4 (version-gated flush + edge prune)
-- Anchors: per-node maps `canvas-sync.ts:182-183`; diff/enforcement seam `:242-318` (esp. `:284-318`); resurrect bug to fix `:304-311`; disk-write funnel `:409-429`; per-key diff live `:104-119,300-303` (keep).
+### I3 — Absence is not destructive authorization
 
-### background-sync.ts (text disk flush)
-- Change type: modify
-- Responsibility: version/sequence-gated text flush; preserve single-writer invariant.
-- Interfaces: Input local text modify events; Output gated Y.Text writes.
-- User stories: US5
-- Assigned to WP: WP4
-- Anchors: disk-write funnel `background-sync.ts:365-391`; active-file/`collabBoundFile` gating must stay intact.
+Missing manifest entries, partial reads, rejected records, missing receipts, and stale views do not by themselves license deletion. A destructive transition requires explicit completeness evidence plus an applicable receipt or tombstone rule.
 
-### Latency E2E harness (NEW — tests)
-- Change type: create
-- Responsibility: two-client harness injecting 50–150 ms RTT; reproduces WP1–WP4 races red-first; regression assertions.
-- Interfaces: Input configurable RTT; Output pass/fail per race scenario.
-- User stories: US6
-- Assigned to WP: WP5
-- Anchors: extend existing vitest suites (`plugin/src/__tests__`, `server/src/__tests__`).
+### I4 — Canonical serialization is deterministic
 
-**Open-Question resolution (documented constraint/assumption, non-blocking):** On-join awareness transfer is resolved **client-side first — no relay redeploy**. Existing peers re-emit their full awareness state to a newly-subscribing client (per WP1), which closes the `null`/static-caret join race without touching the relay. Server-side replay (touching `ws-handler.ts` + `mux-protocol.ts`, triggering a redeploy) is a **P2 fallback**, adopted only if client-side hardening leaves residual flakiness after WP5 validation. This is an assumption, **not a blocker**, and is not escalated.
+The `.canvas` file is a deterministic projection of the Yjs document. Replica-local protection may withhold a write, but must not make two replicas serialize the same document to different bytes.
 
-**Other §5 constraints/assumptions (from PLAN.md §Constraints):**
-- Locking is **advisory-only + presence** — no server enforcement (Yjs delta opacity). Accepted.
-- **No fencing token (GAP-7):** a GC-paused holder can push one stale delta after its lock auto-released and another peer reacquired. Accepted **bounded risk** — worst case per-key LWW clobber, not corruption. Optional lock-epoch/Lamport counter mitigates (US3 AC9, P1).
-- **Crash-safe auto-release is non-negotiable** — lock must ride ephemeral awareness.
-- Private Canvas API is **untyped/unstable** — the diff-inferred fallback must be a **real, tested path**, not a stub.
-- **Single-writer text invariant** (Round-1 `collabBoundFile`/active-file gating in `background-sync.ts`) must stay intact.
-- **Do not re-spend on already-fixed bugs:** ghost-caret (`ws-handler.ts:236-237` `lastClock+1`) and per-key canvas diff (`canvas-sync.ts:104-119,300-303`) are live in-tree; BUG_ANALYSIS "Bug C/D" are stale.
-- **Protected infra untouched:** `neural-angels-access` and `n8n` never restarted; if any relay change is made, reuse the established build→save→scp→load→root-recreate deploy path (no `--remove-orphans`, `name: liveshare`, password + volume preserved, landing untouched); do **not** read `SERVER_PASSWORD`; coop console connects as `thomas` (not root); npm changes are `nginx -t`-gated. (Phase A expects no relay change.)
+### I5 — Fail closed without fabricating truth
 
----
+Malformed, incomplete, or untrusted input is quarantined, refused, or withheld with an observable reason. The system must not translate uncertainty into deletion, reseeding, or silent success.
 
-## 6. API and Interfaces
+### I6 — Ephemeral state is not durable truth
 
-- **Endpoints / tool surfaces:** No new network endpoints in Phase A (client-side resolution). Transports unchanged: MUX (`/ws-mux`), CONTROL (`/control`).
-- **New client interfaces (internal):**
-  - Canvas awareness field: `{ canvasPath, nodeId|null, x, y, lockedNodes: {[nodeId]: {color, name, epoch?}} }`.
-  - `canWriteNode(path, nodeId): boolean` — advisory gate in the per-node diff path; false while a lower-`clientID` peer also claims, or another peer holds the lock.
-  - `canDeleteNode(path, nodeId): boolean` — false when another peer holds the node locked.
-  - Lock acquire/release lifecycle (hybrid: private Canvas API detect → diff-inferred fallback) writing/clearing `lockedNodes`.
-  - Awareness heartbeat: re-emit full local state at fixed interval < 30 s (target 10–15 s).
-  - Reconnect clock-tick: `setLocalState(getLocalState())`.
-- **Request / response structure:** MUX awareness frames carry `encodeAwarenessUpdate` payloads (existing mechanism); no wire schema change beyond richer local state content.
-- **Authentication / authorization:** unchanged; advisory lock enforcement is per-node client-side, layered over existing per-doc read-only. No auth changes in Phase A.
-- **Error cases and expected responses:**
-  - Competing claim within one RTT → lowest-`clientID` wins; loser reverts + releases (no error surfaced; deterministic).
-  - Remote delete of locked node → holder aborts edit, drops lock, no resurrect.
-  - Remote lock arrives with un-flushed local edits → drop local edits.
-  - Reconnect → do not blind-reassert locks; re-request `lockedNodes`, re-claim only still-free nodes.
-- **Persistence behaviour:** lock/presence state is **never persisted** (ephemeral awareness → crash-safe). Document/canvas content persists via existing Yjs → disk flush, now version/sequence-gated.
+Presence, cursor location, current editor state, and advisory interaction state use awareness or live adapter state. Document identity, sidecar history, tombstones, durable refusal state, and persisted canvas content use explicit durable stores.
 
----
+### I7 — Receipts answer one question each
 
-## 7. Quality Gates
+Whether values match, whether this pass delivered a record, whether a surface accepted it, and whether deletion is licensed are separate facts. One enum or boolean must not silently stand for all of them.
 
-- **Lint / typecheck / test commands (exact commands W3 must run):**
-  - Client: `cd plugin && npm run lint` (if present) · `npm run build` (tsc typecheck) · `npm test` (vitest).
-  - Server: `cd server && npm run build` (tsc typecheck) · `npm test` (vitest).
-  - W3 must confirm the exact script names against each `package.json` before running and use those; do not invent scripts.
-- **Execution order:** typecheck/build → unit/integration tests → smoke → full E2E latency harness (WP5).
-- **Abort criteria:** typecheck/build failure; any Round-1 regression test going red (single-writer, ghost-caret, per-key diff); a race AC that cannot be made green under injected latency.
-- **Definition of Done (project-level):** all US1–US6 ACs satisfied; every GAP-1..GAP-7 AC (or documented bounded-risk acceptance for GAP-7) green under 50–150 ms RTT; no Round-1 regression; both artifacts' WP DoDs met.
-- **Test framework and runner:** vitest (existing suites `plugin/src/__tests__`, `server/src/__tests__`), extended with the WP5 latency harness.
-- **Active W4 test levels (read from `workflow.config.json` — current state):**
-  - Smoke tests: **enabled** (`w4_smoke: true`)
-  - Integration tests: **enabled** (`w4_integration: true`)
-  - Full E2E: **enabled** (`w4_e2e_full: true`)
-  - **Fix-as-failing-test (TDD rework): enabled** (`w4_fix_as_failing_test: true`) — every CRITICAL/HIGH fix ships a confirmed-red failing test for W3 to drive green.
-- **Mandatory latency requirement:** the WP5 harness MUST inject simulated **50–150 ms RTT**; a zero-latency harness cannot reproduce these races and would give false green. Race assertions are only meaningful under injected latency.
+### I8 — The relay remains content-blind
 
----
+Canvas V2 and relay checkpoint persistence may store or forward opaque frames. They must not require the relay to understand canvas records or decrypt session content.
 
-## 8. Validation and Test Strategy
+## 4. Runtime topology
 
-- **Test levels active:** smoke + integration + full E2E + fix-as-failing-test — all enabled (see §7).
-- **Test data sources:** deterministic fixtures / fixed seeds / controlled injected delays. No ad-hoc LLM-generated data, no wall-clock `sleep`-based timing. Two-client scenarios use scripted Yjs docs and simulated RTT.
-- **Known flaky areas (patterns to avoid):**
-  - Wall-clock/`sleep`-based timing assertions — use the harness's controlled RTT + event hooks instead.
-  - Order-dependent awareness frame assertions — assert on final converged state plus explicit frame-cadence checks, not incidental ordering.
-  - Zero-latency runs used as proof (false green) — race assertions must run under injected latency.
-  - Reconnect tests that assume a new `clientID` — assert single stable identity.
+```text
+Obsidian plugin A                         Obsidian plugin B
+├── Markdown/editor binding              ├── Markdown/editor binding
+├── Canvas capture/reconcile             ├── Canvas capture/reconcile
+├── File operations + manifest           ├── File operations + manifest
+├── Presence/awareness                    ├── Presence/awareness
+└── Session + offline/link state          └── Session + offline/link state
+             │                                         │
+             ├── MUX WebSocket: Yjs sync + awareness ──┤
+             └── CONTROL WebSocket: file ops/session ──┘
+                               │
+                         Live Share relay
+```
 
----
+The MUX and CONTROL links are independent. User-facing online state must be derived from measured link state, not from a historical connection latch. A connection failure must stop transmission and remain recoverable without deleting the room identity or clearing valid credentials.
 
-## 9. Work Package Breakdown
+## 5. Current document and storage model
 
-> Batching guidance for W3 (from PLAN.md §Batching note): **WP2 + WP3 share `canvas-sync.ts`, `main.ts`, and the new overlay file → one execution batch owned by one agent** (not parallel) to avoid file conflicts. **WP1 (`sync.ts`) and WP4 (`background-sync.ts`) are more file-disjoint and can run alongside.** WP5 depends on WP1–WP4 and runs after. W3 parallel threshold is 5 (per `workflow.config.json`); with 5 WPs but a mandatory 2+3 co-batch, expect ~3 execution lanes (WP1 | WP2+WP3 | WP4), then WP5.
+### Markdown
 
-### WP1 — Awareness latency-resistance
-- **Status:** planned
-- **Depends on:** none
-- **Scope:** Heartbeat that re-emits **full local awareness state incl. `lockedNodes`** at a fixed interval **< 30 s** (target 10–15 s); on-join full awareness-state transfer to a newly-subscribing peer (existing peers re-emit); fix the `null`/static-state re-emit bail so a static caret is still transferred (`sync.ts:392-402`); **reconnect clock-tick** `setLocalState(getLocalState())` with **no blind lock re-assert** (re-request `lockedNodes`, re-claim only still-free nodes); ensure a reconnecting client keeps a single stable awareness identity.
-- **Out of scope:** canvas overlay rendering (WP2); lock acquisition/tiebreak logic (WP3); disk-flush gating (WP4); server-side replay (P2, only if client-side proves insufficient).
-- **User stories covered:** US1, US4
-- **Acceptance Criteria:**
-  1. New peer renders an existing static caret within ≤ 1000 ms of subscribing, symmetric both directions (US1 AC1/AC2). *(testable: two-client join, assert caret decoration exists ≤1000 ms, no caret movement)*
-  2. A static caret survives > 30 s on all peers — no y-protocols prune (US1 AC3, **GAP-6**). *(testable: hold static 35 s, assert remote decoration present)*
-  3. Heartbeat emits full local state (incl. `lockedNodes`) with inter-emit gap < 30 s even with zero local edits (US1 AC4, **GAP-6**). *(testable: capture outbound MUX awareness frames, assert cadence)*
-  4. `reemitLocalAwareness` no longer bails on a static/non-moving caret; mid-sync joiner still receives it (US1 AC5). *(testable: join mid-sync, assert caret appears with no local movement)*
-  5. On reconnect, awareness clock ticks so the caret re-renders on peers ≤ 1000 ms without typing (US1 AC6, **GAP-4**). *(testable: drop+restore socket, assert peer re-renders caret)*
-  6. Reconnect produces exactly one awareness identity for the client — no ghost duplicate, no split lock (US1 AC7, US4 AC3/AC4, **GAP-4**). *(testable: assert exactly one awareness entry; a peer-acquired node is not reclaimed)*
-  7. An idle-but-connected lock holder keeps its lock past 30 s because the heartbeat re-emits `lockedNodes` (US4 AC2, **GAP-6**). *(testable: hold lock idle 35 s, assert peers still see held + their `canWriteNode` false)*
-- **Definition of Done:** Under WP5's 50–150 ms RTT harness: symmetric ≤1000 ms caret join, static-caret survival past 35 s, <30 s full-state heartbeat frames on the wire, reconnect caret re-visibility with a single identity, and idle-holder lock survival — all green; no Round-1 caret regression.
-- **Key files:** `plugin/src/sync/sync.ts` (primary); `plugin/src/editor/collab.ts` (if caret rendering needs full-state/idle handling). Optional/P2 only if server replay is later required: `server/src/ws-handler.ts`, `server/src/mux-protocol.ts`, `plugin/src/sync/mux-protocol.ts`.
-- **Architecture notes:** Do not disturb the live ghost-caret fix (`ws-handler.ts:236-237` `lastClock+1`). Heartbeat must NOT be short-circuited by `getLocalState()===null` when a caret is merely static. Provides the awareness plumbing WP2/WP3 consume; `lockedNodes` field shape is `{[nodeId]:{color,name,epoch?}}`. Client-side on-join transfer only (no relay redeploy).
-- **Handover summary:** *(filled by W3 on completion)*
+- Each shared text document uses a Yjs `Y.Text` named `content`.
+- CodeMirror collaboration owns the active-editor path.
+- Background synchronization owns unopened text files.
+- The single-writer and active-file guards from the first reliability round remain mandatory.
 
-### WP2 — Canvas presence (cursors + here/typing indicator)
-- **Status:** planned
-- **Depends on:** WP1 (awareness plumbing)
-- **Scope:** New canvas-presence module + **new DOM overlay file** rendering remote **cursors** and a typing/"here" indicator on the canvas surface; branch activation to `CanvasView` (today hard-returns for non-`MarkdownView` at `main.ts:749-802`); expose the canvas doc's awareness (`getDoc().awareness`) from `canvas-sync.ts`; write/read the shared awareness field `{ canvasPath, nodeId|null, x, y, lockedNodes }`.
-- **Out of scope:** lock acquisition, tiebreak, enforcement, held-highlight *behavior* (WP3 — though WP3 reuses this overlay for the highlight rendering); disk-flush gating (WP4). Does not modify text-editor cursor rendering.
-- **User stories covered:** US2 (and provides the overlay WP3's US3 highlight uses)
-- **Acceptance Criteria:**
-  1. Two clients on the same canvas each render the other's cursor as a DOM overlay marker that updates on movement (US2 AC1). *(testable: move cursor, assert peer marker coords change)*
-  2. Each remote cursor marker carries the peer's color + name (US2 AC2). *(testable: assert overlay element color/name)*
-  3. A here/typing indicator shows for a present/editing peer and is absent for a peer on a different canvas (US2 AC3). *(testable: assert indicator presence/absence)*
-  4. Canvas presence renders with no CodeMirror editor active — activation branches to `CanvasView`, not hard-return (US2 AC4). *(testable: open canvas only, assert cursors render)*
-  5. Closing the canvas / disconnecting removes the peer's marker within one heartbeat (US2 AC5). *(testable: disconnect peer, assert marker gone)*
-  6. Emitted awareness state matches exactly `{ canvasPath, nodeId|null, x, y, lockedNodes }` (US2 AC6). *(testable: inspect emitted object shape)*
-- **Definition of Done:** Two clients on one canvas see each other's live, identity-colored cursors + here/typing indicators via the canvas-doc awareness channel and the new overlay; markers vanish on leave — green under the latency harness.
-- **Key files:** `plugin/src/main.ts` (activation branch + overlay mount); `plugin/src/files/canvas-sync.ts` (expose awareness); **new overlay file under `plugin/src/`** (path chosen by W3 — not pre-invented). Anchors: `main.ts:694-700,749-802`.
-- **Architecture notes:** Net-new against Obsidian's **private, untyped Canvas view API** — isolate private-API access behind a thin adapter so WP3's acquisition can reuse it and the diff-inferred fallback stays clean. Shares the overlay DOM with WP3 (held-highlight) — build the overlay to accept both cursor markers and per-node highlights. **Co-batch with WP3 under one agent.**
-- **Handover summary:** *(filled by W3 on completion)*
+### Canvas CRDT V2
 
-### WP3 — Per-card locking (acquisition, tiebreak, delete-wins, enforcement, highlight)
-- **Status:** planned
-- **Depends on:** WP2 (shared overlay + exposed canvas awareness)
-- **Scope:** Hybrid lock acquisition (private Canvas API detect on drag/edit-start → **diff-inferred fallback**: lock on first node-key change); write lock to canvas awareness `lockedNodes` (auto-release on disconnect); **provisional-claim + lowest-`clientID` (or lowest Lamport clock) tiebreak with loser-revert** (GAP-1); **settle ~1 RTT / one heartbeat before committing a mutating write** (GAP-3, WP3 half); advisory `canWriteNode(path,nodeId)` **and** `canDeleteNode(path,nodeId)` gates wired into the per-node diff path (`canvas-sync.ts:284-318`); **delete-wins / no-resurrect** of a remote-deleted locked node (fix `canvas-sync.ts:304-311`); **colored "held" highlight** rendered via WP2's overlay; **optional** lock-epoch/Lamport counter (GAP-7, P1).
-- **Out of scope:** cursor/indicator rendering primitives (WP2 owns the overlay); text-flush/edge-prune (WP4); on-reconnect lock re-request plumbing (WP1 owns the reconnect path — WP3 supplies the "re-claim only still-free" policy it calls).
-- **User stories covered:** US3, US4 (lock lifecycle)
-- **Acceptance Criteria:**
-  1. Begin edit/drag → `lockedNodes[nodeId]={color,name}` set and every peer highlights the node in the holder's color (US3 AC1). *(testable: assert peer overlay highlight color)*
-  2. Hybrid acquisition works with the private API forcibly absent — diff-inferred fallback still acquires on first key change; fallback is real, not a stub (US3 AC2). *(testable: stub out private API, assert lock acquired on first key change)*
-  3. Two claims within one RTT → lowest-`clientID` wins; loser reverts optimistic edit + releases; exactly one holder, no dual ownership (US3 AC3, **GAP-1**). *(testable: two-client one-RTT claim, assert winner=lowest id, loser lockedNodes cleared + edit rolled back)*
-  4. Claim is pending ~1 RTT/one heartbeat before a mutating write; a competing lower-id claim in that window aborts the local mutation — loser makes no committed CRDT write (US3 AC4, **GAP-3**). *(testable: assert loser performs no node CRDT write)*
-  5. `canWriteNode` returns false while a lower-id peer claims or another peer holds the lock; diff path drops such writes (US3 AC5). *(testable: non-holder edit produces no CRDT change to the node)*
-  6. Lock holder observing a remote delete of its locked node aborts, drops lock, does **not** resurrect (US3 AC6, **GAP-2**). *(testable: remote-delete while locked+edited, assert node stays deleted + lock released)*
-  7. `canDeleteNode` blocks deleting a peer-held node (US3 AC7, **GAP-2**). *(testable: attempted delete of peer-held node dropped, node still present + locked)*
-  8. Release (end drag/edit/blur) clears `lockedNodes[nodeId]` + highlight on all peers within one heartbeat (US3 AC8). *(testable: end edit, assert peers un-highlight)*
-  9. If lock-epoch implemented: a superseded resumed holder self-aborts its stale write; if not, GAP-7 bounded risk is documented (§5) with no AC failing on its absence (US3 AC9, **GAP-7**). *(testable only when epoch field present)*
-- **Definition of Done:** Two clients contending for one card converge to a single deterministic holder with the loser reverted; held card shows holder's color on peers; delete-wins + `canDeleteNode` prevent resurrection/clobber; locks release on end-edit — all green under 50–150 ms RTT.
-- **Key files:** `plugin/src/files/canvas-sync.ts` (lock gates, delete-wins, expose/consume awareness); `plugin/src/main.ts` (drag/edit-start hooks); the WP2 overlay file (held-highlight). Anchors: `canvas-sync.ts:182-183,242-318` (esp. `:284-318`), resurrect fix `:304-311`.
-- **Architecture notes:** Locking is **advisory + presence** — never server-enforced. Lock **must** ride ephemeral awareness (crash-safe auto-release — non-negotiable). Reuse WP2's private-Canvas-API adapter; the diff-inferred fallback must be a tested path. Tiebreak is deterministic and server-free. **Co-batch with WP2 under one agent** (shared `canvas-sync.ts`/`main.ts`/overlay).
-- **Handover summary:** *(filled by W3 on completion)*
+- A canvas is represented as per-record Yjs maps rather than as one whole JSON string.
+- Node position and size fields are atomic registers.
+- Edge endpoints are atomic registers.
+- Ordering uses fractional `ord` values.
+- Deletions use tombstones rather than omission alone.
+- `meta.schemaVersion = 2` is document metadata and is not emitted into the user-facing `.canvas` file.
+- Node text and edge labels use `Y.Text` internally and serialize explicitly to strings.
+- Ingest validation quarantines or refuses invalid records before they can become document truth.
+- Canonical serialization omits internal metadata and is deterministic across replicas.
 
-### WP4 — Latency-tolerant editing (version-gated flush, drop-unflushed, edge prune)
-- **Status:** planned
-- **Depends on:** none
-- **Scope:** Make the local text/canvas disk-flush **yield to in-flight remote deltas** via a version/sequence gate (not wall-clock debounce racing); on receiving a **remote lock** for a node with un-flushed local edits, **drop those edits rather than push them** (GAP-3, WP4 half); **cascade/prune dangling edges** whose endpoint node was concurrently deleted, and prune dangling edges on serialize (GAP-5); close the remaining canvas guest-text-loss clobber window; keep the Round-1 single-writer text invariant intact.
-- **Out of scope:** lock acquisition/tiebreak (WP3 — WP4 only *reacts* to a remote lock); awareness heartbeat/reconnect (WP1); canvas overlay (WP2). Does not re-touch already-fixed per-key diff behavior beyond the reconcile-clobber window.
-- **User stories covered:** US5
-- **Acceptance Criteria:**
-  1. A local whole-file flush yields to an in-flight remote delta not yet applied locally — remote change survives, not clobbered (US5 AC1). *(testable: inject in-flight remote delta during local flush, assert remote change persists)*
-  2. Remote lock for a node with un-flushed local edits → local edits dropped, not pushed (US5 AC2, **GAP-3**). *(testable: assert un-flushed edit discarded, holder value stands)*
-  3. Deleting an endpoint node (local or remote) prunes its edges; no serialized edge references a non-existent node (US5 AC3, **GAP-5**). *(testable: delete endpoint node, assert serialized .canvas has no dangling edge)*
-  4. Round-1 single-writer text invariant preserved — frontmatter/single-writer regression tests stay green, no Bug B reintroduction (US5 AC4). *(testable: re-run Round-1 regression suite green)*
-  5. No reintroduction of ghost-caret or per-key canvas diff regressions (US5 AC5). *(testable: Round-1 tests green)*
-- **Definition of Done:** Under 50–150 ms RTT, guest in-flight canvas node/text edits survive concurrent host/guest writes (version-gated flush + drop-on-remote-lock), edges never dangle, and no Round-1 fix regresses — all green.
-- **Key files:** `plugin/src/files/background-sync.ts` (text flush gate; anchor `:365-391`); `plugin/src/files/canvas-sync.ts` (canvas reconcile/flush gate + edge prune; anchors `:242-318,409-429`).
-- **Architecture notes:** Version/sequence gate — do not rely on wall-clock debounce for ordering. Preserve `collabBoundFile`/active-file gating (single-writer invariant). Shares `canvas-sync.ts` with WP2/WP3 but on the flush/reconcile seam rather than the lock/awareness seam — W3 must coordinate edits within `canvas-sync.ts` if run alongside the WP2+WP3 batch; otherwise sequence WP4 after the co-batch. File-disjoint enough (owns `background-sync.ts`) to run alongside WP1.
-- **Handover summary:** *(filled by W3 on completion)*
+### Surface Shadow
 
-### WP5 — Latency E2E harness
-- **Status:** planned
-- **Depends on:** WP1, WP2, WP3, WP4
-- **Scope:** Two-client E2E harness injecting a configurable **50–150 ms RTT**; reproduce (as red-first tests, fix-as-failing-test ON) WP1–WP4 symptoms: same-card claim in one tick → tiebreak, delete-vs-lock (no resurrect), idle-holder > 30 s lock survival, reconnect no-split-lock, guest canvas text/node survival under concurrent write; regression assertions mapping each race AC → test id.
-- **Out of scope:** implementing the fixes (WP1–WP4). Does not add production code beyond test scaffolding/harness utilities.
-- **User stories covered:** US6
-- **Acceptance Criteria:**
-  1. Harness injects configurable RTT in 50–150 ms; measured round-trip within band (US6 AC1). *(testable: assert applied delay)*
-  2. Named red-first tests exist for: (a) same-card one-tick tiebreak, (b) delete-vs-lock no-resurrect, (c) idle-holder >30 s lock survival, (d) reconnect no-split-lock, (e) guest canvas text/node survival — failing pre-fix, passing post-fix (US6 AC2). *(testable: each test present; red on pre-fix tree)*
-  3. Each race-describing WP1–WP4 AC has a corresponding harness assertion (AC→test mapping present) (US6 AC3). *(testable: mapping exists)*
-  4. Harness is deterministic — fixed seeds/controlled delays, repeatable, no timing flakiness (US6 AC4). *(testable: repeated runs stable)*
-  5. Zero-latency run is not treated as proof — race assertions skip/annotate when RTT=0; latency path is gating (US6 AC5). *(testable: assert race assertions skipped at RTT 0)*
-- **Definition of Done:** A deterministic 50–150 ms RTT two-client harness reproduces every targeted race red-first and asserts each fix, providing the regression net for WP1–WP4 — full E2E green.
-- **Key files:** extend `plugin/src/__tests__` and `server/src/__tests__` (vitest); new harness utility file(s) under the test tree (path chosen by W3).
-- **Architecture notes:** Localhost (≈0 ms) hides these races — injected latency is mandatory (§7). Use controlled delays + event hooks, never wall-clock `sleep`. Deterministic seeds; assert on converged state + explicit frame-cadence, not incidental ordering.
-- **Handover summary:** *(filled by W3 on completion)*
+The Surface Shadow is the last known state accepted by the local surface, not merely the last disk file and not merely the current CRDT projection. Local intent is derived by comparing the observed surface/file state with this shadow. Shadow advancement requires the corresponding receipt; it must not advance past an apply the surface did not take.
 
----
+### Sidecar, identity, and epoch
 
-## 10. Operational Rules
+- Canvas CRDT history is stored under the local sidecar directory.
+- Canvas identity uses a GUID rather than a path alone.
+- Epoch rules prevent an older file or stale identity from silently becoming current truth.
+- Rename handling follows GUID-backed sidecar and manifest identity.
+- Explicit import is a user command and is not conflated with ordinary synchronization.
+- Sidecar and durable safety stores are local-only and must never be shared or remotely writable.
 
-- **Logging:** reuse the existing `DebugLogger`; do not add noisy per-frame awareness logging in hot paths (heartbeat/cursor-move). Gate any new verbose logs behind the existing debug level.
-- **Monitoring:** none new in Phase A. Race behavior is observed through the WP5 harness, not runtime telemetry.
-- **Recovery / backups:** lock/presence state is ephemeral and self-heals on reconnect (clock-tick, re-request `lockedNodes`); document content recovers via existing Yjs CRDT convergence + disk flush. No new persistence to back up.
-- **Security and access rules:** advisory per-node gate layers over existing per-doc read-only; no auth changes. Protected infra untouched (`neural-angels-access`, `n8n` never restarted); no `SERVER_PASSWORD` reads; coop console as `thomas`; npm/relay changes (not expected in Phase A) are `nginx -t`-gated and use the established deploy path.
+### Durable seed-refusal protection
 
----
+- A record refused during ingest cannot be projected away merely because a later session starts.
+- The protection is durable, local-only, and keyed by document identity rather than by a host-specific path.
+- Repair or re-seed may lift a refusal only through the specified validated path.
+- Store writes have an awaitable idle boundary where durability is required.
+- The version field of the refusal store is currently not enforced; this remains open as S103.
 
-## 11. Repeated-Action Signals and Automation Candidates
+## 6. Implemented feature level
 
-Filled progressively as W3 runs.
+### Core collaboration — implemented
 
-| Repeated action | Tool / command | Frequency | Friction / failure | Automation candidate |
-|---|---|---|---|---|
-| | | | | |
+- Host and guest sessions, invites, permissions, room lifecycle, encrypted sessions, presence, user colors, file sharing, exclusions, rename/delete/create operations, binary transfer, and offline queuing.
+- Markdown real-time collaboration through Yjs and CodeMirror.
+- Canvas presence overlay, cursor position, peer identity, card interaction visibility, and canvas subscription.
+- One-shot production and E2E builds, including `npm run build:e2e`.
+- Per-vault E2E control ports and distinct vault identities.
 
----
+### Canvas V2 foundations — implemented
 
-## Worker 2 Checklist
+- P0 shadow intent diff and canonical serialization, WP1–WP6.
+- P1 schema V2, registers, tombstones, ingest validation, quarantine, and convergence tooling, WP8–WP23.
+- P2 sidecar lifecycle, GUID identity, epoch handling, explicit import, and exclusion, WP24–WP30.
+- P4 `Y.Text`, editing-aware deferral/blur merge, and UndoManager work, WP36–WP38.
+- P6 relay blob/checkpoint persistence, WP41–WP42.
+- Real-Obsidian rig infrastructure, WP43–WP49.
 
-- [x] Project overview and non-goals aligned with PLAN.md?
-- [x] USER_STORIES.md written with all stories expanded from PLAN.md (6 stories)?
-- [x] All stories have numbered, observable ACs and a definition of done?
-- [x] All components in scope defined with interfaces and US/WP references?
-- [x] Every WP in Section 9 has scope, out-of-scope, ACs, DoD, and US references?
-- [x] Every AC is observable and testable (no interpretation gaps)?
-- [x] Architecture decisions documented with rationale?
-- [x] Data models and flows complete?
-- [x] API surfaces fully specified?
-- [x] Quality gates and active W4 levels documented in Section 7 (smoke + integration + full E2E + fix-as-failing-test all TRUE)?
-- [x] Graph basis noted ("none — Graphify disabled")?
-- [x] GAP-1..GAP-7 folded into concrete testable ACs (WP1: GAP-4/6; WP3: GAP-1/2/3/7; WP4: GAP-3/5)?
-- [x] Open Question resolved client-side (no relay redeploy) as a §5 assumption, not escalated?
-- [x] BUILD_SPEC saved as `obsidian-live-share/workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md`?
-- [x] Both BUILD_SPEC and USER_STORIES.md paths returned to Dispatcher?
+WP7 is a mandatory end-to-end gate and is not treated as complete merely because the P0 implementation exists.
+
+### Reliability and data-loss repairs — implemented
+
+- Host/guest role application and manifest publication were repaired after the live data-loss chain.
+- Manifest cleanup now requires completeness evidence; an absent or partial manifest is not a delete instruction.
+- Pre-existing shared canvases are materialized to a joining guest; live verification changed the measured result from 0/3 to 3/3.
+- Raw shared-canvas content cannot bypass the Canvas V2 synchronization path.
+- Canvas writer attachment and mirror decisions were separated from subscription so a subscription does not destroy or overwrite an existing file.
+- Editing-aware view reconciliation protects a live inline editor from remote structural apply and blur-commit replacement.
+- Session link exhaustion no longer destroys room identity as the normal recovery action.
+- Canvas capture mute windows have bounded and observable release paths, including `MUTE OVERRUN:` counters.
+- Whole-file deletion capture now requires completeness plus surface-matched receipt authorization.
+- Failed or silent structural applies no longer wholesale-revoke the standing delete-license set.
+- Apply receipts distinguish value outcome from delivery by the current pass.
+- Protected-path admission covers `.obsidian/**` for all derived inbound file-operation arms. This is defence in depth under the owner's trusted-peer risk decision.
+- Seed-refusal durability follows document identity across rename and has an explicit idle/durability boundary.
+
+### Live-verified behaviours
+
+The following verdicts have direct live evidence and may be relied on at the stated boundary:
+
+- Canvas presence and card-touch visibility work when both peers are subscribed to the same canvas.
+- A pre-session canvas reaches the guest after WP79.
+- The original hostless/partial-manifest deletion chain is closed by the role and manifest-purge repairs.
+- WP37 closes the reported dropped-keystroke symptom at the live view-reconciliation seam.
+- WP91's capture path was live-verified, including a non-vacuous positive control.
+- Durable seed refusal survived the live restart scenario after WP90/WP92; S81 is closed.
+- WP94's delete arm passed live validation.
+- Ordinary inbound rename works when the declared `{oldPath, newPath}` operation shape is used.
+
+## 7. Incomplete planned features and gates
+
+The following are not presented as implemented or release-verified:
+
+| Area | Work packages | Current verdict |
+|---|---|---|
+| Room-mode consensus and receive-and-persist | WP31–WP35 | Open / not implemented as a complete phase |
+| Operation capture promoted to primary source | WP39–WP40, WP52–WP54 | Open / not implemented as a complete phase |
+| Real-host matrix and stale-view release gate | WP50, WP51, WP7 | Gate not completed |
+| Gate correctness chain | WP74, WP75, WP76, WP71 | Still required before WP7 can be accepted |
+| External-write premise cleanup and live drag row | WP89 | Partial: static premise/route work landed; live AC1/AC4 remain unmeasured |
+
+The release gate must exercise the real capture path. With `useCanvasBinding = false`, that path is a real `.canvas` file write observed by `vault.on("modify")` and handled by `handleLocalModify`. Direct mutation through `canvas.simulateEdit` changes the Yjs document and is not evidence that capture works.
+
+The matrix must prove all of the following before WP7 can pass:
+
+- Both real Obsidian instances are distinct and identify different vaults.
+- Both instances loaded the intended instrumented build.
+- Both instances subscribed to and opened the intended canvas through their own workspace.
+- Every gesture reports whether it was applied and which production path it exercised.
+- Quiescence is an observed result on both peers; a timeout is inconclusive, not convergence.
+- The local relay and rig-owned shared folder are provisioned safely and restored byte-exactly.
+- No scenario inherits records from a previous run; the suite is idempotent or creates unique isolated state.
+
+## 8. Open product and reliability risks
+
+Only demonstrated or statically closed findings are listed as facts. Historical signals that were falsified are excluded or explicitly marked withdrawn.
+
+### High impact
+
+- **S76 — canonical path identity collision:** the Windows canonicalizer can map a real fullwidth-character filename and a Windows-illegal ASCII spelling onto one identity, while another platform keeps them distinct. This is an open wire-format and primary-key risk.
+- **S92/S93 — refusal protection depends on reachable lifecycle/UI state:** record and restore paths were mutually exclusive in the measured shape, and protection of an existing file could depend on a host leaf/writer being attached. S81's specific durability verdict is closed, but these broader lifecycle risks remain open.
+
+### Reliability and liveness
+
+- **S71/S72:** renderer timers have shown approximately 60-second clamp gaps. Awareness and timer-based guarantees must not assume nominal scheduling. S72 remains an undiagnosed question because the existing inbound-message opportunity did not fire in the observed clamp window.
+- **S89:** at least one additional mute-release timer is passed as an injected callback and was missed by name-based census work. Timer/capability inventories must follow types or runtime flow, not grep a function name.
+- **S64:** a final hard-kill window may still lose the newest asynchronous local store write unless the owning lifecycle awaits its idle boundary.
+- **S40 residue:** the offline queue has no general retention/cap policy; session teardown is no longer accepted as its accidental bound.
+
+### Instrument and observability risks
+
+- **S65:** debug-log flush lag can exceed short bounded polling windows. Absence from a log is not evidence until the sink, setting, watermark, flush horizon, and positive control are established.
+- **S66:** a link-break command that auto-reconnects is not a valid negative control.
+- **S67:** the committed plugin bundle and installed bundle may differ unless installation pins and verifies the expected hash.
+- **S74/S85/S86/S87:** the legacy latency suite contains tests that can fail for unrelated scheduling, pass before their subject acts, enforce a second inconsistent bound, or test a helper used by no production subject. These rows must not support release claims until repaired or deprecated with a method-preserving replacement.
+- **S88/S99/S100:** derived checks must read a pinned commit, not a moving `HEAD` or sibling-edited working tree, and must attribute by structure rather than prose tokens.
+- **S97/S98:** source-text regex/comment stripping is not a parser and has produced false import/call inventories.
+
+### Bounded or owner-accepted risk
+
+- The owner explicitly accepts trusted collaborators and does not treat malicious-peer resistance as a release requirement. WP95's `.obsidian/**` protection remains implemented defence in depth.
+- An absent encryption passphrase currently means the session is not encrypted rather than throwing. Normal session creation generates the passphrase; reachability of an unintended empty value has not been demonstrated and remains unverified.
+- `readiness.RawAnswer.body` can render externally supplied bytes in diagnostics. It is not known to carry credentials in the current probe and is low severity.
+
+## 9. File-operation contract
+
+All inbound and outbound file operations must use the declared discriminated operation shape. A rename is `{type, oldPath, newPath}` and has no generic destination `path` field.
+
+Every inbound arm must apply these checks before any vault call:
+
+- Path normalization and containment.
+- Shared-surface membership.
+- Protected-path rejection for all of `.obsidian/**`.
+- Sidecar/local-state exclusion.
+- Permission and role rules.
+- Operation-specific source/destination checks.
+
+A refusal must be observable without exposing file contents or secrets. A caught exception must name the applicable endpoint(s); `unknown` is not acceptable where the operation type provides `oldPath` and `newPath`.
+
+## 10. Canvas capture and reconcile contract
+
+### Local capture
+
+1. Observe the local surface or file state.
+2. Parse with an explicit completeness result; parse failure must not become an empty canvas.
+3. Compare against the Surface Shadow to derive user intent.
+4. Validate and quarantine/refuse invalid records.
+5. Apply authorized creates, updates, and deletions in one Yjs transaction where atomicity is required.
+6. Advance the shadow only from a matching receipt.
+7. Persist through the single writer, respecting durable withholds and mute/echo boundaries.
+
+### Remote reconcile
+
+1. Build a field-level plan from document state and the current surface.
+2. Apply geometry without rebuilding unrelated live editor state.
+3. Defer structural apply for the record being edited and drain it on blur, view close, or teardown.
+4. Keep other records live where safe.
+5. Emit a receipt that separates outcome, delivery, and handover.
+6. Advance delete authorization only for records actually handed to the applicable surface.
+7. Write the canonical projection without feeding projection-only omissions back as user intent.
+
+### Delete criterion
+
+For a record `X`, deletion is allowed only when all required terms are true:
+
+`Delete(X) ⇔ Receipt(X, surface) ∧ Complete(save) ∧ Present(X) ∧ ¬Seen(X, save)`
+
+Absence selects among records already authorized by a surface receipt; absence does not create the authorization.
+
+## 11. Presence, awareness, and canvas interaction
+
+- Text and canvas presence are awareness state, not persisted document content.
+- Heartbeats send full local awareness state often enough to remain below the nominal stale-prune horizon, while correctness must also tolerate host timer clamps.
+- Reconnect uses one stable client identity and does not create ghost presence.
+- Canvas overlays are mounted independently of `useCanvasBinding`; the flag gates binding/follower behaviour, not cursor visibility.
+- Presence success requires both peers to subscribe to the same canvas. A visible cursor test that never established shared subscription is vacuous.
+- Real-time co-typing inside one canvas card is not promised as a server-enforced lock protocol. Current correctness comes from `Y.Text`, editing-aware deferral, blur merge, and explicit reconcile rules.
+
+## 12. Session and connection behaviour
+
+- CONTROL and MUX health are measured separately and combined into an explicit sharing/link state.
+- A stale historical latch must not report a disconnected client as connected.
+- Exhausting a retry chain must stop or seal new transmission, announce the state once, preserve valid room identity and credentials, and offer recovery.
+- A transient network outage must not call destructive room/session teardown as its automatic recovery path.
+- Host election/role assignment is authoritative from the server response and must be applied on join/rejoin.
+- Manifest publication and guest cleanup require a live, valid authority path and completeness evidence.
+
+## 13. Build, test, and release gates
+
+### Commands
+
+- Plugin typecheck/build: `cd plugin && npm run build`
+- Instrumented one-shot build: `cd plugin && npm run build:e2e`
+- Plugin tests: `cd plugin && npm test`
+- Plugin lint: `cd plugin && npm run lint`
+- Server build/tests: run the scripts declared by `server/package.json`
+- Signal register: `python workflowArtifacts/canvas-v2/check_signal_register.py`
+
+### Evidence requirements
+
+- Every acceptance criterion must name its observable and its vacuity risk.
+- For every criterion, plant the protected regression, show the relevant check red, restore byte-identically, and show it green.
+- A planted break that reddens nothing is a finding and must be explained.
+- Demonstrated and argued conclusions must be reported separately.
+- Every quoted figure must be re-run after the change it covers, on a tree bracketed by identical `git status` output.
+- A test result from a tree being edited by a sibling is void unless the subject is pinned to an explicit commit.
+- A measurement that lost its positive control is not a result.
+- Live suites that share the same two Obsidian instances must run serially.
+
+### Release blockers
+
+Release is blocked while any of these remain true:
+
+- WP7's real-host gate has not passed with the gate-correctness chain in Section 7.
+- A current build can translate incomplete manifest/read/refusal state into destructive deletion.
+- The installed bundle cannot be proven to be the intended build.
+- A test or E2E instrument used for the release verdict cannot demonstrate that it fails when its subject is broken.
+
+Owner-accepted malicious-peer risk is not a release blocker, but protected-path defence must not regress.
+
+## 14. Work-package disposition summary
+
+This is the current normative status summary. Detailed task charters and reports are supporting evidence, not competing specifications.
+
+| Group | Verdict |
+|---|---|
+| WP1–WP6 | Implemented Canvas V2 P0; WP7 live gate still owed |
+| WP8–WP23 | Implemented P1 data model and integrity foundation |
+| WP24–WP30 | Implemented P2 sidecar/GUID/epoch/import foundation |
+| WP31–WP35 | Open P3 |
+| WP36–WP38 | Implemented P4; principal editing-loss symptom live-verified closed |
+| WP39–WP40, WP52–WP54 | Open P5 |
+| WP41–WP42 | Implemented P6 source-level relay persistence |
+| WP43–WP49 | Implemented real-Obsidian rig infrastructure |
+| WP50, WP51, WP71, WP74–WP76, WP7 | Required gate chain not complete |
+| WP69, WP70, WP72, WP73, WP77–WP83, WP85–WP88 | Implemented supporting and reliability packages; WP84 withdrawn and never reused |
+| WP89 | Partial |
+| WP90–WP95 | Implemented; the broader residual signals in Section 8 remain open where stated |
+
+No work-package number, suite count, signal number, or status may be changed here from a task report alone. The verdict must be reproduced against the current code or backed by an already accepted Dispatcher verification with its qualification preserved.
+
+## 15. Non-goals
+
+- No Yjs replacement.
+- No Byzantine-peer or hostile-collaborator protocol.
+- No server-side understanding of canvas records.
+- No claim that awareness/presence is durable.
+- No claim that headless convergence proves live-editor intent preservation.
+- No deployment-stack change as part of Canvas V2 source work.
+- No silent amendment of inherited acceptance criteria to fit current code.
+- No deletion or rewriting of the historical working documents; they remain the audit trail for how this specification was reached.
+
+## 16. Maintenance rule
+
+Going forward, feature intent, current implementation status, accepted limitations, release blockers, and final verdicts are updated here first. Working papers may explore hypotheses and collect evidence, but they must link back to the relevant section here and must not introduce a competing current-state contract.
+
+When evidence changes a verdict:
+
+1. Reproduce or re-derive it against the current tree.
+2. Preserve whether it is headless, live, argued, partial, or withdrawn.
+3. Update this file and the supporting evidence record in the same change window.
+4. Do not erase the superseded working-paper record.
