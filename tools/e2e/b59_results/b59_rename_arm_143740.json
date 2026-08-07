@@ -1,0 +1,188 @@
+{
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "host": "B",
+  "guest": "A",
+  "pinned": [
+    "53aedf027eee2daf6c07669dc36976bbee14972b45f49eac6c3d4f8bb94c0bff",
+    "e7df354cb4cd6d546aad75fa9a964b671494034b"
+  ],
+  "sink_state": {
+    "A": {
+      "path": ".obsidian/live-share-debug.md",
+      "enabled": true,
+      "fileLevel": "debug",
+      "ringLevel": "debug",
+      "linesWritten": 59,
+      "linesPending": 0,
+      "linesDropped": 0,
+      "lastWritePath": ".obsidian/live-share-debug.md",
+      "lastWriteOk": true,
+      "failureCount": 0,
+      "lastError": null,
+      "failureAnnounced": false,
+      "locationAnnounced": true
+    },
+    "B": {
+      "path": ".obsidian/live-share-debug.md",
+      "enabled": true,
+      "fileLevel": "debug",
+      "ringLevel": "debug",
+      "linesWritten": 50,
+      "linesPending": 1,
+      "linesDropped": 0,
+      "lastWritePath": ".obsidian/live-share-debug.md",
+      "lastWriteOk": true,
+      "failureCount": 0,
+      "lastError": null,
+      "failureAnnounced": false,
+      "locationAnnounced": true
+    }
+  },
+  "sink_admits_all_four_branches": true,
+  "branch_history_before": {
+    "1-gate-drop": 0,
+    "2-neither-endpoint": 0,
+    "3/4-apply-threw": 0,
+    "legacy-error-channel": 2
+  },
+  "owner_before": {
+    "A:Properties.md": {
+      "exists": true,
+      "sha256": "5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff",
+      "size": 440
+    },
+    "A:Properties 1.md": {
+      "exists": false,
+      "sha256": null,
+      "size": null
+    },
+    "B:Properties.md": {
+      "exists": true,
+      "sha256": "5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff",
+      "size": 440
+    }
+  },
+  "rows": [
+    {
+      "row": "R1  MALFORMED {oldPath, path} \u2014 my original S105 shape",
+      "op_keys": [
+        "oldPath",
+        "path",
+        "type"
+      ],
+      "delivered": true,
+      "reason": null,
+      "mutedAfterDispatch": true,
+      "mutated": false,
+      "changed": [],
+      "endpoints_seen_by_rig": [
+        "_liveshare-test/b59r-143740-r1-dst.md",
+        "_liveshare-test/b59r-143740-r1-src.md"
+      ],
+      "samples": 3,
+      "disk_applied_on_host": false,
+      "after_s": 45.0,
+      "src_after": true,
+      "dst_after": false,
+      "dst_on_peer": false,
+      "branch_lines": {}
+    },
+    {
+      "row": "R2  DECLARED {oldPath, newPath} \u2014 THE CONTROL",
+      "op_keys": [
+        "newPath",
+        "oldPath",
+        "type"
+      ],
+      "delivered": true,
+      "reason": null,
+      "mutedAfterDispatch": true,
+      "mutated": true,
+      "changed": [
+        "_liveshare-test/b59r-143740-r2-src.md",
+        "_liveshare-test/b59r-143740-r2-dst.md"
+      ],
+      "endpoints_seen_by_rig": [
+        "_liveshare-test/b59r-143740-r2-src.md",
+        "_liveshare-test/b59r-143740-r2-dst.md"
+      ],
+      "samples": 3,
+      "disk_applied_on_host": true,
+      "after_s": 0.0,
+      "src_after": false,
+      "dst_after": true,
+      "dst_on_peer": true,
+      "branch_lines": {}
+    },
+    {
+      "row": "R3  DECLARED, source ABSENT \u2014 instrument proof, branch 2",
+      "op_keys": [
+        "newPath",
+        "oldPath",
+        "type"
+      ],
+      "delivered": true,
+      "reason": null,
+      "mutedAfterDispatch": true,
+      "mutated": false,
+      "changed": [],
+      "endpoints_seen_by_rig": [
+        "_liveshare-test/b59r-143740-r3-absent.md",
+        "_liveshare-test/b59r-143740-r3-dst.md"
+      ],
+      "samples": 4,
+      "disk_applied_on_host": false,
+      "after_s": 45.0,
+      "src_after": false,
+      "dst_after": false,
+      "dst_on_peer": false,
+      "branch_lines": {}
+    },
+    {
+      "row": "R4  DECLARED, both endpoints OUTSIDE the shared folder \u2014 branch 1",
+      "op_keys": [
+        "newPath",
+        "oldPath",
+        "type"
+      ],
+      "delivered": true,
+      "reason": null,
+      "mutedAfterDispatch": false,
+      "mutated": false,
+      "changed": [],
+      "endpoints_seen_by_rig": [
+        "b59r-143740-r4-outside-src.md",
+        "b59r-143740-r4-outside-dst.md"
+      ],
+      "samples": 4,
+      "disk_applied_on_host": false,
+      "after_s": 45.0,
+      "src_after": false,
+      "dst_after": false,
+      "dst_on_peer": false,
+      "branch_lines": {}
+    }
+  ],
+  "leftovers": [],
+  "owner_after": {
+    "A:Properties.md": {
+      "exists": true,
+      "sha256": "5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff",
+      "size": 440
+    },
+    "A:Properties 1.md": {
+      "exists": false,
+      "sha256": null,
+      "size": null
+    },
+    "B:Properties.md": {
+      "exists": true,
+      "sha256": "5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff",
+      "size": 440
+    }
+  },
+  "owner_disturbed": []
+}

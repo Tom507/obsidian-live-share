@@ -1,0 +1,100 @@
+==============================================================================
+B59 / W4 — RENAME ARM — which of the four branches fires?   run 143740   2026-08-07 14:37:40
+==============================================================================
+  PINNED bundle 53aedf027eee2daf6c07669dc36976bbee14972b45f49eac6c3d4f8bb94c0bff
+  PINNED commit e7df354cb4cd6d546aad75fa9a964b671494034b
+  bundle A: sha256=53aedf027eee2daf6c07669dc36976bbee14972b45f49eac6c3d4f8bb94c0bff  size=4904632
+  bundle B: sha256=53aedf027eee2daf6c07669dc36976bbee14972b45f49eac6c3d4f8bb94c0bff  size=4904632
+  MARKER CENSUS — commands that exist only in the bundle under test:
+    A fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 1, "overruns": 1, "worstOverrunMs": 6, "overrunsByClass": {"canvas": 1}, "pending":
+    A fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+    B fileop.muteStats: ROUTED {"ok": true, "result": {"releasedByEvent": 0, "releasedByCeiling": 1, "overruns": 1, "worstOverrunMs": 3, "overrunsByClass": {"canvas": 1}, "pending":
+    B fileop.protectedRefusals: ROUTED {"ok": true, "result": {"total": 0, "byArm": {}, "byRoot": {}}}
+  sharedFolder A = '_liveshare-test'
+  sharedFolder B = '_liveshare-test'
+  A: role=guest connected=True vaultId=703aa794cc73a117 build=0.6.1+e2e
+  B: role=host connected=True vaultId=55a4253eb7a90dde build=0.6.1+e2e
+  LIVE ROLE ASSIGNMENT: A=guest, B=host
+  S57 gate: both ports ROUTED all 4 commands
+  HOST = B   GUEST = A   (asked, not assumed)
+  S71 — host wake-up clamp, measured now:
+    A: newest on-disk log stamp is 1.0s behind wall clock
+    B: newest on-disk log stamp is 3.0s behind wall clock
+
+  ---- S110: the file sink, ASKED (not assumed) before any log is read ----
+    A: enabled=True fileLevel=debug ringLevel=debug linesWritten=59 lastWriteOk=True failures=0 dropped=0
+    B: enabled=True fileLevel=debug ringLevel=debug linesWritten=50 lastWriteOk=True failures=0 dropped=0
+
+  ---- rule 15: the four branch signatures and their history ----
+    1-gate-drop            'rename dropped: no endpoint is a shared path'       history_hits=0
+    2-neither-endpoint     'RENAME NOT APPLIED:'                                history_hits=0
+    3/4-apply-threw        'APPLY FAILED:'                                      history_hits=0
+    legacy-error-channel   'failed to apply remote file-op'                     history_hits=2
+    (all four are expected to be ZERO: they were merged today, and two of
+     them could not have been written before S104 landed in the same batch.
+     Rows R3 and R4 exist to make them fire before any silence is read.)
+
+  ---- the owner's files, sha256'd BEFORE anything is touched ----
+    A:Properties.md: exists=True size=440 sha256=5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff
+    A:Properties 1.md: exists=False size=None sha256=None
+    B:Properties.md: exists=True size=440 sha256=5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff
+
+  ---- R1  MALFORMED {oldPath, path} — my original S105 shape ----
+    op keys: ['oldPath', 'path', 'type']   (`path` is NOT a field of FileRenameOp)
+    precondition: src exists=True dst exists=False
+      !! WAIT TIMED OUT after 45.0s waiting for: R1  MALFORMED {oldPath, path} — my original S105 shape: the DESTINATION exists and the SOURCE is gone, on the host
+    delivered=True  mutedAfterDispatch=True  mutated=False
+    rig saw endpoints: ['_liveshare-test/b59r-143740-r1-dst.md', '_liveshare-test/b59r-143740-r1-src.md']
+    DISK: applied=False after=45.0s  src_after=True dst_after=False dst_on_peer=False
+    BRANCH FIRED: none announced
+
+  ---- R2  DECLARED {oldPath, newPath} — THE CONTROL ----
+    op keys: ['newPath', 'oldPath', 'type']   (exactly the fields FileRenameOp declares)
+    precondition: src exists=True dst exists=False
+    delivered=True  mutedAfterDispatch=True  mutated=True
+    rig saw endpoints: ['_liveshare-test/b59r-143740-r2-src.md', '_liveshare-test/b59r-143740-r2-dst.md']
+    DISK: applied=True after=0.0s  src_after=False dst_after=True dst_on_peer=True
+    BRANCH FIRED: none announced
+
+  ---- R3  DECLARED, source ABSENT — instrument proof, branch 2 ----
+    op keys: ['newPath', 'oldPath', 'type']   (neither endpoint resolves; expect RENAME NOT APPLIED)
+    precondition: src exists=False dst exists=False
+      !! WAIT TIMED OUT after 45.0s waiting for: R3  DECLARED, source ABSENT — instrument proof, branch 2: the DESTINATION exists and the SOURCE is gone, on the host
+    delivered=True  mutedAfterDispatch=True  mutated=False
+    rig saw endpoints: ['_liveshare-test/b59r-143740-r3-absent.md', '_liveshare-test/b59r-143740-r3-dst.md']
+    DISK: applied=False after=45.0s  src_after=False dst_after=False dst_on_peer=False
+    BRANCH FIRED: none announced
+
+  ---- R4  DECLARED, both endpoints OUTSIDE the shared folder — branch 1 ----
+    op keys: ['newPath', 'oldPath', 'type']   (vault root, not _liveshare-test; expect the gate drop)
+    precondition: src exists=False dst exists=False
+      !! WAIT TIMED OUT after 45.0s waiting for: R4  DECLARED, both endpoints OUTSIDE the shared folder — branch 1: the DESTINATION exists and the SOURCE is gone, on the host
+    delivered=True  mutedAfterDispatch=False  mutated=False
+    rig saw endpoints: ['b59r-143740-r4-outside-src.md', 'b59r-143740-r4-outside-dst.md']
+    DISK: applied=False after=45.0s  src_after=False dst_after=False dst_on_peer=False
+    BRANCH FIRED: none announced
+
+==============================================================================
+  THE READING
+==============================================================================
+    row     applied   mutedAfterDispatch    branch announced
+    R1  MA  False     True                  none
+    R2  DE  True      True                  none
+    R3  DE  False     True                  none
+    R4  DE  False     False                 none
+
+    R2 APPLIED and R1 DID NOT. The one difference between them is the
+    KEY the destination was carried in. S105 as I reported it is a
+    defect in MY INJECTED OP, not in the product's inbound rename.
+
+  ---- teardown (this arm's fixtures only; every name starts b59r-) ----
+    removed A:_liveshare-test/b59r-143740-r1-src.md
+    removed B:_liveshare-test/b59r-143740-r1-src.md
+    removed A:_liveshare-test/b59r-143740-r2-dst.md
+    removed B:_liveshare-test/b59r-143740-r2-dst.md
+
+  ---- the owner's files, sha256'd AFTER ----
+    A:Properties 1.md: unchanged=True exists=False sha256=None
+    A:Properties.md: unchanged=True exists=True sha256=5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff
+    B:Properties.md: unchanged=True exists=True sha256=5ffd6e67fa95070575c6bf95608be85e4ccb9e56adfc512ff6d417790f1086ff
+    every owner file is byte-identical to before this arm ran
