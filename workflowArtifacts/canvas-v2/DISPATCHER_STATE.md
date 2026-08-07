@@ -3164,3 +3164,68 @@ in one list is how a run talks itself into changing tests to make them pass. Re-
 **six** failing files; the two extra were `@codemirror` module-resolution from a **transient `node_modules`
 teardown** it correctly refused to repair mid-flight. `node_modules` is intact (281 packages, 69 binaries).
 **Its diagnosis is confirmed independently: the 11 are one root cause and the ruling above is the fix.**
+
+---
+
+## ✅ WP92 LANDED (`65bb358` · `71fbd2b` · `940edaa` / `d91f734`) — the rename orphan is closed, and the batch caught itself
+
+**Verified by me:** WP92's own **40 tests across 6 files pass**, and the arithmetic closes exactly against my
+`fec039d` baseline (2717 + 40 = 2757, 378 + 6 = 384) — which is B57's isolated figure. **The shared tree is
+red on WP95's ruling, not on WP92**, and B57 established that as a *measurement* rather than a reading: 17
+reds across 9 files, **6 cleared when the sibling committed (they were S88)** and 11 did not, none naming a
+WP92 symbol, all nine files green at `71fbd2b`.
+
+### The key choice, and a charter premise corrected by measurement
+
+**AC1 keys by the canvas GUID.** Rejected: canonical path (dies at the first rename — the defect), and
+guid+path (a second vocabulary in the one file this package exists to give a single one). The charter costed
+the guid as *"async, may answer null"*; **B57 measured that it is neither** — `getCanvasGuid` is cached and
+synchronous, and `attachCanvasWriter`'s own precondition guarantees it resolved. **No new await, no new null
+branch.** A stated cost that did not survive contact.
+
+### 🏅 B7 reddened NOTHING, and that is the batch's best moment
+
+**A `catch` behind another `catch` is unfalsifiable by construction** — WP90's `save()` already swallows
+every rejection, so a rejecting `io.write` can never reach `idle()`'s handler. **Defence-in-depth that no
+test could ever redden, in a module audited twice.** B57 reported it instead of dropping the test, then drove
+the rejection at the seam the function actually consumes; B7 is now red, and two further tests were added the
+same way. → `S101`. **This is exactly what the plant-the-regression rule is for, and it only works because a
+break that reddens nothing is treated as a finding rather than a nuisance.**
+
+### 🚨 S100 — `HEAD` is not a stable reference to your own work
+
+A sibling committed mid-batch, so B57's AC6 attribution check **went blind and PASSED FOR THE WRONG REASON**
+— caught only by its own positive control. **I fixed this same defect by hand in WP77's T6** (an unbounded
+git-diff endpoint) and never wrote the class down. **It has now appeared twice.** A derived check must pin an
+explicit commit, never a moving ref. `S88` is the same mistake one level down (reading the working tree
+instead of a commit).
+
+### ⚠ S102 — the batch broke the shared `node_modules`, and said so unprompted
+
+**Junctioning `plugin/node_modules` into a detached worktree turns `git worktree remove --force` into
+`rm -rf` on the real dependency tree.** It emptied `.bin` and broke every `vitest`/`tsc` run for ~4 minutes —
+**including B58's final gate measurement**, which is why B58 reported two module-resolution failures that
+were not test failures. **The charter recommended the junction as its own instrument.**
+
+Repaired with `npm ci`; `package.json` / `package-lock.json` **byte-untouched**, no version drift, nothing
+lost. **PowerShell's `Remove-Item` throws on a junction and leaves it in place — `cmd /c rmdir` is correct.**
+Captured in `Coding/memory/worktree_junction_destroys_node_modules.md`.
+
+**This cost four minutes because the batch that caused it reported it.** Silent, it would have been
+misattributed to whichever package happened to be building — and B58 nearly was.
+
+### Disposition of the rest
+
+**S64 — NARROWED, not closed**, and the boundary is stated exactly: the in-process window is shut
+(`onunload` is `async` and awaits a bounded, non-rejecting flush), the **hard-kill window is irreducible from
+inside the process** and needs a write-ahead journal, which is a new artefact. **S76 — not more reachable**:
+inherited unchanged from the identity layer, neither widened nor narrowed, and now pinned by a test.
+`S103` — `SEED_REFUSAL_STORE_VERSION` is written and still never compared; B57 declined to add the gate
+unasked, which is the right call, and it is recorded so it is not lost.
+
+**B57 also identified the WP95 fixture collision independently**, from the other side, and correctly
+classified it as semantic rather than `S88`. Two batches reaching the same conclusion from opposite
+directions is the strongest evidence the ruling had.
+
+**No live vault work · no `data.json` touched · no existing test deleted, weakened, retitled, skipped or
+amended · every commit staged by explicit path.**
