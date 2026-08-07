@@ -17,6 +17,7 @@ import {
   toLocalPath,
 } from "../utils";
 import { isSidecarPath } from "./canvas-sidecar";
+import { yTextHeldContent } from "./ytext-history";
 import {
   EMPTY_WRITE_DECISION,
   decideEmptyWrite,
@@ -549,17 +550,29 @@ export class BackgroundSync {
         // So a single empty document propagated as a CRDT delete-all and every
         // peer flushed `""` over its own copy within half a second.
         //
-        // The evidence here is not a hash (there is no manifest entry on this
-        // path) but session history: has this document ever held content on this
-        // peer? If it has, an empty state is a deletion somebody performed and
-        // must be honoured — that is the select-all-and-delete a user means. If
-        // it never has, the emptiness is an absence, and an absence must not
-        // overwrite bytes.
+        // S126 — THE EVIDENCE, CORRECTED. This shipped as
+        // `this.observedNonEmpty.has(path)`: "has THIS PEER seen this document
+        // hold content in this session". That is a fact about local
+        // observation, and it refused a LEGITIMATE select-all-and-delete on
+        // every peer that happened to have the note closed — the deletion never
+        // arrived, and the peer kept its stale bytes indefinitely.
+        //
+        // "Did somebody delete this content" is a property of the DOCUMENT, and
+        // CRDTs replicate it. A `Y.Text` that held characters and had them
+        // removed carries TOMBSTONES; one that never held anything does not.
+        // Every peer has them, opened or not, and they survive gc, v2 encoding
+        // and repeated compaction (measured — see `ytext-history.ts`).
+        //
+        // The session-local set is KEPT as a second, weaker witness rather than
+        // deleted: it is true in strictly fewer cases than the tombstone probe,
+        // so OR-ing it cannot admit a write the probe would refuse, and it
+        // still answers if a future Yjs makes the probe unavailable.
+        const docText = this.syncManager.getDoc(path)?.text ?? null;
         const verdict = decideEmptyWrite({
           incoming: content,
           existing,
-          intentional: this.observedNonEmpty.has(path),
-          evidenceLabel: "whether this document has held content in this session",
+          intentional: yTextHeldContent(docText) || this.observedNonEmpty.has(path),
+          evidenceLabel: "whether this document ever held content (CRDT tombstones)",
         });
         if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {
           noteEmptyWriteRefusal("doc-write");
