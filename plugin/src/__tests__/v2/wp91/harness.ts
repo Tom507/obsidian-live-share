@@ -237,6 +237,13 @@ export async function createRig(opts: RigOpts = {}): Promise<Rig> {
     // other consumers (create/delete/rename, the text arm) still ask it.
     fileOpsManager: {
       isPathMuted: (p: string) => fileOps.isPathMuted(p),
+      // S120 — the kind-aware gate, delegated to the SAME real manager, so the
+      // "real refcount answers the router's mute question" property above is
+      // preserved rather than replaced by a stub with its own opinion.
+      isPathMutedFor: (p: string, kind: Parameters<typeof fileOps.isPathMutedFor>[1]) =>
+        fileOps.isPathMutedFor(p, kind),
+      noteMuteDrop: (kind: Parameters<typeof fileOps.noteMuteDrop>[0]) =>
+        fileOps.noteMuteDrop(kind),
       onFileModify: vi.fn(),
       onFileCreate,
       onFileDelete,

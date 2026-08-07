@@ -26,6 +26,9 @@ YTEXT = PLUGIN / "src" / "files" / "ytext-history.ts"
 SYNC = PLUGIN / "src" / "sync" / "sync.ts"
 COLLAB = PLUGIN / "src" / "editor" / "collab.ts"
 COLLABDEC = PLUGIN / "src" / "editor" / "collab-bind-decision.ts"
+FILEOPS = PLUGIN / "src" / "files" / "file-ops.ts"
+VEVENTS = PLUGIN / "src" / "files" / "vault-events.ts"
+CTRL = PLUGIN / "src" / "sync" / "control-handlers.ts"
 
 TESTS = [
     "src/__tests__/v2/ux01/test_s115_stale_reconcile_is_scoped_by_the_host.test.ts",
@@ -39,6 +42,8 @@ TESTS = [
     "src/__tests__/dataloss/test_s126_a_real_delete_reaches_a_closed_note.test.ts",
     "src/__tests__/v2/wp103/test_s128_waitforsync_says_why.test.ts",
     "src/__tests__/dataloss/test_s129_opening_a_note_cannot_empty_it.test.ts",
+    "src/__tests__/v2/wp108/test_s120_mute_does_not_swallow_intent.test.ts",
+    "src/__tests__/v2/wp108/test_s124_peers_do_not_follow_a_file_out.test.ts",
 ]
 
 # (id, acceptance criterion, description, [(file, old, new), ...])
@@ -402,6 +407,82 @@ BREAKS = [
           "  refusedPaths.add(path);",
           "  void path;")],
     ),
+    # ---- S120 / WP108 : the mute stops swallowing user intent ----
+    (
+        "B43",
+        "S120 AC1",
+        "the mute predicate goes type-blind again (THE DEFECT)",
+        [(FILEOPS,
+          "    return live.some((entry) => entry.consumes.has(kind));",
+          "    return true;")],
+    ),
+    (
+        "B44",
+        "S120 AC1 (the fail-closed half)",
+        # RELABELLED by W3b. The predecessor called this "the mute stops
+        # suppressing the echo it was armed for", which is not what the edit
+        # does: it flips the branch taken when NO entry is armed. The row is a
+        # good one — that branch is the conservative default the three
+        # un-armed release sites depend on — but the old label named a
+        # different property from the one it reddens.
+        "the fail-closed default goes permissive: a mute with no armed entry stops suppressing",
+        [(FILEOPS,
+          "    if (live.length === 0) return true;",
+          "    if (live.length === 0) return false;")],
+    ),
+    (
+        "B45",
+        "S120 AC2",
+        "drops stop being counted, so a lost gesture is silent again",
+        [(FILEOPS,
+          "    this.muteDrops.total += 1;",
+          "    this.muteDrops.total += 0;")],
+    ),
+    (
+        "B46",
+        "S120 AC4",
+        "one gate reverts to the type-blind predicate",
+        [(VEVENTS,
+          'if (plugin.fileOpsManager.isPathMutedFor(originalPath, "create")) {',
+          "if (plugin.fileOpsManager.isPathMuted(originalPath)) {")],
+    ),
+    # ---- S124 / WP108 : peers do not follow a file out of the share ----
+    (
+        "B47",
+        "S124 AC5 (worst blast radius)",
+        "the host accepts a rename whose destination leaves the shared tree",
+        [(CTRL,
+          "        !plugin.manifestManager.isSharedPath(renameDestination)",
+          "        false")],
+    ),
+    (
+        "B48",
+        "S124 AC5",
+        "the destination reader returns null, so nothing is ever checked",
+        [(CTRL,
+          "    op?.type === \"rename\" && typeof op.newPath === \"string\" ? op.newPath : null;",
+          "    null;")],
+    ),
+    (
+        "B49",
+        "S124 (the reversal)",
+        "the inbound-only predicate is borrowed sideways onto the OUTBOUND gate again",
+        # W3b REPLACED the predecessor's B49. Its version broke a guard that
+        # this run REMOVED: `isProtectedPath` is documented "INBOUND PEER
+        # OPERATIONS ONLY", and putting it on `onFileRename` reddened three
+        # WP68 AC4 near-miss rows. The break now plants the REGRESSION rather
+        # than removing the fix — the pin is an ABSENCE, so the way to redden
+        # it is to put the thing back.
+        [(FILEOPS,
+          "    const prev = this.sendQueues.get(localOld) ?? Promise.resolve();",
+          "    for (const candidate of [localOld, localNew, wireOld, wireNew]) {\n"
+          "      if (isProtectedPath(candidate)) {\n"
+          '        noteProtectedRefusal("file-op-gate", candidate);\n'
+          "        return;\n"
+          "      }\n"
+          "    }\n"
+          "    const prev = this.sendQueues.get(localOld) ?? Promise.resolve();")],
+    ),
 ]
 
 
@@ -417,9 +498,24 @@ def run_tests():
     )
     out = (proc.stdout or "") + (proc.stderr or "")
     clean = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    # ⚠ ANCHORED AT LINE START, and it was not — a W3b finding, found the only
+    # way findings like this are found: it reported a GREEN run as red.
+    #
+    # The old pattern was `[x×]\s+(.+?)…$` with no anchor, so ANY line containing
+    # a literal `x` followed by a space was harvested as a failing test name. A
+    # test titled "…the fix is on the RECEIVER" made the baseline abort with
+    # `['is on the RECEIVER']` against a suite that was 165/165 passing.
+    #
+    # This fails SAFE (a false red aborts the run) rather than silently, so no
+    # earlier row in this table can have been a false green from it. But a break
+    # table whose oracle fires on prose is not an oracle, and every row it prints
+    # is only as trustworthy as this regex.
+    #
+    # vitest's verbose reporter puts the marker FIRST on the line, after indent
+    # only. `^\s*` says exactly that and nothing else changes.
     failed = sorted({
         m.group(1).strip()
-        for m in re.finditer(r"[x×]\s+(.+?)(?:\s+\d+ms)?$", clean, re.M)
+        for m in re.finditer(r"^\s*[x×]\s+(.+?)(?:\s+\d+ms)?$", clean, re.M)
     })
     m = re.search(r"Tests\s+(?:(\d+) failed \| )?(\d+) passed", clean)
     summary = clean_summary(clean)
@@ -440,8 +536,27 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT, MIRROR, YTEXT, SYNC, COLLAB, COLLABDEC}
+    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT, MIRROR, YTEXT, SYNC, COLLAB, COLLABDEC,
+               FILEOPS, VEVENTS, CTRL}
     baseline_sha = {p: sha256(p) for p in targets}
+
+    # OPTIONAL FILTER, added by W3b: `python s115_break_table.py B43 B44 ...`
+    # runs only those rows. The table is CUMULATIVE across work packages and a
+    # full sweep is ~50 vitest runs, so a WP that adds seven rows re-proves those
+    # seven rather than restarting. WITHOUT AN ARGUMENT NOTHING CHANGES: the
+    # default is still every row, so a filtered run can never be mistaken for a
+    # full one — the header below prints which it was.
+    wanted = {a.upper() for a in sys.argv[1:]}
+    selected = [b for b in BREAKS if not wanted or b[0].upper() in wanted]
+    if wanted:
+        missing = wanted - {b[0].upper() for b in BREAKS}
+        if missing:
+            print(f"  !! unknown break ids: {sorted(missing)}")
+            return 2
+        print(f"=== FILTERED RUN: {len(selected)} of {len(BREAKS)} rows "
+              f"({', '.join(b[0] for b in selected)}) ===")
+    else:
+        print(f"=== FULL RUN: all {len(BREAKS)} rows ===")
 
     print("=== BASELINE (no break) ===")
     failed, summary = run_tests()
@@ -451,7 +566,7 @@ def main():
         return 1
 
     rows = []
-    for bid, ac, desc, edits in BREAKS:
+    for bid, ac, desc, edits in selected:
         for p in targets:
             shutil.copyfile(p, p.with_suffix(p.suffix + ".pre-v2-smoke"))
         applied = True

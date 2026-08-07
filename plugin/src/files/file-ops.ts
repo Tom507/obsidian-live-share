@@ -209,6 +209,10 @@ export class FileOpsManager {
   private logger: { warn(category: string, message: string): void } | null = null;
   /** Armed releases, per normalised path, oldest first. One per taken mute. */
   private pendingReleases = new Map<string, PendingMuteRelease[]>();
+  /** S120 AC2 — user gestures the mute refused. Never silent again. */
+  private muteDrops = { total: 0, byKind: new Map<string, number>() };
+  /** S124 — remote renames refused because their destination left the shared tree. */
+  private refusedEscapingRenames = 0;
   /** Outbound reads currently between their entry check and their re-check. */
   private outboundReads = new Set<OutboundRead>();
   private muteStats = {
@@ -398,6 +402,73 @@ export class FileOpsManager {
 
   isPathMuted(path: string): boolean {
     return (this.mutedPaths.get(normalizePath(path)) ?? 0) > 0;
+  }
+
+  /**
+   * S120 — IS THIS PATH MUTED *FOR THIS KIND OF EVENT*?
+   *
+   * The mute exists to break ECHOES: a write we made coming back as a vault
+   * event. It was also swallowing GENUINE USER INTENT that merely arrived in
+   * the same window — a rename, move or delete issued within ~1 s of that file
+   * arriving from a peer was dropped permanently, with no retry, no queue and
+   * no notice. Measured live: three clients holding three different filenames
+   * five minutes later, with no self-healing.
+   *
+   * {@link isPathMuted} cannot tell the two apart because it is a bare
+   * refcount — it knows a mute is held and nothing about what for.
+   *
+   * THE DISCRIMINATOR WAS ALREADY HERE. Every armed release carries `consumes`,
+   * the exact set of vault-event kinds the applied op can legitimately produce
+   * ({@link consumingEventsFor}), and {@link noteVaultEvent} already matches on
+   * it. So a remote `create` arms `["create","modify"]` — and a `rename`
+   * arriving in that window CANNOT be its echo, because applying a create never
+   * emits a rename. The ledger held the answer and the gate never asked it.
+   *
+   * This is the same move `handleLocalModify` already makes for the canvas
+   * branch, where the byte compare is "exact, has no window, and is strictly
+   * stronger than either timer". Here the exact fact is the event KIND rather
+   * than the bytes, and it costs nothing because it is already recorded.
+   *
+   * FAIL-CLOSED WHERE THE KIND IS UNKNOWN. Three release sites still take a
+   * refcount without arming an entry (`background-sync`, `canvas-sync`,
+   * `manifest` all use a bare `setTimeout`). For those there is no `consumes`
+   * to consult, so this answers exactly as {@link isPathMuted} did — suppressing
+   * everything, which is the behaviour that was already shipping.
+   */
+  isPathMutedFor(path: string, kind: MuteConsumingEvent): boolean {
+    if (!this.isPathMuted(path)) return false;
+    const queue = this.pendingReleases.get(normalizePath(path));
+    const live = queue?.filter((entry) => !entry.done) ?? [];
+    // No armed entry: the mute was taken without declaring what it expects, so
+    // nothing can be ruled out. Conservative, and identical to the old answer.
+    if (live.length === 0) return true;
+    // Suppress only the kinds some live entry is actually waiting for.
+    return live.some((entry) => entry.consumes.has(kind));
+  }
+
+  /**
+   * S120 AC2 — a refused user gesture must never be silent. Counts drops by
+   * event kind; the path is deliberately not recorded, matching every sibling
+   * ledger in this file.
+   */
+  noteMuteDrop(kind: MuteConsumingEvent): void {
+    this.muteDrops.total += 1;
+    this.muteDrops.byKind.set(kind, (this.muteDrops.byKind.get(kind) ?? 0) + 1);
+  }
+
+  /** S124 — record one refused escaping rename. */
+  noteEscapingRenameRefusal(): void {
+    this.refusedEscapingRenames += 1;
+  }
+
+  /** S124 — READ-ONLY. Renames refused for leaving the shared tree. */
+  getEscapingRenameRefusals(): number {
+    return this.refusedEscapingRenames;
+  }
+
+  /** S120 AC2 — READ-ONLY. What the mute has swallowed, for a live validator. */
+  getMuteDrops(): { total: number; byKind: Record<string, number> } {
+    return { total: this.muteDrops.total, byKind: Object.fromEntries(this.muteDrops.byKind) };
   }
 
   /**
@@ -1083,6 +1154,26 @@ export class FileOpsManager {
       this.refusedSidecarRenames += 1;
       return;
     }
+    // S124 — THE OUTBOUND/INBOUND ASYMMETRY IS DELIBERATE, AND IT WAS MEASURED.
+    //
+    // An in-flight attempt at S124 added an `isProtectedPath` loop over all four
+    // endpoints here, on the argument that "the outbound direction is strictly
+    // weaker than the inbound one for no stated reason". The reason IS stated,
+    // one module over: `protected-paths.ts` says of the predicate, in its own
+    // doc comment, "This governs INBOUND PEER OPERATIONS ONLY." It answers the
+    // question "may a PEER's bytes land here", and the answer is enforced where
+    // peer bytes arrive — `applyRemoteOpInner` (WP95) and the channel gate.
+    //
+    // Adding it here reddened three WP68 AC4 rows, and those rows are not
+    // stale: `.obsidian/liveshare/stateful/…` is the deliberate NEAR MISS, an
+    // ORDINARY path that merely shares a prefix with the sidecar directory, and
+    // WP68 AC4 exists precisely to catch a guard that refuses too much. A local
+    // rename of a local file is not a peer operation, and the receiving side
+    // already refuses anything protected — so the guard bought nothing and cost
+    // a pinned behaviour.
+    //
+    // If the outbound direction is ever to be narrowed, it needs its own
+    // predicate with its own stated question, not this one borrowed sideways.
     const prev = this.sendQueues.get(localOld) ?? Promise.resolve();
     const task = prev.then(() => {
       this.emitOp({

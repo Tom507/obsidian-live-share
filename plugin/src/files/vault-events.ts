@@ -169,8 +169,12 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
     plugin.app.vault.on("create", (file: TAbstractFile) => {
       const originalPath = file.path;
       if (!plugin.manifestManager.isSharedPath(originalPath)) return;
-      if (plugin.fileOpsManager.isPathMuted(originalPath)) {
+      if (plugin.fileOpsManager.isPathMutedFor(originalPath, "create")) {
+        // S120 — kind-aware. A mute armed for an op that cannot emit a `create`
+        // no longer swallows one.
         noteMuteConsumed(plugin, originalPath, "create");
+        plugin.fileOpsManager.noteMuteDrop("create");
+        plugin.logger.warn("file-op", `MUTE DROP: create suppressed as an echo`);
         return;
       }
       if (renamedPaths.has(originalPath)) return;
@@ -205,8 +209,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
     plugin.app.vault.on("delete", (file: TAbstractFile) => {
       const run = () => {
         if (!plugin.manifestManager.isSharedPath(file.path)) return;
-        if (plugin.fileOpsManager.isPathMuted(file.path)) {
+        if (plugin.fileOpsManager.isPathMutedFor(file.path, "delete")) {
           noteMuteConsumed(plugin, file.path, "delete");
+          plugin.fileOpsManager.noteMuteDrop("delete");
+          plugin.logger.warn("file-op", `MUTE DROP: delete suppressed as an echo`);
           return;
         }
         plugin.fileOpsManager.onFileDelete(file);
@@ -231,13 +237,17 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
       )
         return;
       if (
-        plugin.fileOpsManager.isPathMuted(file.path) ||
-        plugin.fileOpsManager.isPathMuted(oldPath)
+        plugin.fileOpsManager.isPathMutedFor(file.path, "rename") ||
+        plugin.fileOpsManager.isPathMutedFor(oldPath, "rename")
       ) {
         // Both endpoints: `applyRemoteOpInner` mutes oldPath AND newPath for a
         // rename, so one event consumes two armed releases.
         noteMuteConsumed(plugin, file.path, "rename");
         noteMuteConsumed(plugin, oldPath, "rename");
+        // S120 AC2 — the gesture that went missing in the live run. Counted and
+        // logged, so a permanent divergence can never again be invisible.
+        plugin.fileOpsManager.noteMuteDrop("rename");
+        plugin.logger.warn("file-op", `MUTE DROP: rename suppressed as an echo`);
         return;
       }
 
@@ -322,8 +332,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
           }
           return;
         }
-        if (plugin.fileOpsManager.isPathMuted(file.path)) {
+        if (plugin.fileOpsManager.isPathMutedFor(file.path, "modify")) {
           noteMuteConsumed(plugin, file.path, "modify");
+          plugin.fileOpsManager.noteMuteDrop("modify");
+          plugin.logger.warn("file-op", `MUTE DROP: modify suppressed as an echo`);
           return;
         }
         // Not canvas-owned: the text path runs exactly as before. For a `.canvas`
@@ -335,8 +347,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
         void plugin.backgroundSync.handleLocalTextModify(file.path);
         return;
       }
-      if (plugin.fileOpsManager.isPathMuted(file.path)) {
+      if (plugin.fileOpsManager.isPathMutedFor(file.path, "modify")) {
         noteMuteConsumed(plugin, file.path, "modify");
+        plugin.fileOpsManager.noteMuteDrop("modify");
+        plugin.logger.warn("file-op", `MUTE DROP: modify suppressed as an echo`);
         return;
       }
       void plugin.fileOpsManager.onFileModify(file);

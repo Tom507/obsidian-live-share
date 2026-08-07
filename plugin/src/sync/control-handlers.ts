@@ -43,6 +43,13 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     }
   });
 
+  /**
+   * S124 — the destination of a rename op, or `null` for anything else. Reads
+   * the field the wire actually carries rather than positional guesswork.
+   */
+  const renameDestinationOf = (op: { type?: string; newPath?: unknown }): string | null =>
+    op?.type === "rename" && typeof op.newPath === "string" ? op.newPath : null;
+
   channel.on("file-op", (msg) => {
     const op = msg.op;
     const paths = [
@@ -121,6 +128,41 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
         plugin.logger.warn(
           "file-op",
           `refused remote rename touching the sidecar directory (${paths.length} paths)`,
+        );
+        return;
+      }
+      // S124 — THE DESTINATION MUST BE INSIDE THE SHARED TREE.
+      //
+      // Live: dragging a file OUT of the shared folder made every peer FOLLOW
+      // the move and write the file outside `sharedFolder`, into a directory
+      // the session does not govern — `_w4wp97-outside/` was created in two
+      // vaults BY THE PLUGIN, not by the operator.
+      //
+      // The rename branch is the only one of the nine op types admitted on
+      // `.some(isSharedPath)`, and WP95's own comment names that asymmetry as
+      // the vector it had just fixed one gate over. Its destination was never
+      // tested, so a rename straddling the boundary rode in on its shared
+      // SOURCE and `applyRemoteOpInner` then called `ensureFolder` for the
+      // out-of-tree parent and moved the file there.
+      //
+      // WHAT THIS PEER DOES INSTEAD, stated because AC7 requires it: NOTHING.
+      // It does not follow the move and it does not delete its copy — the file
+      // stays exactly where it is, byte for byte. That is deliberately NOT
+      // "the file left the shared tree, so drop it", which this codebase
+      // already names the refuse-then-delete trap (WP68, `file-ops.ts`), and
+      // it is I11: a refusal never destroys. The divergence that remains is the
+      // accepted one, and it is the same one WP68 chose for sidecar renames —
+      // so both peers do the same thing, which is AC6.
+      const renameDestination = renameDestinationOf(op);
+      if (
+        renameDestination !== null &&
+        !plugin.manifestManager.isSharedPath(renameDestination)
+      ) {
+        plugin.fileOpsManager.noteEscapingRenameRefusal();
+        plugin.logger.warn(
+          "file-op",
+          "refused remote rename: the destination leaves the shared folder, so this " +
+            "peer keeps its own copy where it is rather than following the move",
         );
         return;
       }

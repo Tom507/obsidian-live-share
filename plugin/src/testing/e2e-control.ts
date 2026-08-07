@@ -771,6 +771,10 @@ export interface E2EControlHost {
   muteReleaseStats?(): unknown;
   /** WP95 (AC5) — the protected-path refusal ledger, on the same reasoning. */
   protectedPathRefusals?(): unknown;
+  /** S120 AC2 — mute-dropped user gestures, by kind. */
+  muteDrops?(): unknown;
+  /** S124 — refused escaping renames. */
+  escapingRenameRefusals?(): unknown;
   /** S119 AC5 — refused empty writes, by arm. */
   emptyWriteRefusals?(): unknown;
   /** S125 AC10 — conflict copies written, by arm. */
@@ -1109,6 +1113,20 @@ export async function routeCommand(
           throw new Error("fileop.muteStats unavailable on this host");
         }
         return ok(host.muteReleaseStats());
+      }
+      // S120 AC2 — user gestures the mute swallowed, by kind.
+      case "fileop.muteDrops": {
+        if (typeof host.muteDrops !== "function") {
+          throw new Error("fileop.muteDrops unavailable on this host");
+        }
+        return ok(host.muteDrops());
+      }
+      // S124 — remote renames refused for leaving the shared tree.
+      case "fileop.escapingRenames": {
+        if (typeof host.escapingRenameRefusals !== "function") {
+          throw new Error("fileop.escapingRenames unavailable on this host");
+        }
+        return ok(host.escapingRenameRefusals());
       }
       case "fileop.protectedRefusals": {
         if (typeof host.protectedPathRefusals !== "function") {
@@ -1585,6 +1603,10 @@ export interface E2EPluginLike {
    */
   fileOpsManager?: {
     isPathMuted(path: string): boolean;
+    /** S120 AC2 — mute-dropped user gestures, by kind. */
+    getMuteDrops?(): { total: number; byKind: Record<string, number> };
+    /** S124 — remote renames refused for leaving the shared tree. */
+    getEscapingRenameRefusals?(): number;
     getMuteReleaseStats?(): {
       releasedByEvent: number;
       releasedByCeiling: number;
@@ -2320,6 +2342,22 @@ export function buildPluginHost(
         );
       }
       return plugin.getEmptyWriteRefusals();
+    },
+
+    muteDrops() {
+      const manager = plugin.fileOpsManager;
+      if (!manager || typeof manager.getMuteDrops !== "function") {
+        throw new Error("fileop.muteDrops unavailable: no mute-drop ledger on this instance");
+      }
+      return manager.getMuteDrops();
+    },
+
+    escapingRenameRefusals() {
+      const manager = plugin.fileOpsManager;
+      if (!manager || typeof manager.getEscapingRenameRefusals !== "function") {
+        throw new Error("fileop.escapingRenames unavailable: no ledger on this instance");
+      }
+      return { refused: manager.getEscapingRenameRefusals() };
     },
 
     protectedPathRefusals() {
