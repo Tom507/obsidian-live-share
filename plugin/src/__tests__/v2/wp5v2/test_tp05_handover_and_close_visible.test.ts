@@ -149,6 +149,47 @@ describe("WP5 — the reconcile receipt supplies the capture path's surface stat
     vi.restoreAllMocks();
   });
 
+  // WP94 (C94 AC2) — T1 IS AMENDED BY STRENGTHENING, AND IT IS AMENDED BECAUSE IT
+  // WAS INCOMPLETE, NOT BECAUSE IT WAS WRONG. THE I7 ARGUMENT, IN FULL:
+  //
+  // T1 asserts that an omission WITHOUT a hand-over receipt must not delete, and
+  // cites I7. That is correct, it remains correct, and WP94 does not weaken it —
+  // every assertion below is kept verbatim and still passes. What WP94 changes is
+  // WHO MAY ISSUE the receipt, never whether one is required.
+  //
+  // The criterion WP94 installs, quoted rather than paraphrased:
+  //
+  //     Delete(X) <=> Receipt(X, surface) & Complete(save) & Present(X) & !Seen(X, save)
+  //
+  //     ABSENCE NEVER AUTHORISES. A RECEIPT AUTHORISES; ABSENCE ONLY SELECTS
+  //     WHICH AUTHORISED RECORD TO SPEND IT ON.
+  //     Delete the `!Seen` conjunct and NOTHING is deleted. Delete the `Receipt`
+  //     conjunct and EVERYTHING is. Only one of the four is a licence, and it is
+  //     the only one that is a positive fact about a record having been SEEN.
+  //
+  // I7 says a PARTIAL REPORT MUST NEVER BE READ AS "THE REST IS GONE". The
+  // criterion satisfies it in the strongest available form, in two independent
+  // ways, and this fixture exercises the first:
+  //
+  //   ├── `Receipt` is a POSITIVE, per-record, per-surface fact. This fixture's
+  //   │      `n2` reached the doc through the HOST SEED, and WP29 is explicit that
+  //   │      a seed has no opinion about deletion — so the seed issues no receipt,
+  //   │      `n2` holds no licence, and the omission is ignorance exactly as T1
+  //   │      says. The record is not deleted, and it is now REPORTED as withheld
+  //   │      rather than dropped in silence.
+  //   └── `Complete` is measured, so an observation that CANNOT be shown to be a
+  //          full picture of the surface deletes nothing at all, whatever receipts
+  //          exist. That is I7 applied to the OBSERVATION rather than to the
+  //          record, and it is the conjunct that keeps a truncated read from
+  //          destroying a board.
+  //
+  // The one thing T1 could not tell apart, and the reason it is amended: a green
+  // here was equally consistent with "the record had no licence" and with "the
+  // delete rule never ran at all" — and the second was in fact true for every
+  // closed board (S84) and for every locally-created record (S78). The added
+  // assertion pins the FIRST reading, positively, by naming the reason charged.
+  // Without it this test would go green again the moment rule 4 were disabled
+  // outright, which is precisely the failure mode it exists to catch.
   it("T1 nothing is handed over before a confirmed apply", async () => {
     const p = await makePeer(canvasJson([N1, N2, N3]));
 
@@ -157,8 +198,17 @@ describe("WP5 — the reconcile receipt supplies the capture path's surface stat
     expect(state.handedToView.node.size).toBe(0);
     expect(state.handedToView.edge.size).toBe(0);
 
+    const withheldBefore = p.cs.deleteWithholdCounts();
     p.vault.files.set(PATH, canvasJson([N1, N3]));
     await p.cs.handleLocalModify(PATH);
+
+    // WP94 (C94 AC6) — THE DISCRIMINATION T1 LACKED. The rule RAN, considered
+    // `n2`, and refused it for a named reason. A build that simply never reached
+    // rule 4 would leave this counter at zero and now fails here.
+    expect(
+      p.cs.deleteWithholdCounts()["no-receipt"] - withheldBefore["no-receipt"],
+      "the delete rule never even considered the record — the green below is vacuous",
+    ).toBe(1);
 
     expect(
       p.doc.getMap<Y.Map<unknown>>("nodes").has("n2"),
