@@ -252,6 +252,27 @@ export class LiveShareSettingTab extends PluginSettingTab {
         });
       })
       .addSetting((setting) => {
+        // S116 — the GUEST half of the whole-vault warning. The host is asked to
+        // confirm before sharing an entire vault; this is the peer on the other
+        // end of that arrangement, whose own files are the ones at risk, being
+        // asked the same question. Deliberately NOT disabled during an active
+        // session: it is the control that stops an in-progress arrangement, so
+        // locking it while the risk is live would be exactly backwards.
+        setting
+          .setName("Allow whole-vault cleanup")
+          .setDesc(
+            "When the host shares their ENTIRE vault, allow Live Share to delete local files " +
+              "the host does not have. Off by default: while off, files that pre-date this " +
+              "session are never deleted and whole-vault hosts trigger no cleanup at all.",
+          )
+          .addToggle((toggle) => {
+            toggle.setValue(settings.allowWholeVaultReconcile).onChange(async (value) => {
+              settings.allowWholeVaultReconcile = value;
+              await this.plugin.saveSettings();
+            });
+          });
+      })
+      .addSetting((setting) => {
         setting
           .setName("Require approval")
           .setDesc("Guests must be approved by the host before joining")
@@ -340,23 +361,35 @@ export class LiveShareSettingTab extends PluginSettingTab {
           );
       })
       .addSetting((setting) => {
-        // This flag is not a preference — it selects between TWO WHOLE canvas
-        // sync implementations, in both directions:
-        //   OFF → remote deltas run `reconcileLiveCanvas` (main.ts:1974) and
-        //         local edits are captured by re-reading the .canvas file
-        //         (`canvasSync.handleLocalModify`, vault-events.ts:319).
-        //   ON  → a per-canvas `CanvasBinding` over the model bridge owns both
-        //         directions (main.ts:3150); no file re-read, node-level intent.
-        // The old description called it "experimental — leave OFF", which is
-        // why the redesign it gates had never been exercised by this vault's
-        // owner. Say what it switches, and say which one is which.
+        // WHAT THIS FLAG DOES AND DOES NOT SWITCH — stated carefully, because
+        // the first version of this description got it wrong in the reader's
+        // favour and called the OFF path "legacy".
+        //
+        // It does NOT switch the data model. BOTH paths read and write the same
+        // V2 record CRDT: `parseCanvasReport` (canvas-sync.ts:628) produces
+        // `V2Node` / `V2EdgeRecord` regardless of this flag.
+        //
+        // What it switches is HOW LOCAL INTENT IS CAPTURED and how remote
+        // deltas are applied:
+        //   OFF → capture by re-reading the .canvas file and diffing it
+        //         (`canvasSync.handleLocalModify`, vault-events.ts:319);
+        //         remote deltas patch the open view via `reconcileLiveCanvas`
+        //         (main.ts:1974).
+        //   ON  → capture from the adapter's interaction signals, model → CRDT,
+        //         with no file read; remote deltas apply per node through
+        //         `CanvasBinding.applyRemote` (main.ts:3150).
+        //
+        // The old description said "experimental — leave OFF unless testing",
+        // which is why the path it gates had never been exercised by this
+        // vault's owner. Say what it switches, without overstating it.
         setting
-          .setName("Canvas sync engine: V2 node-level binding")
+          .setName("Canvas sync engine: model-driven capture")
           .setDesc(
-            "ON — canvas changes sync node by node through the CRDT binding: two people " +
-              "can drag different cards at once, and an edit to one card no longer rewrites " +
-              "the whole file. OFF — the legacy path, which reconciles the entire canvas " +
-              "file on every change. Close and reopen any canvas after changing this.",
+            "ON — your canvas edits are captured from the interaction itself and applied " +
+              "node by node, so two people dragging different cards do not go through the " +
+              "file. OFF — the settled default: the same node-level CRDT, but edits are " +
+              "captured by re-reading the canvas file and remote changes patch the open " +
+              "view as a whole. Close and reopen any canvas after changing this.",
           )
           .addToggle((toggle) =>
             toggle.setValue(settings.useCanvasBinding).onChange(async (value) => {

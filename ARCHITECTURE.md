@@ -2,7 +2,7 @@
 
 > **Current architecture reference.** Rewritten on 2026-08-07 against the committed Canvas CRDT V2 implementation and the settled WP1–WP95 feature baseline. Active S104–S113 investigations remain working-state notes in the build specification and are not used to redefine the architecture here.
 >
-> For exact product verdicts, incomplete work, and release blockers, see [BUILD_SPEC_ObsidianLiveShare.md](workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md). Historical design papers remain under `workflowArtifacts/` and do not override this document.
+> For exact product verdicts, incomplete work, and release blockers, see [BUILD_SPEC_ObsidianLiveShare.md](BUILD_SPEC_ObsidianLiveShare.md). Historical engineering records are intentionally excluded from the release branch and do not override this document.
 
 ![Runtime architecture](docs/assets/architecture-overview.svg)
 
@@ -247,6 +247,8 @@ The overlay is independent from the optional binding engine. A peer can see anot
 
 Private Obsidian Canvas APIs are isolated behind `CanvasAdapter`. The adapter checks capabilities defensively and degrades rather than letting private API drift break the synchronization path.
 
+This is a real compatibility boundary, not a claim that Canvas has a supported live plugin API. The adapter currently observes `view.canvas`, node and edge maps, selection, viewport and editing state; invokes guarded live methods such as `setData` and `moveAndResize`; and temporarily wraps interaction methods such as `updateSelection`, `setDragging`, and `markViewportChanged`. Every access is shape-checked, wrappers retain and restore the original function, and unavailable members produce a defined fallback or refusal. Obsidian can still rename or alter these private members without notice, so each newly supported Obsidian release requires real Canvas compatibility validation.
+
 Main modules:
 
 - `plugin/src/canvas/canvas-presence.ts`
@@ -268,6 +270,13 @@ Before an inbound operation reaches the vault, the client applies:
 
 The manifest is not a delete list. Cleanup requires a complete, authoritative publication path. Missing or partial information fails closed.
 
+Manifest reconciliation also has two data-loss boundaries:
+
+- An empty incoming `Y.Text` cannot overwrite a non-empty note merely because document replay has not arrived yet. A true select-all-and-delete remains valid because replicated CRDT history proves that the document previously held content.
+- Before a host-authoritative join overwrites a divergent guest file, the guest version is preserved when it was changed offline or the evidence is uncertain. The host still wins the active path; preservation is a recovery copy, not a semantic merge.
+
+Conflict copies live in a sibling `<shared folder> (conflicts)` tree. Whole-vault shares use the vault-root `Live Share (conflicts)` tree. Paths are mirrored relative to the share, filenames are timestamped, and `isSharedPath` owns an explicit exclusion for the conflicts tree so it can never be published back into the room.
+
 Main modules:
 
 - `plugin/src/files/file-ops.ts`
@@ -275,6 +284,9 @@ Main modules:
 - `plugin/src/files/manifest-purge-decision.ts`
 - `plugin/src/files/manifest-removal-decision.ts`
 - `plugin/src/files/protected-paths.ts`
+- `plugin/src/files/conflict-copy.ts`
+- `plugin/src/files/empty-write-guard.ts`
+- `plugin/src/files/ytext-history.ts`
 
 ## Session, reconnect, and offline behavior
 
@@ -285,6 +297,7 @@ CONTROL and MUX health feed an explicit sharing state. Network failure and sessi
 - A user can retry the connection without ending the session.
 - New offline operations are sealed/refused when the connection state can no longer deliver them safely.
 - Host/guest role is applied from the authoritative join response.
+- A guest file changed while disconnected is preserved before host-authoritative reconciliation overwrites the shared path.
 
 Main modules:
 
@@ -296,7 +309,7 @@ Main modules:
 
 ## Relay storage
 
-The relay forwards opaque Yjs and awareness frames. Its optional blob/checkpoint store preserves encrypted or otherwise opaque room frames for empty-room recovery without interpreting canvas semantics.
+The relay forwards Yjs and awareness frames without interpreting Canvas semantics, but "not interpreted" does not mean end-to-end encrypted: the relay can read Yjs collaboration state. Its optional blob/checkpoint store preserves room frames for empty-room recovery. File-operation payloads may be AES-GCM encrypted; live Yjs state is protected from network observers by TLS, not from the relay itself.
 
 The relay also owns:
 
@@ -321,9 +334,15 @@ The deployment can combine independent controls:
 - Per-room invite token.
 - Session encryption passphrase.
 
+These controls are not interchangeable. In particular, browser SSO or reverse-proxy forward authentication does not automatically authenticate Obsidian's WebSocket client: Electron does not carry the browser's SSO cookie into the plugin's MUX and CONTROL connections. A deployment may safely place a credential/download landing page behind SSO while routing the WebSocket and relay REST paths around that browser gate, but those bypassed paths must still enforce the relay's own `SERVER_PASSWORD`, room token, and optional JWT policy.
+
+A self-hosted deployment can use that external pattern with any compatible reverse proxy or identity provider. Proxy configuration, credential landing pages, secret generation, and network isolation remain deployment concerns outside this repository; no proprietary identity provider or provider-specific header contract is compiled into the plugin or relay. The distributable uses the server password and optional GitHub OAuth/JWT flow regardless of the surrounding infrastructure.
+
 ### Encryption
 
-Session encryption uses AES-GCM-256 with a PBKDF2-derived key. Encrypted room payloads are opaque to the relay. Presence and protocol metadata may still expose operational information, and a deployment without TLS exposes WebSocket traffic in transit.
+Session encryption uses AES-GCM-256 with a PBKDF2-derived key and a random per-session salt carried in the invite. It covers file-operation content, chunk data, and transferred file paths. It does not cover Yjs CRDT updates or control/presence metadata. Consequently, the relay can read live Markdown and Canvas collaboration state; TLS is mandatory on untrusted networks and protects transport, not the relay boundary. Older invites without the random salt retain a compatibility fallback.
+
+JWT identity is fail-closed: tokens are trusted only when `JWT_SECRET` is explicitly configured, and verification is restricted to HS256. Peer-supplied paths pass a shared containment check that rejects absolute paths and `.`/`..` segments before vault access; protected `.obsidian/**` paths have a separate owned refusal boundary.
 
 ### Local secrets
 
@@ -390,7 +409,9 @@ obsidian-live-share/
 │   └── src/
 ├── tools/obsidian_e2e/             ← real two-vault orchestration utilities
 ├── docs/                           ← user/developer documentation and diagrams
-├── workflowArtifacts/              ← specification and historical engineering record
+├── BUILD_SPEC_ObsidianLiveShare.md ← authoritative product and release contract
+├── CONCEPT_V2.md                   ← Canvas V2 design rationale
+├── REPO_MAP.md                     ← structural source map
 ├── ARCHITECTURE.md                 ← this document
 ├── README.md                       ← public project entry point
 └── LICENSE                         ← MIT license and upstream notice
@@ -411,7 +432,7 @@ obsidian-live-share/
 
 ## Known incomplete areas
 
-The architecture is implemented far beyond the original upstream design, but the project is still under active stabilization. The authoritative list is maintained in the [build specification](workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md). At the current settled baseline:
+The architecture is implemented far beyond the original upstream design, but the project is still under active stabilization. The authoritative list is maintained in the [build specification](BUILD_SPEC_ObsidianLiveShare.md). At the current settled baseline:
 
 - Room-mode consensus and Receive-and-Persist are incomplete as a full phase.
 - Operation capture is not yet promoted as the universal primary Canvas source.

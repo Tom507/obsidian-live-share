@@ -18,7 +18,7 @@ import {
   AWARENESS_TICK_INTERVAL_MS,
   SyncManager,
 } from "../sync/sync";
-import type { LiveShareSettings } from "../types";
+import { DEFAULT_SETTINGS, type LiveShareSettings } from "../types";
 
 /** Pull the raw awareness-update payloads for a doc out of a mock socket's sends. */
 function awarenessFrames(ws: MockWebSocket, docId: string): Uint8Array[] {
@@ -120,30 +120,17 @@ class MockWebSocket {
 
 function makeSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSettings {
   return {
-    serverUrl: "http://localhost:3000",
+    ...DEFAULT_SETTINGS,
     roomId: "test-room",
     token: "test-token",
-    jwt: "",
-    serverPassword: "",
     clientId: "client-1",
-    githubUserId: "",
     role: "host" as const,
     displayName: "Test",
-    avatarUrl: "",
     cursorColor: "#000",
-    sharedFolder: "",
-    encryptionPassphrase: "",
-    encryptionSalt: "",
     autoReconnect: false,
     notificationsEnabled: false,
-    debugLogging: false,
     debugLogPath: "",
     excludePatterns: [] as string[],
-    requireApproval: false,
-    approvalTimeoutSeconds: 60,
-    showCanvasCursors: true,
-    showCanvasPresence: true,
-    useCanvasBinding: false,
     permission: "read-write" as const,
     readOnlyPatterns: [] as string[],
     ...overrides,

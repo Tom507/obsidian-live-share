@@ -38,6 +38,9 @@ import {
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
+import { conflictsRootFor, getConflictCopies } from "./files/conflict-copy";
+import { getCollabBindRefusals } from "./editor/collab-bind-decision";
+import { getEmptyWriteRefusals } from "./files/empty-write-guard";
 import {
   type CanvasPersistence,
   type PersistenceIO,
@@ -48,7 +51,11 @@ import {
   type ImportFromFileResult,
   runImportFromFile,
 } from "./files/canvas-import";
-import { mirrorSharedCanvases } from "./files/canvas-mirror";
+import {
+  CANVAS_RECORD_MAPS,
+  type CanvasMirrorReport,
+  mirrorSharedCanvases,
+} from "./files/canvas-mirror";
 import {
   type CanvasSidecarWiring,
   createVaultSidecarIO,
@@ -119,7 +126,9 @@ import {
   type LiveShareSettings,
   type ManifestChangeDisposition,
   type ManifestPublishDecision,
+  STALE_RECONCILE_RULE,
   type StaleReconcileDecision,
+  type StaleReconcileRule,
 } from "./types";
 
 import { AuditLogModal } from "./ui/audit-modal";
@@ -253,6 +262,23 @@ export default class LiveSharePlugin extends Plugin {
   explorerIndicators: ExplorerIndicators | null = null;
   controlChannel: ControlChannel | null = null;
   remoteUsers = new Map<string, PresenceUser>();
+
+  /**
+   * S116 — the canonical paths this vault held BEFORE this session's guest arm
+   * started, i.e. the files the session did not give us and is not entitled to
+   * take away.
+   *
+   * `null` is not "empty" — it is "never captured", and it REFUSES. The two
+   * must not collapse: an empty set means "this guest joined with an empty
+   * vault, so everything here now arrived through the session" (a real and
+   * permissive state), while `null` means the question was never asked. Only
+   * one of those may license a deletion.
+   *
+   * Session-scoped by construction, and therefore lost on reload — see
+   * {@link captureVaultBaseline} for what that costs and why it is the safe
+   * direction.
+   */
+  private vaultBaseline: Set<string> | null = null;
   remoteReadOnlyPatterns: string[] = [];
   presenceManager: PresenceManager | null = null;
   private connectionStateUnsub: (() => void) | null = null;
@@ -1315,6 +1341,13 @@ export default class LiveSharePlugin extends Plugin {
     // attached, but only reports `AWARENESS GAP:` once one is. Attached here, right after
     // the DebugLogger exists, because SyncManager is constructed before it.
     this.syncManager.setLogger(this.logger);
+    // S129 AC5 — a refused bind leaves the buffer untouched, which from outside
+    // is indistinguishable from "nothing happened", so it has to be logged.
+    // Wired HERE, below the `DebugLogger` assignment, and not beside
+    // `new CollabManager()` where it started: S104's guard caught that the
+    // first placement handed a consumer `this.logger` before it existed. The
+    // guard was right and the placement was wrong.
+    this.collabManager.setLogger(this.logger);
     // WP93 (C93 AC4) — WIRING ONLY. `MUTE OVERRUN:` has exactly one emitter, in
     // `files/file-ops.ts`; this is the only thing that gives it somewhere to
     // say it.
@@ -1424,6 +1457,15 @@ export default class LiveSharePlugin extends Plugin {
   // teardown stays ABOVE the first await and therefore still runs synchronously
   // — the await is appended, never interleaved.
   async onunload() {
+    // S125 AC6c — the THIRD session-end path. `onunload` does not call
+    // `cleanupSession()`, so without this line a normal Obsidian quit during an
+    // active session would leave the stamp stale and the next join would
+    // preserve every divergent file. Safe, but it would make the gate inert —
+    // the S116 B14 lesson, which was exactly a feature that looked wired and
+    // was not. Guarded on an ACTIVE session: stamping on an ordinary quit with
+    // no session would move the timestamp forward and start classifying real
+    // offline edits as stale, which is the unsafe direction.
+    if (this.sessionManager?.isActive) this.stampSessionEnd();
     this.testControlHandle?.close();
     this.testControlHandle = null;
     this.logger.destroy();
@@ -1511,6 +1553,8 @@ export default class LiveSharePlugin extends Plugin {
         // nothing listening. Only the retry moves; `registerManifestChangeHandler`
         // stays exactly where it always was — see `armStaleReconcileRetry`.
         this.armStaleReconcileRetry();
+        // S116 — BEFORE the first reconcile and before `syncFromManifest`.
+        this.captureVaultBaseline();
         await this.cleanupStaleFiles();
         await this.manifestManager.syncFromManifest(
           this.mutePathEvents,
@@ -1562,6 +1606,36 @@ export default class LiveSharePlugin extends Plugin {
         this.settings.showCanvasPresence,
       );
     }
+  }
+
+  /**
+   * S119 AC5 — the empty-write refusal ledger, exposed so a live validator can
+   * read it. A refusal by construction leaves NO other trace: the file is
+   * unchanged, which is indistinguishable from "nothing happened" from outside.
+   * Routed through the plugin rather than imported by the e2e module, whose
+   * import allow-list is frozen on purpose.
+   */
+  getEmptyWriteRefusals(): { total: number; byArm: Record<string, number> } {
+    return getEmptyWriteRefusals();
+  }
+
+  /**
+   * S125 AC10 — the join notice, which used to read "synced N file(s)" while
+   * quietly replacing the user's own edits with the host's. If any local
+   * version was preserved, the notice says how many and where; a user who is
+   * not told a copy was made cannot go and find it.
+   */
+  private joinSyncNotice(syncedCount: number): string {
+    const copies = this.manifestManager.getLastSyncConflictCopies();
+    const base = `Live Share: joined session, synced ${syncedCount} file(s)`;
+    if (copies === 0) return base;
+    const root = conflictsRootFor(this.settings.sharedFolder);
+    return `${base}. ${copies} local version(s) differed and were preserved in "${root}"`;
+  }
+
+  /** S125 AC10 — the conflict-copy ledger, for a live validator. */
+  getConflictCopies(): { total: number; byArm: Record<string, number>; failed: number } {
+    return getConflictCopies();
   }
 
   notify(msg: string): void {
@@ -1635,19 +1709,64 @@ export default class LiveSharePlugin extends Plugin {
    * legitimate cleanup still happens — the moment the evidence arrives, and not
    * one instant before.
    */
+  /**
+   * S116 — snapshot the vault as it stands BEFORE the session delivers
+   * anything. Must be called on the guest arm immediately ahead of the first
+   * {@link cleanupStaleFiles}.
+   *
+   * WHY THIS INSTANT IS THE RIGHT ONE, and not merely a convenient one: at all
+   * three guest entry points the first `cleanupStaleFiles()` already runs
+   * BEFORE `syncFromManifest()`. So at the moment this is called, every file in
+   * the vault is by definition the user's own — the session has not written a
+   * byte. No ledger, no per-write bookkeeping and no new persisted file are
+   * needed to know what the session did not bring; it is the complement of what
+   * it later adds, and it is knowable in one `getFiles()`.
+   *
+   * WHAT IT DOES NOT SURVIVE: a plugin reload or an Obsidian restart. On the
+   * next `resumeSession` the baseline is re-taken, and files a PREVIOUS session
+   * delivered are then indistinguishable from the user's own — so they become
+   * protected. That direction is deliberate: the failure mode is a stale file
+   * that outlives the host's deletion of it, which is untidy. The other
+   * direction is destroying a user's note, which is the incident this whole
+   * subsystem exists because of. Durable cross-restart provenance needs a
+   * per-write delivery ledger; see the S116 report for why that is a package of
+   * its own and not a line here.
+   */
+  private captureVaultBaseline(): void {
+    this.vaultBaseline = new Set(
+      this.app.vault.getFiles().map((file) => toCanonicalPath(normalizePath(file.path))),
+    );
+    this.logger.log(
+      "manifest",
+      `pre-join vault baseline captured: ${this.vaultBaseline.size} file(s) pre-date this session`,
+    );
+  }
+
   public async cleanupStaleFiles(): Promise<StaleReconcileDecision> {
-    const refuse = (reason: string): StaleReconcileDecision => {
-      this.logger.log("manifest", `stale reconcile refused: ${reason}`);
-      return { ran: false, reason, candidates: 0, trashed: [], scope: null };
+    const refuse = (rule: StaleReconcileRule, reason: string): StaleReconcileDecision => {
+      this.logger.log("manifest", `stale reconcile refused [${rule}]: ${reason}`);
+      return {
+        ran: false,
+        reason,
+        candidates: 0,
+        trashed: [],
+        scope: null,
+        rule,
+        withheldPreExisting: 0,
+      };
     };
 
     if (this.settings.role === "host") {
-      return refuse("this peer is the host; the host is the source of the manifest, not a consumer");
+      return refuse(
+        STALE_RECONCILE_RULE.HOST,
+        "this peer is the host; the host is the source of the manifest, not a consumer",
+      );
     }
     // Condition 1 — somebody published while we were online.
     if (!this.manifestManager.hasFreshPublication(this.userId)) {
       const pub = this.manifestManager.getPublication();
       return refuse(
+        STALE_RECONCILE_RULE.NO_PUBLICATION,
         pub
           ? `no manifest publication observed this session (last attestation seq=${pub.seq} ` +
               "predates this connection, so it proves only that a host once existed)"
@@ -1657,7 +1776,10 @@ export default class LiveSharePlugin extends Plugin {
     // Condition 2 — that somebody is still here.
     const liveHost = Array.from(this.remoteUsers.values()).find((user) => user.isHost);
     if (!liveHost) {
-      return refuse("a manifest was published but no peer in this session claims to be host");
+      return refuse(
+        STALE_RECONCILE_RULE.NO_LIVE_HOST,
+        "a manifest was published but no peer in this session claims to be host",
+      );
     }
 
     const manifest = this.manifestManager.getEntries();
@@ -1666,7 +1788,10 @@ export default class LiveSharePlugin extends Plugin {
     // folder is empty", but the cost of being wrong here is the whole shared
     // tree, so this one stays paranoid.
     if (manifest.size === 0) {
-      return refuse("the freshly published manifest is empty; refusing to empty the shared folder");
+      return refuse(
+        STALE_RECONCILE_RULE.EMPTY_MANIFEST,
+        "the freshly published manifest is empty; refusing to empty the shared folder",
+      );
     }
 
     // Condition 4 (S115) — WHAT RANGE DID THE HOST ACTUALLY SPEAK ABOUT?
@@ -1688,16 +1813,73 @@ export default class LiveSharePlugin extends Plugin {
       // vault, so guessing wrong in the permissive direction is precisely the
       // data loss. An older host that publishes no scope is a real deployment
       // and it lands here, on purpose, doing nothing at all.
-      return refuse(`the host's shared folder is unknown: ${scope.reason}`);
+      return refuse(
+        STALE_RECONCILE_RULE.UNKNOWN_SCOPE,
+        `the host's shared folder is unknown: ${scope.reason}`,
+      );
+    }
+
+    // Condition 5 (S116) — CONSENT, for the one scope whose blast radius is
+    // everything.
+    //
+    // S115 made a SCOPED host safe. It did not change anything for a host in
+    // the default configuration, which publishes `sharedRoot: ""` — a scope
+    // that is perfectly KNOWN and happens to mean "all of it". So the guest
+    // sailed through the fail-closed branch and reconciled its whole vault, and
+    // the only party ever asked to confirm that arrangement was the host.
+    if (scope.root === "" && !this.settings.allowWholeVaultReconcile) {
+      // Loud, not silent. A reconcile that quietly stops running is the S114
+      // shape — a safe-looking default that removes a behaviour the user still
+      // believes they have — so the refusal is surfaced, not just logged.
+      this.notify(
+        "Live Share: the host shares their entire vault. Stale-file cleanup is OFF " +
+          "until you enable “Allow whole-vault cleanup” in Live Share settings.",
+      );
+      return refuse(
+        STALE_RECONCILE_RULE.WHOLE_VAULT_NO_CONSENT,
+        `host ${liveHost.userId} shares its ENTIRE vault, so every local file this ` +
+          "manifest omits would be trashed; this guest has not enabled whole-vault cleanup",
+      );
+    }
+
+    // Condition 6 (S116) — PROVENANCE. Scoping asks WHERE; this asks WHOSE.
+    //
+    // A file that was in this vault before the guest joined was never the
+    // host's to delete, no matter which folder it sits in. That is the property
+    // no amount of scoping can express, and it is why this family of defects
+    // kept needing another fix: S115 narrowed the range and a pre-existing note
+    // INSIDE the host's range was still destroyed.
+    //
+    // The baseline is captured at session start, which is exactly the instant
+    // at which "everything in this vault is mine" is true — `cleanupStaleFiles`
+    // runs BEFORE `syncFromManifest` at all three guest entry points, so
+    // nothing the session delivers has landed yet. That ordering was previously
+    // just an awkward fact (the first reconcile almost always refuses); here it
+    // is the enabling one.
+    //
+    // `null` means the baseline was never taken, and that REFUSES. A future
+    // entry point that forgets to capture it therefore fails closed instead of
+    // silently treating the user's whole vault as the session's property.
+    const baseline = this.vaultBaseline;
+    if (!baseline) {
+      return refuse(
+        STALE_RECONCILE_RULE.NO_BASELINE,
+        "no pre-join vault baseline was captured for this session, so which files " +
+          "pre-date the join is unknowable and none of them can be shown to be the session's",
+      );
     }
 
     const manifestPaths = new Set(manifest.keys());
     const localFiles = this.app.vault
       .getFiles()
       .filter((file) => this.manifestManager.isWithinSharedRoot(file.path, scope.root));
-    const stale = localFiles.filter(
+    const absentFromManifest = localFiles.filter(
       (file) => !manifestPaths.has(toCanonicalPath(normalizePath(file.path))),
     );
+    const stale = absentFromManifest.filter(
+      (file) => !baseline.has(toCanonicalPath(normalizePath(file.path))),
+    );
+    const withheldPreExisting = absentFromManifest.length - stale.length;
 
     const trashed: string[] = [];
     for (const file of stale) {
@@ -1715,7 +1897,8 @@ export default class LiveSharePlugin extends Plugin {
     const scopeLabel = scope.root === "" ? "<entire vault>" : scope.root;
     const reason =
       `host ${liveHost.userId} published a manifest of ${manifest.size} entry/entries this ` +
-      `session, scoped to ${scopeLabel}`;
+      `session, scoped to ${scopeLabel}; ${withheldPreExisting} candidate(s) withheld as ` +
+      "pre-dating this join";
     // S115 AC5 — UNCONDITIONAL. This used to fire only when something was
     // trashed, which made the two outcomes that matter most indistinguishable:
     // "I ran and selected nothing" and "I ran and selected your whole vault but
@@ -1724,13 +1907,43 @@ export default class LiveSharePlugin extends Plugin {
     // BEFORE the count of what was destroyed, so both are stated every time.
     this.logger.log(
       "manifest",
-      `stale reconcile ran: scope=${scopeLabel} candidates=${stale.length} ` +
+      `stale reconcile ran [${STALE_RECONCILE_RULE.RAN}]: scope=${scopeLabel} ` +
+        `candidates=${stale.length} withheldPreExisting=${withheldPreExisting} ` +
         `trashed=${trashed.length} — ${reason}`,
     );
-    return { ran: true, reason, candidates: stale.length, trashed, scope: scope.root };
+    return {
+      ran: true,
+      reason,
+      candidates: stale.length,
+      trashed,
+      scope: scope.root,
+      rule: STALE_RECONCILE_RULE.RAN,
+      withheldPreExisting,
+    };
+  }
+
+  /**
+   * S125 AC6c — stamp the moment this peer's session ended.
+   *
+   * The whole set of session-end paths is THREE, and it is three rather than
+   * two because `onunload` does NOT call `cleanupSession()` — verified by
+   * reading it, and pinned by a source-derivation test rather than left to a
+   * later reader to rediscover. `cleanupSession()` itself covers `endSession`
+   * and `abortSession`, which are its only two callers.
+   *
+   * Fire-and-forget on the save: if the write does not land (a crash, a kill),
+   * the stamp stays old or absent, and an absent stamp PRESERVES. The failure
+   * mode of this method is therefore extra copies, never lost work.
+   */
+  private stampSessionEnd(): void {
+    this.settings.lastSessionEndedAt = Date.now();
+    void this.saveSettings();
   }
 
   cleanupSession() {
+    // S125 — the two callers of this method are `endSession` and
+    // `abortSession`; both are genuine session ends.
+    this.stampSessionEnd();
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
     if (activeView) {
       const cmView = getCmView(activeView);
@@ -1755,6 +1968,17 @@ export default class LiveSharePlugin extends Plugin {
     this.presenceManager = null;
     this.removeScrollListener();
     this.remoteUsers.clear();
+    // S123 — a watcher describes ONE session's docs. Leaving them observing a
+    // doc that is about to be destroyed would re-arm a mirror pass for a
+    // session that has ended.
+    for (const path of Array.from(this.canvasRecordWatchers.keys())) {
+      this.unwatchCanvasForRecords(path);
+    }
+    this.lastCanvasMirrorReport = null;
+    // S116 — a baseline describes ONE session. Carrying it into the next one
+    // would license deletions against a vault snapshot taken before a different
+    // host's share; `null` makes the next reconcile refuse until it is retaken.
+    this.vaultBaseline = null;
     this.remoteReadOnlyPatterns = [];
     this.refreshPresenceView();
     this.fileOpsManager.clearPendingChunks();
@@ -1850,6 +2074,8 @@ export default class LiveSharePlugin extends Plugin {
           await this.manifestManager.connect(this.syncManager);
           // D2 — only the RETRY is armed early; see `armStaleReconcileRetry`.
           this.armStaleReconcileRetry();
+          // S116 — BEFORE the first reconcile and before `syncFromManifest`.
+          this.captureVaultBaseline();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,
@@ -1862,7 +2088,7 @@ export default class LiveSharePlugin extends Plugin {
           this.armCanvasMirrorPass();
           this.onActiveFileChange();
           this.logger.log("session", `joined, room=${this.settings.roomId}`);
-          this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
+          this.notify(this.joinSyncNotice(syncedCount));
         } catch {
           this.logger.error("session", "failed to join session");
           await this.abortSession("Live Share: failed to join session");
@@ -1887,6 +2113,8 @@ export default class LiveSharePlugin extends Plugin {
           await this.manifestManager.connect(this.syncManager);
           // D2 — only the RETRY is armed early; see `armStaleReconcileRetry`.
           this.armStaleReconcileRetry();
+          // S116 — BEFORE the first reconcile and before `syncFromManifest`.
+          this.captureVaultBaseline();
           await this.cleanupStaleFiles();
           const syncedCount = await this.manifestManager.syncFromManifest(
             this.mutePathEvents,
@@ -1899,7 +2127,7 @@ export default class LiveSharePlugin extends Plugin {
           this.armCanvasMirrorPass();
           this.onActiveFileChange();
           this.logger.log("session", `joined via link, room=${this.settings.roomId}`);
-          this.notify(`Live Share: joined session, synced ${syncedCount} file(s)`);
+          this.notify(this.joinSyncNotice(syncedCount));
         } catch {
           this.logger.error("session", "failed to join via link");
           await this.abortSession("Live Share: failed to join session");
@@ -2960,18 +3188,83 @@ export default class LiveSharePlugin extends Plugin {
    * pass deliberately does not use `subscribeCanvasWithHandover` — see the
    * header of `files/canvas-mirror.ts`.
    */
+  /**
+   * S123 — one-shot watchers on canvas docs whose records had not arrived when
+   * the mirror pass last asked. Keyed by path so a path cannot accumulate
+   * observers across repeated passes.
+   */
+  private canvasRecordWatchers = new Map<string, () => void>();
+
+  /** S123 AC5 — what the last mirror pass decided, per path. Previously discarded. */
+  private lastCanvasMirrorReport: CanvasMirrorReport | null = null;
+
+  /**
+   * S123 — re-ask the mirror when this doc actually gains records.
+   *
+   * The defect was a readiness signal that did not mean what it said, answered
+   * by polling once. This replaces the poll with the event it was trying to
+   * approximate: observe the two record maps, and the first time either becomes
+   * non-empty, re-run the pass. No timer, no backoff, no retry budget — a
+   * wall-clock retry would close this race only on the runs where it happened
+   * to be fast enough, which is what "one guest got it in 23 s and the other
+   * never did" already looks like.
+   */
+  private watchCanvasForRecords(path: string): void {
+    if (this.canvasRecordWatchers.has(path)) return;
+    const doc = this.canvasSync?.getCanvasDocHandle(path)?.doc;
+    if (!doc) return;
+    const maps = CANVAS_RECORD_MAPS.map((name) => doc.getMap(name));
+    let fired = false;
+    const onChange = () => {
+      if (fired) return;
+      if (!maps.some((map) => map.size > 0)) return;
+      fired = true;
+      this.unwatchCanvasForRecords(path);
+      this.logger.log("canvas-mirror", `records arrived for ${path}; re-running the mirror pass`);
+      this.armCanvasMirrorPass();
+    };
+    for (const map of maps) map.observe(onChange);
+    this.canvasRecordWatchers.set(path, () => {
+      for (const map of maps) map.unobserve(onChange);
+    });
+    // The records may have landed between the pass's probe and this line.
+    onChange();
+  }
+
+  private unwatchCanvasForRecords(path: string): void {
+    const dispose = this.canvasRecordWatchers.get(path);
+    if (!dispose) return;
+    this.canvasRecordWatchers.delete(path);
+    try {
+      dispose();
+    } catch {
+      /* an unobserve on a destroyed doc is not an error worth surfacing */
+    }
+  }
+
+  /** S129 AC5 — notes this peer is NOT collaborating on, and why, for a live validator. */
+  getCollabBindRefusals(): { total: number; paths: string[] } {
+    return getCollabBindRefusals();
+  }
+
+  /** S123 AC5 — the last mirror pass's per-path verdicts, for a live validator. */
+  getLastCanvasMirrorReport(): CanvasMirrorReport | null {
+    return this.lastCanvasMirrorReport;
+  }
+
   private armCanvasMirrorPass(): void {
     this.canvasMirrorQueue = this.canvasMirrorQueue
       .then(async () => {
         const canvasSync = this.canvasSync;
         if (!canvasSync) return;
-        await mirrorSharedCanvases({
+        this.lastCanvasMirrorReport = await mirrorSharedCanvases({
           role: this.settings.role === "host" ? "host" : "guest",
           listManifestPaths: () => this.manifestManager.getEntries().keys(),
           localFileExists: (path) => this.app.vault.adapter.exists(toLocalPath(path)),
           guidForPath: (path) => this.manifestManager.getCanvasGuid(path),
           canvasSync,
           materialise: (path) => this.attachCanvasWriter(path),
+          watchForRecords: (path) => this.watchCanvasForRecords(path),
           logger: this.logger,
         });
       })

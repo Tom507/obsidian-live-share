@@ -1,6 +1,6 @@
 // WP5 — Latency E2E harness utilities (US6).
 //
-// Runs the REAL NeuralAngels relay (server/src, imported in-process) and REAL
+// Runs the real relay implementation (server/src, imported in-process) and real
 // sync-core client instances (plugin SyncManager + canvas CanvasPresence) with an
 // injected 50–150 ms RTT between each client and the relay. Localhost is ~0 ms and
 // hides exactly the races these tests target, so the injected latency is the

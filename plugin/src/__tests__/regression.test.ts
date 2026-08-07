@@ -9,7 +9,7 @@ import * as Y from "yjs";
 import { BackgroundSync } from "../files/background-sync";
 import { FileOpsManager } from "../files/file-ops";
 import { ManifestManager } from "../files/manifest";
-import type { LiveShareSettings } from "../types";
+import { DEFAULT_SETTINGS, type LiveShareSettings } from "../types";
 
 /* ------------------------------------------------------------------ */
 /*  Shared helpers (mirrors existing test patterns)                    */
@@ -24,32 +24,14 @@ function mockFile(path: string) {
 
 function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSettings {
   return {
-    serverUrl: "http://localhost:3000",
+    ...DEFAULT_SETTINGS,
     roomId: "test-room",
     token: "test-token",
-    jwt: "",
-    githubUserId: "",
-    avatarUrl: "",
     displayName: "Test User",
     cursorColor: "#ff0000",
-    sharedFolder: "",
     role: "host",
-    encryptionPassphrase: "",
-    encryptionSalt: "",
-    permission: "read-write",
-    requireApproval: false,
-    serverPassword: "",
     clientId: "test-client-id",
-    notificationsEnabled: true,
-    debugLogging: false,
     debugLogPath: "live-share-debug.md",
-    autoReconnect: true,
-    excludePatterns: [],
-    readOnlyPatterns: [],
-    approvalTimeoutSeconds: 60,
-    showCanvasCursors: true,
-    showCanvasPresence: true,
-    useCanvasBinding: false,
     ...overrides,
   };
 }

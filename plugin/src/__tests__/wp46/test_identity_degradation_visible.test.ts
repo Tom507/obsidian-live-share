@@ -67,15 +67,15 @@ describe("WP46 AC1 — identity degrades, it never throws and never guesses", ()
       settings: {},
       app: {
         vault: {
-          getName: () => "ObsidianOrga - Kopie",
+          getName: () => "LiveShare-E2E-B",
           adapter: {
-            getBasePath: () => "H:\\Developement\\_NeuralAngels\\ObsidianOrga - Kopie",
+            getBasePath: () => "C:\\ObsidianVaults\\LiveShare-E2E-B",
           },
         },
       },
     } as E2EPluginLike).sessionInfo() as Record<string, unknown>;
-    expect(info.vaultId).toBe("H:\\Developement\\_NeuralAngels\\ObsidianOrga - Kopie");
-    expect(info.vaultName).toBe("ObsidianOrga - Kopie");
+    expect(info.vaultId).toBe("C:\\ObsidianVaults\\LiveShare-E2E-B");
+    expect(info.vaultName).toBe("LiveShare-E2E-B");
   });
 
   it("derives canvasSurface from the plugin surface, with the explicit hook winning", () => {

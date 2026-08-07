@@ -124,6 +124,30 @@ export interface CanvasMirrorDeps {
   readonly canvasSync: CanvasMirrorSync;
   /** Attach the ONE existing writer, which cold-opens and flushes the doc to disk. */
   materialise(path: string): Promise<void>;
+  /**
+   * S123 — RE-ASK WHEN THE RECORDS ARRIVE.
+   *
+   * `docHasRecords` below is a ONE-SHOT PROBE of a value that is still in
+   * flight, and this pass is armed only by manifest key changes. The host
+   * publishes the canvas guid BEFORE it seeds the doc (`resolveGuidForSubscribe`
+   * binds, then `subscribe` awaits `waitForSync` and only then applies the file
+   * to the maps), so the guest is notified by the first event and needs the
+   * second. A guest whose probe lands in that window skips — and because the
+   * host performs no further manifest write for that path, NOTHING re-arms and
+   * the file never arrives for the rest of the session.
+   *
+   * That is the whole of S123: one guest's probe landed after the seed and it
+   * got the file; another's landed before and it never did. Widening the window
+   * further, `waitForSync` resolves IMMEDIATELY on a brand-new canvas doc id
+   * whenever the relay reports `peerCount === 0` — the same signal that caused
+   * S119, consumed here one layer over.
+   *
+   * So the probe stops being the decision. The caller installs a one-shot
+   * watcher on the doc's record maps and re-runs the pass when records actually
+   * land. Optional: a deps object without it degrades to exactly the previous
+   * behaviour rather than throwing.
+   */
+  watchForRecords?(path: string): void;
   readonly logger?: {
     log(category: string, message: string): void;
     warn(category: string, message: string, err?: unknown): void;
@@ -279,6 +303,27 @@ async function mirrorOne(
   };
   const verdict = decideCanvasMirror(post);
   if (verdict !== MIRROR_VERDICT.MATERIALISE) {
+    // S123 — the ONE skip that is provably premature rather than final: this
+    // guest has no local file and CAN resolve the identity, so the only thing
+    // missing is the host's records, and those are on their way. Every other
+    // skip is a settled answer (the user already has the file; there is no
+    // published identity to resolve) and must not install a watcher.
+    //
+    // `identityResolves === true` is SUBSUMED by `admitsCanvasMirror(pre)`
+    // above, which already early-returns for a guest that cannot resolve the
+    // identity — so this conjunct can never be false here. Measured, not
+    // assumed: breaking it reddens NOTHING (break table B30). It is kept
+    // because the pre-gate is a cost optimisation that could legitimately be
+    // relaxed, and this condition must not silently become wrong if it is;
+    // `decideCanvasMirror` refusing that combination is pinned by its own test
+    // so the subsumption itself is falsifiable rather than folklore.
+    if (
+      post.localFileExists === false &&
+      post.identityResolves === true &&
+      post.docHasRecords === false
+    ) {
+      deps.watchForRecords?.(path);
+    }
     return { path, verdict, outcome: "skipped" };
   }
 

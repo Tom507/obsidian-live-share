@@ -1,6 +1,6 @@
 // WP5 — Latency E2E harness suite (US6, and the E2E gate for US1/US3/US4/US5).
 //
-// Real NeuralAngels relay (in-process) + real sync-core clients + injected
+// Real relay implementation (in-process) + real sync-core clients + injected
 // 50–150 ms RTT. These are the tests localhost cannot produce: the races only
 // appear once frames are actually in flight.
 //

@@ -53,6 +53,10 @@ interface StaleReconcileDecision {
   trashed: string[];
   /** S115 — the HOST's shared root the candidate set was scoped to; `null` on a refusal. */
   scope: string | null;
+  /** S116 — the machine-readable rule that produced this answer. */
+  rule: string;
+  /** S116 — candidates withheld because they pre-date this guest's join. */
+  withheldPreExisting: number;
 }
 
 /**
@@ -767,6 +771,14 @@ export interface E2EControlHost {
   muteReleaseStats?(): unknown;
   /** WP95 (AC5) — the protected-path refusal ledger, on the same reasoning. */
   protectedPathRefusals?(): unknown;
+  /** S119 AC5 — refused empty writes, by arm. */
+  emptyWriteRefusals?(): unknown;
+  /** S125 AC10 — conflict copies written, by arm. */
+  conflictCopies?(): unknown;
+  /** S123 AC5 — the last canvas mirror pass's per-path verdicts. */
+  canvasMirror?(): unknown;
+  /** S129 AC5 — paths this peer refused to bind to an unproven-empty document. */
+  collabBindRefusals?(): unknown;
 }
 
 /**
@@ -1103,6 +1115,38 @@ export async function routeCommand(
           throw new Error("fileop.protectedRefusals unavailable on this host");
         }
         return ok(host.protectedPathRefusals());
+      }
+      // S119 AC5 — refused empty writes. Same shape and same reason as the
+      // protected-path ledger beside it: a refusal leaves no other trace.
+      // S129 AC5 — notes this peer refused to bind because the shared document
+      // had not arrived. Invisible otherwise: the buffer is simply unchanged.
+      case "collab.bindRefusals": {
+        if (typeof host.collabBindRefusals !== "function") {
+          throw new Error("collab.bindRefusals unavailable on this host");
+        }
+        return ok(host.collabBindRefusals());
+      }
+      // S123 AC5 — WHY a canvas did or did not materialise on THIS peer, per
+      // path. The report already existed and was discarded at the call site;
+      // W4 spent two rounds unable to see past "timed out at 45 s".
+      case "canvas.mirror": {
+        if (typeof host.canvasMirror !== "function") {
+          throw new Error("canvas.mirror unavailable on this host");
+        }
+        return ok(host.canvasMirror());
+      }
+      // S125 AC10 — local versions preserved before a host overwrite.
+      case "sync.conflictCopies": {
+        if (typeof host.conflictCopies !== "function") {
+          throw new Error("sync.conflictCopies unavailable on this host");
+        }
+        return ok(host.conflictCopies());
+      }
+      case "sync.emptyWriteRefusals": {
+        if (typeof host.emptyWriteRefusals !== "function") {
+          throw new Error("sync.emptyWriteRefusals unavailable on this host");
+        }
+        return ok(host.emptyWriteRefusals());
       }
       // --- `fileop.inject`, ADDITIVE ------------------------------------------
       //
@@ -1480,6 +1524,14 @@ export interface E2EPluginLike {
   demoteToGuest?: () => Promise<void>;
   /** WP81 AC1 — the debug sink's own state, read from the logger, not from settings. */
   logger?: { getSinkState?: () => unknown };
+  /** S119 AC5 — the empty-write refusal ledger. Optional, like every capability here. */
+  getEmptyWriteRefusals?: () => { total: number; byArm: Record<string, number> };
+  /** S125 AC10 — the conflict-copy ledger. */
+  getConflictCopies?: () => { total: number; byArm: Record<string, number>; failed: number };
+  /** S123 AC5 — the last canvas mirror report, or null if no pass has run. */
+  getLastCanvasMirrorReport?: () => unknown;
+  /** S129 AC5 — the collab bind refusal ledger. */
+  getCollabBindRefusals?: () => { total: number; paths: string[] };
   /**
    * WP82 (AC2/AC3) — the real per-link report and the real break seam, invoked.
    * All three are optional so every hand-rolled fake plugin in the existing
@@ -2236,6 +2288,38 @@ export function buildPluginHost(
         );
       }
       return manager.getMuteReleaseStats();
+    },
+
+    collabBindRefusals() {
+      if (typeof plugin.getCollabBindRefusals !== "function") {
+        throw new Error("collab.bindRefusals unavailable: this instance exposes no bind ledger");
+      }
+      return plugin.getCollabBindRefusals();
+    },
+
+    canvasMirror() {
+      if (typeof plugin.getLastCanvasMirrorReport !== "function") {
+        throw new Error("canvas.mirror unavailable: this instance exposes no mirror report");
+      }
+      return plugin.getLastCanvasMirrorReport() ?? { role: null, considered: 0, entries: [] };
+    },
+
+    conflictCopies() {
+      if (typeof plugin.getConflictCopies !== "function") {
+        throw new Error(
+          "sync.conflictCopies unavailable: this instance exposes no conflict-copy ledger",
+        );
+      }
+      return plugin.getConflictCopies();
+    },
+
+    emptyWriteRefusals() {
+      if (typeof plugin.getEmptyWriteRefusals !== "function") {
+        throw new Error(
+          "sync.emptyWriteRefusals unavailable: this instance exposes no empty-write ledger",
+        );
+      }
+      return plugin.getEmptyWriteRefusals();
     },
 
     protectedPathRefusals() {

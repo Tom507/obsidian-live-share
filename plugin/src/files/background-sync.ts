@@ -17,6 +17,12 @@ import {
   toLocalPath,
 } from "../utils";
 import { isSidecarPath } from "./canvas-sidecar";
+import { yTextHeldContent } from "./ytext-history";
+import {
+  EMPTY_WRITE_DECISION,
+  decideEmptyWrite,
+  noteEmptyWriteRefusal,
+} from "./empty-write-guard";
 import type { FileOpsManager } from "./file-ops";
 import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
 import type { ManifestManager } from "./manifest";
@@ -66,6 +72,20 @@ export class BackgroundSync {
   private collabBoundFile: string | null = null;
   private recentDiskWrites = new Set<string>();
   private lastWrittenContent = new Map<string, string>();
+  /**
+   * S119 — paths whose shared document this peer has observed holding CONTENT
+   * during this session. The positive evidence that lets an empty write
+   * through.
+   *
+   * A document that went from text to nothing was emptied by somebody, and that
+   * edit must reach disk (a user who selects-all-and-deletes means it). A
+   * document that has never held anything is not "empty" in the same sense — it
+   * is a document nothing has arrived in yet, and the two were indistinguishable
+   * to the writer until this set existed. Membership is monotonic within a
+   * session and never removed on emptiness, because "it once had content" is
+   * exactly the fact being remembered.
+   */
+  private observedNonEmpty = new Set<string>();
   // Per-file monotonic counter of remote (non-local) Y.Text deltas applied to
   // the doc. A whole-file disk flush snapshots this value when it captures its
   // content; if the counter has advanced by the time the flush actually reaches
@@ -140,6 +160,7 @@ export class BackgroundSync {
           const content = normalizeLineEndings(await this.vault.read(file));
           if (this.cancelledSubscribes.has(path)) return;
           const remoteContent = docHandle.text.toString();
+          this.noteIfNonEmpty(path, remoteContent);
           if (remoteContent.length === 0) {
             // No remote content yet - host seeds the Y.Text
             applyMinimalYTextUpdate(docHandle.doc, docHandle.text, content);
@@ -163,6 +184,7 @@ export class BackgroundSync {
         }
         const file = getFileByPath(this.vault, diskPath);
         const remoteContent = docHandle.text.toString();
+        this.noteIfNonEmpty(path, remoteContent);
         const localContent = file ? normalizeLineEndings(await this.vault.read(file)) : "";
         if (remoteContent !== localContent) {
           await this.writeToDisk(path, remoteContent);
@@ -387,10 +409,24 @@ export class BackgroundSync {
     this.recentDiskWrites.clear();
     this.lastWrittenContent.clear();
     this.remoteSeq.clear();
+    // S119 — the evidence describes ONE session. Carrying it forward would let
+    // a document that held content in a previous session vouch for an empty
+    // write in the next one, before anything has arrived.
+    this.observedNonEmpty.clear();
   }
 
   private currentSeq(path: string): number {
     return this.remoteSeq.get(path) ?? 0;
+  }
+
+  /**
+   * S119 — remember that this document has held content. See
+   * {@link observedNonEmpty}. Called wherever the doc's text is read, so the
+   * evidence is gathered on the same reads the writer already performs and
+   * costs nothing extra.
+   */
+  private noteIfNonEmpty(path: string, content: string): void {
+    if (content.length > 0) this.observedNonEmpty.add(path);
   }
 
   private attachObserver(path: string, text: Y.Text): void {
@@ -402,6 +438,10 @@ export class BackgroundSync {
       // gate returns: even the active file's version must advance so a queued
       // background flush for it cannot clobber the remote change.
       this.remoteSeq.set(path, this.currentSeq(path) + 1);
+      // S119 — the evidence is recorded on EVERY remote delta, including the
+      // ones for the active file that return below. A user emptying a note they
+      // have open must still be able to empty it on every peer.
+      this.noteIfNonEmpty(path, text.toString());
       // The active file is persisted by the editor / yCollab, never by
       // background-sync. Gate on active-file identity as well as collabBoundFile
       // so the currently-active file is never disk-echoed during the activation
@@ -500,6 +540,43 @@ export class BackgroundSync {
         const existing = normalizeLineEndings(await this.vault.read(file));
         if (existing === content) {
           this.lastWrittenContent.set(path, content);
+          return;
+        }
+        // S119 — THE FLOOR, on the amplifying arm.
+        //
+        // Four gates already stood here — `lastWrittenContent`, the `remoteSeq`
+        // staleness check, `isPathSafe` and `isProtectedPath` — and not one of
+        // them looked at whether `content` was empty while the target was not.
+        // So a single empty document propagated as a CRDT delete-all and every
+        // peer flushed `""` over its own copy within half a second.
+        //
+        // S126 — THE EVIDENCE, CORRECTED. This shipped as
+        // `this.observedNonEmpty.has(path)`: "has THIS PEER seen this document
+        // hold content in this session". That is a fact about local
+        // observation, and it refused a LEGITIMATE select-all-and-delete on
+        // every peer that happened to have the note closed — the deletion never
+        // arrived, and the peer kept its stale bytes indefinitely.
+        //
+        // "Did somebody delete this content" is a property of the DOCUMENT, and
+        // CRDTs replicate it. A `Y.Text` that held characters and had them
+        // removed carries TOMBSTONES; one that never held anything does not.
+        // Every peer has them, opened or not, and they survive gc, v2 encoding
+        // and repeated compaction (measured — see `ytext-history.ts`).
+        //
+        // The session-local set is KEPT as a second, weaker witness rather than
+        // deleted: it is true in strictly fewer cases than the tombstone probe,
+        // so OR-ing it cannot admit a write the probe would refuse, and it
+        // still answers if a future Yjs makes the probe unavailable.
+        const docText = this.syncManager.getDoc(path)?.text ?? null;
+        const verdict = decideEmptyWrite({
+          incoming: content,
+          existing,
+          intentional: yTextHeldContent(docText) || this.observedNonEmpty.has(path),
+          evidenceLabel: "whether this document ever held content (CRDT tombstones)",
+        });
+        if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {
+          noteEmptyWriteRefusal("doc-write");
+          console.warn(`[live-share] empty-write refused for ${path}: ${verdict.reason}`);
           return;
         }
       }

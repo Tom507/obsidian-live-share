@@ -157,7 +157,7 @@ describe("D2 — the manifest publication attestation is the evidence gate", () 
     doc.on("afterTransaction", (tr: Y.Transaction) => {
       const touched = Array.from(tr.changed.keys()).map((t) =>
         // biome-ignore lint/suspicious/noExplicitAny: reading the internal type tag
-        ((t as any)._item === null ? (doc.share.get("files") === t ? "files" : "meta") : "other"),
+        (t as any)._item === null ? (doc.share.get("files") === t ? "files" : "meta") : "other",
       );
       if (touched.length > 0) {
         seen.push({ files: touched.includes("files"), meta: touched.includes("meta") });
@@ -170,5 +170,104 @@ describe("D2 — the manifest publication attestation is the evidence gate", () 
     expect(seen.length).toBe(1);
     expect(seen[0]?.meta).toBe(true);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * S115 — THE DIMENSION THIS FIXTURE WAS MISSING.
+ *
+ * Every assertion above is about whether the reconcile MAY run. None is about
+ * what it SELECTS once it does, and the two are independent: the gate can be
+ * perfectly correct while the candidate set is the guest's entire vault.
+ *
+ * The omission was invisible here for a structural reason worth recording.
+ * `settings()` at the top of this file hardcodes `sharedFolder: "shared"` — the
+ * SAFE value, matching the notional host. The dangerous value is the shipped
+ * default, `""`, which means "the whole vault"; it was never in the fixture, so
+ * no green in this file could ever have failed for the S115 reason. The scope
+ * is added HERE, beside the attestation, because it now IS part of the
+ * attestation: the same `meta` write, the same transaction, the same freshness
+ * rule. The end-to-end selection behaviour — the `trashFile` loop actually
+ * executing — lives in
+ * `../v2/ux01/test_s115_stale_reconcile_is_scoped_by_the_host.test.ts`, which
+ * drives the real `cleanupStaleFiles`; this file's subject stays
+ * `ManifestManager`.
+ */
+describe("S115 — the attestation states the scope the entry set describes", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  it("publishing states the publisher's shared folder alongside the entries", async () => {
+    const { manager } = await connected({ hostId: "someone", seq: 41 });
+    await manager.publishManifest({ purge: true });
+    // `settings()` above sets `sharedFolder: "shared"`, so that is what a host
+    // running this fixture governs — and now says so.
+    expect(manager.getPublication()?.sharedRoot).toBe("shared");
+  });
+
+  it("the scope a consumer reads is the HOST's, never this peer's own setting", async () => {
+    // The whole defect in one assertion. This peer's `sharedFolder` is
+    // "shared" (the fixture's hardcoded value); the host published "elsewhere".
+    // A consumer must answer "elsewhere". Under the old code there was nothing
+    // to answer with, and the reconcile used "shared".
+    const { manager, doc } = await connected();
+    doc.getMap("meta").set("publication", {
+      hostId: "a-live-host",
+      seq: 1,
+      publishedAt: Date.now(),
+      sharedRoot: "elsewhere",
+    });
+    const scope = manager.getHostSharedScope();
+    expect(scope.known).toBe(true);
+    expect(scope.root).toBe("elsewhere");
+    expect(scope.root).not.toBe("shared");
+  });
+
+  it("a host that states no scope is FRESH but unknown — the two never merge", async () => {
+    // An older host. Freshness must be unaffected: that peer is alive and has
+    // published, and every behaviour keyed on liveness must keep working. Only
+    // the destructive question answers "I don't know".
+    const { manager, doc } = await connected({ hostId: "h", seq: 7 });
+    remotePublish(doc, "a-live-host", 8); // the pre-S115 shape: no `sharedRoot`
+    expect(manager.hasFreshPublication("me")).toBe(true);
+    const scope = manager.getHostSharedScope();
+    expect(scope.known).toBe(false);
+    expect(scope.root).toBeNull();
+  });
+
+  it("a whitespace-only shared folder is published trimmed, not as a scope matching nothing", async () => {
+    // S114's value, one hop further out. `"  "` is truthy, so an untrimmed
+    // value would cross the wire and build the prefix `"   /"` at the consumer
+    // — a stated scope that matches no path in any vault.
+    const doc = new Y.Doc();
+    const manager = new ManifestManager(vault() as never, settings({ sharedFolder: "   " }));
+    const sync = {
+      getDoc: () => ({ doc, text: doc.getText("content"), awareness: {} }),
+      waitForSync: async () => {},
+      releaseDoc: vi.fn(),
+    };
+    await manager.connect(sync as never);
+    await manager.publishManifest({ purge: true });
+    expect(manager.getPublication()?.sharedRoot).toBe("");
+    expect(manager.getHostSharedScope()).toEqual({ known: true, root: "" });
+  });
+
+  it("a malformed sharedRoot is refused rather than coerced", async () => {
+    // Same discipline `getPublication` applies to `hostId`/`seq`. A non-string
+    // here is a host this peer cannot understand, and `""` — the coercion a
+    // `String(x)` or a `?? ""` would produce — means THE ENTIRE VAULT.
+    const { manager, doc } = await connected();
+    for (const junk of [5, null, {}, ["shared"], true]) {
+      doc.getMap("meta").set("publication", {
+        hostId: "h",
+        seq: 1,
+        publishedAt: 1,
+        sharedRoot: junk,
+      } as never);
+      const scope = manager.getHostSharedScope();
+      expect(scope.known).toBe(false);
+      expect(scope.root).toBeNull();
+    }
   });
 });

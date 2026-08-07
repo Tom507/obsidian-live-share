@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ControlChannel, ControlMessage } from "../sync/control-ws";
-import type { LiveShareSettings } from "../types";
+import { DEFAULT_SETTINGS, type LiveShareSettings } from "../types";
 
 class MockWebSocket {
   static OPEN = 1;
@@ -42,32 +42,16 @@ const { ControlChannel: CC } = await import("../sync/control-ws");
 
 function createSettings(overrides?: Partial<LiveShareSettings>): LiveShareSettings {
   return {
-    serverUrl: "http://localhost:3000",
+    ...DEFAULT_SETTINGS,
     roomId: "test-room",
     token: "tok123",
-    jwt: "",
     githubUserId: "u1",
-    avatarUrl: "",
     displayName: "Tester",
     cursorColor: "#000",
     sharedFolder: "shared",
     role: "host",
-    encryptionPassphrase: "",
-    encryptionSalt: "",
-    permission: "read-write",
-    requireApproval: false,
-    serverPassword: "",
     clientId: "test-client-id",
-    notificationsEnabled: true,
-    debugLogging: false,
     debugLogPath: "live-share-debug.md",
-    autoReconnect: true,
-    excludePatterns: [],
-    readOnlyPatterns: [],
-    approvalTimeoutSeconds: 60,
-    showCanvasCursors: true,
-    showCanvasPresence: true,
-    useCanvasBinding: false,
     ...overrides,
   };
 }

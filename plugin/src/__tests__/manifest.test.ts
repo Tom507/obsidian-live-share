@@ -2,36 +2,18 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { ExclusionManager } from "../files/exclusion";
 import { ManifestManager } from "../files/manifest";
-import type { LiveShareSettings } from "../types";
+import { DEFAULT_SETTINGS, type LiveShareSettings } from "../types";
 
 function createSettings(overrides: Partial<LiveShareSettings> = {}): LiveShareSettings {
   return {
-    serverUrl: "http://localhost:3000",
+    ...DEFAULT_SETTINGS,
     roomId: "test-room",
     token: "test-token",
-    jwt: "",
-    githubUserId: "",
-    avatarUrl: "",
     displayName: "Test User",
     cursorColor: "#ff0000",
-    sharedFolder: "",
     role: "host",
-    encryptionPassphrase: "",
-    encryptionSalt: "",
-    permission: "read-write",
-    requireApproval: false,
-    serverPassword: "",
     clientId: "test-client-id",
-    notificationsEnabled: true,
-    debugLogging: false,
     debugLogPath: "live-share-debug.md",
-    autoReconnect: true,
-    excludePatterns: [],
-    readOnlyPatterns: [],
-    approvalTimeoutSeconds: 60,
-    showCanvasCursors: true,
-    showCanvasPresence: true,
-    useCanvasBinding: false,
     ...overrides,
   };
 }
