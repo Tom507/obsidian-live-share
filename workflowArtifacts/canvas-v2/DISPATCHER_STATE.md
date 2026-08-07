@@ -2925,3 +2925,29 @@ Undo with `python H:\tmp\liveshare_smoke_setup.py --restore`, which refuses to r
    rig notes assume role assignments the relay's coin-flip election changes on its own.
 3. **Only then consider new dispatches.** The two resumed packages are the top of the queue: WP94 first
    (a user's deletion never reaches a peer), then S81 (WP90's durable branch has never fired).
+
+---
+
+## ▶ RESUMED 2026-08-07 11:35 — the budget reset, and the resume cost two messages
+
+**Both batches came back.** `SendMessage` to the stored agent ids resumed B55 and B56 **from their own
+transcripts**; neither was re-chartered and neither re-read its brief from scratch. Confirmed alive by
+transcript inspection: in both files the `spend limit` line sits in the *historical* region (line 56 of 77,
+line 71 of 96) with live tool calls after it. **This is the first time in the run that a limit stop cost
+nothing** — contrast the first stop, which cost two packages redone from zero.
+
+**Nothing had drifted.** `1e057e9 → 73b43da` is `DISPATCHER_STATE.md` and nothing else (+78 lines), so every
+line citation in both briefs is still exact. I told each batch that explicitly, so neither spends a tool call
+re-establishing it.
+
+One artefact cleared: `plugin/src/files/canvas-sidecar.ts` showed as modified with an **empty diff** — CRLF
+on disk against an LF blob, normalised hash identical (`019571d8`). Converted back to LF; tree clean.
+Worth naming because *"modified with an empty diff"* is exactly what a half-landed change looks like, and
+the two are told apart by `git hash-object --no-filters`, not by reading the diff.
+
+**Priority promoted:** S81 is now item 1 of B56's round 2, above the original list. WP90's durable branch has
+still never fired — every live arm so far re-derived the verdict from the host seed, which is WP63 working,
+not WP90. Until a **guest-side or leaf-less** arm runs, the oldest open P0 is not demonstrably closed.
+
+**Cron `6d2b0853` deleted.** It existed to resume these two at 15:23; they are already running, and a
+scheduled re-send would have interrupted them mid-package.
