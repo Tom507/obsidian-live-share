@@ -2654,3 +2654,91 @@ term rather than to itself**; B48 then amended it properly. That is the collisio
 
 **BUILD_SPEC §10 corrected:** the registered `CAPTURE DECLINED:` reason set was one member short — the
 implementation emits `no-file`. Added.
+
+---
+
+## 🔴 B50 / W4 — THE FIRST REAL VALIDATION (`e1cbf69`), and it changes three verdicts
+
+**The installed bundle was pre-WP68, pre-WP90 AND pre-WP91** — established by **marker census**
+(`CAPTURE DECLINED` 0, `SEED REFUSAL STORE` 0, `refusedSidecarRenames` 0), **not by date**. That is
+**S67 confirmed live and then turned into an advantage**: instead of quoting B44's pre-fix profile, the
+batch measured it **on this rig tonight**, and every install ran under `LS_EXPECT_SHA256`. Built and
+installed `7922d277…` (4 609 545 B) in both vaults.
+
+### WP91 — **PASS**, with the control that makes it non-vacuous
+
+Oracle is **the writer's own doc**:
+
+| δ | pre-fix bundle | post-fix bundle |
+|---|---|---|
+| 0.1 / 0.3 / 0.5 / 0.8 s | **0 of 4 captured, each rung** | **3/3 each** |
+| 1.0 / 2.0 s | 2/2 captured | 3/3 |
+
+**The 1.0 and 2.0 s rungs pass in BOTH columns.** So the block that moved is exactly the block that was
+supposed to move, and the ladder is not simply green everywhere. Swallowed rungs carried **zero**
+`local modify` receipts; captured rungs one or more. **`CAPTURE DECLINED: … reason=echo` fires live and
+never for a user edit.**
+
+**AC4 step 2 reproduced the destruction on the pre-fix bundle**: step 1 swallowed, step 2's projection
+*proved* to land (0.41 s), **the user's node gone from their own disk**. Post-fix, step 1 captures, so the
+loss is unreachable. **The most serious half of B44's finding is now demonstrated rather than argued.**
+
+### S73 — **RESOLVED.** `SEED REFUSED:` fired for the first time in the project's history
+
+`SEED REFUSED: …/wp90-c50.canvas write WITHHELD — 1 refused: edge wp90-c50-BADEDGE (MISSING_TO)`.
+Verified by me in the live logs: **vault B `SEED REFUSED:` ×3, `SEED RESTORED:` ×1, `SEED REFUSAL STORE:`
+4/7, `CAPTURE DECLINED:` 62/57.**
+
+**The answer is both readings plus a precondition nobody had stated → S80.** The withhold is consulted
+only from `flushToDisk`, so it needs an attached `CanvasPersistence`; on the **host** that needs an **open
+leaf**, because the mirror pass will not materialise the host's own file. **That is why the signature never
+fired for the whole run.** W4's first attempt lacked the leaf and *looked exactly like a product finding* —
+and it recorded that rather than filing it.
+
+### ⚠ WP90 — **PARTIAL**, and the qualification matters more than the pass → S81
+
+Across a real restart the store persists, is read, the withhold holds, and the lift lifts
+(`SEED RESTORED:` → projection resumes → entry pruned). **But every session re-derived the verdict from
+the host seed** — *"the stored set is re-derived, not restored"*. **The `restored N standing` branch has
+never fired.**
+
+**So what was demonstrated live is WP63's re-derivation, which already worked. WP90's durable path — the
+entire point of the oldest open P0 — is still unexercised.** It needs a **guest-side or leaf-less arm
+where re-derivation cannot rescue it**, and that is the row to demand before WP90 is called done. The
+on-disk-survival row is **NOT DEMONSTRATED**: the plugin's writer provably did not remove the record (no
+`CANVAS WRITER:` against 2 000 historical hits), and the open leaf the withhold requires also puts
+Obsidian's own normaliser on the file.
+
+### WP68 — split, and the attribution arm is why the split is trustworthy
+
+- **Security property PASS** — nothing reaches the peer's `.obsidian/**`, with the instrument proved live
+  first (a shared→shared rename propagates, so the test can observe a propagation at all).
+- **AC3's stated invariant fails — and it is NOT WP68's.** The attribution arm showed a rename to the
+  **vault root**, where WP68's guard cannot fire, **loses the peer's copy too** → **S79**. A batch that
+  simply reported "AC3 fails" would have sent someone to repair the wrong file.
+- **Inbound refusal NOT DEMONSTRATED** — there is no way to inject a raw `FileOp`. **Revision request to
+  W3: a `fileop.inject` command.**
+
+### 🚨 S78 — the most severe unowned defect in the project, found by looking
+
+**A node deletion by whole-file write is NEVER captured.** Delta-independent to 6 s on a 45 s budget, and
+**identical on both bundles**, so it is **pre-existing and not a WP91 regression**. Signature: **`local
+modify` = 1, `declines` = 0.**
+
+**Read the signature: the event arrives, capture runs, nothing declines, and the removal never reaches the
+doc.** WP91 fixed a write that is *never seen*; this is a write that **is** seen, is **not** declined, and
+still loses the user's intent. **A user deletes a card, watches it vanish locally, and it stays on every
+peer** — then the peer's copy comes back. **Chartered as WP94 (B52).** *"The green that hid it was already
+known vacuous."*
+
+### And one thing held
+
+**WP80 survived a real host churn**: `publish[promote-to-host] … deleted=0`, **no owner file lost across
+four restarts.** The data-loss chain that started this stretch stayed shut under exactly the condition
+that used to break it.
+
+### Rig handover
+
+**Roles have swapped by server designation — A is now GUEST (:39431), B is now HOST (:39432).** That is
+`S27/S37`'s coin flip, live, and any script assuming A=host is now wrong. `sharedFolder=_liveshare-test`
+verified in both; shared trees restored to their pre-run 8-file state.
