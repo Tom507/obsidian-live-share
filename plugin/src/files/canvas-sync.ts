@@ -308,6 +308,76 @@ export function createCanvasIdentityStore(deps: {
 export const DEBOUNCE_MS = 200;
 export const MAX_WAIT_MS = 500;
 
+/**
+ * WP91 (C91 AC5, S68) — the ceiling on ONE continuous external-write echo window,
+ * measured from the first write of a burst.
+ *
+ * `noteExternalDiskWrite` clears and re-arms a `VAULT_EVENT_SETTLE_MS` timer per
+ * write, and `CanvasPersistence.armSettleRelease` does the same for the mute, both
+ * fed by the same `onWritten` wiring — so before WP91 TWO independent 250 ms
+ * windows were held across the same burst and neither had a ceiling. Derived from
+ * the constants already in this module, on the precedent of `MAX_WAIT_MS`:
+ *
+ *   MAX_WAIT_MS (500, the flush debounce cap) + VAULT_EVENT_SETTLE_MS (250) = 750
+ *
+ * This bounds a window. It is NOT what makes a local save distinguishable from our
+ * own echo — that is the byte compare in `handleLocalModify`, which has no window.
+ */
+export const MAX_ECHO_WINDOW_MS = MAX_WAIT_MS + VAULT_EVENT_SETTLE_MS;
+
+/**
+ * WP91 (C91 AC3) — the CLOSED reason set for a local canvas `modify` that
+ * produced no capture.
+ *
+ * The defect this work package removes survived a whole run of adversarial review
+ * because the drop produced nothing at all: no signature, no counter, no receipt.
+ * An unlogged silent discard on a data path is the mechanism by which a data-loss
+ * bug becomes undetectable, so every path out of `handleLocalModify` that does not
+ * capture names itself here and advances a counter.
+ *
+ *   ├── `echo`           the file's bytes are byte-identical to what this client
+ *   │                    last wrote — the ONLY sound reason, and the only one that
+ *   │                    is a fact about the bytes (WP4 AC2)
+ *   ├── `not-subscribed` no CanvasSync subscription for the path
+ *   ├── `read-only`      the session denies this client writes to the path
+ *   ├── `schema-major`   the doc's schema major is untranslatable here (WP8 AC4)
+ *   ├── `no-doc`         no doc id, or no doc handle, for the path
+ *   └── `no-file`        the vault has no `TFile` for the path any more
+ *
+ * `no-file` is NOT in the set BUILD_SPEC §10 registers, which lists the five above
+ * it. It is here because the branch is real and drivable and AC3's rule is that
+ * every decline is counted — leaving one path out would have re-created, at one
+ * remove, the silent discard this work package exists to remove. The §10 format
+ * string needs the extra member; that is the Dispatcher's edit, not this one's.
+ */
+export type CaptureDeclineReason =
+  | "echo"
+  | "not-subscribed"
+  | "read-only"
+  | "schema-major"
+  | "no-doc"
+  | "no-file";
+
+export const CAPTURE_DECLINE_REASONS = [
+  "echo",
+  "not-subscribed",
+  "read-only",
+  "schema-major",
+  "no-doc",
+  "no-file",
+] as const satisfies readonly CaptureDeclineReason[];
+
+function emptyDeclineCounts(): Record<CaptureDeclineReason, number> {
+  return {
+    echo: 0,
+    "not-subscribed": 0,
+    "read-only": 0,
+    "schema-major": 0,
+    "no-doc": 0,
+    "no-file": 0,
+  };
+}
+
 // Scatter fix (v0.5.6): geometry keys that define WHERE a card sits. Obsidian
 // never removes these from a node that still exists — a live node losing x/y/w/h
 // is always a transient/partial disk read, never a real user intent. The key-diff
@@ -2103,6 +2173,16 @@ export class CanvasSync {
   // (`CanvasPersistence`), reported through `noteExternalDiskWrite`. Tracked so
   // teardown can cancel them, exactly like `writeTimers`.
   private externalWriteSettleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  // WP91 (C91 AC5, S68): when the CURRENT external-write window for a path was
+  // opened, i.e. the first write of the burst. `noteExternalDiskWrite` re-arms on
+  // every write; the cap is measured from here so the window has a ceiling that
+  // does not move with peer activity. Deleted with the window it belongs to.
+  private externalWriteWindowOpenedAt = new Map<string, number>();
+  // WP91 (C91 AC3): per-reason capture declines. STATE, not a log line, so a test
+  // can be an oracle over it (the precedent WP68/WP88 set in `file-ops.ts`). No
+  // path and no content is retained — a count is a diagnostic, and a path here
+  // would put a user's filename into a value other components may render.
+  private captureDeclines: Record<CaptureDeclineReason, number> = emptyDeclineCounts();
   private recentLocalEdits = new Set<string>();
   private lastWrittenContent = new Map<string, string>();
   // WP63 (I11): per-path refused set from the HOST seed, shared with that path's
@@ -2664,6 +2744,10 @@ export class CanvasSync {
     moveMap(this.writeTimers);
     moveMap(this.writeFirstScheduled);
     moveMap(this.externalWriteSettleTimers);
+    // WP91 (AC5): the window's opening timestamp travels with the timer it caps.
+    // Left behind, the renamed path's next write would measure its cap from a
+    // key that no longer exists and re-open an unbounded window.
+    moveMap(this.externalWriteWindowOpenedAt);
     moveMap(this.lastWrittenContent);
     moveMap(this.seedRefusalLedgers);
     // WP29: the knowledge is about the DOC, and a rename does not change which
@@ -2960,6 +3044,7 @@ export class CanvasSync {
       clearTimeout(settleTimer);
       this.externalWriteSettleTimers.delete(path);
     }
+    this.externalWriteWindowOpenedAt.delete(path);
     this.writeFirstScheduled.delete(path);
     this.remoteSeq.delete(path);
     const unobserve = this.observers.get(path);
@@ -3060,18 +3145,58 @@ export class CanvasSync {
     }
   }
 
+  /**
+   * WP91 (C91 AC3) — a decline that names itself.
+   *
+   * ONE production emitter for `CAPTURE DECLINED:` (BUILD_SPEC §10) and the only
+   * writer of the per-reason counters. `declines=` is this REASON's running count,
+   * which is what {@link captureDeclineCounts} reports; the line carries the path
+   * and the reason and nothing else — never the file's contents, never node text.
+   */
+  private declineCapture(path: string, reason: CaptureDeclineReason): void {
+    this.captureDeclines[reason] += 1;
+    this.logger?.debug(
+      "canvas-sync",
+      `CAPTURE DECLINED: ${path} reason=${reason} (declines=${this.captureDeclines[reason]})`,
+    );
+  }
+
+  /**
+   * WP91 (C91 AC3) — the per-reason decline counts, as state.
+   *
+   * A snapshot, so a caller cannot mutate the ledger it is reading, and a caller
+   * that holds it across two events sees the first reading rather than a value
+   * that changed under it.
+   */
+  captureDeclineCounts(): Record<CaptureDeclineReason, number> {
+    return { ...this.captureDeclines };
+  }
+
   async handleLocalModify(rawPath: string): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
-    if (this.recentDiskWrites.has(path)) return;
-    if (!this.subscribedPaths.has(path)) return;
+    // WP91 (C91 AC1) — THE `recentDiskWrites` GATE IS GONE FROM THIS PATH.
+    //
+    // It used to be the first statement of this method: `if
+    // (this.recentDiskWrites.has(path)) return;`, a 250 ms window re-armed on
+    // every write of a burst. It stood 42 lines in front of the byte compare
+    // below, which was built for exactly this question and is strictly stronger:
+    // exact, windowless, and unable to be wrong about an edit it can see. Every
+    // drop it took was therefore either redundant with that compare or a user's
+    // save discarded unread — and the second is what was measured (LOST 11/12 at
+    // a 0.5-0.8 s delta, with no receipt of any kind on either side).
+    //
+    // `recentDiskWrites` is still MAINTAINED — `isRecentDiskWrite` is a public
+    // fact about this client's own writes and the settle windows still bound it
+    // (AC5). It is simply no longer consulted to decide whose bytes these are.
+    if (!this.subscribedPaths.has(path)) return this.declineCapture(path, "not-subscribed");
     // Bug G: never push local edits for a read-only canvas path (defense in
     // depth; the authoritative check is server-side in ws-handler.ts).
-    if (!this.canWrite(path)) return;
+    if (!this.canWrite(path)) return this.declineCapture(path, "read-only");
 
     const docId = this.canvasDocIdFor(path);
-    if (!docId) return;
+    if (!docId) return this.declineCapture(path, "no-doc");
     const docHandle = this.syncManager.getDoc(docId);
-    if (!docHandle) return;
+    if (!docHandle) return this.declineCapture(path, "no-doc");
 
     // WP8 AC4 — the SCHEMA-MAJOR GATE. A doc stamped with a major this build
     // cannot translate (CONCEPT_V2 Teil 12) gets no local capture at all: any
@@ -3090,11 +3215,11 @@ export class CanvasSync {
         "canvas-sync",
         `local modify ${path}: schema major mismatch - local capture disabled for this path (persistence continues)`,
       );
-      return;
+      return this.declineCapture(path, "schema-major");
     }
 
     const file = getFileByPath(this.vault, toLocalPath(path));
-    if (!file) return;
+    if (!file) return this.declineCapture(path, "no-file");
 
     const content = await this.vault.read(file);
 
@@ -3104,9 +3229,16 @@ export class CanvasSync {
     // identical bytes are our own write coming back. Zero CRDT writes and NO
     // shadow mutation — the bytes prove what the DISK holds, never what an open
     // Obsidian canvas holds (that receipt is a confirmed apply, WP5's job).
+    //
+    // WP91 (C91 AC1/AC3): PROMOTED, not modified. This compare is now the SOLE
+    // authority on whether a local canvas modify is our own write coming back —
+    // the three timers that used to answer that question in front of it are gone
+    // (`vault-events.ts` mute + `isRecentDiskWrite`, and the `recentDiskWrites`
+    // gate at the top of this method). Byte equality is what it was; what changed
+    // is that it is finally given the events it was built to judge.
     if (content === this.lastWrittenContent.get(path)) {
       this.logger?.debug("canvas-sync", `local modify ${path}: no-op (disk == shared state)`);
-      return;
+      return this.declineCapture(path, "echo");
     }
 
     const nodesMap = docHandle.doc.getMap<Y.Map<unknown>>("nodes");
@@ -3756,6 +3888,7 @@ export class CanvasSync {
       clearTimeout(timer);
     }
     this.externalWriteSettleTimers.clear();
+    this.externalWriteWindowOpenedAt.clear();
     this.writeFirstScheduled.clear();
     this.remoteSeq.clear();
     for (const [, unobserve] of this.observers) {
@@ -3965,15 +4098,31 @@ export class CanvasSync {
     if (this.surfaceStateProvider(path).viewOpen === false) {
       this.advanceShadowFromContent(path, content, true);
     }
+    // WP91 (C91 AC5, S68) — THE SECOND RE-ARMING WINDOW, AND IT IS NOW BOUNDED.
+    //
+    // This timer has the same clear-and-re-arm shape as
+    // `CanvasPersistence.armSettleRelease` and is fed by the same `onWritten`
+    // wiring, so a burst held TWO independent 250 ms windows, not one, and
+    // neither had a ceiling: under sustained co-editing every write pushed both
+    // out again. A repair that bounded only `CanvasPersistence` would have left
+    // this half in place — the measurement would have moved and the mechanism
+    // would not. The cap is measured from the FIRST write of the burst.
+    const openedAt = this.recentDiskWrites.has(path)
+      ? (this.externalWriteWindowOpenedAt.get(path) ?? Date.now())
+      : Date.now();
+    this.externalWriteWindowOpenedAt.set(path, openedAt);
     this.recentDiskWrites.add(path);
     const existing = this.externalWriteSettleTimers.get(path);
     if (existing) clearTimeout(existing);
+    const capRemaining = openedAt + MAX_ECHO_WINDOW_MS - Date.now();
+    const delay = Math.max(0, Math.min(VAULT_EVENT_SETTLE_MS, capRemaining));
     this.externalWriteSettleTimers.set(
       path,
       setTimeout(() => {
         this.externalWriteSettleTimers.delete(path);
+        this.externalWriteWindowOpenedAt.delete(path);
         this.recentDiskWrites.delete(path);
-      }, VAULT_EVENT_SETTLE_MS),
+      }, delay),
     );
   }
 

@@ -49,8 +49,34 @@ import type { DurableSeedRefusals } from "./seed-refusal-store";
 
 /** Settle window before unmuting our own write echo. Mirrors VAULT_EVENT_SETTLE_MS
  * (utils.ts) but inlined to keep this module free of the Obsidian-importing utils
- * module. Purely mechanical echo suppression — NOT a correctness mechanism. */
+ * module.
+ *
+ * Mechanical echo suppression: it exists so a burst of flushes takes and releases
+ * the mute ONCE instead of N times, not so the mute can decide whose write an
+ * event belongs to. Until WP91 this sentence read "NOT a correctness mechanism",
+ * and that was false on the capture side: the mute it holds was the only thing
+ * standing between a user's `.canvas` save and the doc, and a save landing inside
+ * the window was discarded unread. The decision now belongs to the byte echo
+ * breaker (`canvas-sync.ts` `handleLocalModify`, WP4 AC2), which compares the
+ * file's bytes against what this writer last put there. */
 const DISK_WRITE_SETTLE_MS = 250;
+
+/**
+ * WP91 (C91 AC5) — the ABSOLUTE ceiling on one continuous mute, measured from the
+ * FIRST write of a burst rather than from the last.
+ *
+ * `armSettleRelease` clears and re-arms on every write, so before WP91 the number
+ * above was not the window a reader got: a stream of remote changes re-armed it
+ * indefinitely and the mute had no ceiling at all — exactly the case the product
+ * exists to serve. The cap makes the documented number computable again from the
+ * two constants this module already depends on:
+ *
+ *   MAX_WAIT_MS (500, the flush debounce cap) + DISK_WRITE_SETTLE_MS (250) = 750
+ *
+ * The cap is NOT the fix. Discrimination is content identity, one seam upstream;
+ * this only stops the window from being a function of peer activity.
+ */
+const MAX_MUTE_MS = MAX_WAIT_MS + DISK_WRITE_SETTLE_MS;
 
 /**
  * Injected file I/O + echo-suppression seam. Production wires this to the Obsidian
@@ -106,6 +132,13 @@ export interface CanvasPersistenceOpts {
   scheduler?: PersistenceScheduler;
   /** Settle window (ms) before unmuting the write echo. Default 250. */
   settleMs?: number;
+  /**
+   * WP91 (C91 AC5): absolute ceiling (ms) on one continuous mute, measured from
+   * the first write of the burst. Default `MAX_WAIT_MS + DISK_WRITE_SETTLE_MS`.
+   * `Number.POSITIVE_INFINITY` restores the pre-WP91 unbounded re-arm, which is
+   * what AC5's control fixture uses to show the cap is doing the work.
+   */
+  maxMuteMs?: number;
   /** Optional debug logger. */
   logger?: { debug(category: string, message: string): void; warn?(c: string, m: string): void };
   /**
@@ -181,6 +214,7 @@ export class CanvasPersistence {
   private readonly deletedMap: Y.Map<unknown>;
   private readonly scheduler: PersistenceScheduler;
   private readonly settleMs: number;
+  private readonly maxMuteMs: number;
   private readonly logger?: {
     debug(category: string, message: string): void;
     warn?(category: string, message: string): void;
@@ -230,6 +264,11 @@ export class CanvasPersistence {
   // flushes overlap inside one settle window (the normal case: DEBOUNCE_MS=200,
   // MAX_WAIT_MS=500 vs settleMs=250).
   private muteDepth = 0;
+  // WP91 (C91 AC5): `scheduler.now()` at the instant `muteDepth` went 0 → 1, i.e.
+  // the first write of the current burst. `armSettleRelease` measures the cap
+  // from here, never from the write that is re-arming — measuring from the last
+  // write is what gave the window no ceiling.
+  private muteOpenedAt = 0;
 
   constructor(doc: Y.Doc, io: PersistenceIO, diskPath: string, opts: CanvasPersistenceOpts = {}) {
     this.doc = doc;
@@ -240,6 +279,7 @@ export class CanvasPersistence {
     this.deletedMap = doc.getMap<unknown>(DELETED_MAP_NAME);
     this.scheduler = opts.scheduler ?? REAL_SCHEDULER;
     this.settleMs = opts.settleMs ?? DISK_WRITE_SETTLE_MS;
+    this.maxMuteMs = opts.maxMuteMs ?? MAX_MUTE_MS;
     this.logger = opts.logger;
     this.onWritten = opts.onWritten;
     // A rebuilt persistence instance with no shared ledger starts with an EMPTY
@@ -456,17 +496,31 @@ export class CanvasPersistence {
     if (this.muteDepth === 0) {
       this.io.mutePathEvents(this.diskPath);
       this.muteDepth = 1;
+      // WP91 AC5: the burst starts HERE, and the cap is measured from here.
+      this.muteOpenedAt = this.scheduler.now();
     }
   }
 
-  /** (Re)arm the settle window; releases exactly the mute we took, exactly once. */
+  /**
+   * (Re)arm the settle window; releases exactly the mute we took, exactly once.
+   *
+   * WP91 (C91 AC5): the re-arm is BOUNDED. The trailing window is still
+   * `settleMs` from this write, but never past `maxMuteMs` from the first write
+   * of the burst — so a stream of remote changes can no longer hold one
+   * continuous mute for as long as it keeps arriving. When the cap is already
+   * spent the delay clamps to 0 and the mute is released on the next tick, while
+   * writes are still landing; the next write re-acquires and opens a new window,
+   * which is the same take-and-release shape, just with a stated ceiling.
+   */
   private armSettleRelease(): void {
     if (this.settleTimer !== undefined) this.scheduler.clearTimeout(this.settleTimer);
+    const capRemaining = this.muteOpenedAt + this.maxMuteMs - this.scheduler.now();
+    const delay = Math.max(0, Math.min(this.settleMs, capRemaining));
     this.settleTimer = this.scheduler.setTimeout(() => {
       this.settleTimer = undefined;
       this.recentDiskWrite = false;
       this.releaseMute();
-    }, this.settleMs);
+    }, delay);
   }
 
   private releaseMute(): void {

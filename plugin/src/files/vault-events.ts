@@ -229,9 +229,16 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
   plugin.registerEvent(
     plugin.app.vault.on("modify", (file: TAbstractFile) => {
       if (!(file instanceof TFile) || !plugin.manifestManager.isSharedPath(file.path)) return;
-      if (plugin.fileOpsManager.isPathMuted(file.path)) return;
 
       if (isTextFile(file.path)) {
+        // `BackgroundSync`'s OWN 250 ms disk-write window. It is the text
+        // writer's echo guard and it is left exactly where WP6 put it: WP91
+        // did not charter it and no measurement in this run reaches it. It is
+        // recorded rather than removed — a path is only in this set while
+        // `BackgroundSync` is its writer, and the ownership discipline below
+        // forbids that for a canvas-owned path, so the only way it can stand in
+        // front of the canvas branch is the ≤ 250 ms window in which a
+        // text-owned path is handed over to `CanvasSync`.
         if (plugin.backgroundSync.isRecentDiskWrite(file.path)) return;
         // WP6 / US5 AC3+AC4: ONE ownership predicate, evaluated once per event.
         // Canvas-owned ⇒ the text path below is UNREACHABLE for this path, no
@@ -240,8 +247,27 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
         // path, i.e. re-create the two-writer race this WP exists to remove.
         const canvasSync = plugin.canvasSync;
         if (canvasSync && canvasOwned(file.path, canvasSync)) {
+          // WP91 (C91 AC1) — THE MUTE AND THE DISK-WRITE WINDOW ARE NOT ASKED HERE.
+          //
+          // Both used to stand in front of this call: `isPathMuted` above (a bare
+          // per-path refcount) and `canvasSync.isRecentDiskWrite` inside the
+          // condition (a 250 ms window re-armed on every write). Neither has a
+          // term for the bytes, so for a canvas-owned path they answered "our own
+          // echo" for a real user save that merely arrived while the window was
+          // open — the save was discarded before the file was ever read, with no
+          // receipt of any kind. Measured: LOST 11/12 at a 0.5-0.8 s delta.
+          //
+          // The discriminator this event actually admits is content identity, and
+          // it already exists: `handleLocalModify`'s byte echo breaker (WP4 AC2),
+          // which reads the file and compares it against `lastWrittenContent`.
+          // It is exact, it has no window, and it is strictly stronger than either
+          // timer. So the canvas branch is decided THERE, on the bytes, and every
+          // decline it takes is counted and named (`CAPTURE DECLINED:`).
+          //
+          // The mute itself is untouched and still governs every other consumer:
+          // it moves DOWN to the text branch and to the binary branch below, which
+          // is where it remains the only answer available.
           if (
-            !canvasSync.isRecentDiskWrite(file.path) &&
             // Phase 3 (SPEC_04 §4): when the CanvasBinding path is ON, local canvas
             // edits are captured model→CRDT by the bridge's interaction-signal
             // capture (SPEC_02 §4) — NOT by re-reading the .canvas file. Skipping the
@@ -253,6 +279,7 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
           }
           return;
         }
+        if (plugin.fileOpsManager.isPathMuted(file.path)) return;
         // Not canvas-owned: the text path runs exactly as before. For a `.canvas`
         // that means the announced raw-text fallback (US5 AC5) — a canvas synced
         // through character-merge, but exclusively, never alongside CanvasSync.
@@ -262,6 +289,7 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
         void plugin.backgroundSync.handleLocalTextModify(file.path);
         return;
       }
+      if (plugin.fileOpsManager.isPathMuted(file.path)) return;
       void plugin.fileOpsManager.onFileModify(file);
       if (plugin.settings.role === "host") {
         void (async () => {

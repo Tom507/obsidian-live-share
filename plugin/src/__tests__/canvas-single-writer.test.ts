@@ -569,6 +569,18 @@ describe("WP6 / US5 AC3+AC4+AC6 — canvas ownership predicate and dispatch matr
     expect(r.handleLocalTextModify).toHaveBeenCalledTimes(0);
   });
 
+  // WP91 (C91 AC1) — ENUMERATED AMENDMENT, one assertion, and it is the only
+  // pre-existing assertion this work package changes.
+  //
+  // This row asserted `handleLocalModify` was called ZERO times while
+  // `CanvasSync.isRecentDiskWrite` answered true. That is the router half of the
+  // defect WP91 removes: the 250 ms window was re-armed on every write of a
+  // burst, so a real user save landing inside it was discarded before the file
+  // was ever read (measured LOST 11/12 at a 0.5-0.8 s delta, no receipt on
+  // either side). The router no longer consults the window; the byte compare in
+  // `handleLocalModify` decides, and for a genuine echo it declines there with
+  // `reason=echo`. The router-level outcome the AC actually owns is UNCHANGED
+  // and is still asserted below: the echo is never redirected to the text path.
   it("AC6 case 2 — subscribed, CanvasSync's own disk-write echo → NEITHER", () => {
     const r = makeRouter();
     r.canvasSubscribed.add(PATH);
@@ -576,7 +588,9 @@ describe("WP6 / US5 AC3+AC4+AC6 — canvas ownership predicate and dispatch matr
 
     r.emitModify(PATH);
 
-    expect(r.handleLocalModify).toHaveBeenCalledTimes(0);
+    // WP91: routed to the byte compare instead of dropped on a timer. Whether it
+    // captures is decided there, on the bytes — never here, on a window.
+    expect(r.handleLocalModify).toHaveBeenCalledTimes(1);
     // The trap this AC exists for: a naive `else` would send the echo here.
     expect(r.handleLocalTextModify).toHaveBeenCalledTimes(0);
   });
