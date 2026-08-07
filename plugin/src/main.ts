@@ -1286,10 +1286,6 @@ export default class LiveSharePlugin extends Plugin {
     this.syncManager = new SyncManager(this.settings);
     this.collabManager = new CollabManager();
     this.fileOpsManager = new FileOpsManager(this.app.vault, this.app.fileManager);
-    // WP93 (C93 AC4) — WIRING ONLY. `MUTE OVERRUN:` has exactly one emitter, in
-    // `files/file-ops.ts`; this is the only thing that gives it somewhere to
-    // say it.
-    this.fileOpsManager.setLogger(this.logger);
     this.sessionManager = new SessionManager(this);
     this.manifestManager = new ManifestManager(this.app.vault, this.settings);
     this.authManager = new AuthManager(this);
@@ -1319,6 +1315,20 @@ export default class LiveSharePlugin extends Plugin {
     // attached, but only reports `AWARENESS GAP:` once one is. Attached here, right after
     // the DebugLogger exists, because SyncManager is constructed before it.
     this.syncManager.setLogger(this.logger);
+    // WP93 (C93 AC4) — WIRING ONLY. `MUTE OVERRUN:` has exactly one emitter, in
+    // `files/file-ops.ts`; this is the only thing that gives it somewhere to
+    // say it.
+    //
+    // S104: this line used to sit beside the `new FileOpsManager(...)` above,
+    // which is FIFTEEN LINES ABOVE `this.logger` being assigned — so the
+    // manager was handed `undefined` and, since nothing calls `setLogger` on it
+    // again, kept `undefined` for the plugin's whole life. `logger!` suppressed
+    // the compiler and `this.logger?.warn(...)` suppressed the crash, so BOTH
+    // of this manager's signatures — `MUTE OVERRUN:` and `PROTECTED PATH
+    // REFUSED: arm=apply-remote-op` — were unreachable in every real session
+    // this project has ever run. It lives here now for the same reason
+    // `syncManager` above does: after the sink exists, not before.
+    this.fileOpsManager.setLogger(this.logger);
     this.connectionStateUnsub = this.connectionState.onChange(() => this.updateStatusBar());
 
     this.registerEditorExtension(this.collabManager.getBaseExtension());
