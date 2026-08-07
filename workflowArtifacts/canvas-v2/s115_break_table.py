@@ -24,6 +24,8 @@ CONFLICT = PLUGIN / "src" / "files" / "conflict-copy.ts"
 MIRROR = PLUGIN / "src" / "files" / "canvas-mirror.ts"
 YTEXT = PLUGIN / "src" / "files" / "ytext-history.ts"
 SYNC = PLUGIN / "src" / "sync" / "sync.ts"
+COLLAB = PLUGIN / "src" / "editor" / "collab.ts"
+COLLABDEC = PLUGIN / "src" / "editor" / "collab-bind-decision.ts"
 
 TESTS = [
     "src/__tests__/v2/ux01/test_s115_stale_reconcile_is_scoped_by_the_host.test.ts",
@@ -36,6 +38,7 @@ TESTS = [
     "src/__tests__/v2/wp101/test_s123_canvas_mirror_race.test.ts",
     "src/__tests__/dataloss/test_s126_a_real_delete_reaches_a_closed_note.test.ts",
     "src/__tests__/v2/wp103/test_s128_waitforsync_says_why.test.ts",
+    "src/__tests__/dataloss/test_s129_opening_a_note_cannot_empty_it.test.ts",
 ]
 
 # (id, acceptance criterion, description, [(file, old, new), ...])
@@ -358,6 +361,47 @@ BREAKS = [
           "    this.syncResolution.delete(filePath);",
           "    void filePath;")],
     ),
+    # ---- S129 / WP104 : opening a note cannot empty it ----
+    (
+        "B38",
+        "S129 AC1",
+        "the expiry falls through to the bind again (THE DEFECT)",
+        [(COLLAB,
+          "      if (verdict.decision !== COLLAB_BIND.BIND) {",
+          "      if (false) {")],
+    ),
+    (
+        "B39",
+        "S129 AC1",
+        "an unproven emptiness is decided as proven",
+        [(COLLABDEC,
+          "    decision: COLLAB_BIND.REFUSE_UNPROVEN_EMPTY,",
+          "    decision: COLLAB_BIND.BIND,")],
+    ),
+    (
+        "B40",
+        "S129 AC3",
+        "the host re-seeds over a document somebody emptied (undoing the delete)",
+        [(COLLABDEC,
+          "  return !observation.docHeldContent;",
+          "  return true;")],
+    ),
+    (
+        "B41",
+        "S129 AC2",
+        "the recovery watcher never fires, so a refused note never starts syncing",
+        [(COLLAB,
+          "      if (fired || text.length === 0) return;",
+          "      return;")],
+    ),
+    (
+        "B42",
+        "S129 AC5",
+        "refusals stop being recorded, so the fail-safe becomes unobservable",
+        [(COLLABDEC,
+          "  refusedPaths.add(path);",
+          "  void path;")],
+    ),
 ]
 
 
@@ -396,7 +440,7 @@ def main():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT, MIRROR, YTEXT, SYNC}
+    targets = {MAIN, MANIFEST, BGSYNC, CONFLICT, MIRROR, YTEXT, SYNC, COLLAB, COLLABDEC}
     baseline_sha = {p: sha256(p) for p in targets}
 
     print("=== BASELINE (no break) ===")

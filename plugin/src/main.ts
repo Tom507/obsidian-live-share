@@ -39,6 +39,7 @@ import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
 import { conflictsRootFor, getConflictCopies } from "./files/conflict-copy";
+import { getCollabBindRefusals } from "./editor/collab-bind-decision";
 import { getEmptyWriteRefusals } from "./files/empty-write-guard";
 import {
   type CanvasPersistence,
@@ -1340,6 +1341,13 @@ export default class LiveSharePlugin extends Plugin {
     // attached, but only reports `AWARENESS GAP:` once one is. Attached here, right after
     // the DebugLogger exists, because SyncManager is constructed before it.
     this.syncManager.setLogger(this.logger);
+    // S129 AC5 — a refused bind leaves the buffer untouched, which from outside
+    // is indistinguishable from "nothing happened", so it has to be logged.
+    // Wired HERE, below the `DebugLogger` assignment, and not beside
+    // `new CollabManager()` where it started: S104's guard caught that the
+    // first placement handed a consumer `this.logger` before it existed. The
+    // guard was right and the placement was wrong.
+    this.collabManager.setLogger(this.logger);
     // WP93 (C93 AC4) — WIRING ONLY. `MUTE OVERRUN:` has exactly one emitter, in
     // `files/file-ops.ts`; this is the only thing that gives it somewhere to
     // say it.
@@ -3232,6 +3240,11 @@ export default class LiveSharePlugin extends Plugin {
     } catch {
       /* an unobserve on a destroyed doc is not an error worth surfacing */
     }
+  }
+
+  /** S129 AC5 — notes this peer is NOT collaborating on, and why, for a live validator. */
+  getCollabBindRefusals(): { total: number; paths: string[] } {
+    return getCollabBindRefusals();
   }
 
   /** S123 AC5 — the last mirror pass's per-path verdicts, for a live validator. */

@@ -777,6 +777,8 @@ export interface E2EControlHost {
   conflictCopies?(): unknown;
   /** S123 AC5 — the last canvas mirror pass's per-path verdicts. */
   canvasMirror?(): unknown;
+  /** S129 AC5 — paths this peer refused to bind to an unproven-empty document. */
+  collabBindRefusals?(): unknown;
 }
 
 /**
@@ -1116,6 +1118,14 @@ export async function routeCommand(
       }
       // S119 AC5 — refused empty writes. Same shape and same reason as the
       // protected-path ledger beside it: a refusal leaves no other trace.
+      // S129 AC5 — notes this peer refused to bind because the shared document
+      // had not arrived. Invisible otherwise: the buffer is simply unchanged.
+      case "collab.bindRefusals": {
+        if (typeof host.collabBindRefusals !== "function") {
+          throw new Error("collab.bindRefusals unavailable on this host");
+        }
+        return ok(host.collabBindRefusals());
+      }
       // S123 AC5 — WHY a canvas did or did not materialise on THIS peer, per
       // path. The report already existed and was discarded at the call site;
       // W4 spent two rounds unable to see past "timed out at 45 s".
@@ -1520,6 +1530,8 @@ export interface E2EPluginLike {
   getConflictCopies?: () => { total: number; byArm: Record<string, number>; failed: number };
   /** S123 AC5 — the last canvas mirror report, or null if no pass has run. */
   getLastCanvasMirrorReport?: () => unknown;
+  /** S129 AC5 — the collab bind refusal ledger. */
+  getCollabBindRefusals?: () => { total: number; paths: string[] };
   /**
    * WP82 (AC2/AC3) — the real per-link report and the real break seam, invoked.
    * All three are optional so every hand-rolled fake plugin in the existing
@@ -2276,6 +2288,13 @@ export function buildPluginHost(
         );
       }
       return manager.getMuteReleaseStats();
+    },
+
+    collabBindRefusals() {
+      if (typeof plugin.getCollabBindRefusals !== "function") {
+        throw new Error("collab.bindRefusals unavailable: this instance exposes no bind ledger");
+      }
+      return plugin.getCollabBindRefusals();
     },
 
     canvasMirror() {

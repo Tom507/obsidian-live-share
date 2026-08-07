@@ -81,6 +81,11 @@ function createMockView() {
     dispatch: vi.fn(),
     state: {
       doc: {
+        // S129 — the real CodeMirror `doc` has a `length`, and the bind
+        // decision reads it. A double without it reported `undefined`, which
+        // is neither 0 nor a number, and the guard correctly refused — the
+        // double was incomplete, not the code.
+        length: "local content".length,
         toString: () => "local content",
       },
       selection: {
@@ -93,11 +98,16 @@ function createMockView() {
 function createMockSyncManager(opts?: {
   returnNull?: boolean;
   textLength?: number;
+  /** S129 — why sync resolved; `PEER_STATE` licenses a bind over an empty doc. */
+  resolution?: string | null;
 }) {
   const text = {
     length: opts?.textLength ?? 0,
     insert: vi.fn(),
     delete: vi.fn(),
+    // S129 — the real `Y.Text` is observable; the recovery watcher uses it.
+    observe: vi.fn(),
+    unobserve: vi.fn(),
     toString: () => (opts?.textLength ? "remote" : ""),
   };
   const doc = {
@@ -114,6 +124,9 @@ function createMockSyncManager(opts?: {
       return { doc, text, awareness };
     }),
     waitForSync: vi.fn(async () => {}),
+    // S129 — the real `SyncManager` always has this; a double without it made
+    // every guest activation throw rather than decide.
+    getSyncResolution: vi.fn(() => opts?.resolution ?? null),
     _text: text,
     _doc: doc,
     _awareness: awareness,
@@ -197,6 +210,22 @@ describe("CollabManager", () => {
       await collab.activateForFile(view as any, "test.md", syncManager as any);
 
       expect(syncManager._text.insert).not.toHaveBeenCalled();
+    });
+
+    it("does not seed content when a guest BINDS over a legitimately empty doc", async () => {
+      // S129 — the two rows above still assert "a guest never seeds", but since
+      // S129 they reach that conclusion via the REFUSAL path (an unproven-empty
+      // document is not bound at all). This row preserves the original
+      // property on the path they used to take: a peer answered, so the empty
+      // document is a FACT, the guest binds — and still does not seed.
+      const view = createMockView();
+      const syncManager = createMockSyncManager({ textLength: 0, resolution: "peer-state" });
+
+      await collab.activateForFile(view as any, "test.md", syncManager as any, "guest");
+
+      expect(syncManager._text.insert).not.toHaveBeenCalled();
+      // …and it genuinely bound, so the row is not a second copy of the refusal.
+      expect(view.dispatch).toHaveBeenCalled();
     });
 
     it("host does NOT re-seed when Y.Text already has content", async () => {

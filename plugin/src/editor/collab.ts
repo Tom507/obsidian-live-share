@@ -7,7 +7,15 @@ import * as Y from "yjs";
 
 import type { SyncManager } from "../sync/sync";
 import type { Permission, SessionRole } from "../types";
+import { yTextHeldContent } from "../files/ytext-history";
 import { applyMinimalYTextUpdate, normalizeLineEndings, skipsAutoTextSync } from "../utils";
+import {
+  COLLAB_BIND,
+  clearCollabBindRefusal,
+  decideCollabBind,
+  hostMaySeedFromEditor,
+  noteCollabBindRefusal,
+} from "./collab-bind-decision";
 import { conflictExtension } from "./conflict-decoration";
 
 export interface CursorUser {
@@ -22,6 +30,70 @@ export class CollabManager {
   private currentView: EditorView | null = null;
   private currentAwareness: awarenessProtocol.Awareness | null = null;
   private activationGen = 0;
+  /** S129 — one-shot observers on documents whose content had not arrived. */
+  private contentWatchers = new Map<string, () => void>();
+  /** Optional, so every existing construction of this class stays valid. */
+  private logger: { log(category: string, message: string): void } | null = null;
+
+  /** S129 AC5 — wired by `main.ts` so a refusal reaches the debug log. */
+  setLogger(logger: { log(category: string, message: string): void } | null): void {
+    this.logger = logger;
+  }
+
+  /**
+   * S129 — RECOVER ON THE EVENT, NOT ON A RETRY BUDGET.
+   *
+   * S123's lesson at a new site: a refused bind must not need the user to close
+   * and reopen the file. The moment the document gains content, re-activate —
+   * which re-runs the same decision and, this time, binds.
+   *
+   * A bounded wait is still legitimate ABOVE this (a human just opened a file
+   * and the editor cannot stay unconfigured indefinitely), which is the one way
+   * this site differs from S123's background pass. What is not legitimate is
+   * the expiry CONTINUING into the destructive path, and it no longer does.
+   */
+  private watchForContent(
+    view: EditorView,
+    filePath: string,
+    syncManager: SyncManager,
+    role?: SessionRole,
+    permission?: Permission,
+    cursorUser?: CursorUser,
+  ): void {
+    if (this.contentWatchers.has(filePath)) return;
+    const handle = syncManager.getDoc(filePath);
+    if (!handle) return;
+    const text = handle.text;
+    let fired = false;
+    const onChange = () => {
+      if (fired || text.length === 0) return;
+      fired = true;
+      this.unwatchContent(filePath);
+      clearCollabBindRefusal(filePath);
+      this.logger?.log("collab", `content arrived for ${filePath}; re-activating`);
+      void this.activateForFile(view, filePath, syncManager, role, permission, cursorUser);
+    };
+    // Defensive: the recovery is an ENHANCEMENT to the refusal, never a
+    // precondition for it. A document that cannot be observed still leaves the
+    // buffer intact — it simply will not auto-recover — and must not turn a
+    // fail-safe into a thrown activation.
+    if (typeof text.observe !== "function") return;
+    text.observe(onChange);
+    this.contentWatchers.set(filePath, () => text.unobserve?.(onChange));
+    // It may have landed between the decision and this line.
+    onChange();
+  }
+
+  private unwatchContent(filePath: string): void {
+    const dispose = this.contentWatchers.get(filePath);
+    if (!dispose) return;
+    this.contentWatchers.delete(filePath);
+    try {
+      dispose();
+    } catch {
+      /* unobserve on a destroyed doc is not worth surfacing */
+    }
+  }
 
   getBaseExtension(): Extension {
     return this.compartment.of([]);
@@ -119,14 +191,69 @@ export class CollabManager {
       }
     }
 
-    if (role === "host" && docHandle.text.length === 0) {
+    // S129 — THE FALL-THROUGH, WHICH IS THE DEFECT.
+    //
+    // The loop above is a bounded wait; when it expired this code simply
+    // CONTINUED and handed an empty `Y.Text` to `yCollab`, which makes the
+    // editor buffer match it. Opening a note before its document arrived
+    // emptied the note — on the one path neither empty-write floor covers,
+    // because `background-sync.ts` hands the active file to the editor.
+    //
+    // The evidence is S128's resolution and S126's tombstones, not a longer
+    // timer: a longer timer closes this on the runs that happen to be fast
+    // enough, which is precisely what S123 looked like before its probe became
+    // an event.
+    const docTextLength = docHandle.text.length;
+    // Only consult the history and the resolution when the document is EMPTY —
+    // that is the only case either can change the answer, and it keeps the
+    // common path (a doc that already holds content) free of both.
+    const docHeldContent = docTextLength === 0 ? yTextHeldContent(docHandle.text) : true;
+    if (role !== "host") {
+      const verdict = decideCollabBind({
+        docTextLength,
+        editorBufferLength: view.state.doc.length,
+        resolution: docTextLength === 0 ? syncManager.getSyncResolution(filePath) : null,
+        docHeldContent,
+      });
+      if (verdict.decision !== COLLAB_BIND.BIND) {
+        noteCollabBindRefusal(filePath);
+        this.logger?.log("collab", `bind refused for ${filePath}: ${verdict.reason}`);
+        // The buffer is left EXACTLY as it was: no `yCollab`, so nothing
+        // reconciles the editor against the empty document.
+        this.currentAwareness = null;
+        try {
+          view.dispatch({ effects: this.compartment.reconfigure([]) });
+        } catch {
+          // The view may have been destroyed during the wait.
+        }
+        // AC5 — silently not collaborating is the S114 shape. Say so.
+        new Notice(
+          `Live Share: not syncing "${filePath}" yet — the shared copy has not arrived. ` +
+            "Your text is untouched; it will start syncing when the other peers connect.",
+        );
+        // S123's lesson applied here: recover on the EVENT, not on a retry
+        // budget. The moment the document gains content, re-activate.
+        this.watchForContent(view, filePath, syncManager, role, permission, cursorUser);
+        return;
+      }
+    }
+
+    if (role === "host" && hostMaySeedFromEditor({ docTextLength: docHandle.text.length, docHeldContent })) {
       // Seed only when Y.Text is empty (mirror the guest logic). Force-seeding
       // on every activation would clobber concurrent guest edits whenever the
       // CM6 doc is momentarily stale relative to Y.Text.
+      //
+      // S129 AC3 — additionally gated on the absence of TOMBSTONES. Without
+      // that, a host whose buffer is stale re-inserts content a peer had just
+      // deleted, undoing the deletion: the inverse of S126, and a divergence
+      // nobody asked for. Milder than the guest hole (it resurrects rather than
+      // destroys), but it is a hole and the evidence to close it was free.
       const localContent = normalizeLineEndings(view.state.doc.toString());
       applyMinimalYTextUpdate(docHandle.doc, docHandle.text, localContent);
     }
 
+    // S129 — this path is now collaborating, so it is no longer refused.
+    clearCollabBindRefusal(filePath);
     this.currentAwareness = docHandle.awareness;
     if (cursorUser) {
       docHandle.awareness.setLocalStateField("user", cursorUser);
@@ -151,6 +278,8 @@ export class CollabManager {
 
   deactivateAll(view: EditorView) {
     this.activationGen++;
+    // S129 — watchers describe one session's documents.
+    for (const path of Array.from(this.contentWatchers.keys())) this.unwatchContent(path);
     if (this.currentAwareness) {
       this.currentAwareness.setLocalState(null);
       this.currentAwareness = null;
