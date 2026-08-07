@@ -3229,3 +3229,63 @@ directions is the strongest evidence the ruling had.
 
 **No live vault work · no `data.json` touched · no existing test deleted, weakened, retitled, skipped or
 amended · every commit staged by explicit path.**
+
+---
+
+## ✅ THE WP95 RULING LANDED (`5dcbf26`) — and my verification of it was worthless
+
+### The ruling was applied correctly, and the proof is in which breaks were built
+
+B58 kept **both** properties, as ruled: the prefix property (`stateful` ≠ `state`) now asserts **directly on
+`isSidecarPath`**, where no gate can weaken it; the admission property moved to
+`NEAR_MISS_SHARED = "_liveshare-test/liveshare/stateful/board.canvas"` — same shape, a boundary-less
+`startsWith` still swallows it, ordinary shared space. `NEAR_MISS` itself is **byte-unchanged**.
+
+**It did not delete the ruled rows.** Each got a positive `REFUSED` row with the same two oracles, so
+*"WP95 refuses these"* stays distinguishable from *"nobody tests these any more"*. That distinction is the
+first thing a run loses when it edits tests under pressure.
+
+**BR3 and BR4 are the breaks that matter, and they were built on purpose.** BR3 over-refuses (everything
+protected) → **34 red**, proving the *relocated admission* rows still bite rather than having become
+decoration. BR4 removes `isSidecarPath`'s `/` boundary → **13 red**, proving the *preserved prefix* property
+survived the separation. **Each separated property reddened independently.** That is what makes the split a
+separation rather than a deletion, and it is the strongest falsifiability work of the run.
+
+**5 BEHAVIOURAL, 6 COSMETIC, labelled separately as required.** Two consequences asserted rather than left
+implicit: `.obsidian/snippets/theme.css` is a file **Obsidian loads**, so refusing peer bytes there is
+correct rather than collateral; and **with `sharedFolder` pointed at the config directory that configuration
+now shares nothing at all** — intended, pinned, so nobody later reads the empty result as a bug and "fixes"
+it. The cosmetic six now assert **`arm=file-op-gate`** instead of matching the prose `/refused remote
+rename/` — a match that could not tell *which* guard fired, so deleting WP68's guard outright would have
+read identically.
+
+### 🔴 A THIRD PROPERTY — reported, not folded in
+
+`wp68/tp04:296` exists, by its own comment, so that *"a later edit that moves the rename guard up out of its
+branch reddens something"*. **WP95 did exactly that and it stayed green**, because it only asserts a `create`
+for a sidecar path is refused — still true, now by a different gate. **Its stated intent and its measurement
+have come apart: a green-that-cannot-fail forming, caught while forming.** B58 changed nothing there and
+routed it to me. **Third time today a batch was right to stop.** Ruled: assert which gate. Both fixes sent
+back to B58 with explicit authorisation, including the file that is not its own.
+
+### ⚠️ MY GATE MEASUREMENT WAS TAKEN ON A TREE A SIBLING WAS EDITING
+
+I ran the suite and got **2792 / 2792, 387 / 387, zero failures**, against B58's reported **2791 / 1 failed**.
+**My figure is not quotable and the discrepancy is mine, not B58's.** `git status` shows B58 had already
+edited `wp92/test_tp06` (**+31 / −4**) before my run began — **I measured its in-progress fix, not the
+committed state of `5dcbf26`.**
+
+**This is `S88` landing on the Dispatcher**, one hour after I wrote *"the gate figure is a function of who
+else is typing"* into the workflow file and told three separate batches to watch for it. **The rule is not
+"re-run the gate" — it is "re-run the gate on a tree nobody is editing."** A figure measured during a
+sibling's edit is not a weaker measurement, it is a measurement *of something else*.
+
+Re-measure after B58 reports. **Until then this run has no quotable gate figure.**
+
+### Carried, and NOT chartered under the owner's ruling
+
+`onFileRename`'s **outbound** guard is still `isSidecarPath` alone, so this peer will still *emit* a rename
+under `.obsidian/liveshare/stateful/`. **No live exposure** — a conforming receiver refuses it — so the two
+directions merely no longer share a predicate. **Recorded, not acted on**, per the owner's standing
+instruction that only functionality and reliability are in scope. A10 / A13 / A14 remain **ARGUED and
+undischarged**, which I accept.
