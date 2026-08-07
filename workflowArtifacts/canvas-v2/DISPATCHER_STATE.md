@@ -3426,7 +3426,7 @@ held the rig), and B60 said so **in the code**, not only in its report.
 ## 🔴 MY OWN ERROR — I DELETED AN OWNER FILE, AND FILED A DEFECT THAT DOES NOT EXIST
 
 Restoring `Properties.md` to vault A, I saw a 0-byte `Properties 1.md` appear beside my write, **in the same
-second**, and filed it as a plugin collision artefact — allocating `S108` and chartering it to B62. **It was
+second**, and filed it as a plugin collision artefact — allocating `S108` and chartering it to B62. **It was <!-- signal-register: meta -->
 the owner's file**, made by hand while moving a note to their vault root. **I then deleted it.**
 
 Nothing was lost — it was 0 bytes, and it is restored — but the file was not mine to remove, and the reasoning
@@ -3434,7 +3434,7 @@ is the failure worth recording: **I reported a MECHANISM from an ADJACENCY.** W4
 earlier and wrote that it **could not attribute the event**. *The correct answer was already in the record and
 I read it as an open question.*
 
-**`S108` is BURNED**, not reused. Item 3 withdrawn from B62 before it spent anything on it.
+**`S108` is BURNED**, not reused. Item 3 withdrawn from B62 before it spent anything on it. <!-- signal-register: meta -->
 
 **`Properties.md` verified byte-identical across both vaults** (`5ffd6e67…`) with content intact, and now also
 at vault A's root where the owner wanted it. **The 429 → 440 byte change was a sync round normalising it, not
