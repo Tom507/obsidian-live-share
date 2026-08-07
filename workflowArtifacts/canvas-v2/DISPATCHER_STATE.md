@@ -2881,7 +2881,7 @@ this time, and I checked rather than assumed.
 | **HEAD** | `1e057e9`, branch `fix-bugs-and-raceconditions`, **working tree clean** |
 | **Gate** | `tsc -noEmit -skipLibCheck` **clean** · **2653 / 2653 tests, 370 / 370 files, ZERO failures** |
 | **Baseline quotable** | **yes** — first time this stretch, no *"except the flaky one"* caveat (S74 closed) |
-| **Register** | `check_signal_register.py` clean; next free **S90** |
+| **Register** | `check_signal_register.py` clean; next free **S90** | <!-- signal-register: meta -->
 | **BUILD_SPEC** | **93 live** (WP1–WP83, WP85–WP94; WP84 withdrawn, number not re-used) |
 
 ⚠ **The gate figure carries one caveat that is not a hedge: S88.** `v2/wp93/`'s census tests read the
@@ -2951,3 +2951,59 @@ not WP90. Until a **guest-side or leaf-less** arm runs, the oldest open P0 is no
 
 **Cron `6d2b0853` deleted.** It existed to resume these two at 15:23; they are already running, and a
 scheduled re-send would have interrupted them mid-package.
+
+---
+
+## ✅ WP94 LANDED (`c4ba2f1` · `6125994` · `dc7f1af` · `71951fc`) — S78 closed, and the ordering was *proved*, not asserted
+
+**Verified by me, not quoted:** `tsc -noEmit -skipLibCheck` clean · **2717 / 2717 tests, 378 / 378 files,
+zero failures** (`vitest run`, 42 s, exit 0). Baseline before the package: 2653 / 370. Tree clean.
+
+**A user deleting a card now reaches every peer.** That was S78 — the most severe unowned defect in the
+project — and B55 reproduced its signature *headless* before fixing it: create lands, `handedToView` empty,
+the delete is discarded, telemetry reads `+0 ~0`.
+
+### The ordering constraint was discharged with evidence, which is the part worth copying
+
+I required `Complete` to land **before** the licence widening, because the gate was the only barrier between
+a partial read and total destruction of a board. B55 did not merely commit in that order — it showed that at
+`c4ba2f1` the delete set is a **strict subset** of the pre-WP94 one, from three facts visible in that single
+commit's diff: `receipts` had no producer, the `viewOpen` gate was still standing with a comment naming its
+own removal as the next commit, and `Complete` can only subtract. Full suite green at that commit too
+(2668 / 2668). **An intermediate commit that is safe by construction, and shown to be.**
+
+### Three defects in its own widening, every one found by a test rather than by argument
+
+1. **S90 — receipts accumulated.** Literally *"any past knowledge licenses any future absence"*. **B55's own
+   suite missed it; the WP23 fuzzer caught it** at seed 6221142 — an edge destroyed on all four replicas
+   that no op touched. A deterministic row was added afterwards so the class no longer depends on a seed.
+2. **S91 — WP19 AC3's cascade fed back.** The file is written from `buildCanvasData`, which suppresses an
+   edge whose node is tombstoned; the next capture read that suppression as user intent. **General shape:
+   anything the projection removes for its own reasons is indistinguishable, at the next read, from
+   something the user removed.**
+3. **P3 is not an issuer** — a *measured* deviation from the charter's three-producer scope, not a quiet one.
+   Wiring `noteExternalDiskWrite` reddened `wp91/test_tp05` T2 by destroying a peer's record under a stale
+   editor — **I11 inverted**. AC7's closed board still works, through P2. Deviation accepted.
+
+### Break A reddened nothing, and the disposition is right
+
+Ignoring `parsed.degraded` changed no test because conjunct 1 is **subsumed** by conjunct 3: a parse that
+throws reports both kind keys absent. Kept for naming, pinned at unit level instead, recorded in the test
+header. 13 breaks total, all restored **byte-identical** by copy-aside — never `git checkout`, never `stash`.
+
+### 🔴 My own error, caught by the instrument I built
+
+`check_signal_register.py` went **red on my line**, `DISPATCHER_STATE.md:2884` — a bare `S90` in the pause
+table. I wrote it in `2cd91e4` **and reported "register clean" in the same commit**, having last run the
+check before writing the file the check reads. Same class as the B44 caveat I propagated for two days:
+**a result quoted from before the change it was supposed to cover.** Fixed with the §5 meta marker.
+The instrument caught its author for the second time this run — which is the whole argument for building it.
+
+**S90 and S91 allocated; `NEXT_FREE` → 92; register clean.** B55 correctly allocated **none** itself.
+
+### Still owed
+
+**S82 narrowed, not closed** — the receipt still answers two questions with one value; only the user-visible
+half-apply is gone. **S83 untouched** as instructed, blast radius reduced (P2 lives in `CanvasSync`, outside
+`noteHandover`'s replace-not-merge), mechanism intact and asserted *as not repaired* in `test_ac4`.
+**WP94 has had no live arm** — W4 must exercise a real deletion across two vaults before this is called done.
