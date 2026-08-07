@@ -3441,3 +3441,64 @@ at vault A's root where the owner wanted it. **The 429 → 440 byte change was a
 a truncation** — checked, not assumed.
 
 **Fifth Dispatcher error of the run, and the only one that touched the owner's data.**
+
+---
+
+## 🔴 S105 WITHDRAWN — the rename works. The defect was in the instrument, and it cost two batches.
+
+`FileRenameOp` is `{type, oldPath, newPath}`. **There is no `path` field.** Both of B59's reproductions
+injected `{oldPath, path}`, so `applyRemoteOpInner` read `op.newPath` as `undefined` and threw on
+`normalizePath`. With the **declared** shape the rename **applies in 0.0 s and reaches both vaults** — R2,
+the control that could have failed and did not: source gone, destination present on host *and* peer. The only
+difference between the two rows is the key the destination sat in.
+
+**`S112` is the finding, and it is the most expensive instrument defect of the run.** `fileOpEndpoints` scans
+`["path","oldPath","newPath"]` — **the injector's endpoint reader is more permissive than the code it
+observes.** A rename carrying its destination in `path` therefore looked **well-formed to every observation
+the rig took**: `paths` held two entries, `before`/`after` were read for both, and an earlier arm's rows
+refused on exactly that key. **A reader that accepts fields its subject ignores silently re-types the thing it
+is measuring.**
+
+**What it cost:** a P0-shaped *product* defect that did not exist — reproduced twice, allocated, recorded,
+chartered, and worked by two batches. It is `S109`'s family from the other side: there the reporter could not
+name its subject; here the reader accepted a subject the product would not.
+
+**And it was found only because B62 refused to guess.** Told to fix a rename that does not apply, it said it
+could not find the functional cause and would not infer it from the shape — and repaired the *diagnostics*
+instead. Those four branches are what named this. **A batch that had guessed would have "fixed" the rename
+path and the green would have proved nothing.**
+
+### All four B62 diagnostics confirmed live, including the silent one
+
+| row | shape | applied | branch |
+|---|---|---|---|
+| R1 | `{oldPath, path}` | **no** | `APPLY FAILED: … Cannot read properties of undefined` |
+| R2 | declared | **yes, 0.0 s, both vaults** | *silent* — B62's anti-vacuity assertion holding in production |
+| R3 | declared, source absent | no | `RENAME NOT APPLIED: neither endpoint resolved` |
+| R4 | both endpoints outside the share | no | `rename dropped: no endpoint is a shared path` |
+
+`mutedAfterDispatch` separated gate from apply exactly as B62 predicted — `False` only on R4.
+
+### ✅ S104 CONFIRMED LIVE — `MUTE OVERRUN:` has fired for the first time in this project's history
+
+**18 occurrences** across the two vaults, `held=995ms ceiling=250ms`. B59's earlier contradiction — 89
+overruns counted, 0 lines — is **resolved rather than explained away**.
+
+### S113 — B59's own reader was wrong, and it said so unprompted
+
+Its in-arm log reader was a **bounded 48 s poll** while the clamp ran **54–74 s** behind wall clock, so it
+printed `BRANCH FIRED: none announced` on every row; all three lines were on disk minutes later. Every verdict
+above is read from the **flushed** log, and **the arm's own reader is the source of no claim.** `S65` again,
+new site, margin chosen without reference to the lag. **Caught only because Rule-15 history was 0 for all four
+signatures, so R3 and R4 had to prove the instruments before any silence could be read.**
+
+### The owner's files — final state, and I should have stopped sooner
+
+Their `Properties 1.md` is **at the vault root of BOTH vaults, 429 bytes — the original content, intact.**
+That is the copy they made. `Properties.md` sits in both share folders at 440 bytes, byte-identical across
+vaults (`5ffd6e67…`), content verified. **Nothing of theirs was lost.**
+
+What is gone is only what **I** put there: a 0-byte file I created in A's *share* folder while "restoring"
+something that actually lived at the root, and a redundant root copy. **Both of my two errors here came from
+acting on their vault before establishing where their file actually was** — `find` answered it in one call, and
+I ran that call only after the second mistake. **Stop touching the vault; the state is correct.**
