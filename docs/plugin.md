@@ -11,10 +11,12 @@ cd plugin && npm install && npm run build
 Copy into your vault:
 
 ```bash
-mkdir -p /path/to/vault/.obsidian/plugins/obsidian-live-share
-cp main.js styles.css /path/to/vault/.obsidian/plugins/obsidian-live-share/
-cp manifest.json /path/to/vault/.obsidian/plugins/obsidian-live-share/
+mkdir -p /path/to/vault/.obsidian/plugins/live-share
+cp main.js styles.css /path/to/vault/.obsidian/plugins/live-share/
+cp manifest.json /path/to/vault/.obsidian/plugins/live-share/
 ```
+
+The folder name must match the `id` in `manifest.json`, which is `live-share`.
 
 Enable **Live Share** in **Settings > Community Plugins**.
 
@@ -44,9 +46,16 @@ Open **Settings > Live Share**:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Shared folder | - | Restrict sharing to a subfolder (empty = whole vault) |
+| Shared folder | - | Restrict sharing to a subfolder. Type-ahead over your vault's real folders. **Empty = the whole vault** — see below. |
 | Require approval | `false` | Require host approval before guests can join |
 | Approval timeout | `60` seconds | Auto-deny pending join requests after this duration (0 = no timeout) |
+
+> **What an empty "Shared folder" does.** It is not "unset" and not "share nothing" — every path in the
+> vault is shared, and it is the shipped default. Guests see every note, and their deletions, renames and
+> moves are applied to your vault. Starting a session with the field empty asks for confirmation first.
+>
+> A folder name that does not exist shares **nothing**, silently — the session connects and reports no
+> error. Pick from the suggestions rather than typing, and the value is one that exists.
 
 ### Preferences
 
@@ -59,14 +68,25 @@ Open **Settings > Live Share**:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Debug logging | `false` | Write verbose debug logs to a file in the vault |
-| Debug log path | `live-share-debug.md` | File path for debug output |
+| Debug logging | `false` | Write verbose debug logs to a file |
+| Debug log file | `.obsidian/live-share-debug.md` | Where the log goes. It lives in the **configuration folder, not among your notes**, so it does not appear in the file explorer, search, the graph or Quick Switcher — at the vault root Obsidian indexed an unbounded log as an ordinary note. Clearing the field restores the default. |
+| Debug log location | — | Read-only. Shows the resolved path, how many lines were written this session, and any write failure. An enabled sink that is failing looks exactly like an empty log, so this states which it is. **Copy path** puts it on the clipboard. |
+| Open status console | — | Opens the live log in the sidebar, without a file |
+
+### Canvas
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Show canvas cursors | `true` | Other collaborators' live cursors on shared canvases |
+| Show canvas presence | `true` | Highlight cards others are selecting, editing or holding |
+| Canvas sync engine: V2 node-level binding | `false` | Selects between two whole canvas implementations. **ON** — changes sync node by node through the CRDT binding, so two people can drag different cards at once and an edit to one card does not rewrite the whole file. **OFF** — the legacy path, reconciling the entire canvas file on every change. Both directions (local capture and remote apply) follow the flag together. Close and reopen a canvas after changing it. |
 
 ### Advanced
 
 | Setting | Description |
 |---------|-------------|
-| Excluded patterns | Glob patterns for files to exclude from sync (e.g. `drafts/**`, `*.tmp`) |
+| Excluded patterns | Glob patterns for files to exclude from sync (e.g. `drafts/**`, `*.tmp`). Your configuration folder and `.trash/**` are always excluded; inbound writes into any `.obsidian/` or `.git/` folder are always refused. |
+| Read-only patterns | Glob patterns guests can see but not edit (e.g. `journal/**`, `README.md`). Per-person overrides are set from the collaborators panel. |
 
 When a session is active, the settings page also shows connection state, room ID, encryption status, and session actions.
 
@@ -81,6 +101,7 @@ All commands are in the command palette (Ctrl/Cmd+P, type "Live Share").
 | End session | End the session for all participants | Host |
 | Leave session | Leave the session | Guest |
 | Copy invite link | Copy invite to clipboard | Anyone in session |
+| Retry connection | Re-arm sharing after a peer gave up: re-publishes the manifest and re-subscribes every shared file, without ending the session. Also a button on the settings page. | Anyone in session |
 | Show collaborators panel | Open the presence sidebar | Anyone |
 | Focus participants here | Send "look here" to all participants | Anyone in session |
 | Summon all participants here | Navigate everyone to your cursor position | Host |
@@ -149,7 +170,7 @@ When the host enables presentation mode via **Toggle presentation mode**, every 
 
 - **Text files** (`.md`, `.txt`, `.json`, `.css`, `.js`, `.ts`, `.html`, `.xml`, `.yaml`, `.toml`, `.csv`, etc.): Character-level real-time sync via Yjs
 - **Binary files** (images, PDFs, etc.): Base64 transfer via the control channel with automatic chunking. Max 50 MB per file.
-- **Canvas files** (`.canvas`): Real-time CRDT sync
+- **Canvas files** (`.canvas`): Real-time CRDT sync with per-node presence and node-level conflict resolution. Which engine handles them is set by **Canvas sync engine** above.
 
 ## Cross-Platform Support
 

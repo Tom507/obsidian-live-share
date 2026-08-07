@@ -34,7 +34,12 @@ Enable **Live Share** in **Settings > Community Plugins**.
 
 ### 3. Configure
 
-Open **Settings > Live Share** and set your **Server URL**, **Display name**, and **Shared folder** (leave empty for the whole vault).
+Open **Settings > Live Share** and set your **Server URL**, **Display name**, and **Shared folder**.
+
+> **Set a shared folder.** Leaving it empty shares your **entire vault** — and it is the shipped default.
+> Guests see every note, and their deletions, renames and moves are applied to your vault. Starting a
+> session with no shared folder asks for confirmation first. The field offers your vault's real folders as
+> you type.
 
 ### 4. Collaborate
 
@@ -53,10 +58,24 @@ Open **Settings > Live Share** and set your **Server URL**, **Display name**, an
 - **Kick protection** - Kicked users must be re-approved by the host to rejoin, even when approval is not required
 - **Host transfer** - Hand off the host role to another participant
 - **Presentation mode** - Auto-broadcast your navigation to all participants
-- **Canvas collaboration** - Real-time sync of `.canvas` files
+- **Canvas collaboration** - Real-time sync of `.canvas` files, with per-node presence, live cursors and node-level conflict resolution
 - **Cross-platform support** - Windows filename character mapping for seamless sync between platforms
 - **Offline queue** - File operations are buffered when disconnected and replayed on reconnect
 - **Auto-reconnect** - Optionally rejoin the previous session on startup
+
+## Canvas sync engines
+
+Two implementations of canvas sync ship in the plugin, selected by
+**Settings > Live Share > Canvas sync engine: V2 node-level binding**.
+
+| | OFF (default today) | ON |
+|---|---|---|
+| Remote changes | `reconcileLiveCanvas` rewrites from the whole file | `CanvasBinding.applyRemote`, node by node |
+| Local changes | the `.canvas` file is re-read and diffed | captured from interaction signals, model → CRDT |
+| Two people dragging different cards | serialised through the file | independent |
+
+Close and reopen a canvas after changing this. Both directions follow the flag together — it is not a
+display preference.
 
 ## Commands
 
@@ -67,6 +86,7 @@ Open **Settings > Live Share** and set your **Server URL**, **Display name**, an
 | End session | End the session for all participants | Host |
 | Leave session | Leave the session | Guest |
 | Copy invite link | Copy invite to clipboard | Anyone in session |
+| Retry connection | Re-publish the manifest and re-subscribe every shared file without ending the session | Anyone in session |
 | Show collaborators panel | Open the presence sidebar | Anyone |
 | Focus participants here | Send a "look here" notification | Anyone in session |
 | Summon all participants here | Navigate all users to your cursor | Host |
@@ -92,8 +112,13 @@ Open **Settings > Live Share** and set your **Server URL**, **Display name**, an
 | Approval timeout | `60` | Auto-deny join requests after N seconds (0 = disabled) |
 | Notifications | `true` | Toggle non-critical status notices |
 | Auto-reconnect | `true` | Rejoin previous session on startup |
-| Debug logging | `false` | Write debug logs to a vault file |
+| Debug logging | `false` | Write debug logs to a file in the config folder |
+| Debug log file | `.obsidian/live-share-debug.md` | Where that log goes. Inside `.obsidian/`, so it is **not** indexed into search, the graph or Quick Switcher — it will not appear among your notes. Settings shows the live path, lines written and any write failure. |
+| Show canvas cursors | `true` | Other collaborators' live cursors on shared canvases |
+| Show canvas presence | `true` | Highlight cards others are selecting, editing or holding |
+| Canvas sync engine: V2 node-level binding | `false` | ON syncs canvases node by node through the CRDT binding; OFF reconciles the whole canvas file on every change. See [Canvas sync engines](#canvas-sync-engines). |
 | Excluded patterns | - | Glob patterns for files to exclude from sync |
+| Read-only patterns | - | Glob patterns guests can see but not edit |
 
 ## Server Configuration
 
@@ -138,10 +163,10 @@ See [docs/security.md](docs/security.md) for the full threat model.
 ## Development
 
 ```bash
-# Server: 108 tests
+# Server: 149 tests
 cd server && npm run dev && npm test && npm run lint
 
-# Plugin: 310 tests
+# Plugin: 2829 tests
 cd plugin && npm run dev && npm test && npm run lint
 ```
 
