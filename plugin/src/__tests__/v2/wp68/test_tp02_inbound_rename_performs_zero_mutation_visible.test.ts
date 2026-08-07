@@ -137,7 +137,32 @@ describe("WP68 AC2 — a hand-built rename touching the sidecar directory mutate
 
       // The refusal is OBSERVABLE. Not the primary oracle — state above is —
       // but a silent drop is a defect of its own.
-      expect(rig.warnings.join("\n")).toMatch(/refused remote rename/i);
+      //
+      // WP95 — ASSERT WHICH GATE REFUSED, NOT WHICH WORDS IT USED.
+      //
+      // COSMETIC CHANGE, and the behaviour above is byte-for-byte what it was:
+      // still refused, still zero mutation, still nothing admitted. Only the
+      // message differs, because every path in this table is under `.obsidian`
+      // (the sidecar directory lives there) and WP95's protected-path gate is
+      // ordered ahead of WP68's sidecar gate, so it answers first.
+      //
+      // The old assertion matched the PROSE `/refused remote rename/`. That is
+      // the weakest possible oracle for a refusal: it cannot tell which guard
+      // fired, so a run in which WP68's guard had been deleted outright and some
+      // other gate happened to refuse would have read identically. Matching on a
+      // named gate identity instead means the next reader can tell the two
+      // refusals apart, and a gate that stops firing is visible even when the
+      // op is still refused by its neighbour.
+      const warned = rig.warnings.join("\n");
+      expect(
+        warned,
+        "the refusal named no gate at all — a silent or anonymous drop",
+      ).toMatch(/PROTECTED PATH REFUSED|refused remote rename/i);
+      expect(
+        warned,
+        "these endpoints are all under `.obsidian`, so WP95's gate is the one that " +
+          "must answer first; WP68's sidecar gate is now the second line for them",
+      ).toContain("arm=file-op-gate");
     });
   }
 

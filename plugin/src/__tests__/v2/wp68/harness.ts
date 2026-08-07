@@ -61,6 +61,27 @@ export const SIDECAR_STORE = `${SIDECAR_DIR}/${SEED_REFUSAL_STORE_FILENAME}`;
  * `startsWith` on the bare directory (no `/` boundary) would swallow it.
  */
 export const NEAR_MISS = `${SIDECAR_DIR}ful/board.canvas`;
+/**
+ * WP95 — THE SAME NEAR-MISS SHAPE, OUTSIDE THE PROTECTED TREE.
+ *
+ * {@link NEAR_MISS} carries TWO properties that were conflated until WP95 forced
+ * them apart, and only the first of them was ever really about this fixture:
+ *
+ *   1. `isSidecarPath` does not prefix-over-match — `stateful` is not `state`.
+ *      STILL TRUE, still asserted on {@link NEAR_MISS} directly, and the reason
+ *      that constant stays exactly as it was.
+ *   2. such a path is ADMITTED across the file-op boundary. That was only ever
+ *      true BECAUSE THE GUARD WAS NARROW: `.obsidian/liveshare/stateful/…` lies
+ *      inside `.obsidian`, which WP95 protects in full. Asserting admission
+ *      there is the defect written down as the specification.
+ *
+ * So the admission rows move here. This path is a near miss in the shape that
+ * matters to them — it ends in `liveshare/stateful/` and would be swallowed by a
+ * boundary-less `startsWith` just the same — while lying in ordinary shared
+ * space, so it exercises "a path that merely LOOKS like replica state still
+ * travels" without asserting anything WP95 has made false.
+ */
+export const NEAR_MISS_SHARED = "_liveshare-test/liveshare/stateful/board.canvas";
 
 /** An ordinary shared note. */
 export const SHARED_NOTE = "_liveshare-test/hello.md";

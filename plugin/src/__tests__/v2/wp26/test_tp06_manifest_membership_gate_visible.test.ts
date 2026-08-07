@@ -28,6 +28,7 @@ import * as Y from "yjs";
 
 import {
   SIDECAR_DIR,
+  isSidecarPath,
   sidecarCheckpointPath,
   sidecarHistoryPath,
   sidecarIndexPath,
@@ -139,8 +140,25 @@ describe("WP26 AC1 — a sidecar path is never a shared path", () => {
     for (const path of SIDECAR_PATHS) {
       expect(manager.isSharedPath(path), path).toBe(false);
     }
-    // POSITIVE CONTROL — the shared folder itself still admits its own content.
-    expect(manager.isSharedPath(".obsidian/snippets/theme.css")).toBe(true);
+    // ---------------------------------------------------------------- WP95 --
+    // BEHAVIOURAL CHANGE, RULED. The positive control here used to be
+    // `.obsidian/snippets/theme.css`, asserting that pointing `sharedFolder` at
+    // the config directory re-admits its ordinary content. That is now FALSE and
+    // must be: a CSS snippet under `.obsidian` is loaded by Obsidian, so
+    // peer-supplied bytes there are the same class of surface as `main.js`.
+    //
+    // A CONSEQUENCE WORTH NAMING RATHER THAN HIDING IN A DIFF: with
+    // `sharedFolder` set to the config directory, this configuration now shares
+    // NOTHING AT ALL — every path it admits is inside the protected tree. That
+    // is the intended outcome, and it is asserted here explicitly so nobody
+    // later reads the empty result as a bug and "fixes" it.
+    expect(manager.isSharedPath(".obsidian/snippets/theme.css")).toBe(false);
+    expect(manager.isSharedPath(".obsidian/plugins/live-share/data.json")).toBe(false);
+    // POSITIVE CONTROL — `isSharedPath` is still a filter and not a wall. It has
+    // to be taken on a manager whose `sharedFolder` admits something outside the
+    // protected tree, because THIS one, by construction, no longer does.
+    const ordinary = new ManifestManager(createVault() as any, createSettings());
+    expect(ordinary.isSharedPath("notes/hello.md")).toBe(true);
   });
 
   it("keeps excluding the default-config-dir case that already worked (characterisation)", () => {
@@ -157,14 +175,34 @@ describe("WP26 AC1 — a sidecar path is never a shared path", () => {
   });
 
   it("does not swallow near-miss siblings of the sidecar directory", () => {
-    const manager = new ManifestManager(
-      createVault() as any,
-      createSettings({ sharedFolder: ".obsidian" }),
-    );
+    // ---------------------------------------------------------------- WP95 --
+    // BEHAVIOURAL CHANGE, RULED — and the property this case exists for is
+    // PRESERVED, not dropped. It was conflating two things:
+    //
+    //   1. `isSidecarPath` must not prefix-over-match: `stateful` is not
+    //      `state`, and `.obsidian/liveshare/notes.md` is not inside
+    //      `.obsidian/liveshare/state/`. THIS is what "does not swallow" means,
+    //      it is a fact about the PREDICATE, and it is still true.
+    //   2. such a path is therefore SHARED. That followed only while the sidecar
+    //      predicate was the only thing `isSharedPath` consulted about this
+    //      tree. It no longer follows, because `.obsidian` is protected in full.
+    //
+    // Property 1 is now asserted directly on the predicate, where no gate can
+    // weaken it. Property 2 moves to a path with the same near-miss SHAPE
+    // outside the protected tree, so the membership gate is still shown to admit
+    // something that merely looks like replica state.
+    expect(isSidecarPath(`${SIDECAR_DIR}ful/notes.md`), "prefix over-match").toBe(false);
+    expect(isSidecarPath(".obsidian/liveshare/notes.md"), "prefix over-match").toBe(false);
+    // POSITIVE CONTROL on the predicate: it does say `true` to something.
+    expect(isSidecarPath(`${SIDECAR_DIR}/notes.md`)).toBe(true);
 
-    expect(manager.isSharedPath(`${SIDECAR_DIR}ful/notes.md`)).toBe(true);
-    // The directory itself names no file; the predicate's contract stops there.
-    expect(manager.isSharedPath(".obsidian/liveshare/notes.md")).toBe(true);
+    const manager = new ManifestManager(createVault() as any, createSettings());
+    expect(manager.isSharedPath("notes/liveshare/stateful/board.canvas")).toBe(true);
+    expect(manager.isSharedPath("notes/liveshare/notes.md")).toBe(true);
+    // And the ruled half, asserted positively so the change is visible in both
+    // directions rather than only as two deleted lines.
+    expect(manager.isSharedPath(`${SIDECAR_DIR}ful/notes.md`)).toBe(false);
+    expect(manager.isSharedPath(".obsidian/liveshare/notes.md")).toBe(false);
   });
 });
 

@@ -55,6 +55,7 @@ const { isSidecarPath } = await import("../../../files/canvas-sidecar");
 const {
   DEEP_NOTE,
   NEAR_MISS,
+  NEAR_MISS_SHARED,
   SHARED_CANVAS,
   SHARED_NOTE,
   SIDECAR_INDEX,
@@ -63,6 +64,7 @@ const {
 } = await import("./harness");
 
 const NEAR_MISS_SIBLING = NEAR_MISS.replace("board.canvas", "notes/other.md");
+const NEAR_MISS_SHARED_SIBLING = NEAR_MISS_SHARED.replace("board.canvas", "notes/other.md");
 const SIDECAR_INDEX_BACKSLASH = SIDECAR_INDEX.replace(/\//g, "\\");
 const DEEP_NOTE_BACKSLASH = DEEP_NOTE.replace(/\//g, "\\");
 
@@ -72,6 +74,9 @@ const DISK = {
   [DEEP_NOTE]: "deep",
   [NEAR_MISS]: '{"nodes":[],"edges":[]}',
   [NEAR_MISS_SIBLING]: "near miss sibling",
+  // WP95 — the same two shapes in ordinary shared space, for the admission rows.
+  [NEAR_MISS_SHARED]: '{"nodes":[],"edges":[]}',
+  [NEAR_MISS_SHARED_SIBLING]: "near miss sibling",
   [SIDECAR_INDEX]: "{}",
 };
 
@@ -222,12 +227,30 @@ describe("WP68 AC4 — INBOUND: every non-sidecar rename is still admitted and s
     rig = createInboundRig(registerControlHandlers, DISK);
   });
 
+  // ------------------------------------------------------------------ WP95 --
+  // THE TWO `.obsidian`-ROOTED NEAR-MISS ROWS MOVED OUT OF THIS TABLE, and the
+  // move is a RULED BEHAVIOUR CHANGE rather than a test repair.
+  //
+  // They used to assert that `.obsidian/liveshare/stateful/board.canvas` is
+  // admitted inbound and its bytes moved. That was true only because the inbound
+  // guard was `isSidecarPath` — one directory — while the surface its own
+  // comment named was `.obsidian/**`. WP95 protects that tree in full, so the
+  // old rows asserted the defect. The Dispatcher ruled WP95 wins.
+  //
+  // NOTHING IS LOST. The prefix property those rows were chosen for is a fact
+  // about the PREDICATE, not about admission, and it is asserted directly in the
+  // first describe block above (`isSidecarPath(NEAR_MISS) === false`), where it
+  // cannot be weakened by any gate. The admission property moves to
+  // `NEAR_MISS_SHARED`, which has the same near-miss shape — a boundary-less
+  // `startsWith` still swallows it — in ordinary shared space. Both properties
+  // survive; only their conflation is gone. The refused half is pinned
+  // immediately below this loop, so the change is asserted in BOTH directions.
   const admitted: Array<[string, string, string]> = [
     ["an ordinary note", SHARED_NOTE, "_liveshare-test/renamed.md"],
     ["a shared .canvas", SHARED_CANVAS, "_liveshare-test/renamed.canvas"],
     ["a deep path", DEEP_NOTE, "_liveshare-test/a/b/c/d/e/f/deeper.md"],
-    ["the near miss (a .canvas under `…/stateful/`)", NEAR_MISS, `${NEAR_MISS}.bak`],
-    ["a near-miss sibling deeper in", NEAR_MISS_SIBLING, "_liveshare-test/recovered.md"],
+    ["the near miss (a .canvas under `…/stateful/`)", NEAR_MISS_SHARED, `${NEAR_MISS_SHARED}.bak`],
+    ["a near-miss sibling deeper in", NEAR_MISS_SHARED_SIBLING, "_liveshare-test/recovered.md"],
     ["the backslash spelling", DEEP_NOTE_BACKSLASH, "_liveshare-test/from-backslash.md"],
   ];
 
@@ -240,6 +263,32 @@ describe("WP68 AC4 — INBOUND: every non-sidecar rename is still admitted and s
         true,
       );
       expect(rig.vault.journal.some((entry) => entry.startsWith("rename "))).toBe(true);
+    });
+  }
+
+  // WP95 — THE OTHER HALF OF THE RULING, ASSERTED POSITIVELY.
+  //
+  // Deleting the two rows above without pinning what replaced them would leave
+  // the suite unable to tell "WP95 refuses these" from "nobody tests these any
+  // more", which is the failure mode a test change is most likely to hide. So
+  // the `.obsidian`-rooted near miss keeps its own row — with the opposite
+  // verdict, and with the SAME two oracles.
+  for (const [label, oldPath, newPath] of [
+    ["the near miss, now inside the protected tree", NEAR_MISS, `${NEAR_MISS}.bak`],
+    ["its sibling deeper in", NEAR_MISS_SIBLING, "_liveshare-test/recovered.md"],
+    ["out of the protected tree is refused too — both endpoints", NEAR_MISS, SHARED_NOTE],
+  ] as Array<[string, string, string]>) {
+    it(`REFUSED by WP95 (${label}) — it is under \`.obsidian\`, whatever the sidecar predicate says`, async () => {
+      // The premise, measured rather than recalled: this path is NOT a sidecar
+      // path, so WP68's guard does not see it. The refusal below is therefore
+      // attributable to WP95's predicate and to nothing else.
+      expect(isSidecarPath(oldPath) || isSidecarPath(newPath)).toBe(false);
+
+      await rig.deliver({ type: "rename", oldPath, newPath });
+
+      expect(rig.admitted, `${oldPath} -> ${newPath} was admitted`).toEqual([]);
+      expect(rig.vault.journal, "the refusal mutated the vault").toEqual([]);
+      expect(rig.warnings.join("\n")).toContain("PROTECTED PATH REFUSED");
     });
   }
 

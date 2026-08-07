@@ -139,7 +139,21 @@ describe("WP90 AC5 — no peer can read, write or even learn of the durable refu
       createSettings({ sharedFolder: ".obsidian" }),
     );
     expect(inside.isSharedPath(STORE)).toBe(false);
-    expect(inside.isSharedPath(".obsidian/notes/hello.md"), "positive control").toBe(true);
+    // ---------------------------------------------------------------- WP95 --
+    // BEHAVIOURAL CHANGE, RULED. The positive control was
+    // `.obsidian/notes/hello.md`, which asserted that configuration 3 re-admits
+    // the config subtree's ordinary content. `.obsidian` is now protected in
+    // full, so that is false — and this configuration therefore admits NOTHING,
+    // which is the intended outcome and is stated here rather than left as a
+    // deletion for the next reader to puzzle over.
+    expect(inside.isSharedPath(".obsidian/notes/hello.md")).toBe(false);
+    // The positive control still has to exist — without one, all three rows
+    // above are satisfied by a predicate that always answers `false`, which is
+    // exactly the vacuity this file was written to avoid. It moves to a manager
+    // whose `sharedFolder` admits something outside the protected tree, because
+    // configuration 3 by construction no longer can.
+    const ordinary = new ManifestManager(createVault() as never, createSettings());
+    expect(ordinary.isSharedPath("notes/hello.md"), "positive control").toBe(true);
   });
 
   it("TEXT SYNC — the store is never given a raw Y.Text document of its own", () => {
