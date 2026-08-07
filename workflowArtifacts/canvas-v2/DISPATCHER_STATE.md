@@ -3289,3 +3289,70 @@ under `.obsidian/liveshare/stateful/`. **No live exposure** — a conforming rec
 directions merely no longer share a predicate. **Recorded, not acted on**, per the owner's standing
 instruction that only functionality and reliability are in scope. A10 / A13 / A14 remain **ARGUED and
 undischarged**, which I accept.
+
+---
+
+## ✅ WP95 COMPLETE (`2aabc4c` · `5dcbf26` · `baa9aa0`) — and the gate has a quotable figure again
+
+### 📏 THE FIGURE, measured the way the rule actually requires
+
+`git status` **before** the run, `git status` **after**, diffed — **identical and empty**. Only then:
+
+| | |
+|---|---|
+| **HEAD** | `baa9aa0`, working tree **clean** |
+| **tsc** | `-noEmit -skipLibCheck` **clean** |
+| **Suite** | **2792 / 2792 tests · 387 / 387 files · ZERO failures** |
+| **Register** | `check_signal_register.py` exit 0, next free **S104** |
+
+**This matches B58's figure exactly**, which my earlier void measurement did not. The correction that made the
+difference is one line of procedure: **bracket the run with `git status` and refuse the number if the tree
+moved.** Cheap, and it converts "I re-ran the gate" from a ritual into a measurement.
+
+### 🏅 The best single decision of the batch was an assertion B58 REMOVED
+
+It wrote a second half to `wp68/tp04` claiming the membership gate still refuses independently — then
+established that **it cannot be isolated in that rig**: every sidecar path lies under `.obsidian`, so WP95's
+gate answers first for all of them, and the harness treats everything else as shared. **There is no path in
+that fixture on which the membership gate alone is responsible.** It deleted its own new assertion, said so
+in place, and pointed at `wp26/tp06`, which holds that coverage on the predicate directly.
+
+> *"A row that looks like it proves something it cannot is worse than an honest absence."*
+
+That is this run's entire thesis, arrived at independently by a worker, and applied against its own work.
+
+### CR2 is the plant that closes the third property
+
+`wp92/tp06`'s two rows now use per-directory **marker attribution** through the same helper the loop above
+them already used — **stricter where it matters**: a genuine WP92 line in either directory is still caught,
+while a sibling's unrelated edit is no longer misreported as a scope violation. B58 recorded in the comment
+that this **fired for real** against its own ruled edit, so the next reader sees evidence rather than a claim.
+
+`wp68/tp04` now asserts `arm=file-op-gate`. **CR2** — remove WP95's gate while `isSharedPath` still refuses
+the op — recreates exactly the situation the row stayed green through, and it now reddens. **14 breaks across
+the whole batch, every one reddened at least one test, all restored byte-identically by copy-aside.**
+
+### Batch accounting
+
+**Three W3 batches landed today** — WP92, WP94, WP95 — plus WP95's two rulings, **at zero net cost to the
+gate**: 2717 / 378 before the day's work, 2792 / 387 after, zero failures at both ends.
+
+### ▶ Next, bunched per the owner's instruction
+
+**B60 (W3)** — WP89 revised + `S82` + `S83`, bunched because all three live in the **receipt / apply-licence**
+surface. **B59 (W4)** — six live arms on **one** rig provisioning. Bunching is not only a token saving: four
+separate measurement failures today (`S88`, `S100`, `S102`, and the fixture collision) were caused by two
+batches sharing one tree, and every one of them disappears when related packages ride in one batch.
+
+**Recorded and NOT chartered**, per the owner's ruling that only functionality and reliability are in scope:
+the outbound/inbound predicate asymmetry (no live exposure); A10 / A13 / A14 (**ARGUED**, undischarged);
+`S103`; and the E2E note below.
+
+### 🔐 Encryption — checked by me, and the owner's premise holds
+
+**AES-GCM-256 with a PBKDF2-derived key** (`sync/crypto.ts:21-32`); passphrase generated on session create and
+carried in the invite; the relay branches on an `encrypted` flag and **does not parse the payload at all** for
+encrypted rooms. The only path clearing the passphrase is **session teardown**, which is correct.
+**No security work needed.** One line recorded and not acted on: the gate is `if (settings.encryptionPassphrase)`
+with **no floor**, so an absent passphrase does not error — it silently does not encrypt. In the normal flow it
+is always generated, and **I have not established that state is reachable.** Recorded as a bounded claim.
