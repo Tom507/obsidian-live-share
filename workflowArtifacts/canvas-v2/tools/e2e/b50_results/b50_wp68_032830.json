@@ -1,0 +1,77 @@
+{
+  "bundles": {
+    "A": "7922d277940881ecc9d57bbac09531c4bb79961dab5030f1fd244a6e9dceb43f",
+    "B": "7922d277940881ecc9d57bbac09531c4bb79961dab5030f1fd244a6e9dceb43f"
+  },
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "control_created_on_B": true,
+  "control_rename_followed_by_B": true,
+  "control_B_new": true,
+  "control_B_old": false,
+  "d1_source_on_B": true,
+  "d1_A_dest_exists": true,
+  "d1_A_dest_digest_unchanged": true,
+  "d1_B_sidecar_written": false,
+  "d1_B_source_still_there": false,
+  "d1_B_source_digest": null,
+  "d2_sidecar_source_leaked_to_B": false,
+  "d2_A_dest_exists": true,
+  "d2_A_dest_digest_unchanged": true,
+  "d2_B_dest_exists": true,
+  "survey": {
+    "A:_liveshare-test/wp68-032830-ctl.md": {
+      "exists": false,
+      "sha256": null
+    },
+    "A:_liveshare-test/wp68-032830-ctl-renamed.md": {
+      "exists": true,
+      "sha256": "8339d1a7070c1d58c09d606d8845a67f8138780e9fa647a7b00c55be669fc679"
+    },
+    "A:_liveshare-test/wp68-032830-out.md": {
+      "exists": false,
+      "sha256": null
+    },
+    "A:.obsidian/liveshare/state/wp68-032830-out.md": {
+      "exists": true,
+      "sha256": "afb05bebf75f3687fe24790107190065831354d152666a1365af4ce40940e4eb"
+    },
+    "A:.obsidian/liveshare/state/wp68-032830-in.md": {
+      "exists": false,
+      "sha256": null
+    },
+    "A:_liveshare-test/wp68-032830-in.md": {
+      "exists": true,
+      "sha256": "39a50740014059fc17aa36abf45868a7bad3d7b3661356a0d6d96df04744ea58"
+    },
+    "B:_liveshare-test/wp68-032830-ctl.md": {
+      "exists": false,
+      "sha256": null
+    },
+    "B:_liveshare-test/wp68-032830-ctl-renamed.md": {
+      "exists": true,
+      "sha256": "7293f112d5d91ed8959913203f56ccee0a51cc9521a468374625f65bdb67eb67"
+    },
+    "B:_liveshare-test/wp68-032830-out.md": {
+      "exists": false,
+      "sha256": null
+    },
+    "B:.obsidian/liveshare/state/wp68-032830-out.md": {
+      "exists": false,
+      "sha256": null
+    },
+    "B:.obsidian/liveshare/state/wp68-032830-in.md": {
+      "exists": false,
+      "sha256": null
+    },
+    "B:_liveshare-test/wp68-032830-in.md": {
+      "exists": true,
+      "sha256": "4ca6708247864ed74fe3b0f8b1252b44c09d03bbb7bcc507417c5fb220e80255"
+    }
+  },
+  "instrument_live": true,
+  "sharedFolder_after_A": "_liveshare-test",
+  "sharedFolder_after_B": "_liveshare-test"
+}

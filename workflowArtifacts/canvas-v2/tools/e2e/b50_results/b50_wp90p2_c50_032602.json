@@ -1,0 +1,63 @@
+{
+  "phase": "2",
+  "tag": "c50",
+  "rel": "_liveshare-test/wp90-c50.canvas",
+  "bundles": {
+    "A": "7922d277940881ecc9d57bbac09531c4bb79961dab5030f1fd244a6e9dceb43f",
+    "B": "7922d277940881ecc9d57bbac09531c4bb79961dab5030f1fd244a6e9dceb43f"
+  },
+  "roles": {
+    "A": "guest",
+    "B": "host"
+  },
+  "plant_role": "B",
+  "peer_role": "A",
+  "store_at_start_A": {
+    "exists": false
+  },
+  "store_at_start_B": {
+    "exists": true,
+    "n_paths": 1,
+    "paths_for_this_run": [
+      "_liveshare-test/wp90-c50.canvas"
+    ],
+    "entries": {
+      "_liveshare-test/wp90-c50.canvas": [
+        {
+          "boundary": "host-seed",
+          "kind": "edge",
+          "id": "wp90-c50-BADEDGE",
+          "reason": "MISSING_TO"
+        }
+      ]
+    }
+  },
+  "PLANT_file_has_bad_at_start": false,
+  "PLANT_doc_nodes": [
+    "wp90-c50-nudge",
+    "wp90-c50-ok1",
+    "wp90-c50-ok2"
+  ],
+  "PLANT_doc_edges": [],
+  "poke_reached_A_doc": false,
+  "poke_in_PLANT_file": false,
+  "PLANT_file_has_bad_after_poke": false,
+  "lift_admitted": true,
+  "store_after_lift_A": {
+    "exists": false
+  },
+  "store_after_lift_B": {
+    "exists": true,
+    "n_paths": 0,
+    "paths_for_this_run": [],
+    "entries": {}
+  },
+  "hits_SEED_REFUSAL_STORE": [],
+  "hits_SEED_REFUSED": [],
+  "hits_SEED_RESTORED": [
+    "SEED RESTORED: _liveshare-test/wp90-c50.canvas refused set is empty \u2014 resuming the canonical projection write"
+  ],
+  "hits_CANVAS_WRITER": [
+    "CANVAS WRITER: _liveshare-test/wp90-c50.canvas owner=CanvasPersistence nodes=3 edges=1"
+  ]
+}
