@@ -3084,3 +3084,83 @@ you could not separate is the discipline this run has been trying to install.
 
 **Rig at handover:** A = guest `:39431`, B = host `:39432` (**asked, not assumed**), room `314c85ca…`,
 both on bundle `d8818271…`, both vaults back to their pre-run 8 files, both `seed-refusals.json` empty.
+
+---
+
+## 🔴 WP95 (`2aabc4c`) — the guard landed, and B58 corrected the Dispatcher's premise while building it
+
+### My fourth error: I gave the batch the wrong gate
+
+I briefed B58 that `file-ops.ts:983` was **the inbound admission gate**. **It is `onFileRename` — the
+OUTBOUND handler**, and its own comment says so. The real inbound gate is `control-handlers.ts:83`.
+
+**Verified by me after B58 said so, not taken on report.** My original check established that
+`SIDECAR_DIR = ".obsidian/liveshare/state"` and that `isSidecarPath` was consumed at that line — the
+*narrowness* was real. **I then attributed a direction I had not checked.** Precisely the §3.3 failure I had
+written into the workflow file that same hour: *a scope claim is only as good as the predicate that
+implements it* — and a predicate has a **direction** as well as a shape.
+
+**The defect was worse than I described.** At the true inbound gate, `isSidecarPath` sat **inside the
+`isRename` branch**, so it constrained **one of the nine members of the `FileOp` union**. The other eight
+reached `applyRemoteOp` with only `isSharedPath` between them and the vault. B58 checked rather than
+believing me, which is the only reason the fix covers nine arms instead of one.
+
+### AC1's census is the package's real product, and it is exhaustive by construction
+
+**Ten inbound arms**, method stated per arm. The file-op set is enumerated as
+`Record<FileOp["type"], FileOp>` in the harness — **the compiler refuses to build if a union member is
+missing**, so a tenth op kind added tomorrow reds `tsc` until the table gains a row, and the suite then
+tests it automatically. **That is exhaustiveness checking rather than a grep**, and `S89` is why it matters:
+grep-based censuses of this very codebase went 2 → 9 → 10 across three batches.
+
+**`A9 requestBinary?.(path)` is S89's exact shape found again** — a capability passed as a parameter, no call
+site to grep, found only by following the type.
+
+### Demonstrated vs argued, kept separate exactly as required
+
+**Demonstrated**: all nine op kinds against `.obsidian/plugins/live-share/data.json`, driven through the real
+`registerControlHandlers` over a journalling vault with two oracles; the chunk channel driven in the shape a
+peer actually sends; `applyRemoteOp` called directly with the channel gate out of the picture; AC4 by
+**SHA-256 of bytes**. **Argued and NOT accepted as closed**: `A10 BackgroundSync.writeToDisk`,
+`A13 CanvasSync.writeToDisk`, `A14`. B58 reported building those rigs as the *"more work than the guard
+itself"* case and stopped — **correct behaviour under its brief, and recorded as undischarged, not closed.**
+
+### 8 breaks, and none reddened nothing
+
+B1 and B7 reddened **12 each** (the gate disabled; the predicate narrowed to drop `.obsidian`). B8 —
+predicate made case-**sensitive** — reddened 1, which is the break worth noticing: it is the only one that
+tests a property nobody wrote down. Driver committed at `wp95_breaks.py`; restoration sha256-verified.
+
+### Three fragility findings — S97, S98, S99 — and they name a family
+
+`S97` the import allow-list is a **regex over source text**; `S98` `stripComments` strips **block before
+line** comments, so a `/**` inside a `//` comment eats real code 40 lines down; `S99` WP93 AC5 attributes
+edits by grepping a **bare token**. With `S88` and `S89` that is **five members of one family: a census over
+TEXT rather than over a type or a runtime** — and that family has now cost this run more false reds and false
+greens than any product defect in it.
+
+### ⚖️ RULING — the near-miss fixtures conflate two properties; split them
+
+**11 red, one root cause. B58 asked instead of assuming, which is the only reason this is answerable.**
+`WP26 AC1`, `WP68 AC4`, `WP90 AC5` pin near-miss fixtures at `.obsidian/liveshare/stateful/board.canvas` —
+chosen to prove `isSidecarPath` does not prefix-over-match (`stateful` ≠ `state`) — and then assert that path
+is **admitted and shared**.
+
+**WP95 wins the behavioural conflict; `.obsidian/**` is refused.** But the fixtures are not simply wrong:
+
+1. **The prefix property is still true and moves to unit level** — assert on `isSidecarPath(...) === false`
+   directly. That is the actual content of the near-miss and it never involved admission.
+2. **The admission assertion gets a fixture outside `.obsidian/**`** — still a near-miss, still exercising
+   *"a path that merely looks like the sidecar is admitted"*. **Both properties kept, neither lost.**
+3. **`wp68/tp02`'s six are cosmetic** — still refused, zero mutation, only the warning text differs. The new
+   assertion must name **which gate refused**, so WP68's refusal is distinguishable from WP95's.
+
+**Every edited test must be labelled `BEHAVIOURAL` or `COSMETIC` and reported separately.** Conflating them
+in one list is how a run talks itself into changing tests to make them pass. Re-falsify each one.
+
+### Gate — measured by me, and it is RED on purpose
+
+`tsc` clean · **11 failed / 2778 passed (2789), 4 failing files** at `2aabc4c`. B58 reported 11 / 2767 and
+**six** failing files; the two extra were `@codemirror` module-resolution from a **transient `node_modules`
+teardown** it correctly refused to repair mid-flight. `node_modules` is intact (281 packages, 69 binaries).
+**Its diagnosis is confirmed independently: the 11 are one root cause and the ruling above is the fix.**
