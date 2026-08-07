@@ -26,6 +26,13 @@ import type * as http from "node:http";
 import { createServer } from "node:http";
 import * as Y from "yjs";
 import { setCanvasBindingInstrument } from "../canvas/canvas-binding";
+// `fileop.inject` (below) must probe the mute map and the vault under the SAME
+// spelling `FileOpsManager` derives from a wire path, and these two are its
+// single definers. Re-spelling them here would let the probe and the mechanism
+// drift apart silently — a probe that reads a path the plugin never wrote is
+// indistinguishable from a refusal. Both specifiers are on the frozen import
+// allow-list WP49 AC4 / WP72 AC4 pinned, so nothing is widened to admit them.
+import { normalizePath, toLocalPath } from "../utils";
 
 /**
  * D2 — structural mirror of `StaleReconcileDecision` in `../types`.
@@ -428,6 +435,101 @@ export interface CanvasNodeEditResult {
   };
 }
 
+// ---------------------------------------------------------------------------
+// `fileop.inject` — the INBOUND file-op seam, so a peer-shaped op can be put
+// through the admission gate that actually guards it.
+//
+// WHY IT EXISTS. WP68 has two halves. The outbound half (`onFileRename` refuses
+// to emit a rename touching the sidecar directory) is demonstrable, because a
+// local rename is something a rig can cause. The inbound half — the gate in
+// `registerControlHandlers` that refuses a REMOTE rename whose endpoints
+// straddle the sidecar boundary — was reported NOT DEMONSTRATED, for the plain
+// reason that nothing could deliver a raw `FileOp` to this instance. That half
+// is the security-relevant one: what it stops is a peer-reachable write into
+// this Electron process's own `.obsidian/**`.
+//
+// WHAT IT IS NOT. It is not `canvas.simulateEdit`. That command reaches past
+// every gate straight into the `Y.Doc` and answers with a hardcoded
+// `applied: true`, so a suite built on it establishes nothing; it is on the
+// rig's permanent do-not-use list and this file does not call it. The two
+// properties that keep this command off that list:
+//
+//   ENTRY. The frame is handed to the LIVE CONTROL SOCKET as a `message` event.
+//   Everything downstream of `WebSocket.onmessage` then runs unaltered: the
+//   inbound suppression check, `JSON.parse`, the encrypted-payload branch, the
+//   handler-table lookup, and the `file-op` handler that carries the WP68 gate.
+//   Not one of those steps is reproduced here, and the gate is not consulted,
+//   named or mirrored anywhere in this module.
+//
+//   ANSWER. Every field below is either a reading taken from real state or
+//   arithmetic over two such readings. There is no field whose value says the
+//   injection succeeded. `delivered` reports that a seam was found and invoked;
+//   whether the op was ADMITTED is answered by `mutedAfterDispatch` (did
+//   `applyRemoteOp` take a path mute?) and by `mutated` (did the bytes at either
+//   endpoint change?), both measured. A refusal and an admission produce
+//   different values for those, which is the whole point — and the answer is
+//   returned in the response rather than written to the debug log, because
+//   S65/S71 put that log's flush at ~0.5 s normally and 60 s under a host clamp,
+//   which makes a log line unusable as an oracle.
+// ---------------------------------------------------------------------------
+
+/** One endpoint of an injected op, read at the vault and at the mute map. */
+export interface FileOpEndpointObservation {
+  /** The path exactly as the injected op spells it (the wire form). */
+  path: string;
+  /** The same path through the plugin's own converters — what the vault sees. */
+  localPath: string;
+  exists: boolean;
+  /** Lowercase hex sha256 over the raw bytes; `""` when the file is absent. */
+  sha256: string;
+  /** Byte length on disk; `0` when the file is absent. */
+  size: number;
+  /** `FileOpsManager.isPathMuted` at the instant of this reading. */
+  muted: boolean;
+}
+
+/** What `fileop.inject` measured around one delivery. */
+export interface FileOpInjectResult {
+  /** A seam was found AND invoked. False carries a `reason`; never assumed. */
+  delivered: boolean;
+  /** Why nothing was delivered, or `null` when it was. */
+  reason: string | null;
+  /** Which seam carried the frame, or `null` when none was reachable. */
+  entry: "control-socket.dispatchEvent" | "control-socket.onmessage" | null;
+  /** Byte length of the JSON frame handed to that seam. */
+  frameBytes: number;
+  /** The op's endpoints, in the order the op spells them. */
+  paths: string[];
+  /** The window the `after` reading covers, in ms. */
+  settleMs: number;
+  /** Mute samples taken across that window, per endpoint. */
+  samples: number;
+  before: FileOpEndpointObservation[];
+  after: FileOpEndpointObservation[];
+  /**
+   * MEASURED: a path mute was observed on at least one endpoint at some sample
+   * in the window. `applyRemoteOpInner` takes the mute before it touches the
+   * vault, so this tells two indistinguishable-looking runs apart — one in which
+   * the gate refused, and one in which the op was applied and changed nothing.
+   *
+   * NOTE for whoever edits this file next: three landed tests scan this SOURCE
+   * with a plain regex for a specifier, so prose of the shape `x` + quoted text
+   * counts as an import and reddens them. Do not write one here. That is why the
+   * two sentences above are phrased as they are.
+   */
+  mutedAfterDispatch: boolean;
+  /** MEASURED: endpoints whose existence, size or digest changed. */
+  changed: string[];
+  /** MEASURED: `changed` is non-empty. */
+  mutated: boolean;
+  /**
+   * The production per-link report at the moment of injection, when the host
+   * exposes one. A suppressed link swallows the frame before any handler runs,
+   * and that must not read as a refusal by the gate.
+   */
+  link: unknown;
+}
+
 export interface E2EControlHost {
   sessionInfo(): {
     clientId: string;
@@ -623,6 +725,20 @@ export interface E2EControlHost {
    * every hand-rolled fake host in the existing tests stays valid.
    */
   rearmSharing?(): Promise<unknown>;
+  /**
+   * ADDITIVE. Deliver a raw `FileOp` to the inbound seam a peer's frame enters
+   * through, and report what was measured around it. Optional on the interface,
+   * on the `canvasFile` / `linkReport` precedent, so every hand-rolled fake host
+   * in the existing tests stays valid; `routeCommand` turns an absent method
+   * into a structured 400 rather than a crash.
+   *
+   * See the block comment above `FileOpInjectResult` for why this is not
+   * `canvas.simulateEdit` wearing a new name.
+   */
+  injectFileOp?(req: {
+    op: Record<string, unknown>;
+    settleMs?: number;
+  }): Promise<FileOpInjectResult>;
   /**
    * WP88 (AC3/AC4). ADDITIVE, READ-ONLY. Why this peer stopped sharing and
    * whether it kept its identity.
@@ -948,6 +1064,47 @@ export async function routeCommand(
         }
         return ok(host.severanceReport());
       }
+      // --- `fileop.inject`, ADDITIVE ------------------------------------------
+      //
+      // ONE case and one optional host method, on the `link.break` /
+      // `session.rearm` precedent. Nothing above changes shape or behaviour, and
+      // `canvas.simulateEdit` is neither called, extended nor repaired.
+      //
+      // BOTH arguments are validated HERE, at the command boundary, before the
+      // host — and therefore before any socket — is reached, so a malformed op
+      // never becomes a frame (I11 REFUSAL NEVER DESTROYS). `op.type` is
+      // required because every downstream branch dispatches on it: an op without
+      // one would be dropped by the handler for a reason that has nothing to do
+      // with the gate under test, and the run would read that as a refusal.
+      //
+      // The response is `ok:true` for "the injection ran and here is what it
+      // measured", including a run in which nothing was delivered — the caller
+      // reads that off `delivered` / `reason`, which is a shape a scenario can
+      // assert on, rather than an HTTP code it has to parse out of a string.
+      case "fileop.inject": {
+        const rawOp = args.op;
+        if (rawOp === null || typeof rawOp !== "object" || Array.isArray(rawOp)) {
+          throw new Error("missing or invalid arg: 'op' must be a JSON object");
+        }
+        const op = rawOp as Record<string, unknown>;
+        if (typeof op.type !== "string" || op.type.length === 0) {
+          throw new Error("invalid arg: 'op.type' must be a non-empty string");
+        }
+        if (
+          args.settleMs !== undefined &&
+          (typeof args.settleMs !== "number" ||
+            !Number.isFinite(args.settleMs) ||
+            args.settleMs < 0)
+        ) {
+          throw new Error("invalid arg: 'settleMs' must be a finite number >= 0 when present");
+        }
+        if (typeof host.injectFileOp !== "function") {
+          throw new Error("fileop.inject unavailable on this host");
+        }
+        return ok(
+          await host.injectFileOp({ op, settleMs: args.settleMs as number | undefined }),
+        );
+      }
       // --- WP37 (C37 AC6) — the typing instrument ---------------------------
       //
       // ADDITIVE. A new `case` and a new optional host method, on the
@@ -1093,6 +1250,18 @@ export interface ControlServerHandle {
 }
 
 const MAX_BODY_BYTES = 1_000_000;
+
+/**
+ * `fileop.inject`'s default settle window and its sampling period.
+ *
+ * The window is what the `after` reading covers and it is REPORTED in the
+ * result, so a caller always knows which interval an answer is about rather than
+ * having to assume one. It is not a quiescence promise and is not called one:
+ * `sync.waitQuiescent` watches canvas doc traffic, which a file-op does not
+ * produce, so there is nothing here for it to answer about.
+ */
+const DEFAULT_FILEOP_SETTLE_MS = 250;
+const FILEOP_SAMPLE_MS = 10;
 
 /**
  * Build (but do not yet listen on) the localhost HTTP control server.
@@ -1274,6 +1443,28 @@ export interface E2EPluginLike {
   linkReport?: () => Record<string, unknown>;
   e2eBreakLink?: (link: "control" | "mux", shape: "close" | "silence") => Record<string, unknown>;
   e2eRestoreLink?: (link: "control" | "mux") => Record<string, unknown>;
+  /**
+   * The control channel, held as `unknown` for exactly the reason
+   * `app.workspace` and `vault.adapter` below are: the live socket it owns is a
+   * private field, so declaring any shape for it here would make the real
+   * `LiveSharePlugin` stop satisfying this interface and `main.ts` would not
+   * compile. It is narrowed through one guarded resolver
+   * (`resolveInboundControlSocket`) and every access is validated.
+   *
+   * READ ONLY, and only to reach the seam a peer's frame arrives at. Nothing in
+   * this module sends on it, closes it, reconnects it or reads a credential
+   * from it.
+   */
+  controlChannel?: unknown;
+  /**
+   * The file-op manager's mute predicate. Typed properly — unlike
+   * `controlChannel` — because it is a public method whose shape the real
+   * `FileOpsManager` already satisfies. READ ONLY: `isPathMuted` takes nothing
+   * and changes nothing, and it is the one observable that tells an inbound
+   * refusal apart from an op that was applied and changed nothing, because
+   * `applyRemoteOpInner` takes the mute before it touches the vault.
+   */
+  fileOpsManager?: { isPathMuted(path: string): boolean };
   /**
    * WP87 (C87 AC1) — the attribution read, invoked on the plugin that owns the
    * adapter, the deferral queue and the writer maps. Optional so every
@@ -1495,6 +1686,118 @@ async function readCanvasBytes(
     return Buffer.from(await adapter.read(path), "utf8");
   }
   throw new Error("file adapter exposes no reader");
+}
+
+// --- `fileop.inject` — resolving the inbound seam and reading the endpoints --
+//
+// Everything in this block is a READ or a narrowing. Nothing here decides
+// whether an op is admissible, and nothing here re-states the WP68 predicate:
+// the gate lives in `sync/control-handlers.ts` and is reached only by handing a
+// frame to the socket, exactly as the relay does.
+
+/**
+ * The subset of a live `WebSocket` the injection needs. `dispatchEvent` is the
+ * platform's own delivery path and is preferred; `onmessage` is the documented
+ * fallback for a socket object that has no event target (a test double).
+ */
+interface InboundSocketSeam {
+  dispatchEvent?: (event: unknown) => boolean;
+  onmessage?: ((event: { data: unknown }) => void) | null;
+}
+
+/**
+ * The live control socket, or `null` when this instance has none.
+ *
+ * `null` is a defined answer and it is reported as a named refusal rather than
+ * worked around: a peer's frame cannot arrive on a link that does not exist, so
+ * an injection with no socket has not exercised the gate and must not be able
+ * to look as though it did.
+ */
+function resolveInboundControlSocket(plugin: E2EPluginLike): InboundSocketSeam | null {
+  const channel = plugin.controlChannel;
+  if (!channel || typeof channel !== "object") return null;
+  const socket = (channel as { ws?: unknown }).ws;
+  if (!socket || typeof socket !== "object") return null;
+  return socket as InboundSocketSeam;
+}
+
+/** `MessageEvent` when the runtime has one (Electron renderer, Node ≥ 18). */
+function resolveMessageEventCtor():
+  | (new (type: string, init: { data: unknown }) => unknown)
+  | null {
+  const ctor = (globalThis as { MessageEvent?: unknown }).MessageEvent;
+  return typeof ctor === "function"
+    ? (ctor as new (type: string, init: { data: unknown }) => unknown)
+    : null;
+}
+
+/** The endpoints an op names, in the order the wire protocol spells them. */
+function fileOpEndpoints(op: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  for (const key of ["path", "oldPath", "newPath"]) {
+    const value = op[key];
+    if (typeof value === "string" && value.length > 0) out.push(value);
+  }
+  return out;
+}
+
+/**
+ * One endpoint's reading. The digest is over the raw bytes and the CONTENT IS
+ * NEVER RETURNED: this command can be pointed at any path a peer could name,
+ * including `.obsidian/**`, where the plugin's own `data.json` holds live
+ * credentials. A digest answers "did these bytes change" without carrying one
+ * of them.
+ *
+ * Missing adapter, missing manager and unreadable file are all defined answers,
+ * never throws: a reading that fails must not abort the injection it was taken
+ * around, or a refusal and a crash would look the same.
+ */
+async function observeFileOpEndpoint(
+  plugin: E2EPluginLike,
+  adapter: CanvasFileAdapterLike | null,
+  path: string,
+): Promise<FileOpEndpointObservation> {
+  const localPath = toLocalPath(normalizePath(path));
+  let exists = false;
+  let sha256 = "";
+  let size = 0;
+  if (adapter) {
+    try {
+      exists = await adapter.exists(localPath);
+      if (exists) {
+        const bytes = await readCanvasBytes(adapter, localPath);
+        sha256 = createHash("sha256").update(bytes).digest("hex");
+        size = bytes.byteLength;
+      }
+    } catch {
+      // An unreadable endpoint stays at its defined empty reading; `exists`
+      // keeps whatever the adapter did answer.
+    }
+  }
+  return { path, localPath, exists, sha256, size, muted: isEndpointMuted(plugin, path) };
+}
+
+/** `FileOpsManager.isPathMuted` for one endpoint; `false` when no manager. */
+function isEndpointMuted(plugin: E2EPluginLike, path: string): boolean {
+  const manager = plugin.fileOpsManager;
+  if (!manager || typeof manager.isPathMuted !== "function") return false;
+  try {
+    return manager.isPathMuted(toLocalPath(normalizePath(path)));
+  } catch {
+    return false;
+  }
+}
+
+/** Did an endpoint's existence, size or digest change between two readings? */
+function endpointChanged(
+  before: FileOpEndpointObservation,
+  after: FileOpEndpointObservation,
+): boolean {
+  return (
+    before.exists !== after.exists ||
+    before.size !== after.size ||
+    before.sha256 !== after.sha256
+  );
 }
 
 // --- WP37 (C37 AC6) — resolving the typing instrument's world ---------------
@@ -1829,6 +2132,116 @@ export function buildPluginHost(
         throw new Error("session.severance unavailable: no severance report on this host");
       }
       return plugin.severanceReport();
+    },
+
+    // --- `fileop.inject` — the inbound seam --------------------------------
+    //
+    // NOTE WHAT IS NOT IN THIS METHOD: no `vault`, no `fileManager`, no
+    // `applyRemoteOp`, no `isSharedPath`, no `isSidecarPath`, no copy of the
+    // WP68 predicate and no branch on `op.type`. It cannot apply, refuse or
+    // classify an op even by accident. The only thing it does to the plugin is
+    // hand one JSON frame to the socket and then READ — which is the structural
+    // half of "the guard under test is the one that actually runs".
+    //
+    // The mute is SAMPLED across the settle window rather than read once,
+    // because the window is a race the reader would otherwise have to win:
+    // `applyRemoteOp` takes the mute a few microtasks after the handler returns
+    // and the arming release drops it again later, so a single reading could
+    // miss a mute that was genuinely taken and report an applied op as refused.
+    // A latch over the window can only fail in the safe direction.
+    async injectFileOp(req): Promise<FileOpInjectResult> {
+      const settleMs =
+        typeof req.settleMs === "number" && Number.isFinite(req.settleMs) && req.settleMs >= 0
+          ? req.settleMs
+          : DEFAULT_FILEOP_SETTLE_MS;
+      const paths = fileOpEndpoints(req.op);
+      const adapter = resolveCanvasFileAdapter(plugin);
+      const link = typeof plugin.linkReport === "function" ? plugin.linkReport() : null;
+
+      const before: FileOpEndpointObservation[] = [];
+      for (const path of paths) before.push(await observeFileOpEndpoint(plugin, adapter, path));
+
+      const frame = JSON.stringify({ type: "file-op", op: req.op });
+      const frameBytes = Buffer.byteLength(frame, "utf8");
+      const base = {
+        frameBytes,
+        paths,
+        settleMs,
+        before,
+        link,
+      };
+      const undelivered = (reason: string): FileOpInjectResult => ({
+        ...base,
+        delivered: false,
+        reason,
+        entry: null,
+        samples: 0,
+        after: before,
+        mutedAfterDispatch: false,
+        changed: [],
+        mutated: false,
+      });
+
+      const socket = resolveInboundControlSocket(plugin);
+      if (!socket) {
+        return undelivered(
+          "no live control socket on this instance: a peer's frame cannot arrive " +
+            "on a link that does not exist, so nothing was injected",
+        );
+      }
+      // A socket with no message handler would swallow the frame silently and
+      // the run would read that as the gate refusing. Refused instead, named.
+      if (typeof socket.onmessage !== "function") {
+        return undelivered(
+          "the control socket carries no message handler, so a delivered frame " +
+            "would reach nothing; the inbound path is not armed",
+        );
+      }
+
+      const MessageEventCtor = resolveMessageEventCtor();
+      let entry: FileOpInjectResult["entry"];
+      try {
+        if (typeof socket.dispatchEvent === "function" && MessageEventCtor !== null) {
+          socket.dispatchEvent(new MessageEventCtor("message", { data: frame }));
+          entry = "control-socket.dispatchEvent";
+        } else {
+          socket.onmessage({ data: frame });
+          entry = "control-socket.onmessage";
+        }
+      } catch (err) {
+        return undelivered(
+          `the inbound seam threw: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+
+      // Sample the mute across the window, latching per endpoint.
+      const muteLatch = paths.map(() => false);
+      let samples = 0;
+      const deadline = Date.now() + settleMs;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, FILEOP_SAMPLE_MS));
+        samples += 1;
+        paths.forEach((path, i) => {
+          if (isEndpointMuted(plugin, path)) muteLatch[i] = true;
+        });
+        if (Date.now() >= deadline) break;
+      }
+
+      const after: FileOpEndpointObservation[] = [];
+      for (const path of paths) after.push(await observeFileOpEndpoint(plugin, adapter, path));
+      const changed = paths.filter((_, i) => endpointChanged(before[i], after[i]));
+
+      return {
+        ...base,
+        delivered: true,
+        reason: null,
+        entry,
+        samples,
+        after,
+        mutedAfterDispatch: muteLatch.some(Boolean),
+        changed,
+        mutated: changed.length > 0,
+      };
     },
 
     // WP81 AC1 (deferred by WP81, landed by WP80). The logger's own accessor,
