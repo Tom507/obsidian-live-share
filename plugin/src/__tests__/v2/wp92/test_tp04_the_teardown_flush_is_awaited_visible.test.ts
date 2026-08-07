@@ -139,6 +139,25 @@ describe("WP92 AC4 — the flush is awaited, bounded, and cannot reject the unlo
     ).toBe(true);
   });
 
+  it("a REJECTING idle() does not reject the unload — the case the store's own catch HIDES", async () => {
+    // ⚠ THIS CASE EXISTS BECAUSE THE FALSIFICATION PASS FOUND IT MISSING.
+    // Removing `flushSeedRefusalStore`'s `.catch` reddened NOTHING: WP90's
+    // `save()` already swallows every rejection into the queue's own catch, so a
+    // rejecting `io.write` can never reach `idle()`, and the case above it is
+    // green whether or not this function handles a rejection at all. A break
+    // that reddens nothing is a finding, not a pass — so the rejection is
+    // driven at the seam `flushSeedRefusalStore` actually consumes.
+    const log = createRecordingLogger();
+    const rejecting = {
+      idle: () => Promise.reject(new Error("the queue itself was poisoned")),
+    };
+    await expect(flushSeedRefusalStore(rejecting, { logger: log })).resolves.toBe("flushed");
+    expect(
+      log.lines.some((l) => l.includes("teardown flush failed")),
+      "a poisoned queue took the unload down with it, or did so silently",
+    ).toBe(true);
+  });
+
   it("a write that NEVER SETTLES is bounded — unload proceeds and says so, measured not read", async () => {
     const storeIO = createStoreIO();
     // Never resolves. Without a bound this wedges the plugin forever.

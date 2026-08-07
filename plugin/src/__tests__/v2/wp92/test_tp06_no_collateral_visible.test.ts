@@ -41,14 +41,61 @@ import {
 const KEY = "guid-collateral";
 const OTHER = "guid-other";
 
-/** `git diff --name-only` against HEAD, run rather than read (AC6(a)). */
-function changedFiles(): string[] {
-  const repoRoot = findPluginSrc().replace(/[/\\]plugin[/\\]src$/, "");
-  const out = execFileSync("git", ["diff", "--name-only", "HEAD"], {
-    cwd: repoRoot,
-    encoding: "utf8",
-  });
-  return out.split(/\r?\n/).filter((line) => line.trim().length > 0);
+function repoRoot(): string {
+  return findPluginSrc().replace(/[/\\]plugin[/\\]src$/, "");
+}
+
+function git(...args: string[]): string[] {
+  return execFileSync("git", args, { cwd: repoRoot(), encoding: "utf8" })
+    .split(/\r?\n/)
+    .filter((line) => line.trim().length > 0);
+}
+
+/**
+ * THIS work package's change set, in a SHARED working tree.
+ *
+ * Not `git diff HEAD`. That answers "what is uncommitted", which in this tree is
+ * a union of every live batch and which becomes EMPTY the moment WP92 commits —
+ * at which point "no forbidden file is in the diff" would be true for free, and
+ * the assertion would have stopped meaning anything without anyone noticing.
+ * That is the exact class this run keeps producing.
+ *
+ * So the set is located from WP92's own artefact: the commit that ADDED
+ * `__tests__/v2/wp92/`, unioned with whatever of WP92's files is still
+ * uncommitted. Self-locating, always non-empty, and unaffected by a sibling.
+ */
+function wp92Commit(): string | null {
+  // ⚠ NEVER `HEAD`. A sibling batch commits into this branch while WP92 runs —
+  // it happened during this batch's own falsification pass — and every `HEAD`
+  // reference silently started pointing at someone else's work, which turned a
+  // real assertion into one that could no longer see its own subject.
+  const commits = git(
+    "log",
+    "--diff-filter=A",
+    "--format=%H",
+    "-1",
+    "--",
+    "plugin/src/__tests__/v2/wp92",
+  );
+  return commits.length > 0 ? commits[0] : null;
+}
+
+/** Every line WP92 ADDED to `file`, across its own commit and the live tree. */
+function wp92AddedLines(file: string): string[] {
+  const commit = wp92Commit();
+  const fromCommit = commit
+    ? git("show", "--unified=0", "--format=", commit, "--", file)
+    : [];
+  return [...fromCommit, ...git("diff", "--unified=0", "--", file)].filter(
+    (line) => line.startsWith("+") && !line.startsWith("+++"),
+  );
+}
+
+function wp92ChangedFiles(): string[] {
+  const commit = wp92Commit();
+  const fromCommit = commit ? git("show", "--name-only", "--format=", commit) : [];
+  const fromTree = git("diff", "--name-only", "HEAD");
+  return [...new Set([...fromCommit, ...fromTree])];
 }
 
 describe("WP92 AC6 — WP90's five properties, driven on POPULATED fixtures", () => {
@@ -163,7 +210,7 @@ describe("WP92 AC6 — WP90's five properties, driven on POPULATED fixtures", ()
   });
 
   it("STRUCTURAL: no out-of-scope file carries a WP92 line — attributable in a SHARED tree", () => {
-    const changed = changedFiles();
+    const changed = wp92ChangedFiles();
     // AC6(a)'s positive control: a comparison over an empty change set would
     // report every file untouched, perfectly.
     expect(
@@ -181,7 +228,6 @@ describe("WP92 AC6 — WP90's five properties, driven on POPULATED fixtures", ()
     // may appear in the diff (a sibling's work), but not one ADDED line in it may
     // carry this work package's marker. That is decidable per batch, and it stays
     // decidable no matter how many agents are typing.
-    const repoRoot = findPluginSrc().replace(/[/\\]plugin[/\\]src$/, "");
     for (const forbidden of [
       "plugin/src/utils.ts",
       "plugin/src/files/canvas-sidecar.ts",
@@ -191,12 +237,7 @@ describe("WP92 AC6 — WP90's five properties, driven on POPULATED fixtures", ()
       "plugin/src/files/vault-events.ts",
     ]) {
       if (!changed.includes(forbidden)) continue;
-      const added = execFileSync("git", ["diff", "--unified=0", "--", forbidden], {
-        cwd: repoRoot,
-        encoding: "utf8",
-      })
-        .split(/\r?\n/)
-        .filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+      const added = wp92AddedLines(forbidden);
       expect(
         added.filter((line) => /WP92|refusalIdentity|SeedRefusalStore|seedRefusalFlush/.test(line)),
         `${forbidden} carries a WP92 line and is out of this WP's scope`,
@@ -211,19 +252,26 @@ describe("WP92 AC6 — WP90's five properties, driven on POPULATED fixtures", ()
     // that the directory is not empty, which is why it is read here.
     expect(changed.filter((f) => f.includes("__tests__/v2/wp63/"))).toEqual([]);
     expect(changed.filter((f) => f.includes("__tests__/v2/wp90/"))).toEqual([]);
+
+    // …and the ATTRIBUTION detector is shown FIRING, on this WP's own in-scope
+    // file. Without it, "no forbidden file carries a WP92 line" would be
+    // satisfied by a regex that matches nothing — the same shape as a census
+    // reporting zero violations from an empty input set.
+    expect(
+      wp92AddedLines("plugin/src/files/canvas-persistence.ts").filter((line) =>
+        /WP92|refusalIdentity|SeedRefusalStore|seedRefusalFlush/.test(line),
+      ).length,
+      "the WP92 marker regex matches nothing at all — the attribution check cannot fail",
+    ).toBeGreaterThan(0);
   });
 
   it("POSITIVE CONTROL for the empty-directory trap — wp63/ and wp90/ are not empty", () => {
-    const src = findPluginSrc();
     // Reading them proves the "not in the diff" assertion above is about real
     // files. WP90's precedent, and it is why WP63's contract stands by
     // measurement rather than by claim.
-    const wp63 = execFileSync("git", ["ls-files", "plugin/src/__tests__/v2/wp63"], {
-      cwd: src.replace(/[/\\]plugin[/\\]src$/, ""),
-      encoding: "utf8",
-    })
-      .split(/\r?\n/)
-      .filter((l) => l.trim().length > 0);
+    const wp63 = git("ls-files", "plugin/src/__tests__/v2/wp63");
+    const wp90 = git("ls-files", "plugin/src/__tests__/v2/wp90");
     expect(wp63.length, "wp63/ is empty — 'not in the diff' would be free").toBeGreaterThan(0);
+    expect(wp90.length, "wp90/ is empty — 'not in the diff' would be free").toBeGreaterThan(0);
   });
 });

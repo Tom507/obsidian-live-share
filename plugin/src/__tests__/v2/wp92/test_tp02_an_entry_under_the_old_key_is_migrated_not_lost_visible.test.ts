@@ -26,13 +26,21 @@
 // restored.
 
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
 
-import {
-  SEED_REFUSAL_STORE_VERSION,
-  SeedRefusalStore,
-} from "../../../files/seed-refusal-store";
+import { CanvasPersistence } from "../../../files/canvas-persistence";
 import { seedRefusalStorePath } from "../../../files/canvas-sidecar";
-import { createRecordingLogger, createStoreIO, legacyEntry, legacyStoreFile } from "./harness";
+import { SEED_REFUSAL_STORE_VERSION, SeedRefusalStore } from "../../../files/seed-refusal-store";
+import {
+  TYPELESS_NODE,
+  VALID_NODE,
+  canvasJson,
+  createIO,
+  createRecordingLogger,
+  createStoreIO,
+  legacyEntry,
+  legacyStoreFile,
+} from "./harness";
 
 const LEGACY_KEY = "boards/Q3：plan.canvas";
 const IDENTITY = "guid-3af1";
@@ -142,6 +150,64 @@ describe("WP92 AC2 — MIGRATE: the version-1 entry is carried forward, once", (
     store.migrate(LEGACY_KEY, LEGACY_KEY);
     await store.idle();
     expect(storeIO.written).toEqual([]);
+  });
+
+  it("AT THE SEAM: a WP90-era store file still WITHHOLDS on the first upgraded cold open", async () => {
+    // The case the store-level ones above cannot reach. Without the legacy
+    // fallback inside `hydrateDurableRefusals` every one of them stays green
+    // while the product silently stops finding a user's standing withhold — a
+    // green that cannot fail, in this WP's own suite.
+    const legacyDisk = "boards/board.canvas";
+    const storeIO = createStoreIO({
+      [seedRefusalStorePath()]: legacyStoreFile({
+        [legacyDisk]: legacyEntry("n-bad"),
+        [OTHER_KEY]: legacyEntry("n-other"),
+      }),
+    });
+    const log = createRecordingLogger();
+    const store = new SeedRefusalStore(storeIO, { logger: log });
+
+    const doc = new Y.Doc();
+    doc.getMap<Y.Map<unknown>>("nodes").set("n-ok", new Y.Map(Object.entries(VALID_NODE)));
+    const before = canvasJson([VALID_NODE, TYPELESS_NODE]);
+    const io = createIO({ [legacyDisk]: before });
+    const p = new CanvasPersistence(doc, io, legacyDisk, {
+      logger: log,
+      durableRefusals: store,
+      refusalIdentity: IDENTITY,
+    });
+
+    // The preconditions, asserted passing before the negative is read.
+    expect(doc.getMap<Y.Map<unknown>>("nodes").size, "the doc arrived empty").toBeGreaterThan(0);
+    expect(await p.coldOpen(), "not the doc-wins branch — this case would be vacuous").toBe(
+      "doc-wins",
+    );
+
+    expect(
+      p.seedRefusals().map((r) => r.id),
+      "a WP90-era store file stopped matching after the key change",
+    ).toEqual(["n-bad"]);
+    expect(p.isWriteWithheld()).toBe(true);
+    expect(io.write, "the projection landed on a file WP90 had protected").not.toHaveBeenCalled();
+    expect(io.files.get(legacyDisk)).toBe(before);
+
+    await p.flush();
+    await store.idle();
+
+    // …and it was carried forward exactly once, leaving the other path alone.
+    const parsed = JSON.parse(storeIO.text() as string) as { paths: Record<string, unknown> };
+    expect(
+      Object.keys(parsed.paths).sort(),
+      "the entry was found but never re-keyed — the store still speaks two vocabularies",
+    ).toEqual([IDENTITY, OTHER_KEY].sort());
+    expect(parsed.paths[OTHER_KEY]).toEqual(legacyEntry("n-other"));
+    expect(
+      log.lines.some((l) => l.includes("carried") && l.includes("legacy path key")),
+      "the carry-forward was silent",
+    ).toBe(true);
+
+    p.destroy();
+    doc.destroy();
   });
 
   it("a migration onto an OCCUPIED identity key keeps the CURRENT entry and drops the legacy one", async () => {
