@@ -724,6 +724,25 @@ export class FileOpsManager {
             }
           } else if (file && alreadyExists) {
             await this.fileManager.trashFile(file);
+          } else {
+            // S105 — THE FOURTH BRANCH, WHICH DID NOT EXIST.
+            //
+            // `!file && !alreadyExists`: the source is gone and the destination
+            // was never made, so all three branches above are skipped and this
+            // arm used to fall out of the `break` below having done, and said,
+            // nothing at all. From outside, an inbound rename that took this
+            // path was INDISTINGUISHABLE from one that was never sent — which
+            // is exactly the state two live reproductions of S105 left us in.
+            //
+            // Diagnostic only. No vault call, no mute change, no throw (I11 and
+            // I5): the outcome is byte-for-byte what it was, it is now merely
+            // legible. It names BOTH endpoints because either one being the
+            // surprise is a different bug.
+            this.logger?.warn(
+              "file-op",
+              `RENAME NOT APPLIED: neither endpoint resolved — ` +
+                `oldPath=${op.oldPath} (absent) newPath=${op.newPath} (absent)`,
+            );
           }
           break;
         }
@@ -837,9 +856,36 @@ export class FileOpsManager {
           break;
         }
       }
-    } catch {
-      const opPath = "path" in op ? op.path : "unknown";
-      new Notice(`Live Share: failed to apply ${op.type} for ${opPath}`);
+    } catch (applyErr) {
+      // S105 — THIS CATCH WAS WORSE THAN SILENT, in three separate ways, and it
+      // is the reason the cause of a failed inbound rename was lost twice.
+      //
+      //   1. IT WROTE NOTHING. The only report was `new Notice(...)`, a toast
+      //      that is gone in seconds and is not in the debug log at all.
+      //   2. IT NAMED THE WRONG THING. `"path" in op ? op.path : "unknown"` —
+      //      and a rename carries `oldPath`/`newPath`, never `path`. So the one
+      //      report that did exist could NEVER name a renamed file. It said
+      //      "unknown", every time, by construction.
+      //   3. IT KILLED THE OTHER CHANNEL. Swallowing here resolves
+      //      `applyRemoteOp` SUCCESSFULLY, so `control-handlers.ts`'s
+      //      `.catch((err) => plugin.logger.error("file-op", "failed to apply
+      //      remote file-op", err))` — the project's only error channel for an
+      //      inbound op — is unreachable for every throw raised in this switch.
+      //      It has been dead code for its entire stated purpose.
+      //
+      // The swallow itself STAYS. Rethrowing would change inbound failure
+      // semantics for all nine op types at once, which is a much wider change
+      // than this signal justifies, and `armMuteRelease` in the `finally` below
+      // is what keeps a failed apply from stranding a mute either way. What
+      // changes is that the failure is now written down, with the error and
+      // with every path the op actually names.
+      const opPaths = this.getOpPaths(op).join(" -> ") || "unknown";
+      this.logger?.warn(
+        "file-op",
+        `APPLY FAILED: ${op.type} ${opPaths}: ` +
+          `${applyErr instanceof Error ? applyErr.message : String(applyErr)}`,
+      );
+      new Notice(`Live Share: failed to apply ${op.type} for ${opPaths}`);
     } finally {
       // WP93 (C93 AC3) — P3, the largest of the nine release sites. Was a bare
       // `setTimeout(..., VAULT_EVENT_SETTLE_MS)`, i.e. a ceiling enforced by the

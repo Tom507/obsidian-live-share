@@ -124,9 +124,34 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
         );
         return;
       }
-      if (!paths.some((path) => plugin.manifestManager.isSharedPath(path))) return;
+      if (!paths.some((path) => plugin.manifestManager.isSharedPath(path))) {
+        // S105 — THE ONLY REFUSAL ON THIS GATE AN ORDINARY PATH CAN TAKE, and
+        // until now the only one that said nothing. The two above it — sidecar
+        // and protected — both log and the protected one also bumps a counter,
+        // so a live run can see them. This one was a bare `return`, which is
+        // why "delivered=true, refusals+0, nothing happened" was a complete
+        // description of two live reproductions and named no branch.
+        //
+        // `debug`, not `warn`: a peer sharing a different folder makes this the
+        // ORDINARY outcome for its traffic, and a warn-level line would be a
+        // steady stream rather than a signal. It is diagnostic only — the
+        // `return` below it is unchanged, so nothing is admitted that was not
+        // admitted before.
+        plugin.logger.debug(
+          "file-op",
+          `rename dropped: no endpoint is a shared path (${paths.join(" -> ")})`,
+        );
+        return;
+      }
     } else {
-      if (paths.some((path) => !plugin.manifestManager.isSharedPath(path))) return;
+      if (paths.some((path) => !plugin.manifestManager.isSharedPath(path))) {
+        // S105 — the same drop for the other eight op types, same reasoning.
+        plugin.logger.debug(
+          "file-op",
+          `${op.type} dropped: an endpoint is not a shared path (${paths.join(" -> ")})`,
+        );
+        return;
+      }
     }
     plugin.fileOpsManager
       .applyRemoteOp(op, async () => {
