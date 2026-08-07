@@ -105,7 +105,7 @@ was categorised from a bucket alone.**
 4. **M1 vs. the ~51 in the brief.** I measure **47 direct + 2 helper-only = 49**. The gap to the
    brief's ~51 is a boundary question (whether the 3 fixture-readers of M1c and the two helper
    modules themselves are counted), not a disagreement. Treat 47–52 as the same set.
-5. **M6 = 1 is a real number, not an error.** The Sleep-as-Wait sweep (B39, S56) already converted
+5. **M6 = 1 is a real number, not an error.** The Sleep-as-Wait sweep (B39, S56(liveness)) already converted
    49 of 61 in-scope sleeps — and its census lived in the `H:\tmp\liveshare_*.py` E2E scripts, not
    in `plugin/src/__tests__/`. The unit suite was already clean of this class before I looked.
 6. **The census cannot see a test that is wrong about a *runtime* property.** That is category (D)
