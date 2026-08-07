@@ -750,13 +750,25 @@ export class ManifestManager {
       return false;
     }
     if (this.exclusionManager?.isExcluded(path)) return false;
-    if (!this.settings.sharedFolder) return true;
-    const folder = normalizePath(
-      this.settings.sharedFolder.endsWith("/")
-        ? this.settings.sharedFolder
-        : `${this.settings.sharedFolder}/`,
-    );
-    return path.startsWith(folder) || path === normalizePath(this.settings.sharedFolder);
+    // S114 — TRIM FIRST, and trim ONCE for both branches.
+    //
+    // This used to read `if (!this.settings.sharedFolder) return true;` against
+    // the raw value. `"   "` is truthy, so a field holding only whitespace took
+    // the SCOPED branch and built the prefix `"   /"`. Nothing in any vault
+    // starts with that, so `isSharedPath` answered `false` for every path: the
+    // session connected, published an empty manifest, raised no error, and
+    // synced NOTHING. It is the worst-behaved value the field accepts — an
+    // empty field shares everything and a typo shares nothing, but at least a
+    // typo is visible in the box; whitespace is not.
+    //
+    // `normalizePath` here is this project's own (`utils.ts`) and only maps
+    // backslashes — it does not trim, so no downstream call was going to
+    // rescue this. Trimming at the single point where "is a folder configured"
+    // is decided keeps the two branches from disagreeing about what empty is.
+    const sharedFolder = this.settings.sharedFolder.trim();
+    if (!sharedFolder) return true;
+    const folder = normalizePath(sharedFolder.endsWith("/") ? sharedFolder : `${sharedFolder}/`);
+    return path.startsWith(folder) || path === normalizePath(sharedFolder);
   }
 
   destroy(): void {

@@ -127,7 +127,7 @@ import { AuditLogModal } from "./ui/audit-modal";
 import { ExplorerIndicators } from "./ui/explorer-indicators";
 import { confirmImportFromFile } from "./ui/import-canvas-modal";
 import { ConfirmModal, PromptModal } from "./ui/modals";
-import { LiveShareSettingTab } from "./ui/settings";
+import { LiveShareSettingTab, sharesEntireVault } from "./ui/settings";
 import {
   ensureFolder,
   hashBuffer,
@@ -1747,6 +1747,29 @@ export default class LiveSharePlugin extends Plugin {
     if (this.sessionManager.isActive || this.isStartingSession) {
       new Notice("Live Share: session already active");
       return;
+    }
+    // An EMPTY `sharedFolder` is not "unset" — `isInSharedFolder` returns true
+    // for every path, so the session shares the whole vault, and a guest's
+    // deletes and renames come back through `applyRemoteOp` onto the host's own
+    // files. That is a legitimate and documented mode; what it must not be is
+    // SILENT, because empty is also the shipped default, so a user who never
+    // opened this setting reaches the widest possible sharing by doing nothing.
+    //
+    // Placed here and not in `sessionManager.startSession()` deliberately: this
+    // is the only surface a human reaches (command palette, ribbon, settings
+    // button — three callers, all human). The e2e control server never calls
+    // it, so the rig cannot be blocked by a modal it has no way to answer.
+    if (sharesEntireVault(this.settings.sharedFolder)) {
+      const proceed = await this.confirm(
+        "No shared folder is set, so this session will share your ENTIRE vault.\n\n" +
+          "Everyone who joins can see every note, and their deletions, renames and " +
+          "moves will be applied to your vault.\n\n" +
+          "Set a shared folder in Settings → Live Share to limit what is shared.",
+      );
+      if (!proceed) {
+        this.notify("Live Share: session cancelled — no shared folder set");
+        return;
+      }
     }
     this.isStartingSession = true;
     try {
