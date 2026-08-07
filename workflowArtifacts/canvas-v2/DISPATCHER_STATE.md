@@ -2850,11 +2850,24 @@ not the name.
 
 ---
 
-## ⛔ SECOND SPEND-LIMIT STOP — clean resume point at `1e057e9`
+## ⏸ SECOND SPEND-LIMIT PAUSE — clean resume point at `1e057e9`
 
-**B55 (WP94) and B56 (W4 round 2) both died on the monthly spend limit at their FIRST tool call.** Neither
-wrote anything. **Nothing to rescue this time** — verified: `git status` shows only `canvas-sidecar.ts`
-with an **empty diff** (an autocrlf stat-cache artefact, not a change).
+> **⚠️ CORRECTION, and it changes how every future stop is handled.** I wrote this section up as a *stop*
+> and told the owner the agents were **"blocked"**. **Both are wrong.**
+>
+> `You've hit your monthly spend limit` is the **owner's monthly subscription budget**, shared between the
+> main loop and every subagent. **It resets.** A killed agent is **not lost** — it can be **resumed hours
+> later via `SendMessage` to its agent id**, with its transcript and context intact.
+>
+> **The practical cost of my misreading was already paid once:** at the FIRST spend-limit stop I replaced
+> B41 and B43 with freshly dispatched batches that redid their packages **from zero**, out of the same
+> budget that had just run out. **Resuming costs one message.** Record the agent id of every killed batch
+> and resume it; never re-dispatch the same package cold. Captured in
+> `Coding/memory/feedback_agent_spend_limit_resume.md`.
+
+**B55 (WP94) and B56 (W4 round 2) both died at their FIRST tool call.** Neither wrote anything. **Nothing
+to rescue** — verified: `git status` shows only `canvas-sidecar.ts` with an **empty diff** (an autocrlf
+stat-cache artefact, not a change). **Both are resumable and should be resumed rather than re-chartered.**
 
 **That is worth contrasting with the first stop.** Then, two workers died *mid-package* and left finished
 analysis uncommitted in the shared tree, where `git log` could not see it and only `git status` could. The
@@ -2901,3 +2914,14 @@ expired with the session (WP90, **with S81 outstanding**), and the mute ceiling 
 to `_liveshare-test` (**load-bearing — leave it**); **roles have swapped, A is guest / B is host**;
 **twelve** repo copies under `H:\tmp` (seven registered worktrees, five snapshots git does not know about).
 Undo with `python H:\tmp\liveshare_smoke_setup.py --restore`, which refuses to run while Obsidian is open.
+
+### How to restart — RESUME, do not re-charter
+
+1. **Resume B55 (WP94) and B56 (W4 round 2) by `SendMessage` to their agent ids**, which the Dispatcher
+   holds in-session. They died at their first tool call, so they return cold on content but carrying their
+   full briefs — still cheaper and more faithful than writing new ones.
+2. **Tell each what moved while it was dead.** Commits land during a pause; line numbers, baselines and the
+   register's next-free number drift. B55's charter cites `canvas-shadow.ts` and `canvas-sync.ts`; B56's
+   rig notes assume role assignments the relay's coin-flip election changes on its own.
+3. **Only then consider new dispatches.** The two resumed packages are the top of the queue: WP94 first
+   (a user's deletion never reaches a peer), then S81 (WP90's durable branch has never fired).
