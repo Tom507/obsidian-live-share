@@ -108,6 +108,15 @@ doc, so **`docNonEmpty` is true essentially always on this arm.**
   **Choose, state which, and give the reason. Do not discover this at the keyboard.** (a) is likelier; the
   charter deliberately does not pick.
 
+  > **OWNER'S RULING, 2026-08-08 — the choice is delegated to you, and it is delegated on one condition.**
+  > The owner was shown this fork with both options and their costs, and ruled: *let the implementer decide,
+  > with evidence.* So **you** pick (a) or (b). The condition is that the decision arrives **argued and
+  > broken**, not asserted: your report must give the reason you chose, a break table for the arm you built,
+  > and — this is the part that is easy to skip — **what you expect would have gone wrong had you built the
+  > other one.** If you chose (a), the exact WP79 AC4 re-wording comes back to the Dispatcher with it; the
+  > owner approves that amendment at handover, not you. A landed acceptance criterion may not be left quietly
+  > contradicted.
+
 **If, on reading the code, you conclude that THIS correction is itself wrong — say so as loudly as it is said
 here.** A predecessor's reading is a strong prior, not an instruction, and workers correcting their charter is
 the norm on this run: eight in a row did, and every one was right.
