@@ -205,9 +205,12 @@ a latency test.
 3. **Large-canvas support / chunking** (`S167`) — owner-sequenced **last**, after functionality is proven.
 4. **Known-issues catalogue** — the final step; sweep the remainder in rather than picking them off.
 
-**Signal register:** `SIGNAL_REGISTER.md` is the allocation authority. **Next free is S173; the Dispatcher
-allocates.** <!-- signal-register: meta --> `NEXT_FREE` is hardcoded in `check_signal_register.py` **as well
-as** in the register — bump both or the checker fails every new allocation.
+**Signal register:** `SIGNAL_REGISTER.md` is the allocation authority; the Dispatcher allocates.
+
+**Next free is S173.** <!-- signal-register: meta -->
+
+`NEXT_FREE` is hardcoded in `check_signal_register.py` **as well as** in the register — bump both or the
+checker fails every new allocation.
 
 *(That line needs the `signal-register: meta` marker because declaring the next free number is, by
 definition, citing an unallocated one. The Dispatcher has now been caught by this four times, which is
