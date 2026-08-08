@@ -2491,6 +2491,10 @@ export default class LiveSharePlugin extends Plugin {
       canvasSync: () => this.canvasSync,
       attachWriter: (path) => this.attachCanvasWriter(path),
       identityFor: (path) => this.manifestManager.getCanvasGuid(path),
+      // WP122 (S170): an accepted result makes the path adoptable, and nothing
+      // else re-asks the mirror. The eleventh call site of this pass; forwarding
+      // only, exactly like the other ten.
+      armMirrorPass: () => this.armCanvasMirrorPass(),
       notify: (message) => {
         new Notice(message);
       },
@@ -3557,6 +3561,13 @@ export default class LiveSharePlugin extends Plugin {
           guidForPath: (path) => this.manifestManager.getCanvasGuid(path),
           canvasSync,
           materialise: (path) => this.attachCanvasWriter(path),
+          // WP122 (S146): the HOST's own canvases get the single writer too, so
+          // a guest's edit reaches the host's FILE and not only its document.
+          // The SAME route as `materialise` above and as the guest-create
+          // handshake's `attachWriter` — `hasCanvasWriter` stays the one
+          // definition of "already attached", and this is a second reference to
+          // one route rather than a second route.
+          bindHostWriter: (path) => this.attachCanvasWriter(path),
           watchForRecords: (path) => this.watchCanvasForRecords(path),
           // WP117 (A6): the ONE path per accepted request whose existing local
           // file is adopted rather than skipped. Both are reads of the

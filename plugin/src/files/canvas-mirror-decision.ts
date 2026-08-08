@@ -42,6 +42,35 @@ export const MIRROR_VERDICT = {
    */
   PUBLISH: "publish",
   /**
+   * WP122 (`S146`) — HOST, and the file is bound to the ONE existing writer as
+   * well as published.
+   *
+   * THE DEFECT THIS ANSWERS. {@link MIRROR_VERDICT.PUBLISH} binds a guid and
+   * nothing else, so a canvas the HOST created has no CRDT→disk writer for the
+   * life of the session: a guest's edit reaches the host's shared DOCUMENT in
+   * seconds and its FILE never — measured unchanged after 240 s and after four
+   * unrelated manifest changes, then converged the instant a human opened the
+   * board. A GUEST-created board takes 0.25 s, because its create handshake
+   * attaches the writer (`canvas-create.ts`, `attachWriter`). The deciding
+   * variable was who created the canvas, which is not a property any correctness
+   * argument should turn on.
+   *
+   * IT LICENSES NO WRITE OF ITS OWN, exactly like
+   * {@link MIRROR_VERDICT.MATERIALISE} and {@link MIRROR_VERDICT.ADOPT_LOCAL_FILE}:
+   * it hands the path to the ONE existing writer, whose cold open then decides.
+   * A doc holding records wins and the file is rewritten from it — under WP121's
+   * conflict copy, which is why WP122 depends on WP121 as a hard precondition
+   * and not as a safety net.
+   *
+   * FENCED BY A SECOND `=== true`, on the WP117 precedent. An observation that
+   * does not carry {@link CanvasMirrorObservation.bindsHostWriter} — every
+   * pre-WP122 caller, and any deps object with no writer seam to bind through —
+   * degrades to exactly {@link MIRROR_VERDICT.PUBLISH} rather than throwing, so
+   * the pre-WP122 verdict table is byte-unchanged for every input that does not
+   * ask for this.
+   */
+  PUBLISH_AND_BIND_WRITER: "publish-and-bind-writer",
+  /**
    * GUEST. There is no local file, an identity resolves, and the doc holds
    * records. This is the only verdict that ends in a file being created, and it
    * is created by the ONE existing writer through the ONE existing projection.
@@ -100,6 +129,17 @@ export interface CanvasMirrorObservation {
    * it degrades to exactly the pre-WP117 verdict table rather than throwing.
    */
   readonly originatedHere?: boolean;
+  /**
+   * WP122 — does the caller have a writer seam to bind the HOST's own file
+   * through? Optional, and read `=== true`: a deps object that does not supply
+   * it degrades to exactly the pre-WP122 verdict table rather than throwing.
+   *
+   * It is a capability, not a preference. `canvas-mirror.ts` derives it from the
+   * presence of {@link CanvasMirrorDeps.bindHostWriter}, i.e. from the object
+   * that owns the answer, so a pass with nothing to bind through can never be
+   * told to bind.
+   */
+  readonly bindsHostWriter?: boolean;
 }
 
 /** The observation minus the one field that costs a doc subscription to measure. */
@@ -135,15 +175,22 @@ export function decideCanvasMirror(observation: CanvasMirrorObservation): Mirror
     identityResolves?: unknown;
     docHasRecords?: unknown;
     originatedHere?: unknown;
+    bindsHostWriter?: unknown;
   };
 
   if (probe.role === "host") {
     // Nothing to publish for a path this client does not hold. `=== true`, so a
     // probe that could not answer does not make the host subscribe (and
     // therefore seed) a path it may not have.
-    return probe.localFileExists === true
-      ? MIRROR_VERDICT.PUBLISH
-      : MIRROR_VERDICT.SKIP_NO_SOURCE;
+    if (probe.localFileExists === true) {
+      // WP122 — and the SECOND `=== true`, on the WP117 precedent: an
+      // observation that does not carry the capability answers exactly what it
+      // answered before this package existed.
+      return probe.bindsHostWriter === true
+        ? MIRROR_VERDICT.PUBLISH_AND_BIND_WRITER
+        : MIRROR_VERDICT.PUBLISH;
+    }
+    return MIRROR_VERDICT.SKIP_NO_SOURCE;
   }
   if (probe.role !== "guest") return MIRROR_VERDICT.SKIP_NO_SOURCE;
 
@@ -183,6 +230,11 @@ export function admitsCanvasMirror(pre: CanvasMirrorPreObservation): boolean {
   });
   return (
     verdict === MIRROR_VERDICT.PUBLISH ||
+    // WP122 — a host bind must be ADMITTED, or the pass would skip the path
+    // before ever asking `decideCanvasMirror` for the bind verdict. WP117 hit
+    // exactly this wall and left the comment below saying so; this is the same
+    // wall, one verdict later. Derived from the same function, not re-stated.
+    verdict === MIRROR_VERDICT.PUBLISH_AND_BIND_WRITER ||
     verdict === MIRROR_VERDICT.MATERIALISE ||
     // WP117 — an adoption must be ADMITTED, or the pass would skip the path
     // before ever asking `decideCanvasMirror` for the adopt verdict. Derived

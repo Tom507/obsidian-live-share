@@ -247,6 +247,24 @@ export interface CanvasCreateEnv {
   attachWriter(path: string): Promise<void>;
   /** `ManifestManager.getCanvasGuid`, to report whether the mint landed. */
   identityFor(path: string): string | null;
+  /**
+   * WP122 (`S170`) — RE-ARM THE MIRROR PASS. Called from the ACCEPTED branch of
+   * {@link CanvasCreateCoordinator.handleResult}, immediately after the path is
+   * marked adoptable, because marking a path adoptable changes the answer the
+   * mirror pass would give for it and NOTHING ELSE RE-ASKS.
+   *
+   * The measurement this exists for: an originator sat unadopted for 240 s, then
+   * adopted in 0.20 s the moment the host created an unrelated note somewhere
+   * else in the share. The pass is armed by manifest key changes only, and an
+   * accepted result is not one — so before this line the adoption waited for a
+   * coincidence. WP118's third round converged in 0.22 s and its first two
+   * waited, for exactly that reason.
+   *
+   * Optional, and invoked with `?.()`: an env without it degrades to the
+   * pre-WP122 behaviour (armed by the next manifest change, as before) rather
+   * than throwing. It is a CALL, never a decision — `main.ts` owns the pass.
+   */
+  armMirrorPass?(): void;
   /** Show the user a message. Never suppressed by a notification preference. */
   notify(message: string): void;
   /** A fresh, unguessable request id. */
@@ -565,6 +583,14 @@ export class CanvasCreateCoordinator {
       // replaces it.
       this.adoptable.add(entry.path);
       this.stats.adoptionsArmed += 1;
+      // WP122 (`S170`) — AND RE-ASK. Arming the adoption above changes the
+      // verdict this path would get, and the pass that reads it is armed by
+      // manifest key changes alone. Without this line the adoption waits for an
+      // unrelated manifest write somewhere else in the share — which is not a
+      // slow path, it is a coincidence. On the ACCEPTED branch and nowhere else:
+      // a refusal changes no verdict, and a pass armed on refusal is invisible
+      // in the stats because `adoptionsArmed` increments here either way.
+      this.env.armMirrorPass?.();
       this.env.logger?.log(
         "canvas-create",
         `CANVAS CREATE ACCEPTED: ${entry.path} — adopting the host's document`,
