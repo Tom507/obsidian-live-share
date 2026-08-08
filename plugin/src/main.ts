@@ -3640,6 +3640,37 @@ export default class LiveSharePlugin extends Plugin {
     };
   }
 
+  /**
+   * B68 (`S188`) — THE ONE ACCESSOR the canvas-disjoint diagnostic reads through.
+   *
+   * Wiring only, and read-only: it hands back the objects this class already
+   * holds in `canvasAdapters` / `canvasPresences`, keyed by the canonical path
+   * they are stored under, and decides nothing. It opens nothing, mounts
+   * nothing, and calls no method on either object — in particular it does NOT
+   * call `adapter.isBusy()` or `adapter.getEditingNodeId()`, both of which run
+   * the staleness sweep and can fire WP37's blur drain (the same reason
+   * `canvasEditingSignal` above states for avoiding them).
+   *
+   * `rawPath` filters to one board; omitting it reports every mounted board, so
+   * an armed diagnostic can say WHICH paths it could reach rather than
+   * silently reporting an empty view plane for a board that is simply not open
+   * on this peer.
+   */
+  canvasDiagTargets(
+    rawPath?: string,
+  ): Array<{ path: string; adapter: unknown; presence: unknown }> {
+    const wanted =
+      typeof rawPath === "string" && rawPath.length > 0
+        ? toCanonicalPath(normalizePath(rawPath))
+        : null;
+    const out: Array<{ path: string; adapter: unknown; presence: unknown }> = [];
+    for (const [path, adapter] of this.canvasAdapters) {
+      if (wanted !== null && path !== wanted) continue;
+      out.push({ path, adapter, presence: this.canvasPresences.get(path) ?? null });
+    }
+    return out;
+  }
+
   private async attachCanvasWriter(rawPath: string): Promise<void> {
     const canonical = toCanonicalPath(normalizePath(rawPath));
     if (this.hasCanvasWriter(canonical)) return;

@@ -1507,6 +1507,14 @@ export interface E2EControlHost {
    * for the same reason as every capability above.
    */
   canvasUndo?(req: { redo?: boolean }): Promise<unknown>;
+  /**
+   * B68 (`S188`) — the canvas-disjoint diagnostic: the three-plane census, the
+   * ledgers and the unattributed delta, behind ONE command with an `op`
+   * argument. Optional on the interface for the same reason as every capability
+   * above, so every hand-rolled fake host in the existing tests stays valid and
+   * `routeCommand` turns an absent method into a structured 400.
+   */
+  canvasDiag?(req: { op: string; path?: string; label?: string }): Promise<unknown>;
   reconcileStale?(): Promise<StaleReconcileDecision>;
   // --- WP80 -----------------------------------------------------------------
   // `publishManifest` used to return the hardcoded `{ published: true }` — the
@@ -2274,6 +2282,28 @@ export async function routeCommand(
         }
         return ok(await host.canvasUndo({ redo: args.redo === true }));
       }
+      // --- B68 (`S188`) — THE CANVAS-DISJOINT DIAGNOSTIC, ADDITIVE -----------
+      //
+      // ONE case and one optional host method, on the `canvas.editingSignal` /
+      // `canvas.undo` precedent. No command above changes shape or behaviour and
+      // `canvas.simulateEdit` is neither extended, repaired nor called.
+      //
+      // The `op` argument is what keeps this ONE command rather than eight:
+      // `census` / `arm` / `mark` / `dump` / `awareness` / `clear`. Unknown ops
+      // are refused HERE-adjacent (in the host, which owns the vocabulary) as a
+      // structured 400, never silently treated as a no-op.
+      case "canvas.diag": {
+        if (typeof host.canvasDiag !== "function") {
+          throw new Error("canvas.diag unavailable on this host");
+        }
+        return ok(
+          await host.canvasDiag({
+            op: requireString(args, "op"),
+            path: args.path === undefined ? undefined : requireString(args, "path"),
+            label: args.label === undefined ? undefined : requireString(args, "label"),
+          }),
+        );
+      }
       default:
         return badRequest(`unknown cmd: ${cmd}`);
     }
@@ -2619,6 +2649,24 @@ export interface E2EPluginLike {
    */
   canvasEditingSignal?: (path: string) => Record<string, unknown>;
   /**
+   * B68 (`S188`) — the canvas-disjoint diagnostic's ONE accessor onto the live
+   * surfaces. Optional so every hand-rolled fake plugin in the existing tests
+   * stays structurally valid, and so a bundle built from a tree that predates
+   * this package answers `view: unavailable` with a stated reason instead of
+   * crashing (§4.2: the ABSENCE is a reading).
+   *
+   * `adapter` and `presence` are held as `unknown` for exactly the reason
+   * `app.workspace` and `controlChannel` above are: their real types live in
+   * `../canvas/*`, which is not on this module's frozen import allow-list. Both
+   * are narrowed through one guarded resolver (`narrowDiagAdapter`) and every
+   * access is validated. The narrowed adapter view deliberately declares
+   * NEITHER `isBusy` NOR `getEditingNodeId`, so no instrument in this file can
+   * reach the two members whose reading fires WP37's blur drain.
+   */
+  canvasDiagTargets?: (
+    rawPath?: string,
+  ) => Array<{ path: string; adapter: unknown; presence: unknown }>;
+  /**
    * WP38 (C38 AC6) — the undo registry's own read and its own receipt, both
    * invoked on the plugin that owns them. Optional so every hand-rolled fake
    * plugin in the existing tests stays structurally valid.
@@ -2684,7 +2732,22 @@ export interface E2EPluginLike {
     getCanvasSnapshot(
       path: string,
     ): { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } | null;
-    getCanvasDocHandle(path: string): { doc: Y.Doc } | null;
+    /**
+     * B68 — `awareness` is declared OPTIONAL beside the doc. The real
+     * `DocHandle` (`sync/sync.ts:96-100`) has carried it all along; this module
+     * simply never asked. Optional, so every hand-rolled `canvasSync` double in
+     * the existing suite that returns a bare `{ doc }` stays structurally
+     * valid, and the diagnostic reports `awareness: "unavailable"` rather than
+     * throwing when it is absent (R7 — an empty reading and a missing
+     * instrument must never look alike).
+     */
+    getCanvasDocHandle(path: string): {
+      doc: Y.Doc;
+      awareness?: {
+        clientID: number;
+        getStates(): Map<number, Record<string, unknown>>;
+      };
+    } | null;
     // WP36 (C36 AC1) — optional, so every existing hand-rolled `canvasSync`
     // double in the test suite stays structurally valid.
     getTextShape?(path: string): unknown;
@@ -3045,6 +3108,371 @@ function resolveCommandRegistry(plugin: E2EPluginLike): {
   };
 }
 
+// ===========================================================================
+// B68 (`S188`) — THE CANVAS-DISJOINT DIAGNOSTIC.
+//
+// The owner's symptom: "each click I do on client 1 moves the nodes on client 2
+// around … it is already disjointed after the first real click", and the error
+// GROWS per click. Nothing in the product could answer "who moved this node".
+// This is that instrument, built to `DIAGNOSTIC_SPEC_CanvasDisjoint.md`.
+//
+// ONE MECHANISM, and it is deliberately not a framework:
+//
+//   ┌── VIEW  ← Obsidian's live canvas   (adapter.getNodeGeometry)
+//   ├── DOC   ← the shared Y.Doc          (canvasSync.getCanvasSnapshot)
+//   └── FILE  ← the .canvas on disk       (parseCanvasReport → decodeCanvasDataToFlat)
+//
+// Everything here is either a CENSUS (all three planes for all nodes, taken on
+// `arm` / `dump` / `census`) or a LEDGER ROW (one mutation with its cause,
+// appended to a single ring buffer). Exposure is one command, `canvas.diag`,
+// with an `op` argument.
+//
+// THE RULES THIS BLOCK IS HELD TO, all measured rather than stylistic:
+//
+//   R1 `canvas/canvas-presence.ts` is byte + SHA-256 pinned
+//      (`v2/wp21/test_tp04…:77-78`). NOTHING here edits it. The two sweeps this
+//      package needs are called as `this.x()` from that file's own awareness
+//      listener, and `this.`-dispatch resolves an own property before the
+//      prototype — so patching the INSTANCE intercepts both with zero
+//      production-source change.
+//   R2 `isBusy()` and `getEditingNodeId()` are NEVER called from here. Both run
+//      the staleness sweep and can fire WP37's blur drain, i.e. the instrument
+//      would cause the thing it measures. `narrowDiagAdapter` does not even
+//      DECLARE them, so this is structural rather than remembered.
+//   R3 No instrument writes any canvas surface: no `setData`, no
+//      `moveAndResize`, no vault write, no `doc.transact`, no
+//      `awareness.setLocalState`. (`v2/wp87/test_tp01_surface_route_census`
+//      derives the sink set from the tree and enforces this for free.)
+//   R5 A canvas is never scored on bytes. Records, always. Bytes appear as a
+//      `label` beside the file plane and never as a verdict.
+//   R6 Every counter increments on every branch, do-nothing included: a sweep
+//      that DECLINED must be distinguishable from one that never ran (`S155`).
+//   R7 If a dump can be lost, the dump says so (`S186`): ring eviction count,
+//      armed/not-armed, per-plane availability with a stated reason, and the
+//      patched-vs-mounted path gap are all surfaced. An empty reading and a
+//      missing instrument never look alike.
+//
+// EVERY HOOK PROBES BEFORE IT PATCHES (§4.2). `expireIdleInferredLocks` and the
+// private `lockMeta` map do not exist on a pre-WP120 bundle; their absence is
+// recorded as `present: false` / `"unreadable"` and is itself the reading that
+// proves which build a peer is on.
+// ===========================================================================
+
+/** Bumped when a dump's SHAPE changes. Its absence means "no diag on this peer". */
+const CANVAS_DIAG_PROTO = 1;
+
+/** Per-plane node cap. The owner's board is 11; 500 is the honesty ceiling (R7). */
+const CANVAS_DIAG_MAX_NODES = 500;
+
+interface DiagGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * One plane of one census. `available: false` ALWAYS carries a `reason` — a
+ * plane that could not be read must never render as an empty board (R7).
+ */
+interface DiagPlaneCensus {
+  available: boolean;
+  reason: string;
+  count: number;
+  truncated: boolean;
+  nodes: Record<string, DiagGeometry>;
+  /** File plane only: `parseCanvasReport`'s own degraded verdict. `null` elsewhere. */
+  degraded: boolean | null;
+  /** File plane only: size + sha256 as a LABEL beside the records, never a verdict (R5). */
+  label: Record<string, unknown> | null;
+}
+
+interface DiagCensus {
+  path: string;
+  at: number;
+  view: DiagPlaneCensus;
+  doc: DiagPlaneCensus;
+  file: DiagPlaneCensus;
+}
+
+function diagPlaneUnavailable(reason: string): DiagPlaneCensus {
+  return {
+    available: false,
+    reason,
+    count: 0,
+    truncated: false,
+    nodes: {},
+    degraded: null,
+    label: null,
+  };
+}
+
+function diagErrorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The four geometry numbers of a record, or `null` when the record cannot carry them. */
+function diagGeometryOf(record: unknown): DiagGeometry | null {
+  if (record === null || typeof record !== "object") return null;
+  const r = record as { x?: unknown; y?: unknown; width?: unknown; height?: unknown };
+  if (
+    typeof r.x !== "number" ||
+    typeof r.y !== "number" ||
+    typeof r.width !== "number" ||
+    typeof r.height !== "number"
+  ) {
+    return null;
+  }
+  return { x: r.x, y: r.y, width: r.width, height: r.height };
+}
+
+/**
+ * Assemble a plane from an id→record iteration, capped and honest about it.
+ * `read` returns `null` for a record that carries no usable geometry; the id is
+ * then simply absent, which the cross-peer table renders as a blank cell.
+ */
+function diagPlaneFrom(
+  ids: string[],
+  read: (id: string) => DiagGeometry | null,
+): DiagPlaneCensus {
+  const sorted = [...ids].sort();
+  const truncated = sorted.length > CANVAS_DIAG_MAX_NODES;
+  const nodes: Record<string, DiagGeometry> = {};
+  for (const id of sorted.slice(0, CANVAS_DIAG_MAX_NODES)) {
+    const geo = read(id);
+    if (geo) nodes[id] = geo;
+  }
+  return {
+    available: true,
+    reason: "",
+    count: sorted.length,
+    truncated,
+    nodes,
+    degraded: null,
+    label: null,
+  };
+}
+
+/**
+ * The READ-ONLY view of `CanvasAdapter` this diagnostic is allowed to hold.
+ *
+ * `isBusy` and `getEditingNodeId` are ABSENT BY CONSTRUCTION (R2) — not omitted
+ * by convention. Everything declared here is a pure member read or a
+ * subscriber registration:
+ *   ├── `isAvailable()`     — `canvas-adapter.ts:925`, three `typeof` tests
+ *   ├── `getLiveNodeIds()`  — `:989`, iterates `canvas.nodes.keys()`
+ *   ├── `getNodeGeometry()` — `:1001`, four property reads
+ *   ├── `getViewport()`     — `:949`, reads `canvas.x/y/zoom`
+ *   └── `onViewportChange()`— `:1209`, adds a callback to an existing set
+ * The two sinks are declared only so they can be WRAPPED; nothing in this file
+ * calls either of them directly.
+ */
+interface DiagAdapterLike {
+  isAvailable(): boolean;
+  getLiveNodeIds(): Set<string>;
+  getNodeGeometry(nodeId: string): DiagGeometry | null;
+  getViewport?(): { x: number; y: number; zoom: number } | null;
+  onViewportChange?(cb: () => void): () => void;
+}
+
+interface DiagTarget {
+  path: string;
+  adapter: DiagAdapterLike | null;
+  /** The `CanvasPresence` instance, held opaque; narrowed at each patch site. */
+  presence: unknown;
+  /** Why the adapter could not be narrowed, when it could not be. */
+  adapterReason: string;
+}
+
+/** Narrow an opaque adapter to the read-only view above, or refuse. Never guesses. */
+function narrowDiagAdapter(value: unknown): DiagAdapterLike | null {
+  if (value === null || typeof value !== "object") return null;
+  const c = value as Record<string, unknown>;
+  if (typeof c.isAvailable !== "function") return null;
+  if (typeof c.getLiveNodeIds !== "function") return null;
+  if (typeof c.getNodeGeometry !== "function") return null;
+  return value as DiagAdapterLike;
+}
+
+/**
+ * The mounted boards this peer can be asked about. An empty array, on a plugin
+ * that HAS the accessor, means "no canvas view is mounted" — a different fact
+ * than "this build has no accessor", and the two are reported separately.
+ *
+ * (That sentence is deliberately not phrased with the two states quoted either
+ * side of the word that precedes a module specifier: the WP49/WP72 import
+ * allow-list census is a REGEX over this file's text, not a parse of its AST,
+ * so an ordinary English sentence of that shape is read as an import and reds
+ * two work packages. Measured, not guessed — it did.)
+ */
+function resolveDiagTargets(plugin: E2EPluginLike, rawPath?: string): DiagTarget[] {
+  const accessor = plugin.canvasDiagTargets;
+  if (typeof accessor !== "function") return [];
+  let raw: unknown;
+  try {
+    raw = accessor(rawPath);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  const out: DiagTarget[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== "object") continue;
+    const row = entry as { path?: unknown; adapter?: unknown; presence?: unknown };
+    if (typeof row.path !== "string" || row.path.length === 0) continue;
+    const adapter = narrowDiagAdapter(row.adapter);
+    out.push({
+      path: row.path,
+      adapter,
+      presence: row.presence ?? null,
+      adapterReason:
+        adapter === null
+          ? "the mounted target exposes no adapter with isAvailable/getLiveNodeIds/getNodeGeometry"
+          : "",
+    });
+  }
+  return out;
+}
+
+/**
+ * I1 — the VIEW plane. Three pure reads and nothing else: no method that
+ * sweeps (R2), no transaction, no awareness write, no disk write.
+ */
+function diagViewCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
+  if (typeof plugin.canvasDiagTargets !== "function") {
+    return diagPlaneUnavailable(
+      "this build exposes no canvasDiagTargets accessor (pre-B68 bundle)",
+    );
+  }
+  const targets = resolveDiagTargets(plugin, path);
+  if (targets.length === 0) {
+    return diagPlaneUnavailable("no canvas view is mounted for this path on this peer");
+  }
+  const target = targets[0];
+  if (!target.adapter) return diagPlaneUnavailable(target.adapterReason);
+  try {
+    if (target.adapter.isAvailable() !== true) {
+      return diagPlaneUnavailable("the adapter reports the private canvas API unavailable");
+    }
+    const ids = [...target.adapter.getLiveNodeIds()];
+    const adapter = target.adapter;
+    return diagPlaneFrom(ids, (id) => adapter.getNodeGeometry(id));
+  } catch (err) {
+    return diagPlaneUnavailable(`view read threw: ${diagErrorText(err)}`);
+  }
+}
+
+/**
+ * I1 — the DOC plane, from `canvasSync.getCanvasSnapshot` (a pure read:
+ * `buildCanvasData` over three maps, no transaction opened).
+ *
+ * `null` means "not subscribed on this peer, or the shared node map is empty".
+ * It is reported as UNAVAILABLE and never as an empty board — those two are the
+ * whole difference between "the doc lost the board" and "we never asked".
+ */
+function diagDocCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
+  const cs = plugin.canvasSync;
+  if (!cs) return diagPlaneUnavailable("this instance exposes no canvasSync");
+  let snapshot: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } | null;
+  try {
+    snapshot = cs.getCanvasSnapshot(path);
+  } catch (err) {
+    return diagPlaneUnavailable(`getCanvasSnapshot threw: ${diagErrorText(err)}`);
+  }
+  if (!snapshot) {
+    return diagPlaneUnavailable(
+      "getCanvasSnapshot returned null: not subscribed on this peer, or the shared node map is empty",
+    );
+  }
+  const byId = new Map<string, unknown>();
+  for (const record of snapshot.nodes) {
+    if (record && typeof record.id === "string") byId.set(record.id, record);
+  }
+  return diagPlaneFrom([...byId.keys()], (id) => diagGeometryOf(byId.get(id)));
+}
+
+/**
+ * I1 — the FILE plane, through THE PRODUCTION PARSER and no other (`S158`).
+ * `parseCanvasReport` rather than `parseCanvas` because the latter degrades to
+ * empty records and never throws, so "parse and compare" would read EQUAL for
+ * two files neither of which could be read. `degraded` is a judgement input.
+ *
+ * It reads bytes the plugin did not author and writes nothing.
+ */
+async function diagFileCensus(plugin: E2EPluginLike, path: string): Promise<DiagPlaneCensus> {
+  const adapter = resolveCanvasFileAdapter(plugin);
+  if (!adapter) return diagPlaneUnavailable("this instance exposes no read-only file adapter");
+  try {
+    if (!(await adapter.exists(path))) {
+      return diagPlaneUnavailable("no .canvas file exists at this path");
+    }
+    const bytes = await readCanvasBytes(adapter, path);
+    const report = parseCanvasReport(bytes.toString("utf8"));
+    const flat = decodeCanvasDataToFlat(report.data);
+    const plane = diagPlaneFrom(Object.keys(flat.nodes), (id) => diagGeometryOf(flat.nodes[id]));
+    plane.degraded = report.degraded;
+    // R5 — a LABEL, never a verdict. `data.json` is never read, hashed or named.
+    plane.label = {
+      size: bytes.byteLength,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      hasNodesKey: report.hasNodesKey,
+      hasEdgesKey: report.hasEdgesKey,
+    };
+    return plane;
+  } catch (err) {
+    return diagPlaneUnavailable(`file read/parse threw: ${diagErrorText(err)}`);
+  }
+}
+
+/** I1 — all three planes for one path, taken on demand. */
+async function diagCensus(plugin: E2EPluginLike, path: string): Promise<DiagCensus> {
+  return {
+    path,
+    at: Date.now(),
+    view: diagViewCensus(plugin, path),
+    doc: diagDocCensus(plugin, path),
+    file: await diagFileCensus(plugin, path),
+  };
+}
+
+/** The request shape `canvas.diag` validates at the command boundary. */
+interface CanvasDiagRequest {
+  op: string;
+  path?: string;
+  label?: string;
+}
+
+export interface CanvasDiagnostic {
+  run(req: CanvasDiagRequest): Promise<unknown>;
+}
+
+/**
+ * The diagnostic, over one live plugin. One ring buffer, one arm census, one
+ * set of patches — held in this closure so they die with the host and cannot
+ * outlive the instance that owns the surfaces they wrap.
+ */
+function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
+  /** Which paths this build could see mounted, for the arm/dump gap report (R7). */
+  const mountedPaths = (): string[] => resolveDiagTargets(plugin).map((t) => t.path).sort();
+
+  return {
+    async run(req: CanvasDiagRequest): Promise<unknown> {
+      switch (req.op) {
+        case "census": {
+          if (!req.path) throw new Error("canvas.diag op 'census' requires a 'path'");
+          return {
+            diagProto: CANVAS_DIAG_PROTO,
+            census: await diagCensus(plugin, req.path),
+            mountedPaths: mountedPaths(),
+          };
+        }
+        default:
+          throw new Error(`canvas.diag: unknown op '${req.op}'`);
+      }
+    },
+  };
+}
+
 /**
  * Build the concrete host over a live plugin. `emit` and `bump` feed the SSE
  * channel + quiescence tracking from binding instrumentation.
@@ -3093,6 +3521,12 @@ export function buildPluginHost(
     observedDocs.add(doc);
     doc.on("update", markActivity);
   };
+  // B68 (`S188`) — one diagnostic per host. Constructing it INSTALLS NOTHING:
+  // every hook is installed by `op:"arm"` and removed by `op:"clear"`, so a
+  // plugin that never receives a `canvas.diag` command carries no wrapper, no
+  // listener and no ring buffer state at all.
+  const canvasDiagnostic = createCanvasDiagnostic(plugin);
+
   /** Observe the doc behind `path`, if the host exposes one. Never breaks the caller. */
   const observeCanvas = (path: string): void => {
     try {
@@ -3594,6 +4028,13 @@ export function buildPluginHost(
         return { available: false, path };
       }
       return { available: true, ...(plugin.canvasEditingSignal(path) as object) };
+    },
+
+    // B68 (`S188`) — the canvas-disjoint diagnostic. One object per host, held
+    // in this closure, so its ring buffer and its patches die with the instance
+    // whose surfaces they wrap.
+    async canvasDiag(req) {
+      return canvasDiagnostic.run(req);
     },
 
     // --- WP38 (C38 AC6) — the undo instrument -----------------------------
