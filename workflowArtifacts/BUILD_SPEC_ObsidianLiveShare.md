@@ -274,6 +274,30 @@ Requirements on the implementation:
    replaced by an adopt path.
 5. Import is explicitly in scope — the owner named *"new or imported"* canvases together.
 
+### Full convergence is PRIORITY 1 - owner decision 2026-08-08
+
+**Every peer's file must always be fully in sync. This outranks everything else in this document.**
+
+The owner's words: *"the files should always be fully in sync, that's prio 1. Of course the host's file
+should change when the guest edits it. Only if the guest and host edit the file at the same time at the
+same place, the host might be preferred in some way."*
+
+Three consequences, and they are requirements, not preferences:
+
+1. **A guest's edit MUST reach the host's file.** A rule that leaves a host's copy untouched while peers
+   move on is wrong by this ruling, whatever its original justification. `WP79`'s *"a host's file is never
+   rewritten by a pass"* must be re-examined against it rather than cited as settled.
+2. **Host preference is scoped to true conflict only** - the same file, the same place, at the same time.
+   It is a tie-break, **not** a general precedence, and it may not be used to justify divergence in the
+   ordinary case.
+3. **Divergence is never acceptable as a steady state**, including divergence that is *"only"*
+   serialisation. Two stable byte forms of one logical canvas (`S150`) is a defect under this ruling even
+   if every record matches, because nothing downstream can tell that case apart from a real one.
+
+**Sequencing, also the owner's:** prove functionality first, then build large-canvas support
+(`S167` chunking) as the **last** step, then sweep the remaining small items into a **known-issues
+catalogue** rather than fixing them one at a time.
+
 #### Open residual that must be closed with it
 
 `canvas-sync.ts` computes `peerKnowsDoc` as *"did bytes arrive across the await"*, which under `NO_PEERS`
