@@ -2709,7 +2709,7 @@ export class CanvasSync {
       );
     }
     const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
-    if (parentDir) await ensureFolder(this.vault, parentDir);
+    if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
     await this.vault.adapter.write(diskPath, content);
   }
 
@@ -4914,7 +4914,7 @@ export class CanvasSync {
     this.fileOpsManager.mutePathEvents(diskPath);
     try {
       const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
-      if (parentDir) await ensureFolder(this.vault, parentDir);
+      if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
       // Re-check after the awaited folder ensure: a remote delta may have landed
       // during the await. Yield rather than clobber it.
       if (expectedSeq !== undefined && this.currentSeq(path) > expectedSeq) return;

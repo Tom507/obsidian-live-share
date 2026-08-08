@@ -35,6 +35,7 @@ import {
 } from "./empty-write-guard";
 import type { ExclusionManager } from "./exclusion";
 import { PUBLICATION_DECISION, decidePublication } from "./manifest-purge-decision";
+import { MANIFEST_SYNC_OUTCOMES, notePathOutcome } from "./path-outcome";
 import {
   isProtectedPath,
   noteProtectedRefusal,
@@ -629,7 +630,7 @@ export class ManifestManager {
         if (!options?.skipText) {
           const existing = this.vault.getAbstractFileByPath(diskPath);
           if (!existing) {
-            await ensureFolder(this.vault, diskPath);
+            await ensureFolder(this.vault, diskPath, this.logger);
             synced++;
           }
         }
@@ -692,11 +693,44 @@ export class ManifestManager {
       }
 
       const tempHandle = this.syncManager.getDoc(path);
-      if (!tempHandle) continue;
+      if (!tempHandle) {
+        // S157 — THE FIRST OF THE TWO TRACELESS GIVE-UPS. `getDoc` answers
+        // `null` while the manager is neither connected nor connecting, or has
+        // no room id. This peer then cannot read the host's content for this
+        // path at all, leaves its own bytes on disk, and — until this line
+        // existed — said nothing whatsoever. `S148` was measured end to end
+        // through exactly this door: `syncFromManifest` returns 0, the file
+        // still holds the guest's bytes, and `subscribe()`'s guest arm
+        // overwrites them a moment later. WP115 made that outcome safe. The
+        // silence was untouched.
+        //
+        // THE DECISION IS UNCHANGED: this still `continue`s. C3 — observability,
+        // not behaviour.
+        notePathOutcome(
+          { arm: "manifest-sync", outcome: MANIFEST_SYNC_OUTCOMES.NO_DOC, path },
+          this.logger,
+        );
+        continue;
+      }
 
+      // S157 — WHICH STATEMENT THREW, WITHOUT NARROWING THE `try`.
+      //
+      // `S157` describes the `catch` below as being around `waitForSync`. IT IS
+      // NOT — it wraps the whole body: the wait, the document read, the
+      // empty-write decision (which itself reads the file and hashes it),
+      // `preserveLocalVersion`, `ensureFolder`, and the `vault.modify` /
+      // `vault.create`. So "the path threw" could mean a sync timeout or a
+      // failed write to the user's disk, and nothing distinguished them.
+      //
+      // Splitting the `try` would attribute the throw at the cost of changing
+      // control flow, which C3 forbids. A phase label costs nothing, changes no
+      // branch, and answers the same question. It is a fixed string per
+      // statement — never a path's contents and never a value read from disk.
+      let phase = "waiting for sync";
       try {
         await this.syncManager.waitForSync(path);
 
+        phase = "reading the shared document";
         const content = tempHandle.text.toString();
 
         // S119 — THE FLOOR. `waitForSync` resolving does NOT mean the document
@@ -716,6 +750,7 @@ export class ManifestManager {
         // Checked against the hash rather than merely against emptiness because
         // the hash is strictly stronger: it also refuses a half-replayed
         // document, which is the same failure one notch less visible.
+        phase = "deciding the empty-write floor";
         const verdict = decideEmptyWrite({
           incoming: content,
           existing: localFile ? normalizeLineEndings(await this.vault.read(localFile)) : null,
@@ -728,6 +763,19 @@ export class ManifestManager {
           // the console and nowhere else. Counted, LOGGED with the path and the
           // arm, and still said on the console. One shared emitter.
           noteEmptyWriteRefusal("manifest-sync", path, verdict.reason, this.logger);
+          // S155/C2 — AND IT IS RECORDED AS ONE OF THIS ARM'S FOUR EXITS TOO.
+          // The refusal ledger above is a census across WRITER ARMS; this one is
+          // a census across THIS FUNCTION'S EXITS, and only a closed one can
+          // answer "which door did this path leave by". The two counters are
+          // independent and must agree — a test asserts they do.
+          notePathOutcome(
+            {
+              arm: "manifest-sync",
+              outcome: MANIFEST_SYNC_OUTCOMES.EMPTY_WRITE_REFUSED,
+              path,
+            },
+            this.logger,
+          );
           continue;
         }
 
@@ -740,13 +788,16 @@ export class ManifestManager {
         // Only the destructive branch copies. A file that does not exist
         // locally is being CREATED, which destroys nothing; a file whose hash
         // already matched never reached this loop body at all.
+        phase = "preserving the local version";
         if (localFile && (await this.preserveLocalVersion(path, localFile, "text"))) {
           conflictCopies++;
         }
 
+        phase = "ensuring the parent folder";
         const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
-        if (parentDir) await ensureFolder(this.vault, parentDir);
+        if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
 
+        phase = "writing to disk";
         mute?.(diskPath);
         try {
           if (localFile) {
@@ -760,8 +811,30 @@ export class ManifestManager {
           }
         }
         synced++;
-      } catch {
-        // Failed to sync individual file, continue with rest
+        // S155/C2 — THE SUCCESS BRANCH, and it is what makes the three above
+        // readable. Without it a ledger showing no give-ups is equally
+        // consistent with "every path synced" and with "this function never ran
+        // for any of them", which is precisely the reading that cost WP115 a
+        // round. `synced` is returned to the caller but nothing keeps it, and it
+        // is a COUNT rather than an attribution: it cannot name a path.
+        notePathOutcome(
+          { arm: "manifest-sync", outcome: MANIFEST_SYNC_OUTCOMES.SYNCED, path },
+          this.logger,
+        );
+      } catch (err) {
+        // S157 — THE SECOND TRACELESS GIVE-UP. Failed to sync individual file,
+        // continue with rest — UNCHANGED, and now it says which path, which
+        // statement and what the error was. C3: the decision to continue is not
+        // this package's to alter.
+        notePathOutcome(
+          {
+            arm: "manifest-sync",
+            outcome: MANIFEST_SYNC_OUTCOMES.THREW,
+            path,
+            detail: `phase=${phase} error=${err instanceof Error ? err.message : String(err)}`,
+          },
+          this.logger,
+        );
       }
     }
 
@@ -1169,7 +1242,7 @@ export class ManifestManager {
     try {
       const target = conflictCopyPath(path, this.settings.sharedFolder, new Date());
       const parent = target.substring(0, target.lastIndexOf("/"));
-      if (parent) await ensureFolder(this.vault, parent);
+      if (parent) await ensureFolder(this.vault, parent, this.logger);
       if (arm === "binary") {
         const bytes = await this.vault.readBinary(localFile);
         await this.vault.createBinary(target, bytes);

@@ -763,7 +763,7 @@ export class FileOpsManager {
             }
           } else if (!exists) {
             const parentDir = op.path.substring(0, op.path.lastIndexOf("/"));
-            if (parentDir) await ensureFolder(this.vault, parentDir);
+            if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
             if (op.binary) {
               const binaryData = base64ToArrayBuffer(op.content);
               await this.vault.createBinary(op.path, binaryData);
@@ -809,7 +809,7 @@ export class FileOpsManager {
           }
           if (file && !alreadyExists) {
             const parentDir = op.newPath.substring(0, op.newPath.lastIndexOf("/"));
-            if (parentDir) await ensureFolder(this.vault, parentDir);
+            if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
             try {
               await this.vault.rename(file, op.newPath);
             } catch (renameErr) {
@@ -906,7 +906,7 @@ export class FileOpsManager {
               await this.vault.modifyBinary(exists, binaryData);
             } else {
               const parentDir = op.path.substring(0, op.path.lastIndexOf("/"));
-              if (parentDir) await ensureFolder(this.vault, parentDir);
+              if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
               await this.vault.createBinary(op.path, binaryData);
             }
           } else {
@@ -914,7 +914,7 @@ export class FileOpsManager {
               await this.vault.modify(exists, joined);
             } else {
               const parentDir = op.path.substring(0, op.path.lastIndexOf("/"));
-              if (parentDir) await ensureFolder(this.vault, parentDir);
+              if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
               await this.vault.create(op.path, joined);
             }
           }
@@ -945,7 +945,7 @@ export class FileOpsManager {
           break;
         }
         case "folder-create": {
-          await ensureFolder(this.vault, op.path);
+          await ensureFolder(this.vault, op.path, this.logger);
           break;
         }
       }

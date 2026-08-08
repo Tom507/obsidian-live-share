@@ -57,6 +57,7 @@ import {
   makeBindStateSink,
 } from "./editor/collab-bind-decision";
 import { getEmptyWriteRefusals } from "./files/empty-write-guard";
+import { type PathOutcomeLedger, getPathOutcomes } from "./files/path-outcome";
 import {
   type CanvasPersistence,
   type PersistenceIO,
@@ -883,6 +884,33 @@ export default class LiveSharePlugin extends Plugin {
     }
     const control = this.controlChannel.rearm();
     const mux = this.syncManager?.rearm() ?? null;
+    // S143 (A3) — RE-DRIVE THE PATHS `subscribe()` GAVE UP ON.
+    //
+    // The two links re-arm above; without this line the DOCUMENTS did not.
+    // `subscribe()` abandons a path when `getDoc` answers `null` (the manager
+    // was neither connected nor connecting) or when `waitForSync` times out,
+    // and nothing re-drove it until the next `startAll` — i.e. until the user
+    // left and rejoined. That is the permanence half of `S143`, and this is the
+    // gesture that already means "try again" (`WP88`, `WP114`), so the recovery
+    // belongs on it rather than on a timer a hidden renderer would clamp
+    // (`S147`).
+    //
+    // Only RETRYABLE give-ups are in that set: a cancelled subscribe and a
+    // released document never entered it. `I11` — refusal never destroys.
+    //
+    // GUARDED, and not for tidiness: this awaits `subscribe()` once per
+    // abandoned path, and each of those touches the vault and the relay. A
+    // recovery that can take down the re-arm it is part of — after both links
+    // have already been re-armed above — would be a worse defect than the one
+    // it repairs. It reports rather than swallows, which is this package's whole
+    // subject.
+    let resubscribed: Awaited<ReturnType<BackgroundSync["retryAbandonedSubscribes"]>> | null =
+      null;
+    try {
+      resubscribed = (await this.backgroundSync?.retryAbandonedSubscribes()) ?? null;
+    } catch (err) {
+      this.logger?.error("connection", "re-arm: re-subscribing abandoned paths failed", err);
+    }
     // The announcement re-arms, so a second outage announces again.
     this.severanceAnnouncement = NO_ANNOUNCEMENT;
     this.lastSeverance = null;
@@ -898,6 +926,10 @@ export default class LiveSharePlugin extends Plugin {
       via: "rearm",
       control,
       mux,
+      // S143 — carried up so the rig can READ the recovery instead of inferring
+      // it from a file that started changing again. `null` means the sync was
+      // not built yet, which is a different answer from `{attempted: 0}`.
+      resubscribed: resubscribed ?? null,
       reportBefore: before,
       reportAfter: this.linkReport(),
     };
@@ -1193,7 +1225,7 @@ export default class LiveSharePlugin extends Plugin {
             this.fileOpsManager.mutePathEvents(localNew);
             try {
               const parentDir = localNew.substring(0, localNew.lastIndexOf("/"));
-              if (parentDir) await ensureFolder(this.app.vault, parentDir);
+              if (parentDir) await ensureFolder(this.app.vault, parentDir, this.logger);
               await this.app.vault.rename(oldFile, localNew);
               disposition.renamed.push(newPath);
             } finally {
@@ -1744,6 +1776,31 @@ export default class LiveSharePlugin extends Plugin {
    */
   getConflictCopies(): ConflictCopyLedger {
     return getConflictCopies();
+  }
+
+  /**
+   * S143/S144/S157 — the give-up ledger, for a live validator.
+   *
+   * The three arms it covers all fail by SURVIVING: a path drops out of the
+   * session, a path's join reconciliation is skipped, a folder is not created —
+   * and in every case the product keeps running and reports healthy. There is
+   * no other trace to read, which is why this surface exists.
+   *
+   * Every branch of all three arms increments, including the successes, so a
+   * zero cell means "this arm did not run for this path" and nothing else
+   * (`S155`).
+   */
+  getPathOutcomes(): PathOutcomeLedger {
+    return getPathOutcomes();
+  }
+
+  /**
+   * S143 — which paths `subscribe()` gave up on and why, right now. The ledger
+   * above is cumulative; this is the CURRENT set that a re-arm would re-drive.
+   * Terminal give-ups (cancelled, released) are deliberately absent from it.
+   */
+  getAbandonedSubscribes(): Record<string, string> {
+    return this.backgroundSync?.getAbandonedSubscribes() ?? {};
   }
 
   notify(msg: string): void {
@@ -3457,7 +3514,7 @@ export default class LiveSharePlugin extends Plugin {
     this.canvasWriterAttaching.add(canonical);
     const baseIo = createVaultPersistenceIO(this.app.vault.adapter, this.fileOpsManager, {
       isPathSafe: (diskPath) => isPathSafe(diskPath),
-      ensureFolder: (parentDir) => ensureFolder(this.app.vault, parentDir),
+      ensureFolder: (parentDir) => ensureFolder(this.app.vault, parentDir, this.logger),
     });
     // WP90 (I11): the durable refused set, over WP24's OWN vault I/O adapter —
     // not `baseIo`. `baseIo` is the canvas writer's seam and it is decorated by

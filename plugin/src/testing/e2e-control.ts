@@ -1207,6 +1207,13 @@ export interface E2EControlHost {
   attestationDecisions?(): unknown;
   /** S142 — writes declined because the editor owns that file's disk copy. */
   singleWriterDeclines?(): unknown;
+  /**
+   * S143/S144/S157 — the give-up ledger over `subscribe()`, `syncFromManifest()`
+   * and `ensureFolder()`. Every branch counted, successes included.
+   */
+  pathOutcomes?(): unknown;
+  /** S143 — the CURRENT paths a re-arm would re-drive, and why each was abandoned. */
+  abandonedSubscribes?(): unknown;
   /** S123 AC5 — the last canvas mirror pass's per-path verdicts. */
   canvasMirror?(): unknown;
   /** S129 AC5 — paths this peer refused to bind to an unproven-empty document. */
@@ -1663,6 +1670,21 @@ export async function routeCommand(
         }
         return ok(host.singleWriterDeclines());
       }
+      // S143/S144/S157 — the three arms that fail by SURVIVING. Every branch
+      // increments, so a zero cell means "this arm did not run for that path"
+      // and never "it ran and declined" (`S155`).
+      case "sync.pathOutcomes": {
+        if (typeof host.pathOutcomes !== "function") {
+          throw new Error("sync.pathOutcomes unavailable on this host");
+        }
+        return ok(host.pathOutcomes());
+      }
+      case "sync.abandonedSubscribes": {
+        if (typeof host.abandonedSubscribes !== "function") {
+          throw new Error("sync.abandonedSubscribes unavailable on this host");
+        }
+        return ok(host.abandonedSubscribes());
+      }
       // --- `fileop.inject`, ADDITIVE ------------------------------------------
       //
       // ONE case and one optional host method, on the `link.break` /
@@ -2061,6 +2083,18 @@ export interface E2EPluginLike {
   };
   /** S142 — the single-writer decline ledger, by `subscribe()` arm. */
   getSingleWriterDeclines?: () => { total: number; byArm: Record<string, number> };
+  /**
+   * S143/S144/S157 — the give-up ledger. Three arms that fail by SURVIVING:
+   * `subscribe()`, `syncFromManifest()` and `ensureFolder()`. Every branch
+   * increments, successes included, so a zero cell means "did not run".
+   */
+  getPathOutcomes?: () => {
+    total: number;
+    byArm: Record<string, number>;
+    byDisposition: Record<string, number>;
+  };
+  /** S143 — the CURRENT set of paths a re-arm would re-drive, and why each was abandoned. */
+  getAbandonedSubscribes?: () => Record<string, string>;
   /** S123 AC5 — the last canvas mirror report, or null if no pass has run. */
   getLastCanvasMirrorReport?: () => unknown;
   /** S129 AC5 — the collab bind refusal ledger. */
@@ -2888,6 +2922,22 @@ export function buildPluginHost(
         );
       }
       return plugin.getSingleWriterDeclines();
+    },
+
+    pathOutcomes() {
+      if (typeof plugin.getPathOutcomes !== "function") {
+        throw new Error("sync.pathOutcomes unavailable: this instance exposes no give-up ledger");
+      }
+      return plugin.getPathOutcomes();
+    },
+
+    abandonedSubscribes() {
+      if (typeof plugin.getAbandonedSubscribes !== "function") {
+        throw new Error(
+          "sync.abandonedSubscribes unavailable: this instance exposes no abandoned-subscribe set",
+        );
+      }
+      return plugin.getAbandonedSubscribes();
     },
 
     muteDrops() {

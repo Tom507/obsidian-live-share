@@ -31,6 +31,13 @@ import {
   noteProtectedRefusal,
   protectedRefusalMessage,
 } from "./protected-paths";
+import {
+  PATH_DISPOSITION,
+  SUBSCRIBE_OUTCOMES,
+  type SubscribeOutcome,
+  notePathOutcome,
+  pathOutcomeDisposition,
+} from "./path-outcome";
 import { noteSingleWriterDecline } from "./single-writer";
 import type { ManifestManager } from "./manifest";
 
@@ -119,6 +126,26 @@ export class BackgroundSync {
    * length the platform decides.
    */
   private seedWaiters = new Map<string, Set<() => void>>();
+  /**
+   * S143 — PATHS `subscribe()` GAVE UP ON FOR A REASON THAT MAY STOP BEING
+   * TRUE, and the whole of the permanence half of the defect.
+   *
+   * The first failure is a 10 s timeout or a momentary disconnection. The
+   * CONSEQUENCE was permanent: nothing re-drove `subscribe()` for that path
+   * until the next `startAll`, which in practice means until the user leaves
+   * and rejoins the session. The file is open, the session says connected,
+   * everything reports healthy, and that document is simply never watched
+   * again.
+   *
+   * ONLY `PATH_DISPOSITION.RETRYABLE` outcomes are recorded here, and that
+   * exclusion is the safety rail rather than a detail. A cancellation
+   * (`cancelSubscribe`) and a released document (`isDestroyed`) are somebody
+   * DELIBERATELY stopping this path; re-driving either would resurrect exactly
+   * what was asked to be stopped. **I11 — refusal never destroys.** See
+   * `path-outcome.ts`'s facts table, which is where that classification lives,
+   * so this class cannot carry a second list that drifts from it.
+   */
+  private abandonedSubscribes = new Map<string, SubscribeOutcome>();
   // Per-file monotonic counter of remote (non-local) Y.Text deltas applied to
   // the doc. A whole-file disk flush snapshots this value when it captures its
   // content; if the counter has advanced by the time the flush actually reaches
@@ -237,17 +264,149 @@ export class BackgroundSync {
     for (const wake of [...waiters]) wake();
   }
 
+  /**
+   * S143 — SAY WHICH DOOR THIS PATH LEFT BY, and remember it if it may be
+   * re-driven.
+   *
+   * Every `return` in `subscribe()` goes through here, including the fall
+   * through the bottom. That totality is `S155`'s rule and it is the point: a
+   * counter that skips its do-nothing branch makes *"ran and declined"*
+   * indistinguishable from *"never reached"*, and that exact ambiguity cost
+   * this run a full round. A zero in this ledger for a path now means one thing
+   * — `subscribe()` did not run for it.
+   *
+   * The RETRYABLE / TERMINAL split is read off `path-outcome.ts`'s table rather
+   * than restated here, so the safety rail has exactly one definition.
+   */
+  private endSubscribe(path: string, outcome: SubscribeOutcome, detail?: string): void {
+    notePathOutcome({ arm: "subscribe", outcome, path, detail }, this.logger);
+    if (pathOutcomeDisposition("subscribe", outcome) === PATH_DISPOSITION.RETRYABLE) {
+      this.abandonedSubscribes.set(path, outcome);
+    } else {
+      // A path that reached any other exit is not owed a retry: it completed,
+      // it had nothing to do, or it was deliberately stopped. Clearing here is
+      // what keeps a later success from leaving a stale entry behind.
+      this.abandonedSubscribes.delete(path);
+    }
+  }
+
+  /**
+   * S143 — READ-ONLY. Which paths this peer gave up on and why, so a live
+   * validator can read the give-ups instead of inferring them from a file that
+   * stopped changing.
+   */
+  getAbandonedSubscribes(): Record<string, SubscribeOutcome> {
+    return Object.fromEntries(this.abandonedSubscribes);
+  }
+
+  /**
+   * S143 (A3) — THE RECOVERY, AND WHY IT IS THIS SHAPE.
+   *
+   * A permanent give-up should not need a session restart to clear. Three
+   * shapes were available and two were rejected:
+   *
+   *   ├── A TIMER that reconciles periodically. Rejected: `S147` is this
+   *   │     project's proof that a clamped renderer decides how long any timer
+   *   │     actually takes, and a recovery whose period the platform chooses is
+   *   │     the defect one layer up. WP114 removed the last such loop from this
+   *   │     very function.
+   *   ├── AN IMMEDIATE RETRY at the exit. Rejected: both retryable exits mean
+   *   │     "the link is not usable right now" — `getDoc` answers `null`
+   *   │     precisely when the manager is neither connected nor connecting, and
+   *   │     `waitForSync` rejected on a timeout. Retrying on the spot re-asks a
+   *   │     question whose answer cannot have changed, and burns the loop the
+   *   │     caller is iterating serially (`S147` again).
+   *   └── RE-DRIVE ON THE GESTURE THAT ALREADY MEANS "TRY AGAIN". Chosen.
+   *         `SyncManager.rearm()` and `ControlChannel.rearm()` are already that
+   *         gesture — the user's re-arm command, the settings button, and the
+   *         rig's `restoreLink` all reach it — and WP88/WP114 already
+   *         established it as the seam where an idempotent recovery belongs.
+   *         `main.ts::rearmSharing` calls this method there.
+   *
+   * IDEMPOTENT AND NON-DESTRUCTIVE BY CONSTRUCTION, which is A4. This re-drives
+   * `subscribe()` — the same production function, with every floor still in
+   * front of it: the `S134`/`S129` seeding guard (`yTextHeldContent`, the
+   * existing evidence predicate, not a second one), the single-writer declines,
+   * and the `S119` empty-write floor. It introduces no new write path, so there
+   * is no new way to seed over a document the editor owns or to resurrect an
+   * emptied note. `subscribe()`'s own `observers.has(path)` guard makes a
+   * re-drive of an already-recovered path a counted do-nothing.
+   *
+   * TERMINAL OUTCOMES ARE NOT HERE AT ALL — they never entered the map. A
+   * cancelled subscribe and a released document are not retried into a
+   * resurrection.
+   */
+  async retryAbandonedSubscribes(): Promise<{
+    attempted: number;
+    recovered: number;
+    stillAbandoned: number;
+    paths: string[];
+  }> {
+    const paths = [...this.abandonedSubscribes.keys()];
+    for (const path of paths) {
+      // Cleared BEFORE the attempt: `subscribe()` records its own outcome, so
+      // leaving the old entry in place would let a completed retry be counted
+      // as still abandoned if the new outcome happened to be a do-nothing.
+      const previous = this.abandonedSubscribes.get(path);
+      this.abandonedSubscribes.delete(path);
+      // WITHOUT THIS THE RETRY IS A NO-OP FOR ONE OF THE TWO EXITS, and it
+      // would be a SILENT one — the defect this package exists to remove,
+      // reintroduced by its own repair.
+      //
+      // `sync-failed` happens with the observer ALREADY ATTACHED (WP114 moved
+      // `attachObserver` ahead of `waitForSync`). What it costs is the one-off
+      // reconciliation, which never ran — on a HOST that means this file's
+      // bytes were never seeded into the document at all. Re-entering
+      // `subscribe()` would meet its own `observers.has(path)` guard, return
+      // `already-observed`, and the reconciliation would still never run.
+      //
+      // The detach is SAFE and that is a property of the code rather than a
+      // hope: from `detachObserver` to `attachObserver` inside `subscribe()`
+      // there is NOT ONE `await` — `isPathSafe`, the two set tests, `getDoc`
+      // and `attachObserver` are all synchronous — so no remote delta can be
+      // integrated in the window, because JavaScript cannot run one there.
+      //
+      // Guarded on a document being available RIGHT NOW: if `getDoc` still
+      // answers `null` the re-subscribe cannot re-attach, and tearing down a
+      // working observer to replace it with nothing is strictly worse than
+      // leaving the reconciliation undone.
+      if (previous === SUBSCRIBE_OUTCOMES.SYNC_FAILED && this.syncManager.getDoc(path)) {
+        this.detachObserver(path);
+      }
+      try {
+        await this.subscribe(path);
+      } catch {
+        // `subscribe()` reports every exit itself; a throw out of it is the
+        // vault or the relay failing, and the caller of a re-arm must not be
+        // taken down by one path.
+        this.abandonedSubscribes.set(path, SUBSCRIBE_OUTCOMES.SYNC_FAILED);
+      }
+    }
+    const stillAbandoned = this.abandonedSubscribes.size;
+    return {
+      attempted: paths.length,
+      recovered: paths.filter((p) => !this.abandonedSubscribes.has(p)).length,
+      stillAbandoned,
+      paths,
+    };
+  }
+
   async subscribe(rawPath: string): Promise<void> {
     const path = toCanonicalPath(normalizePath(rawPath));
     // A peer/host controls manifest keys; reject any that would escape the vault.
-    if (!isPathSafe(path)) return;
-    if (this.observers.has(path) || this.subscribing.has(path)) return;
+    if (!isPathSafe(path)) return this.endSubscribe(path, SUBSCRIBE_OUTCOMES.UNSAFE_PATH);
+    if (this.observers.has(path)) {
+      return this.endSubscribe(path, SUBSCRIBE_OUTCOMES.ALREADY_OBSERVED);
+    }
+    if (this.subscribing.has(path)) {
+      return this.endSubscribe(path, SUBSCRIBE_OUTCOMES.IN_FLIGHT);
+    }
     this.cancelledSubscribes.delete(path);
     this.subscribing.add(path);
 
     try {
       const docHandle = this.syncManager.getDoc(path);
-      if (!docHandle) return;
+      if (!docHandle) return this.endSubscribe(path, SUBSCRIBE_OUTCOMES.NO_DOC);
 
       // S147 — SUBSCRIPTION IS OBSERVATION. SETTLEMENT IS SOMETHING ELSE.
       //
@@ -283,19 +442,38 @@ export class BackgroundSync {
       let resolution: SyncResolution | null = null;
       try {
         resolution = await this.syncManager.waitForSync(path);
-      } catch {
-        return;
+      } catch (err) {
+        // S143 — the exit that made `S134` last a full day. The first failure
+        // is a 10 s timeout; the consequence used to be permanent and silent.
+        // The observer IS attached (see above), so this path still hears remote
+        // deltas — what did not happen is the one-off reconciliation, which on
+        // a HOST means this file's bytes were never seeded into the document.
+        return this.endSubscribe(
+          path,
+          SUBSCRIBE_OUTCOMES.SYNC_FAILED,
+          err instanceof Error ? err.message : String(err),
+        );
       }
 
-      if (this.cancelledSubscribes.has(path)) return;
-      if (docHandle.doc.isDestroyed) return;
+      if (this.cancelledSubscribes.has(path)) {
+        return this.endSubscribe(path, SUBSCRIBE_OUTCOMES.CANCELLED, "after waitForSync");
+      }
+      if (docHandle.doc.isDestroyed) {
+        return this.endSubscribe(path, SUBSCRIBE_OUTCOMES.DOC_DESTROYED, "after waitForSync");
+      }
 
       const diskPath = toLocalPath(path);
       if (this.role === "host") {
         const file = getFileByPath(this.vault, diskPath);
         if (file) {
           const content = normalizeLineEndings(await this.vault.read(file));
-          if (this.cancelledSubscribes.has(path)) return;
+          if (this.cancelledSubscribes.has(path)) {
+            return this.endSubscribe(
+              path,
+              SUBSCRIBE_OUTCOMES.CANCELLED,
+              "after the host's disk read",
+            );
+          }
           const remoteContent = docHandle.text.toString();
           this.noteIfNonEmpty(path, remoteContent);
           // S134 — SEEDING IS NOT WRITING, AND THE ACTIVE-FILE EXEMPTION STOPPED
@@ -370,8 +548,20 @@ export class BackgroundSync {
         // Unknown resolves to the waiting branch: a wait never destroys.
         if (docHandle.text.length === 0 && resolution !== SYNC_RESOLUTION.PEER_STATE) {
           await this.awaitSeed(path, docHandle, SEED_WAIT_BUDGET_MS);
-          if (this.cancelledSubscribes.has(path)) return;
-          if (docHandle.doc.isDestroyed) return;
+          if (this.cancelledSubscribes.has(path)) {
+            return this.endSubscribe(
+              path,
+              SUBSCRIBE_OUTCOMES.CANCELLED,
+              "after the guest's seed wait",
+            );
+          }
+          if (docHandle.doc.isDestroyed) {
+            return this.endSubscribe(
+              path,
+              SUBSCRIBE_OUTCOMES.DOC_DESTROYED,
+              "after the guest's seed wait",
+            );
+          }
         }
         const file = getFileByPath(this.vault, diskPath);
         const remoteContent = docHandle.text.toString();
@@ -441,6 +631,12 @@ export class BackgroundSync {
         }
       }
 
+      // S155 — THE SUCCESS BRANCH IS COUNTED TOO, and it is the branch that
+      // makes every other cell readable. Without it a ledger showing no
+      // give-ups for a path is equally consistent with "it worked" and with
+      // "this arm never ran for that path at all", which is precisely the
+      // ambiguity that sent a worker after a function that was running fine.
+      this.endSubscribe(path, SUBSCRIBE_OUTCOMES.COMPLETED);
     } finally {
       this.subscribing.delete(path);
       // S147 — the observer now goes on BEFORE the arms above, so every exit
@@ -613,6 +809,10 @@ export class BackgroundSync {
     this.writeFirstScheduled.delete(path);
     this.remoteSeq.delete(path);
     this.detachObserver(path);
+    // S143/A4 — a file that no longer exists is never re-subscribed. Dropping
+    // the record here is the same rule as the terminal outcomes: a retry must
+    // never bring back something that was deliberately taken away.
+    this.abandonedSubscribes.delete(path);
     // S147 — the document is about to be destroyed, so anything waiting for it
     // to be seeded is waiting for an event that can no longer happen. Ending
     // the wait here rather than letting a clamped deadline expire is the same
@@ -633,6 +833,8 @@ export class BackgroundSync {
     this.writeFirstScheduled.delete(normOld);
     this.remoteSeq.delete(normOld);
     this.detachObserver(normOld);
+    // S143/A4 — the OLD path is gone; nothing may re-subscribe it later.
+    this.abandonedSubscribes.delete(normOld);
     // S147 — same reason as `onFileRemoved`: the old path's document is going
     // away, so nothing may still be parked waiting for it to be seeded.
     this.wakeSeedWaiters(normOld);
@@ -749,6 +951,11 @@ export class BackgroundSync {
     }
     this.observers.clear();
     this.cancelledSubscribes.clear();
+    // S143 — the give-up record describes ONE session, exactly like
+    // `observedNonEmpty` below. Carrying it across a teardown would let a
+    // re-arm in the next session re-subscribe a path this one abandoned, on
+    // evidence that no longer applies.
+    this.abandonedSubscribes.clear();
     this.activeFile = null;
     this.collabBoundFile = null;
     this.recentDiskWrites.clear();
@@ -977,7 +1184,7 @@ export class BackgroundSync {
       // awaited the disk read above. Yield rather than clobber it.
       if (expectedSeq !== undefined && this.currentSeq(path) > expectedSeq) return;
       const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
-      if (parentDir) await ensureFolder(this.vault, parentDir);
+      if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
       await this.vault.adapter.write(diskPath, content);
       this.lastWrittenContent.set(path, content);
     } catch {
