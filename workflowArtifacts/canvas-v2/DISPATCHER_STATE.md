@@ -15,8 +15,8 @@ it. Nothing was carried over that could not be re-verified.
 | | |
 |---|---|
 | Branch | `fix-bugs-and-raceconditions` |
-| **Gate** (Dispatcher-measured, **quiet tree**, at `d188b0e`) | **3260 tests · 428 files · 0 failed · `tsc` clean · `npm run build` clean · register exit 0** |
-| Deployed rig build | `93c65f06a347e6cc` — **does NOT contain WP119**; a tester is rebuilding |
+| **Gate** (Dispatcher-measured, **quiet tree**, at `488cf3a`) | **3260 tests · 428 files · 0 failed · `tsc` clean · register exit 0** — two consecutive clean runs with exit 0. **One earlier run showed 1 failure and it is UNATTRIBUTED**: it overlapped a tester's final cleanup, the name was not captured, and three later runs were clean. Recorded rather than dismissed. |
+| Deployed rig build | `d30f671979efaeb5` — **contains WP119**, verified live in all three renderers by code inspection (`pluginBuild` reads `0.6.1+e2e` on every build and proves nothing) |
 | Relay | redeployed 2026-08-08 for `S169`; `canvas-create-request` accepted |
 
 **A gate figure is only valid if it was taken on a quiet tree.** Worker figures taken while a sibling was
@@ -26,7 +26,7 @@ live are worthless — see §7.
 
 ## 2. Confirmed LIVE, in three real vaults
 
-Build `93c65f06a347e6cc`, both throttling arms, oracle with expectations recorded **before** each gesture.
+The first five on build `93c65f06a347e6cc`, both throttling arms; **WP119 on `d30f671979efaeb5`**. In every case the oracle's expectations were recorded **before** the gesture, and never by reading a peer.
 
 - **`S147`** — sync no longer dies in a background window. **0 of 12** guest×file pairs left unsubscribed,
   against **16 of 16** before, measured under a *deeper* clamp than the one that caused the original
@@ -37,6 +37,7 @@ Build `93c65f06a347e6cc`, both throttling arms, oracle with expectations recorde
   because the total is not**.
 - **`S122`** — a **guest can create a canvas**, new *and* imported, byte-identical on all three peers, with
   the originator on the host's document. Owner-required capability, delivered.
+- **WP119 — the owner's selection defect.** Proved by **A/B on one variable**: the tester built WP119's *parent*, installed it into **vault B only**, and re-ran the identical arm on the same board with the same gesture. Pre-WP119: the log shows `initial structural reload ok (nodes 11->11)` and **2 uncontested cards jumped**. WP119: `geometry=unchanged`, **0 cards moved**. The clicked card was the one that did not move — the owner's own detail, reproduced. Contested edits still resolve (all three converge, loser's live view included) and the editor guard holds with a positive control.
 - **`S134`, `S135`, `S126`, `S123`** — mid-session notes converge; cross-folder `.md` moves propagate from
   both roles; a real delete reaches peers that never opened the note; a new canvas reaches both guests.
 
@@ -66,6 +67,9 @@ Build `93c65f06a347e6cc`, both throttling arms, oracle with expectations recorde
 - **`S167`** — canvases over **512 KB** are refused, not chunked. The bound is *derived* from the relay's
   2 MB `maxPayload`, not guessed.
 - **`S168`** — an *empty* guest-created canvas reaches the host but not a third peer until it holds a card.
+- **The presence-lock leak, now with numbers.** After 10 minutes / 41 rounds: **vault A holds 14 claims and B holds 15, on an 11-node board** (127 % and 136 %). Some are on **deleted** cards, so the claim set is not even bounded by board size, and the count **never fell**. WP119 bounded the *cost* — a stale claim now buys one per-node revert, `geometry=unchanged`, zero cards moved — but the cause is untouched. **These are WP120's baseline numbers.**
+- **`S173`** — a **plugin reload appears to resurrect files onto a guest**: 16 `.md` files carrying a *previous* worker's timestamps appeared on vault B only, and B is the peer that was reloaded three times. **First candidate mechanism for `S149`.** Observed once, not reproduced on demand.
+- **`S174`** — the convergence oracle **cannot judge canvas geometry**: `ExpectedContent` has no geometry clause, so a positional expectation returns `unjudgeable`. Node position is exactly what the canvas defects are about, and byte-identity is not a usable substitute (three stable spellings).
 
 ---
 
@@ -141,6 +145,8 @@ Kept because each was believed and acted on.
 - **Author process rules in `templates/*.template.md`** — the workflow `.md` files are generated and are
   overwritten on every config-panel save.
 - **Workers correcting their charter is the norm** — eight in a row did, and every one was right.
+- **A junctioned `node_modules` inside a git worktree is destroyed by `git worktree remove --force`** — it deletes *through* the junction. WP119's tester emptied `plugin/node_modules` this way and repaired it with `npm ci` from the committed lockfile (no drift). This is why parallel workers here run **serially in one tree** rather than in worktrees.
+- **A green battery can be VACUOUS.** WP119's tester ran a passing battery, then declared it worthless: the loser already agreed with shared truth, so the *old* build would also have moved nothing, and 3 of 4 arms had no contest at all. It rebuilt the battery with a real discriminator. **Ask what a passing test would have done on the broken build** — if the answer is "passed", it measured nothing.
 
 ---
 
@@ -179,13 +185,11 @@ a latency test.
 
 **In flight**
 
-- **WP119 live test** — the owner's exact gesture (select on one client, watch the others), both sides of
-  the clientID tiebreak, contested edits still resolving, and the cost of the unrepaired lock leak.
+- Nothing. The tree is quiet and the rig is idle.
 
-**Chartered, held**
+**Ready to dispatch on the owner's word**
 
-- **WP120 — a presence lock needs a lifetime.** Owner-authorised. **Held until the tester finishes**, to
-  honour *never run tests in parallel*. The design exists and measured green in WP119 §4.
+- **WP120 — a presence lock needs a lifetime.** Owner-authorised; charter written; the design already exists and measured green in WP119 §4; baseline numbers measured live (14 and 15 claims on an 11-node board). **Not dispatched** — the owner asked to be prompted before decisions.
 
 **Needs an owner decision before it can be chartered**
 
