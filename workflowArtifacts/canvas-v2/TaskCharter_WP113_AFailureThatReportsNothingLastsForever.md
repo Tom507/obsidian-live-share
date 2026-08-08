@@ -1,15 +1,40 @@
 # WP113 — A failure that reports nothing lasts forever
 
-**Signals:** S143 (Tier 1) · S144 · **Worker:** fresh context · **Branch:** `fix-bugs-and-raceconditions`
+**Signals:** S143 · S144 · S157 · **Worker:** fresh context · **Branch:** `fix-bugs-and-raceconditions`
 
 Both packages are failures the product **survives into a wrong steady state** because nothing records that
 they happened.
 
-> **Dispatcher note — read before starting.** A live validation round (WP111) was testing prediction **P2**,
-> which is precisely S143's live reachability under Chromium background throttling. **If a WP111 result is
-> in the register or in `ValidationReport_WP111_LiveW4c.md` by the time you start, read it first and let it
-> inform the fix.** If it refuted P2, S143 is still a real defect and this package still stands — a
-> permanent silent give-up is wrong whether or not it is what the vaults hit.
+> **DISPATCHER NOTE -- THIS CHARTER WAS WRITTEN BEFORE THREE PACKAGES LANDED, AND THEY CHANGED ITS SUBJECT.
+> Re-establish the facts before trusting anything below.**
+>
+> - **WP111 (live) REFUTED S143 as the live cause.** The orphaned guests read `docExists: false`, so the doc
+>   was never created and `subscribe()` was never reached. The live reading belonged to `S147`.
+> - **WP114 then repaired `S147` -- and MOVED `attachObserver` to BEFORE `waitForSync`, in both arms**, on the
+>   principle that *subscription is observation*. It also added an idempotent `SyncManager.rearm()`. **So the
+>   sentence "`attachObserver` is the last statement" is no longer true of this code.**
+> - **WP115** found `syncFromManifest`'s two traceless give-ups (now `S157`, added to this package).
+> - **WP112** noted that `S141`'s producer is reached through exactly this family of early return.
+>
+> **Your first task is therefore to say what `S143` IS now**, on current `HEAD`, with the exits enumerated
+> from source. It may be smaller than described, differently shaped, or already closed by WP114. **Any of
+> those is a legitimate finding** -- report it plainly rather than repairing a defect that no longer exists.
+
+---
+
+## Package C -- S157: `syncFromManifest` gives up completely silently, twice
+
+Its bare `catch` around `waitForSync`, and its `getDoc -> null` branch, both return with **no counter, no log
+and no notice**. WP115 made the **outcome** of both safe (the guest arm now preserves before overwriting) but
+**the silence is untouched**, and WP112 showed `S141`'s producer is reached through this same family.
+
+**C1** -- Both give-ups counted and logged with the path and which exit was taken, in the shape
+`empty-write-guard.ts` and WP110 established: one shared emitter, a named closed set of reasons pinned
+against the production exits, **logger as a parameter, never a module sink** (`S104`). Do not invent a
+third idiom.
+**C2** -- `S155`'s rule: count **every** branch including the do-nothing one, or the ledger cannot
+distinguish *declined* from *never reached* -- which is the mistake that cost WP115 a round.
+**C3** -- This is observability, not behaviour. **Do not change what either branch decides.**
 
 ---
 
@@ -96,10 +121,10 @@ recorded and is not yours to fix.
 2. **Demonstrated beats argued.** The executed exit, the observed absence of an observer, the measured
    silence.
 3. Every new test gets a positive control.
-4. **Report A and B separately.**
+4. **Report A, B and C separately.**
 5. **Correct this charter if it is wrong** — the last three workers each corrected their premise and each
    was right.
-6. **Signal numbers: next free is S147, and you allocate none.** <!-- signal-register: meta -->
+6. **Signal numbers: next free is S163, and you allocate none.** <!-- signal-register: meta -->
 
 **Hard constraints:**
 
@@ -108,5 +133,8 @@ recorded and is not yours to fix.
 - `ARCHITECTURE.md`, `README.md`, `docs/security.md`, deleted `USER_STORIES.md` are the **owner's**.
 - **`data.json` holds live credentials** — never print, log, echo or fixture a value.
 - **Commit before you report.**
+
+**A facility to use:** `plugin/src/__tests__/support/timer-clamp.ts` (WP114) for anything timer-scheduled;
+prove it can redden your scenario before trusting a failure from it.
 
 **Deliverable:** `workflowArtifacts/canvas-v2/ImplementationReport_WP113.md`.
