@@ -285,11 +285,15 @@ a latency test.
 
 **Signal register:** `SIGNAL_REGISTER.md` is the allocation authority; the Dispatcher allocates.
 
-**Next free is S179.** <!-- signal-register: meta -->
+**The next free number lives in ONE place: `NEXT_FREE` in `check_signal_register.py`. Read it there.**
+<!-- signal-register: meta -->
 
-`NEXT_FREE` is hardcoded in `check_signal_register.py` **as well as** in the register — bump both or the
-checker fails every new allocation.
+**This file and `SIGNAL_REGISTER.md` §1 both used to carry a copy, and between them the copy went stale
+six times** — every one a Dispatcher error, and the last two caught by workers rather than by the
+Dispatcher. Both copies are now deleted rather than corrected. That is this run's own rule turned on
+itself: *anything that has broken twice under a written rule should get an instrument, not a firmer
+sentence.* The instrument already existed and already held the number; the paragraph warning about the
+duplicate was itself part of the duplicate.
 
-*(That line needs the `signal-register: meta` marker because declaring the next free number is, by
-definition, citing an unallocated one. The Dispatcher has now been caught by this four times, which is
-precisely why the register has an instrument instead of a paragraph.)*
+**When allocating:** append the row to `SIGNAL_REGISTER.md` §3a, bump `NEXT_FREE` in the checker, run the
+checker. There is no second number to keep in step.

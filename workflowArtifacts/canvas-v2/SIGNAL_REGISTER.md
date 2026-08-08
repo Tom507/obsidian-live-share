@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S175** — ⚠ **also hardcoded as `NEXT_FREE` in `check_signal_register.py:53`. Bump BOTH or the checker fails every new allocation.** Two sources of truth for one number, which is the defect class this file exists to police; recorded here rather than silently tolerated. |
+| **Next free number** | **`NEXT_FREE` in `check_signal_register.py` is the ONLY source. Read it; do not restate it here.** <!-- signal-register: meta --> This cell used to carry a copy of the number and **the copy went stale six times** — S173 quoted while S173/S174 were allocated, then S175 quoted while S175–S178 were. Every one was a Dispatcher error, and the second-to-last was caught by a worker rather than by the Dispatcher. **The fix for a fact that drifts is to delete the duplicate, not to write a firmer warning next to it** — which is this run's own rule (§ *anything that has broken twice under a written rule should get an instrument*), applied to the register itself. The checker is the instrument and it already holds the number. |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
