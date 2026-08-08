@@ -49,8 +49,10 @@ time is how this run got four of them. It is fixed at the source and all six con
 
 | Signal | What happens | Status |
 |---|---|---|
-| **S134** *(P0)* | a note created **during** a session never completes document sync. Bytes and path propagate; **no peer subscribes the document**. `waitForSync` rejects at 10 s, the catch reconfigures the editor to **empty**, `collabBoundFile` is still set — so **everything internal says "bound"** while three peers edit three unlinked copies. **Nothing counts a refusal.** | **WP109 in flight.** Creating a note mid-session is the ordinary case — this is the most reachable defect in the product. Control: a Leave/Start/Join cycle makes them session-start files and the identical arm converges in **0.54 s**. |
-| **S135** | a rename that changes a file's **parent folder** never propagates, from either role — 4 attempts, 60 s. Same-folder renames: **~0.1 s**. The subfolder propagates; the file does not. | **WP110 in flight.** No data lost, but the shares diverge **permanently and silently**. |
+| **S141** *(potentially P0)* | the empty-write floor is **defeated through the front door of its own guard**: `setActiveFile` publishes `updateFile(file, docText)` **unfloored**, so a host can publish `hash("")` for a file that has bytes — and `syncFromManifest`'s evidence test then reads **TRUE**. S119's outcome, reached through the guard built to stop S119. | **OPEN, and the most dangerous thing found this round.** **Traced in code, NOT measured** — WP109 removed the only known producer, which is exactly why it must not be filed as closed: **the path survives its producer.** Needs its own package, and the standard is a demonstrated write. |
+| **S143** | `subscribe()` **gives up permanently and silently** — `attachObserver` is the last statement, and `waitForSync`'s `catch { return; }` plus four other early returns leave `observers: false` with no retry, no counter, no log until the next `startAll`. | **OPEN — and it is the live-signature candidate for S134.** WP109's fix does not explain the live `observers:false`; this does. It is also the amplifier that made S134 last a full day. |
+| **S134** *(P0)* | a note created **during** a session never completes document sync, and three peers edit three unlinked copies. | **SEEDING CAUSE FIXED** (`39255ee`), demonstrated through production wiring. **NOT CLOSED** — the live reading needs S143. Falsifiable prediction for re-validation: pre-fix, **only host-born notes broke.** |
+| **S135** | a rename that changes a file's **parent folder** never propagates, from either role — 4 attempts, 60 s. Same-folder renames: **~0.1 s**. | **TWO SILENT DROPS FIXED** (`6b191d8`) — a poisoned `pendingRename` promise chain that killed **every later rename and delete**, and S120's surviving gate. **NOT CLOSED**: no seam refuses a cross-folder destination, so the live specificity is unexplained. On the rerun, grep for `RENAME FOLLOW-UP FAILED:`. |
 | **AC6 residual** | a guest holding a **stale** canvas that wins the subscribe race seeds it; the host's later subscribe sees a non-empty doc, `doc-wins`, and **the host's canvas is overwritten**. | Narrow reachability, real data loss. **Closes for free** with S122's host-mediated design. |
 
 ### Tier 2 — a capability is missing or a guarantee is decorative
@@ -119,13 +121,41 @@ product.
 
 ---
 
-## 5. In flight
+## 5. WP109 and WP110 — landed, and both corrected the charter they were given
 
-| Package | Signals | Worker |
-|---|---|---|
-| **WP109** | S134 (P0) | W3c, fresh context |
-| **WP110** | S135, S137 | W3d, fresh context |
+Gate re-measured by the Dispatcher on a **quiet** tree, twice: **3057 / 3057 tests, 410 / 410 files,
+`tsc` clean, register exit 0.**
 
-Tree is clean at `ed0307c`; nothing uncommitted, no rescue state outstanding. **The WP108 rescue at
-`H:/tmp/wp108_rescue/` is now superseded** — that work landed at `23fdf01` and the backup can be deleted
-whenever convenient.
+| Package | Signals | Commit | Outcome |
+|---|---|---|---|
+| **WP109** | S134 | `39255ee` | seeding cause **fixed and demonstrated**; live signature **not** explained → S143 |
+| **WP110** | S135, S137 | `6b191d8` | two silent drops **fixed**; attribution **fixed**; live specificity **not** explained |
+
+**Neither signal is closed, and both workers said so themselves.** That is the result worth keeping: each
+found a real, permanent, silent defect on the signal's own anchors, demonstrated it through production
+wiring, and then **declined to claim it was the thing the live vaults hit.** S134's live
+`observers:false` cannot come from the seeding defect (an unseeded guest still reaches `attachObserver`);
+S135's live cross-folder *specificity* has no seam that refuses a cross-folder destination.
+
+**Three premises I wrote into those charters were wrong**, and being wrong in a falsifiable way is what
+made them cheap to correct:
+
+1. *"No peer ever subscribes the document"* — it does. Nobody puts the bytes **into** it.
+2. *"A mid-session file differs by its birth time"* — it differs because `startAll` runs **before**
+   `onActiveFileChange`, so `activeFile` is `null` for the whole session-start pass.
+3. *"The mute is a live hypothesis for S135"* — refuted **structurally**: no mute is ever keyed on a folder.
+
+**S120 was declared fixed while half-fixed.** The census that closed it enumerated one file's gates; the
+surviving gate was in the next file down, and **counted nothing** — so S120's own ledger reported zero
+drops over the half that was still broken. Now closed (`6b191d8`), with `S145` recording the part
+deliberately left.
+
+**S146 — the gate itself was lying, and this run acted on it.** Both workers reported failures (21, then
+19-cold/2-warm, then 9) and both attributed them to the project's own registered-flaky classes. **Zero were
+real.** They were contamination from two workers sharing one working copy. A gate that reports failures
+that do not exist spends worker attention on phantoms and trains everyone to discount RED — and it hid
+inside an explanation the project had already written down. **Next parallel round gets separate worktrees,
+and the gate figure is the Dispatcher's to measure on a quiet tree.**
+
+Tree clean at `9fae8b4`. **The WP108 rescue at `H:/tmp/wp108_rescue/` is superseded** — that work landed at
+`23fdf01` and the backup can be deleted whenever convenient.

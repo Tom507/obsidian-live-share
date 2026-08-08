@@ -3603,3 +3603,49 @@ are code + unit/harness packages. Neither worker touches the vaults.
 
 **Live re-validation is queued behind both**: S134 and S135 were *found* live and their fixes cannot be
 called done on unit evidence alone.
+
+## ✅ WP109 + WP110 LANDED (`39255ee` · `6b191d8` · `9fae8b4`) — and the gate was lying to both of them
+
+**Gate, measured by me on a QUIET tree, twice: 3057/3057 tests, 410/410 files, `tsc` clean, register 0.**
+
+Both workers corrected the charter premise I gave them. Both were right. Neither closed its signal, and
+both said so unprompted — the correct call in both cases.
+
+- **S134** — "no peer ever subscribes the document" is **false**. The document is subscribed and marked
+  synced; **nobody puts the bytes into it.** `subscribe()`'s host arm carried a **disk-side** single-writer
+  guard (`path !== this.activeFile`) in front of an arm whose first branch runs **disk→CRDT**, so it
+  silently disabled seeding — and a mid-session note **is the active file the instant it exists**. The
+  session-start control is structural: `startAll` (`main.ts:1545/:1564`) runs **before**
+  `onActiveFileChange()` (`:1571`), so `activeFile` is `null` for that whole pass. **Our own S119/S126
+  floor is why it was silent** — the guest writes `""`, the floor refuses, the file keeps its bytes, and
+  "nothing happened" is a complete external description. Fixed and demonstrated through production wiring.
+  **The live `observers:false` is NOT explained by it** → `S143`.
+- **S135** — **no seam in this code refuses a cross-folder destination.** Proved by driving
+  emit → send → gate → `applyRemoteOp` with real objects, both roles, both extensions. The mute hypothesis
+  is refuted **structurally**: no mute is keyed on a folder. Two permanent silent drops with the signature
+  were found and fixed — a **poisoned `pendingRename` promise chain** (no `catch` anywhere; one throwing
+  follow-up killed every later rename *and* delete, measured four-gestures-in / one-op-out, and a throwing
+  `CanvasSync.handleRename` poisons the text channel too) and `S120`'s surviving gate. **Live specificity
+  still unexplained.**
+- **S137** — the gap was a level below where I put it: **neither `ManifestManager` nor `BackgroundSync`
+  held a logger at all.** A missing wire, not a missing call. Fixed with one shared emitter, three silent
+  sibling arms brought in, logger as a **parameter** (`S104`'s shape).
+- **`S120` was declared fixed while HALF-fixed** — the census enumerated one file's gates and the survivor
+  was in the next file down, **counting nothing**, so S120's own ledger reported zero drops over the broken
+  half. A lesson about the verification, not the fix.
+
+**Allocated `S141`–`S146`; next free is `S147`.** <!-- signal-register: meta --> `S141` (the floor defeated
+through its own front door) is the most dangerous and is **traced, not measured**.
+
+### `S146` — the instrument that cost this round the most
+
+The two workers reported **21**, **19-cold/2-warm** and **9** suite failures, each attributing them to the
+project's registered-flaky `S74`/`S85`/`S88` classes. **Zero were real.** They were contamination from two
+workers sharing one working copy: half-written test files collected, partial source edits imported, probe
+tests landing in a sibling's figure. Both also needed **index surgery** before staging, and one forked the
+shared break-table file. **What makes it dangerous is that it did not look like noise — it looked like the
+known problem, and the project had already written that explanation down.**
+
+**Standing rule from here: parallel workers get separate worktrees, and the gate figure is the
+Dispatcher's to measure on a quiet tree after everyone is done.** A worker's own bracketed figures are not
+evidence if a sibling was live. Saved to global memory as `concurrent-workers-false-red`.
