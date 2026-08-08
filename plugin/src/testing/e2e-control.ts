@@ -309,7 +309,28 @@ function sameFileObservation(a: CanvasFileResult, b: CanvasFileResult): boolean 
 }
 
 /**
- * The convergence verdict over both projections of both instances (AC2 / D17).
+ * The AGREEMENT verdict over both projections of both instances (AC2 / D17).
+ *
+ * ⚠ S158 — THIS FUNCTION ANSWERS *"DID THE TWO PEERS END UP THE SAME?"*, WHICH
+ * IS NOT THE SAME QUESTION AS *"IS THE STATE RIGHT?"* and never was. It has no
+ * reference point outside the peers, so *"everyone has the right bytes"* and
+ * *"everyone lost the same bytes"* are the same reading to it. This project
+ * supplied its own counter-example: under `S119` all three clients agreed
+ * perfectly on `e3b0c442…` — the digest of the empty string — while every `.md`
+ * in the share was being truncated to nothing. This function scores that run
+ * `converged: true`.
+ *
+ * IT IS KEPT, NOT DELETED, AND ITS BEHAVIOUR IS BYTE-UNCHANGED. Agreement is a
+ * real and separately useful question (*"did this reach B at all?"*), and a rig
+ * that can no longer ask a question it used to ask is a regression of a
+ * different kind. What changed is that it is no longer the only thing on offer
+ * and no longer the thing called "convergence" without qualification:
+ *
+ *   ├── `evaluateCanvasConvergence` / {@link evaluatePeerAgreement} — ARRIVAL.
+ *   │      Peer-to-peer only. `converged` here means AGREED.
+ *   └── {@link judgeConvergence} — CORRECTNESS. Judges the agreed bytes against
+ *          {@link ExpectedContent}, a reference point recorded OUTSIDE the peers,
+ *          and reports `AGREED_ON_WRONG_BYTES` for exactly the `S119` shape.
  *
  * - both agree  → `converged:true`, `reason:null`
  * - docs agree, files do not → `converged:false`, `reason:DOC_CONVERGED_FILE_DIVERGED`
@@ -329,6 +350,409 @@ export function evaluateCanvasConvergence(
     docConverged,
     fileConverged,
     reason: docConverged && !fileConverged ? DOC_CONVERGED_FILE_DIVERGED : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// S158 — AN ORACLE WITH A REFERENCE POINT OUTSIDE THE PEERS.
+//
+// Everything below is pure: no clock, no adapter, no doc, no filesystem.
+//
+// THE DEFECT THIS CLOSES. Every `converged` verdict this rig can produce came
+// from comparing peers to each other. An agreement oracle cannot distinguish
+// convergence from a SHARED LOSS, because it holds nothing to compare the
+// agreed value against. `S119` is the counter-example this project generated
+// itself: three clients in perfect agreement on the digest of the empty string
+// while every `.md` in the share was destroyed — a textbook pass.
+//
+// THE FIX IS A SECOND INPUT, NOT A CLEVERER COMPARISON. No amount of care
+// applied to the peers' readings can recover information that is not in them.
+// `judgeConvergence` therefore takes {@link ExpectedContent}: a statement of
+// WHAT THE BYTES ARE SUPPOSED TO BE, plus a mandatory `origin` naming where that
+// statement came from. The precedent is in this tree already — WP23's
+// `intent-trace` family (`__tests__/harness/fuzz/oracle.ts`) is the same move
+// for the headless fuzzer, and its header carries the same sentence:
+// AGREEMENT BETWEEN REPLICAS IS NECESSARY BUT NOT SUFFICIENT.
+//
+// FOUR VERDICTS, AND `CONVERGED` IS THE ONLY GREEN ONE. There is deliberately no
+// path to `converged: true` that does not pass an expectation, which is the
+// structural half of the repair: the weak reading is not merely discouraged, it
+// is unreachable through this function.
+//
+// S155'S RULE IS OBEYED. `clauses` carries ONE ROW PER CLAUSE IN EVERY BRANCH,
+// including the do-nothing one: a clause the caller did not state is reported as
+// `stated:false, satisfied:null`, never omitted. A ledger in which "not asked"
+// and "asked and passed" look the same is the defect S155 names, and this file
+// is the last place to add another.
+// ---------------------------------------------------------------------------
+
+/** sha256 of zero bytes. `S119`'s signature, and a full digest like any other. */
+export const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+/**
+ * The four outcomes. `AGREED_ON_WRONG_BYTES` is the one that did not exist
+ * before: the peers are in perfect agreement AND the agreed state is wrong.
+ */
+export const CONVERGENCE_VERDICT = {
+  /** The peers agree AND the agreed bytes satisfy every stated clause. */
+  CONVERGED: "converged",
+  /** The peers do not agree. Nothing is claimed about which of them is right. */
+  DIVERGED: "diverged",
+  /** THE `S119` CLASS. Perfect agreement on a state the expectation forbids. */
+  AGREED_ON_WRONG_BYTES: "agreed-on-wrong-bytes",
+  /**
+   * The oracle refuses to answer. Fewer than two peers, no `origin`, or an
+   * expectation that states nothing. **This is never green** — a question that
+   * could not be asked must not be recorded as a pass.
+   */
+  UNJUDGEABLE: "unjudgeable",
+} as const;
+
+export type ConvergenceVerdict =
+  (typeof CONVERGENCE_VERDICT)[keyof typeof CONVERGENCE_VERDICT];
+
+/**
+ * WHAT THE BYTES ARE SUPPOSED TO BE — the reference point, and the whole of the
+ * repair. Every field is optional EXCEPT `origin`, and an expectation that
+ * states no clause at all is `UNJUDGEABLE` rather than satisfied.
+ *
+ * `origin` is mandatory and must be non-empty because the one way to defeat this
+ * oracle is to derive the expectation from a peer, and the cheapest defence
+ * against that is to make the caller write down where the expectation came from.
+ * It is a discipline, not a proof — see the residual in the WP116 report.
+ */
+export interface ExpectedContent {
+  /**
+   * REQUIRED, non-empty. Where this expectation came from, in the caller's own
+   * words: the gesture that was issued, the census taken before the round, the
+   * fixture that was planted. Never a read of a peer under test.
+   */
+  origin: string;
+  /** Whether the file is supposed to be there at all. */
+  exists?: boolean;
+  /** The exact digest the bytes are supposed to have. */
+  sha256?: string;
+  /** Every one of these substrings must appear in the content. */
+  contains?: string[];
+  /**
+   * The file is supposed to hold at least this many bytes. The cheapest clause
+   * to record before a round (`stat` the file) and the one that catches a
+   * truncation without needing to know the exact bytes.
+   */
+  atLeastBytes?: number;
+}
+
+/** One peer's reading, carrying the peer's name so a verdict can name it. */
+export interface PeerFileObservation {
+  /** Which instance this reading came from — `"a"`, `"b"`, a vault id. */
+  peer: string;
+  file: CanvasFileResult;
+}
+
+/** One clause's outcome. Present in EVERY branch, stated or not (S155). */
+export interface ConvergenceClause {
+  clause: string;
+  /** Did the caller state this clause? `emptiness-must-be-asserted` always did. */
+  stated: boolean;
+  /** `null` exactly when `stated` is false. */
+  satisfied: boolean | null;
+  /** Always populated, in every branch. */
+  detail: string;
+}
+
+export interface ConvergenceJudgement {
+  verdict: ConvergenceVerdict;
+  /** `true` for `CONVERGED` and for nothing else. */
+  converged: boolean;
+  /** The peer-to-peer question, kept separate and still answerable (A3). */
+  peersAgree: boolean;
+  /**
+   * `null` when the expectation could not be applied at all. Never conflated
+   * with `false`.
+   */
+  matchesExpectation: boolean | null;
+  peers: string[];
+  /** Where the caller said the expectation came from. Echoed back verbatim. */
+  expectationOrigin: string;
+  /** One row per clause, always, including the ones nobody stated. */
+  clauses: ConvergenceClause[];
+  /** The clause names that were stated AND violated. Empty is not a pass. */
+  violations: string[];
+  /** Always populated, in every branch. */
+  reason: string;
+}
+
+/**
+ * ARRIVAL, kept expressible on purpose (A3). Do the peers hold the same bytes?
+ * Says nothing whatsoever about whether those bytes are right.
+ */
+export function evaluatePeerAgreement(peers: PeerFileObservation[]): {
+  agree: boolean;
+  peers: string[];
+  disagreeing: string[];
+} {
+  const names = peers.map((p) => p.peer);
+  if (peers.length < 2) return { agree: peers.length === 1, peers: names, disagreeing: [] };
+  const reference = peers[0];
+  const disagreeing = peers
+    .slice(1)
+    .filter((p) => !sameFileObservation(reference.file, p.file))
+    .map((p) => p.peer);
+  return { agree: disagreeing.length === 0, peers: names, disagreeing };
+}
+
+/** Is this reading an existing file holding zero bytes? */
+function isEmptyContent(file: CanvasFileResult): boolean {
+  return (
+    file.exists === true &&
+    (file.size === 0 || file.sha256 === EMPTY_SHA256 || file.content === "")
+  );
+}
+
+/**
+ * CORRECTNESS FOR ONE READING, against the external reference point. Exported
+ * because arrival and correctness are different questions and a single-peer
+ * correctness check is a legitimate one — `judgeConvergence` is this plus
+ * agreement, not a different rule.
+ *
+ * Returns one row per clause in every branch (S155), never a bare boolean.
+ */
+export function judgeFileAgainstExpectation(
+  file: CanvasFileResult,
+  expected: ExpectedContent,
+): ConvergenceClause[] {
+  const clauses: ConvergenceClause[] = [];
+
+  // 1. exists
+  if (typeof expected.exists === "boolean") {
+    const satisfied = file.exists === expected.exists;
+    clauses.push({
+      clause: "exists",
+      stated: true,
+      satisfied,
+      detail: `expected exists=${expected.exists}, observed exists=${file.exists}`,
+    });
+  } else {
+    clauses.push({
+      clause: "exists",
+      stated: false,
+      satisfied: null,
+      detail: "the expectation says nothing about whether the file should be there",
+    });
+  }
+
+  // 2. sha256
+  if (typeof expected.sha256 === "string" && expected.sha256.length > 0) {
+    const satisfied = file.sha256 === expected.sha256;
+    clauses.push({
+      clause: "sha256",
+      stated: true,
+      satisfied,
+      detail: `expected sha256=${expected.sha256}, observed sha256=${file.sha256 || "<none>"}`,
+    });
+  } else {
+    clauses.push({
+      clause: "sha256",
+      stated: false,
+      satisfied: null,
+      detail: "the expectation states no exact digest",
+    });
+  }
+
+  // 3. contains
+  if (Array.isArray(expected.contains) && expected.contains.length > 0) {
+    const content = file.content;
+    const missing =
+      content === null ? [...expected.contains] : expected.contains.filter((m) => !content.includes(m));
+    clauses.push({
+      clause: "contains",
+      stated: true,
+      satisfied: missing.length === 0,
+      detail:
+        content === null
+          ? `no content was read back, so all ${expected.contains.length} marker(s) are missing`
+          : missing.length === 0
+            ? `all ${expected.contains.length} marker(s) present`
+            : `missing marker(s): ${missing.join(", ")}`,
+    });
+  } else {
+    clauses.push({
+      clause: "contains",
+      stated: false,
+      satisfied: null,
+      detail: "the expectation names no markers that must survive",
+    });
+  }
+
+  // 4. atLeastBytes
+  if (typeof expected.atLeastBytes === "number" && Number.isFinite(expected.atLeastBytes)) {
+    const satisfied = file.size >= expected.atLeastBytes;
+    clauses.push({
+      clause: "atLeastBytes",
+      stated: true,
+      satisfied,
+      detail: `expected at least ${expected.atLeastBytes} byte(s), observed ${file.size}`,
+    });
+  } else {
+    clauses.push({
+      clause: "atLeastBytes",
+      stated: false,
+      satisfied: null,
+      detail: "the expectation states no floor on the size",
+    });
+  }
+
+  // 5. THE STRUCTURAL CLAUSE — EMPTINESS MUST BE ASSERTED, NEVER INFERRED.
+  //
+  // This one is ALWAYS stated, because the caller does not get to leave it out.
+  // `S119` truncated files to nothing and every peer agreed on the result; a
+  // lazy expectation (`exists: true` and nothing else) would have passed that
+  // run under clauses 1–4 alone. So an existing file holding zero bytes is a
+  // FAILURE unless the expectation says in so many words that it should be
+  // empty — `sha256: EMPTY_SHA256`, or `atLeastBytes: 0`.
+  //
+  // The cost is one explicit clause on the rare legitimately-empty file. The
+  // alternative cost is the one this project already paid.
+  const emptinessAsserted =
+    expected.sha256 === EMPTY_SHA256 || expected.atLeastBytes === 0;
+  const observedEmpty = isEmptyContent(file);
+  clauses.push({
+    clause: "emptiness-must-be-asserted",
+    stated: true,
+    satisfied: !observedEmpty || emptinessAsserted,
+    detail: !observedEmpty
+      ? "the file is not empty, so the clause is inert"
+      : emptinessAsserted
+        ? "the file is empty and the expectation says it should be"
+        : "the file exists and holds ZERO BYTES while the expectation never says it should — " +
+          "this is the S119 signature, and an emptiness nobody asked for is not convergence",
+  });
+
+  return clauses;
+}
+
+/**
+ * THE ORACLE. Agreement AND correctness, reported separately and never
+ * conflated.
+ *
+ *   ├── fewer than two peers / no `origin` / no clause  → `UNJUDGEABLE`
+ *   ├── peers disagree                                  → `DIVERGED`
+ *   ├── peers agree, every stated clause satisfied      → `CONVERGED`
+ *   └── peers agree, some stated clause violated        → `AGREED_ON_WRONG_BYTES`
+ *
+ * The `S119` acceptance case lands on the last line: three peers agreeing on
+ * `e3b0c442…` for a file that held 49 bytes is a FAILURE here, and was a pass
+ * under every oracle this rig had before.
+ */
+export function judgeConvergence(
+  peers: PeerFileObservation[],
+  expected: ExpectedContent,
+): ConvergenceJudgement {
+  const observations = Array.isArray(peers) ? peers : [];
+  const names = observations.map((p) => p?.peer ?? "<unnamed>");
+  const origin =
+    expected && typeof expected.origin === "string" ? expected.origin.trim() : "";
+  const safeExpectation: ExpectedContent = expected ?? { origin: "" };
+
+  // The clause ledger is computed FIRST and in every branch, so an unjudgeable
+  // or diverged run still shows what was asked. S155: no silent branch.
+  const reference = observations[0]?.file;
+  const clauses = reference
+    ? judgeFileAgainstExpectation(reference, safeExpectation)
+    : [
+        "exists",
+        "sha256",
+        "contains",
+        "atLeastBytes",
+        "emptiness-must-be-asserted",
+      ].map((clause) => ({
+        clause,
+        stated: false,
+        satisfied: null,
+        detail: "no peer reading was supplied, so nothing could be judged",
+      }));
+
+  const agreement = evaluatePeerAgreement(observations);
+  const violations = clauses.filter((c) => c.satisfied === false).map((c) => c.clause);
+  const statedClauses = clauses.filter((c) => c.stated && c.clause !== "emptiness-must-be-asserted");
+
+  const unjudgeable = (reason: string): ConvergenceJudgement => ({
+    verdict: CONVERGENCE_VERDICT.UNJUDGEABLE,
+    converged: false,
+    peersAgree: agreement.agree,
+    matchesExpectation: null,
+    peers: names,
+    expectationOrigin: origin,
+    clauses,
+    violations,
+    reason,
+  });
+
+  if (observations.length < 2) {
+    return unjudgeable(
+      `convergence is a statement about two or more peers and ${observations.length} reading(s) ` +
+        "were supplied; use judgeFileAgainstExpectation for a single peer's correctness",
+    );
+  }
+  if (origin.length === 0) {
+    return unjudgeable(
+      "the expectation states no origin; an oracle whose reference point has no stated " +
+        "provenance cannot be told apart from one that read its expectation back off a peer",
+    );
+  }
+  if (statedClauses.length === 0) {
+    return unjudgeable(
+      "the expectation states no clause about the bytes, so there is nothing outside the peers " +
+        "to compare them against — which is precisely the oracle S158 names",
+    );
+  }
+
+  if (!agreement.agree) {
+    return {
+      verdict: CONVERGENCE_VERDICT.DIVERGED,
+      converged: false,
+      peersAgree: false,
+      matchesExpectation: violations.length === 0,
+      peers: names,
+      expectationOrigin: origin,
+      clauses,
+      violations,
+      reason:
+        `peer(s) ${agreement.disagreeing.join(", ")} do not hold what ${names[0]} holds; ` +
+        "no claim is made here about which of them is right",
+    };
+  }
+
+  if (violations.length > 0) {
+    return {
+      verdict: CONVERGENCE_VERDICT.AGREED_ON_WRONG_BYTES,
+      converged: false,
+      peersAgree: true,
+      matchesExpectation: false,
+      peers: names,
+      expectationOrigin: origin,
+      clauses,
+      violations,
+      reason:
+        `all ${names.length} peers agree, and the agreed state violates ${violations.join(", ")} ` +
+        `against the expectation stated by '${origin}'. Agreement is evidence of agreement, not ` +
+        "correctness: everyone having the right bytes and everyone having lost the same bytes " +
+        "read identically to a peer-to-peer oracle",
+    };
+  }
+
+  return {
+    verdict: CONVERGENCE_VERDICT.CONVERGED,
+    converged: true,
+    peersAgree: true,
+    matchesExpectation: true,
+    peers: names,
+    expectationOrigin: origin,
+    clauses,
+    violations,
+    reason:
+      `all ${names.length} peers agree, and the agreed state satisfies every clause of the ` +
+      `expectation stated by '${origin}'`,
   };
 }
 
@@ -994,6 +1418,48 @@ export async function routeCommand(
           throw new Error("canvas.file unavailable on this host");
         }
         return ok(await host.canvasFile(path));
+      }
+      // --- S158 — the convergence oracle, over the SAME envelope -------------
+      //
+      // PURE, AND IT TOUCHES NO HOST METHOD AT ALL: the readings arrive in the
+      // request. That is deliberate. The live rounds are driven from Python, and
+      // the alternative — a second implementation of the rule on the driver side
+      // — is how a rig ends up with two oracles that disagree. One rule, one
+      // implementation, pinned by the unit tests in `v2/wp116/`, reachable by
+      // whatever drives the round.
+      //
+      // It reads nothing and writes nothing, so it is safe on any host,
+      // including the hand-rolled fakes: there is no `host.` call below.
+      case "convergence.judge": {
+        const rawPeers = args.peers;
+        if (!Array.isArray(rawPeers)) {
+          throw new Error("invalid arg: 'peers' must be an array of {peer, file} readings");
+        }
+        const rawExpected = args.expected;
+        if (rawExpected === null || typeof rawExpected !== "object" || Array.isArray(rawExpected)) {
+          throw new Error("invalid arg: 'expected' must be an object with at least an 'origin'");
+        }
+        const peers: PeerFileObservation[] = rawPeers.map((entry, i) => {
+          if (entry === null || typeof entry !== "object") {
+            throw new Error(`invalid arg: peers[${i}] must be an object`);
+          }
+          const row = entry as { peer?: unknown; file?: unknown };
+          const file = row.file;
+          if (file === null || typeof file !== "object") {
+            throw new Error(`invalid arg: peers[${i}].file must be a canvas.file reading`);
+          }
+          const f = file as Partial<CanvasFileResult>;
+          return {
+            peer: typeof row.peer === "string" && row.peer.length > 0 ? row.peer : `#${i}`,
+            file: {
+              exists: f.exists === true,
+              sha256: typeof f.sha256 === "string" ? f.sha256 : "",
+              size: typeof f.size === "number" ? f.size : 0,
+              content: typeof f.content === "string" ? f.content : null,
+            },
+          };
+        });
+        return ok(judgeConvergence(peers, rawExpected as ExpectedContent));
       }
       // --- D2 data-loss chain ------------------------------------------------
       case "manifest.info": {

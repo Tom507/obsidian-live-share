@@ -1,6 +1,7 @@
 import { Platform, TFile, TFolder, type Vault } from "obsidian";
 
 import { isSidecarPath } from "./files/canvas-sidecar";
+import { pairRenamesByIdentity } from "./files/rename-identity";
 
 export const VAULT_EVENT_SETTLE_MS = 250;
 
@@ -133,11 +134,21 @@ export function hashContent(content: string): Promise<string> {
 }
 
 /**
- * Pairs concurrently-removed manifest paths to concurrently-added ones by
- * matching content hash, so `removed=[A,C], added=[D,B]` renames A→B and C→D
- * (content identity) instead of A→D (iteration order). Returns a map of
- * oldPath -> newPath for the confident, hash-matched renames only; callers fall
- * back to positional pairing for anything left unmatched.
+ * S159 — the map-only view of `pairRenamesByIdentity`, which lives in the pure,
+ * zero-import `files/rename-identity.ts` so that `manifest-removal-decision.ts`
+ * can share its accepted-basis list without importing this module (this one
+ * imports `obsidian` on line 1).
+ *
+ * THE SIGNATURE IS UNCHANGED AND THE MEANING IS NOT. A key present in this map
+ * now asserts IDENTITY — a digest unique on both sides of the event, or a
+ * filename that survives inside an ambiguous digest class — where before it
+ * asserted only that two paths carried equal bytes. `hash("")` is a full digest
+ * like any other, so equal bytes made two empty notes, and any two identical
+ * notes, interchangeable to the old loop, which broke the tie by iteration
+ * order and then handed the answer to `vault.rename`.
+ *
+ * Callers that want to know WHY a key was or was not paired — and every refusal
+ * is recorded, S155 — should call `pairRenamesByIdentity` directly.
  */
 export function matchRenamesByHash(
   removed: string[],
@@ -145,21 +156,7 @@ export function matchRenamesByHash(
   removedHashOf: (path: string) => string | undefined,
   addedHashOf: (path: string) => string | undefined,
 ): Map<string, string> {
-  const pairs = new Map<string, string>();
-  const usedNew = new Set<string>();
-  for (const oldPath of removed) {
-    const oldHash = removedHashOf(oldPath);
-    if (!oldHash) continue;
-    for (const newPath of added) {
-      if (usedNew.has(newPath)) continue;
-      if (addedHashOf(newPath) === oldHash) {
-        pairs.set(oldPath, newPath);
-        usedNew.add(newPath);
-        break;
-      }
-    }
-  }
-  return pairs;
+  return pairRenamesByIdentity(removed, added, removedHashOf, addedHashOf).pairs;
 }
 
 const TEXT_EXTENSIONS = new Set([

@@ -94,6 +94,7 @@ import {
   decideManifestRemoval,
   decideManifestRename,
 } from "./files/manifest-removal-decision";
+import { pairRenamesByIdentity } from "./files/rename-identity";
 import {
   canvasOwned,
   registerVaultEvents,
@@ -159,7 +160,6 @@ import {
   hashContent,
   isPathSafe,
   isTextFile,
-  matchRenamesByHash,
   normalizeLineEndings,
   normalizePath,
   parseJwtPayload,
@@ -1123,12 +1123,26 @@ export default class LiveSharePlugin extends Plugin {
         }
       }
       const manifestEntries = this.manifestManager.getEntries();
-      const preferredNew = matchRenamesByHash(
+      // S159 — the pairer now REFUSES when content equality is the only
+      // evidence, and it says so per removed key in every branch (S155). The
+      // ledger is logged below rather than dropped: a pairer that recorded only
+      // its successes would make "it ran and refused" byte-identical to "it
+      // never ran", which is the reading that cost this project a round.
+      const pairing = pairRenamesByIdentity(
         removed,
         added,
         (p) => removedHashes.get(p),
         (p) => manifestEntries.get(p)?.hash,
       );
+      const preferredNew = pairing.pairs;
+      disposition.renamePairing = pairing.ledger;
+      for (const row of pairing.ledger) {
+        this.logger.log(
+          "manifest",
+          `change[pass=${disposition.pass}] pairing ${row.outcome} ${row.oldPath} -> ` +
+            `${row.newPath ?? "<none>"} — ${row.reason}`,
+        );
+      }
 
       for (const oldPath of removed) {
         // The hash-matched target is tried first. WP86 — it is also the ONLY
@@ -1152,6 +1166,13 @@ export default class LiveSharePlugin extends Plugin {
               oldPath,
               newPath,
               hasContentPair: preferred === newPath,
+              // S159 — WHY the pairer believes these are the same file, so the
+              // core can refuse a basis that is not an identity basis instead
+              // of trusting a bare boolean it cannot interrogate.
+              identityBasis:
+                preferred === newPath
+                  ? pairing.ledger.find((row) => row.oldPath === oldPath)?.outcome
+                  : undefined,
               oldKind:
                 oldFile instanceof TFile ? "file" : oldFile instanceof TFolder ? "folder" : "other",
               newExists: false,

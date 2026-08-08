@@ -149,6 +149,20 @@ export interface ManifestChangeDisposition {
   removals: { path: string; verdict: string; reason: string }[];
   /** Per candidate rename pairing that was considered. */
   renames: { oldPath: string; newPath: string; verdict: string; reason: string }[];
+  /**
+   * S159 — the identity pairer's ledger: ONE ROW PER REMOVED KEY, in every
+   * branch, including the refusals and the do-nothing ones (S155). Optional
+   * only because a pass with no added-and-removed overlap never runs the pairer
+   * at all; when the pairer runs, every key it was handed is in here.
+   */
+  renamePairing?: {
+    oldPath: string;
+    newPath: string | null;
+    outcome: string;
+    reason: string;
+    candidates: string[];
+    rivals: string[];
+  }[];
   /** Paths actually moved by the rename arm. */
   renamed: string[];
   /**
