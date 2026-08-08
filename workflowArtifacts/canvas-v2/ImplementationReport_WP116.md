@@ -14,8 +14,9 @@ agreement, not of correctness.** Reported separately below.
 | gate | figure |
 |---|---|
 | `npx vitest run` (baseline, quiet tree at `2ae56e6`) | **3112 passed / 416 files** — re-measured by this worker, matches the Dispatcher |
-| `npx vitest run` (final) | **[3155 passed / 417 files] + [1 failed / 1 file]** |
-| the one failure | `v2/wp92/test_tp06_no_collateral_visible` — **`S153`, the known trap.** It asserts a file is absent from `git diff HEAD`, so it is red while this work is uncommitted and green once committed. **Not edited** (it is WP92's test). |
+| `npx vitest run` (final, **uncommitted**) | **[3155 passed / 417 files] + [1 failed / 1 file]** |
+| `npx vitest run` (final, **after `8585475`**) | **[3156 passed / 418 files], 0 failed** |
+| the one uncommitted failure | `v2/wp92/test_tp06_no_collateral_visible` — **`S153`, the known trap, confirmed in both directions.** It asserts a file is absent from `git diff HEAD`, so it was red while this work was uncommitted and went green the moment it was committed, **unchanged**. **Not edited** (it is WP92's test). One more datum for S153: the suite figure is a function of the worker's git hygiene, not of the code. |
 | `npx tsc --noEmit` | **clean, exit 0** |
 | `check_signal_register.py` | **exit 0** |
 | break table `wp116_break_table.py` | **15 rows**, baseline 247/247, final green 247/247, **0** `.pre-v2-smoke` leftovers, every row restored byte-identically by sha256 |
