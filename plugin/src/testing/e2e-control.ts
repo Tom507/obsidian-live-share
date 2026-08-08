@@ -3278,10 +3278,54 @@ interface DiagAdapterLike {
 interface DiagTarget {
   path: string;
   adapter: DiagAdapterLike | null;
+  /**
+   * The same adapter object as an indexable record. This is the ONLY handle the
+   * patch installer writes through, and it is separate from `adapter` on
+   * purpose: the narrow view is what instruments READ with, and it cannot name
+   * the two sinks at all, so an instrument cannot call one by accident.
+   */
+  adapterRaw: Record<string, unknown> | null;
   /** The `CanvasPresence` instance, held opaque; narrowed at each patch site. */
-  presence: unknown;
+  presence: Record<string, unknown> | null;
   /** Why the adapter could not be narrowed, when it could not be. */
   adapterReason: string;
+}
+
+/**
+ * Patch ONE method on ONE live instance, and hand back the undo.
+ *
+ * This is the shape the production adapter already uses to own Obsidian's
+ * private canvas (`canvas-adapter.ts:828-842`): keep the original in a closure,
+ * install a wrapper as an OWN property, restore on teardown. `this.`-dispatch
+ * resolves an own property before the prototype, so this intercepts a class
+ * method — `CanvasPresence.reconcileClaims`, called as `this.reconcileClaims()`
+ * from that file's own awareness listener — WITHOUT touching the byte-pinned
+ * source (R1).
+ *
+ * PROBE BEFORE PATCH (§4.2): a member that is not a function on this build
+ * yields `null`, and the caller records that absence as a reading rather than
+ * crashing on it. `expireIdleInferredLocks` genuinely does not exist pre-WP120,
+ * and its absence is how a dump proves which bundle it is on.
+ *
+ * The undo refuses to act if somebody re-patched on top of us — clobbering a
+ * later wrapper would be worse than leaving ours in place.
+ */
+function diagPatch(
+  host: Record<string, unknown>,
+  name: string,
+  make: (original: (...args: unknown[]) => unknown) => (...args: unknown[]) => unknown,
+): (() => void) | null {
+  const existing = host[name];
+  if (typeof existing !== "function") return null;
+  const original = existing as (...args: unknown[]) => unknown;
+  const hadOwnProperty = Object.prototype.hasOwnProperty.call(host, name);
+  const wrapper = make(original);
+  host[name] = wrapper;
+  return () => {
+    if (host[name] !== wrapper) return;
+    if (hadOwnProperty) host[name] = original;
+    else delete host[name];
+  };
 }
 
 /** Narrow an opaque adapter to the read-only view above, or refuse. Never guesses. */
@@ -3324,7 +3368,14 @@ function resolveDiagTargets(plugin: E2EPluginLike, rawPath?: string): DiagTarget
     out.push({
       path: row.path,
       adapter,
-      presence: row.presence ?? null,
+      adapterRaw:
+        row.adapter !== null && typeof row.adapter === "object"
+          ? (row.adapter as Record<string, unknown>)
+          : null,
+      presence:
+        row.presence !== null && typeof row.presence === "object"
+          ? (row.presence as Record<string, unknown>)
+          : null,
       adapterReason:
         adapter === null
           ? "the mounted target exposes no adapter with isAvailable/getLiveNodeIds/getNodeGeometry"
@@ -3580,6 +3631,22 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
   let removers: Array<{ what: "patch" | "listener"; undo: () => void }> = [];
   /** Refusals, absences and re-arms. Never silent — R7. */
   let notes: string[] = [];
+  /**
+   * THE CAUSE FLAG — one variable, not a framework.
+   *
+   * `onRevert` → `main.ts:3990 revertCanvasNode` → `:4036 applyCanvasNodeRevert`
+   * → `:4105 applyNodeGeometry` is fully SYNCHRONOUS inside
+   * `presence.reconcileClaims()`. So I3's wrapper sets this before calling the
+   * original and restores it in a `finally`, and any view-sink call that sees it
+   * set was made by a revert. A call with it clear is the ordinary remote path
+   * (`main.ts:2521 setOnRemoteCanvasUpdate` → `:3024 reconcileLiveCanvas`) or
+   * the one-shot mount reconcile (`main.ts:3890`, `{initial:true}`), and those
+   * two are separated by timestamp — `mount-initial` fires once per open.
+   *
+   * `causeResolved` on the row records WHICH of those two facts produced the
+   * label, so a default is never mistaken for a measurement (`S155`'s shape).
+   */
+  let causeNow: string | null = null;
 
   /** Which paths this build can see mounted, for the arm/dump gap report (R7). */
   const mountedPaths = (): string[] => resolveDiagTargets(plugin).map((t) => t.path).sort();
@@ -3592,11 +3659,146 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
     }
   };
 
+  /** The current view geometry of every live node, capped. Pure reads only (R2). */
+  const viewSnapshot = (adapter: DiagAdapterLike): Record<string, DiagGeometry> => {
+    const out: Record<string, DiagGeometry> = {};
+    let seen = 0;
+    for (const id of adapter.getLiveNodeIds()) {
+      if (seen++ >= CANVAS_DIAG_MAX_NODES) break;
+      const geo = adapter.getNodeGeometry(id);
+      if (geo) out[id] = geo;
+    }
+    return out;
+  };
+
   /**
-   * Install every hook for `path`. Step 2 installs none — the arm census and the
-   * unattributed delta need no hook at all, which is exactly why they come
-   * first. Later steps add their installers here, and each one probes before it
-   * patches (§4.2): an absent member is recorded as a note, never crashed on.
+   * I2 — THE VIEW-WRITE LEDGER. Every mutation this plugin makes to the live
+   * view's geometry, with before → after and a CAUSE.
+   *
+   * The two members wrapped below are the COMPLETE set of view-geometry sinks in
+   * the product. That is not an assumption: it is what
+   * `v2/wp87/test_tp01_surface_route_census.test.ts:210-214` derives from the
+   * tree and asserts (`canvas-adapter.ts#applyNodeGeometry` and
+   * `#reloadCanvasData`, both `GUARDED-BY-CALLER`).
+   *
+   * OBSERVER EFFECT IS THIS PACKAGE'S FAILURE MODE, and these two wrappers sit
+   * directly in the product's view-write path on the owner's LIVE vaults. So,
+   * by construction and in this order:
+   *   1. the pre-reading is a pure `getNodeGeometry` inside its own `try/catch`;
+   *   2. the ORIGINAL is called in its own statement and its result is returned
+   *      verbatim;
+   *   3. every remaining diagnostic read is inside a second `try/catch`.
+   * With that shape the failure mode is a MISSING LEDGER ROW, never a missing
+   * apply — verbatim the pattern `canvas-adapter.ts:828-836` already uses.
+   */
+  const installViewWriteLedger = (target: DiagTarget): number => {
+    const host = target.adapterRaw;
+    const adapter = target.adapter;
+    if (!host || !adapter) {
+      notes.push(`I2 view-write ledger NOT installed on '${target.path}': ${target.adapterReason}`);
+      return 0;
+    }
+    const path = target.path;
+    let installed = 0;
+
+    const undoApply = diagPatch(host, "applyNodeGeometry", (original) =>
+      function (this: unknown, ...args: unknown[]): unknown {
+        const nodeId = typeof args[0] === "string" ? args[0] : "";
+        let before: DiagGeometry | null = null;
+        try {
+          before = nodeId.length > 0 ? adapter.getNodeGeometry(nodeId) : null;
+        } catch {
+          before = null;
+        }
+        const result = original.apply(this, args);
+        try {
+          push({
+            t: Date.now(),
+            kind: "applyGeom",
+            path,
+            nodeId,
+            from: before,
+            to: diagGeometryOf(args[1]),
+            outcome: typeof result === "string" ? result : String(result),
+            cause: causeNow ?? "remote-apply",
+            causeResolved: causeNow !== null,
+          });
+        } catch {
+          /* diagnostics must never break canvas interaction */
+        }
+        return result;
+      },
+    );
+    if (undoApply) {
+      removers.push({ what: "patch", undo: undoApply });
+      installed++;
+    } else {
+      notes.push(`I2: '${path}' exposes no applyNodeGeometry to wrap`);
+    }
+
+    // THE WHOLE-BOARD BLAST RADIUS, and it is still reachable on the ORDINARY
+    // remote path: `main.ts:3231-3235` escalates a per-node geometry pass to a
+    // full `setData` the moment a node WITH EDGES actually moves. WP119 removed
+    // the revert's escalation; it did not remove this one. On a board where most
+    // cards have arrows, one moved card re-lays-out everything — which is the
+    // owner's symptom verbatim. This row's `moved` list is what catches it, and
+    // it is expected to be the loudest row in a broken dump.
+    const undoReload = diagPatch(host, "reloadCanvasData", (original) =>
+      function (this: unknown, ...args: unknown[]): unknown {
+        let beforeAll: Record<string, DiagGeometry> = {};
+        let beforeRead = true;
+        try {
+          beforeAll = viewSnapshot(adapter);
+        } catch {
+          beforeRead = false;
+        }
+        const result = original.apply(this, args);
+        try {
+          const afterAll = viewSnapshot(adapter);
+          const moved: Array<{
+            nodeId: string;
+            from: DiagGeometry | null;
+            to: DiagGeometry | null;
+          }> = [];
+          for (const id of new Set([...Object.keys(beforeAll), ...Object.keys(afterAll)])) {
+            if (!diagGeoDiffers(beforeAll[id], afterAll[id])) continue;
+            moved.push({ nodeId: id, from: beforeAll[id] ?? null, to: afterAll[id] ?? null });
+          }
+          const payload = args[0] as { nodes?: unknown; edges?: unknown } | null | undefined;
+          push({
+            t: Date.now(),
+            kind: "setData",
+            path,
+            ok: result === true,
+            nodeCount: Array.isArray(payload?.nodes) ? payload.nodes.length : null,
+            edgeCount: Array.isArray(payload?.edges) ? payload.edges.length : null,
+            // R7 — a `moved: []` produced by a FAILED pre-reading must not read
+            // as "nothing moved". It says which it is.
+            beforeRead,
+            moved: moved.sort((a, b) => a.nodeId.localeCompare(b.nodeId)),
+            movedCount: moved.length,
+            cause: causeNow ?? "remote-apply",
+            causeResolved: causeNow !== null,
+          });
+        } catch {
+          /* diagnostics must never break canvas interaction */
+        }
+        return result;
+      },
+    );
+    if (undoReload) {
+      removers.push({ what: "patch", undo: undoReload });
+      installed++;
+    } else {
+      notes.push(`I2: '${path}' exposes no reloadCanvasData to wrap`);
+    }
+    return installed;
+  };
+
+  /**
+   * Install every hook for `path`. Each installer probes before it patches
+   * (§4.2): an absent member is recorded as a note, never crashed on, because
+   * the absence is itself the reading that names which bundle a peer is on.
    */
   const install = (path: string): void => {
     const targets = resolveDiagTargets(plugin, path);
@@ -3608,6 +3810,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
     }
     for (const target of targets) {
       patchedPaths.push(target.path);
+      installViewWriteLedger(target);
     }
   };
 
