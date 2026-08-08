@@ -49,6 +49,8 @@ time is how this run got four of them. It is fixed at the source and all six con
 
 | Signal | What happens | Status |
 |---|---|---|
+| **S147** *(P0 — the top of the list)* | **the product does not sync in the configuration every user actually runs.** With Chromium background throttling at its default, **16/16** mid-session notes are left **permanently unsubscribed** on guests (0/16 with it off), and after a link break the guests **never** recover while a host edit sits undelivered for 90 s. **All three windows are `hidden` in the ordinary setup** — merely stacking them is enough. | **WP114 in flight.** `docExists:false` on every orphan, so the failure is **before** `subscribe()`. The clamp reaches **9 s/hop** after ten minutes hidden and **grows without bound**, so no timeout is long enough — the fix cannot be a longer wait. Also retro-explains `S120`'s `MUTE OVERRUN` and `S71`'s 60 s. |
+| **S148** *(Tier 1, data loss)* | **conflict preservation was never ATTEMPTED** on a rejoin — `conflictCopies` reads `{total:0}` — and the guest's offline work was silently overwritten on **both** branches. | **OPEN.** `S125` was reported *validated live* one round earlier, so this is either a regression in two commits or a **setup-dependent path**; the two setups differ on the record and the validator declined to guess. **Resolve which before fixing.** |
 | **S141** *(potentially P0)* | the empty-write floor is **defeated through the front door of its own guard**: `setActiveFile` publishes `updateFile(file, docText)` **unfloored**, so a host can publish `hash("")` for a file that has bytes — and `syncFromManifest`'s evidence test then reads **TRUE**. S119's outcome, reached through the guard built to stop S119. | **OPEN, and the most dangerous thing found this round.** **Traced in code, NOT measured** — WP109 removed the only known producer, which is exactly why it must not be filed as closed: **the path survives its producer.** Needs its own package, and the standard is a demonstrated write. |
 | **S143** | `subscribe()` **gives up permanently and silently** — `attachObserver` is the last statement, and `waitForSync`'s `catch { return; }` plus four other early returns leave `observers: false` with no retry, no counter, no log until the next `startAll`. | **OPEN — and it is the live-signature candidate for S134.** WP109's fix does not explain the live `observers:false`; this does. It is also the amplifier that made S134 last a full day. |
 | **S134** *(P0)* | a note created **during** a session never completes document sync, and three peers edit three unlinked copies. | **SEEDING CAUSE FIXED** (`39255ee`), demonstrated through production wiring. **NOT CLOSED** — the live reading needs S143. Falsifiable prediction for re-validation: pre-fix, **only host-born notes broke.** |
@@ -109,11 +111,24 @@ ordinary case, not the exception.
    4/4, and S125's discard branch was reachable at last. This converted the run's fixes from *proven* to
    *proven in the product* — and, as first runs do, it produced seven new signals.
 2. ~~**S120 and S124 landed.**~~ **DONE** (`23fdf01`, `dcf9cd2`).
-3. **S134 and S135** — both found by that live run, both Tier 1, both now outrank everything that was left.
-   **This is the current line.**
-4. **S122** — the owner has called it a required capability, and it closes the AC6 residual with it.
-5. **S136 and S137** — one wastes a user's ten minutes, the other wastes a diagnostician's afternoon.
-6. Everything else is Tier 3 and is a judgement call about how much instrument debt to carry.
+3. ~~**S134 and S135.**~~ **BOTH FIXED AND CONFIRMED LIVE** (`39255ee`, `6b191d8`; WP111 P1 across eight
+   cells, P3 for `.md` both roles both arms).
+4. **S147 — this is the current line, and it is now the whole line.** A collaboration plugin that stops
+   syncing when its window is not in front is not shippable, and **that is the default state of every
+   window**. Everything below is genuinely secondary to it.
+5. **S148** — conflict preservation is not running. Until it is, every other repair is working without a
+   net: a mistake that overwrites a user's offline edits will not be caught.
+6. **S122** — the owner has called it a required capability, and it closes the AC6 residual with it.
+   Confirmed still broken in both arms of WP111.
+7. **S141** — potential data loss, still only traced.
+8. **S136, S137, S143, S149–S152** — one wastes a user's ten minutes, one a diagnostician's afternoon, and
+   the rest are recorded because they are true, not because they are next.
+
+**A note on what the last round actually bought.** WP109 and WP110 fixed real defects and both were
+confirmed live. But **the largest finding of the day came from the owner asking whether their own use of
+the PC could be involved** — a variable nobody in this project had ever controlled for, sitting underneath
+every latency number ever recorded here. Worth remembering the next time a measurement is treated as a
+property of the code.
 
 **What "done" does not require:** S121's 50 ms rename window, S140's unexplained one-off, and the residual
 instrument signals. Those are real and recorded; they are not what stands between this and a working
