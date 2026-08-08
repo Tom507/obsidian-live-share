@@ -229,7 +229,10 @@ describe("S158 tp03 — DIVERGENCE stays a different answer from a shared loss",
       CENSUS_BEFORE,
     );
     expect(judgement.verdict).toBe(CONVERGENCE_VERDICT.DIVERGED);
-    expect(judgement.clauses).toHaveLength(5);
+    // §7 AMENDMENT (WP123, ledger entry A-123-1): 5 → 6. The ledger gained the
+    // `records` row. Same assertion, same strictness — an exact row count, not a
+    // floor, not a subset, not a key-count.
+    expect(judgement.clauses).toHaveLength(6);
     expect(judgement.violations).toContain("atLeastBytes");
   });
 });
@@ -312,7 +315,8 @@ describe("S158 tp05 — UNJUDGEABLE is never green (S155: no branch is silent)",
       expect(judgement.matchesExpectation).toBeNull();
       expect(judgement.reason.length).toBeGreaterThan(20);
       // S155 — the ledger is complete in the do-nothing branch too.
-      expect(judgement.clauses).toHaveLength(5);
+      // §7 AMENDMENT (WP123, ledger entry A-123-2): 5 → 6, for the `records` row.
+      expect(judgement.clauses).toHaveLength(6);
       for (const clause of judgement.clauses) {
         expect(clause.detail.length).toBeGreaterThan(0);
         expect(clause.satisfied === null).toBe(!clause.stated);
@@ -340,7 +344,10 @@ describe("S158 tp06 — the ledger obeys S155 in EVERY branch", () => {
     { origin: "" },
   ];
 
-  it("tp06a: five clause rows in every branch, stated or not, satisfied or not", () => {
+  // §7 AMENDMENT (WP123, ledger entry A-123-3): "five" → "six", and the name
+  // list gains `records` in its ledger position. Still `toStrictEqual` over the
+  // whole list in order — no `toMatchObject`, no `objectContaining`, no subset.
+  it("tp06a: six clause rows in every branch, stated or not, satisfied or not", () => {
     for (const expected of everyBranch) {
       for (const file of [INTACT, TRUNCATED, { exists: false, sha256: "", size: 0, content: null }]) {
         const judgement = judgeConvergence(threePeers(file as typeof TRUNCATED), expected);
@@ -349,6 +356,7 @@ describe("S158 tp06 — the ledger obeys S155 in EVERY branch", () => {
           "sha256",
           "contains",
           "atLeastBytes",
+          "records",
           "emptiness-must-be-asserted",
         ]);
         expect(judgement.reason.length).toBeGreaterThan(0);

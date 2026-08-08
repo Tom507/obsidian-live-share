@@ -26,6 +26,23 @@ import type * as http from "node:http";
 import { createServer } from "node:http";
 import * as Y from "yjs";
 import { setCanvasBindingInstrument } from "../canvas/canvas-binding";
+// WP123 — THE ONE PARSER. The records clause of the convergence oracle reads a
+// `.canvas` with THE PRODUCTION READER and no other. A rig that parses `.canvas`
+// differently from the plugin is `S158`'s family in a new place: it would be
+// scoring a board nobody ships. `parseCanvasReport` rather than `parseCanvas`
+// because `parseCanvas` DEGRADES TO EMPTY RECORDS AND NEVER THROWS
+// (`files/canvas-sync.ts:684`), so "parse both sides, compare records" reads
+// EQUAL for two files neither of which could be read — the exact vacuous green
+// this clause exists to make impossible. `degraded` is a judgement input here,
+// not a footnote. `decodeCanvasDataToFlat` is production's own inverse of the
+// register codec, so the `x`/`y`/`width`/`height` this file compares are the
+// file's own vocabulary and are not re-expanded by hand.
+//
+// This specifier was added to the frozen import allow-list under a §7 amendment
+// (WP49 AC4 / WP72 AC4). The freeze forbids a dependency arriving WITHOUT
+// deliberation; it is not a ban on production imports — `../canvas/canvas-binding`
+// below has been on the list since WP49.
+import { decodeCanvasDataToFlat, parseCanvasReport } from "../files/canvas-sync";
 // `fileop.inject` (below) must probe the mute map and the vault under the SAME
 // spelling `FileOpsManager` derives from a wire path, and these two are its
 // single definers. Re-spelling them here would let the probe and the mechanism
@@ -298,6 +315,16 @@ function sameRecordSet(
  * here — normalisation is exactly what would hide the divergence this oracle
  * exists to catch (charter §2 non-goal), so digest, size and content must all
  * agree, and an existing file never matches an absent one.
+ *
+ * ⚠ WP123 — DO NOT CONFUSE THIS WITH RECORD AGREEMENT, AND DO NOT "FIX" IT.
+ * This is a BYTE test, deliberately, and it is LEFT ALONE: `evaluateCanvasConvergence`
+ * is byte-unchanged by WP49's contract and `v2/wp116/…:248` pins it. What it
+ * therefore cannot answer is *"do these two peers hold the same BOARD?"* — three
+ * stable byte spellings of one identical `.canvas` were measured live on this
+ * build at 235 / 296 / 218 bytes, and this function reads `false` for all three
+ * pairs. It has been given a RECORD-LEVEL SIBLING rather than a normaliser:
+ * {@link evaluateRecordAgreement}, reported as `peersAgreeOnRecords` and `null`
+ * whenever nobody stated a records expectation.
  */
 function sameFileObservation(a: CanvasFileResult, b: CanvasFileResult): boolean {
   return (
@@ -384,6 +411,31 @@ export function evaluateCanvasConvergence(
 // `stated:false, satisfied:null`, never omitted. A ledger in which "not asked"
 // and "asked and passed" look the same is the defect S155 names, and this file
 // is the last place to add another.
+//
+// WP123 / `S178`, CLOSING `S174` — AND A BOARD IS JUDGED BY ITS RECORDS.
+//
+// Every clause above scores a file on its BYTES. That is right for a `.md` and
+// wrong for a `.canvas`: three stable byte spellings of one identical board were
+// measured live on this build (235 / 296 / 218 B — the author's, the plugin's
+// canonical and Obsidian's own), so a byte clause is RED for boards that are in
+// sync and GREEN for boards that are not. `contains` is not an escape either —
+// `"x": 111` is not `"x":111`.
+//
+// So `ExpectedContent` gained ONE more clause, `records`, and it is the only one
+// here that reads the file as a document rather than as bytes:
+//
+//   ├── it parses with THE PRODUCTION PARSER (`parseCanvasReport`), never a
+//   │      second `.canvas` reader living in the rig
+//   ├── it compares ONLY THE NAMED FIELDS of the NAMED nodes — whole-record
+//   │      equality would make an extra or renamed key a divergence, which is
+//   │      the byte oracle one level up
+//   ├── it REFUSES a board it could not read. `parseCanvas` degrades to empty
+//   │      records and never throws, so the naive "parse both sides, compare"
+//   │      answers EQUAL for two files neither of which could be read. That is
+//   │      the one failure this clause exists to make impossible, and
+//   │      {@link readCanvasRecords} branches on `readable` before anything else
+//   └── `peersAgree` KEEPS ITS MEANING (bytes) and has been given a sibling,
+//          `peersAgreeOnRecords`, which is `null` whenever nobody asked.
 // ---------------------------------------------------------------------------
 
 /** sha256 of zero bytes. `S119`'s signature, and a full digest like any other. */
@@ -440,7 +492,47 @@ export interface ExpectedContent {
    * truncation without needing to know the exact bytes.
    */
   atLeastBytes?: number;
+  /**
+   * WP123 — THE RECORDS THE BOARD IS SUPPOSED TO HOLD. The only clause here that
+   * is not about bytes, and the reason it exists: every clause above scores a
+   * `.canvas` on its SPELLING, and one board has three stable spellings on this
+   * build. A byte clause is therefore RED for boards that are in sync and GREEN
+   * for boards that are not (`S174`/`S177`), and `contains` is no escape —
+   * `"x": 111` is not `"x":111`.
+   */
+  records?: ExpectedRecords;
 }
+
+/**
+ * WP123 — the geometry of ONE named node, in the file's own vocabulary.
+ *
+ * Every field except `id` is optional and ONLY THE STATED ONES ARE COMPARED.
+ * That is deliberate and it is not laziness: whole-record equality would make
+ * any extra, renamed or reordered key a divergence, which is the byte oracle one
+ * level up. (`recordSignature` above is that shape — it hashes every key of the
+ * record — and it is not reused here for exactly this reason.)
+ */
+export interface ExpectedNodeRecord {
+  /** The node id, as it appears in the `.canvas`. Required, non-empty. */
+  id: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * WP123 — a statement about the board's RECORDS, judged with the production
+ * parser. An expectation naming no node judges nothing and is refused rather
+ * than silently satisfied.
+ */
+export interface ExpectedRecords {
+  nodes: ExpectedNodeRecord[];
+}
+
+/** The node fields a records expectation may name. Compared only when stated. */
+export const RECORD_FIELDS = ["x", "y", "width", "height"] as const;
+export type RecordField = (typeof RECORD_FIELDS)[number];
 
 /** One peer's reading, carrying the peer's name so a verdict can name it. */
 export interface PeerFileObservation {
@@ -464,8 +556,18 @@ export interface ConvergenceJudgement {
   verdict: ConvergenceVerdict;
   /** `true` for `CONVERGED` and for nothing else. */
   converged: boolean;
-  /** The peer-to-peer question, kept separate and still answerable (A3). */
+  /**
+   * The peer-to-peer question, kept separate and still answerable (A3). BYTES —
+   * see {@link sameFileObservation}. Two peers holding one board in two
+   * spellings read `false` here and `true` in `peersAgreeOnRecords`.
+   */
   peersAgree: boolean;
+  /**
+   * WP123 — the same question asked of the RECORDS the expectation named.
+   * `null` exactly when no usable records expectation was stated, so "nobody
+   * asked" never reads as "asked and agreed" (S155).
+   */
+  peersAgreeOnRecords: boolean | null;
   /**
    * `null` when the expectation could not be applied at all. Never conflated
    * with `false`.
@@ -507,6 +609,248 @@ function isEmptyContent(file: CanvasFileResult): boolean {
     file.exists === true &&
     (file.size === 0 || file.sha256 === EMPTY_SHA256 || file.content === "")
   );
+}
+
+// ---------------------------------------------------------------------------
+// WP123 — THE RECORD READING. `S178`, closing `S174`.
+//
+// THE ONE THING THIS BLOCK MUST NEVER DO is report a match for a board it did
+// not read. `parseCanvas` degrades to empty records and does not throw, so the
+// naive composition — parse both sides, compare — answers EQUAL for two files
+// NEITHER OF WHICH COULD BE READ, and every green built on it is worthless.
+// `readCanvasRecords` therefore returns `readable` as its FIRST field and every
+// consumer below branches on it before it looks at a record.
+//
+// THREE WAYS A READING IS NOT A READING, and they are separated because they
+// fail for different reasons (WP94's distinction, reused rather than re-derived):
+//
+//   ├── `content: null`    — nothing came back from the peer at all
+//   ├── `degraded: true`   — `JSON.parse` threw; the records are empty because
+//   │                         the bytes were unreadable, not because the board is
+//   └── `hasNodesKey:false`— well-formed JSON carrying NO `nodes` array. Not
+//          degraded, and still not a board: an absent key is indistinguishable,
+//          downstream, from a board whose every node was deleted.
+// ---------------------------------------------------------------------------
+
+/** One peer's `.canvas`, read with the production parser — or the reason it was not. */
+export interface CanvasRecordReading {
+  /** FALSE means NOTHING BELOW WAS EXAMINED. Never skip this field. */
+  readable: boolean;
+  /** Always populated, in every branch — why it is or is not readable. */
+  reason: string;
+  /** Flat, file-vocabulary node records by id. Empty whenever `readable` is false. */
+  nodes: Record<string, Record<string, unknown>>;
+  /** The node ids, sorted, so an id-set comparison is order-independent. */
+  ids: string[];
+}
+
+/**
+ * Read one peer's `.canvas` into records, with the production parser and the
+ * production decode bridge — never a second parser living in the rig.
+ */
+export function readCanvasRecords(file: CanvasFileResult): CanvasRecordReading {
+  const unreadable = (reason: string): CanvasRecordReading => ({
+    readable: false,
+    reason,
+    nodes: {},
+    ids: [],
+  });
+  const content = file?.content;
+  if (typeof content !== "string") {
+    return unreadable(
+      "no content was read back from this peer, so its records were never examined; " +
+        "an absence that could not be read is not an empty board",
+    );
+  }
+  const report = parseCanvasReport(content);
+  if (report.degraded) {
+    return unreadable(
+      "the bytes did not parse as JSON, so `parseCanvas` DEGRADED to empty records rather " +
+        "than throwing; the board was not examined and nothing may be concluded from the empty",
+    );
+  }
+  if (!report.hasNodesKey) {
+    return unreadable(
+      "the bytes parsed but the document carries no `nodes` ARRAY, so an absent key and a " +
+        "board whose every node was deleted are the same reading here and neither is judgeable",
+    );
+  }
+  const nodes = decodeCanvasDataToFlat(report.data).nodes;
+  const ids = Object.keys(nodes).sort();
+  return {
+    readable: true,
+    reason: `the board parsed and carries ${ids.length} node record(s)`,
+    nodes,
+    ids,
+  };
+}
+
+/** A records expectation, validated — or the reason it cannot be applied. */
+interface ExpectedRecordsShape {
+  ok: boolean;
+  reason: string;
+  nodes: ExpectedNodeRecord[];
+  /** `"n1.x"`, `"n1.y"`, … — exactly what this expectation asked to be compared. */
+  fields: string[];
+}
+
+/**
+ * Validate a caller's records expectation. A MALFORMED EXPECTATION IS A FAILURE,
+ * NEVER A SILENT "NOT STATED": a caller who asked a question the oracle could not
+ * read must not get the same answer as a caller who asked nothing.
+ */
+function readExpectedRecords(raw: unknown): ExpectedRecordsShape {
+  const bad = (reason: string): ExpectedRecordsShape => ({ ok: false, reason, nodes: [], fields: [] });
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    return bad("`records` must be an object of the form { nodes: [{ id, x?, y?, width?, height? }] }");
+  }
+  const rawNodes = (raw as { nodes?: unknown }).nodes;
+  if (!Array.isArray(rawNodes) || rawNodes.length === 0) {
+    return bad(
+      "`records.nodes` names no node, and an expectation that names nothing judges nothing — " +
+        "a satisfied comparison of empty against empty is the failure this clause exists to prevent",
+    );
+  }
+  const nodes: ExpectedNodeRecord[] = [];
+  const fields: string[] = [];
+  for (let i = 0; i < rawNodes.length; i++) {
+    const entry = rawNodes[i];
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return bad(`\`records.nodes[${i}]\` is not an object`);
+    }
+    const row = entry as Record<string, unknown>;
+    if (typeof row.id !== "string" || row.id.length === 0) {
+      return bad(`\`records.nodes[${i}]\` has no non-empty string \`id\``);
+    }
+    const node: ExpectedNodeRecord = { id: row.id };
+    let named = 0;
+    for (const field of RECORD_FIELDS) {
+      const value = row[field];
+      if (value === undefined) continue;
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return bad(`\`records.nodes[${i}].${field}\` is not a finite number`);
+      }
+      node[field] = value;
+      fields.push(`${row.id}.${field}`);
+      named++;
+    }
+    if (named === 0) {
+      return bad(
+        `\`records.nodes[${i}]\` names node '${row.id}' and no field of it, so it states ` +
+          `nothing that could be compared (one of ${RECORD_FIELDS.join(", ")})`,
+      );
+    }
+    nodes.push(node);
+  }
+  return { ok: true, reason: `${nodes.length} node(s), ${fields.length} named field(s)`, nodes, fields };
+}
+
+/**
+ * Compare the STATED fields of the STATED nodes against one peer's reading.
+ * Returns one human-readable mismatch per field, naming the id AND the field —
+ * an id-set comparison passes every geometry defect this project has.
+ */
+function compareExpectedRecords(
+  expectedNodes: readonly ExpectedNodeRecord[],
+  observed: Record<string, Record<string, unknown>>,
+): string[] {
+  const mismatches: string[] = [];
+  for (const node of expectedNodes) {
+    const record = observed[node.id];
+    if (record === undefined) {
+      mismatches.push(`node '${node.id}' is ABSENT from the board`);
+      continue;
+    }
+    for (const field of RECORD_FIELDS) {
+      const want = node[field];
+      if (want === undefined) continue;
+      const got = record[field];
+      if (got !== want) {
+        mismatches.push(`${node.id}.${field}: expected ${want}, observed ${String(got)}`);
+      }
+    }
+  }
+  return mismatches;
+}
+
+/** The record-level answer to the peer-to-peer question. `peersAgreeOnRecords`. */
+export interface RecordAgreement {
+  agree: boolean;
+  /** Peers that do not hold what the first peer holds, or could not be read. */
+  disagreeing: string[];
+  /** Always populated — what was compared, or why it could not be. */
+  detail: string;
+}
+
+/**
+ * WP123 — {@link sameFileObservation}'s RECORD-LEVEL SIBLING, and the reason A3
+ * is expressible at all: three byte spellings of one board must be ONE verdict.
+ *
+ * What is compared, and nothing else: the node ID SET, and the FIELDS THE
+ * EXPECTATION NAMED. Whole-record equality is not used — an extra or renamed key
+ * would then read as divergence, which is the byte oracle one level up.
+ *
+ * A peer whose reading is NOT READABLE never agrees. Two unreadable peers are the
+ * naive composition's vacuous green, and it is refused here rather than reported.
+ */
+export function evaluateRecordAgreement(
+  peers: PeerFileObservation[],
+  expectedNodes: readonly ExpectedNodeRecord[],
+): RecordAgreement {
+  const readings = peers.map((p) => ({ peer: p?.peer ?? "<unnamed>", file: p?.file, read: readCanvasRecords(p?.file) }));
+  const unreadable = readings.filter((r) => !r.read.readable);
+  if (unreadable.length > 0) {
+    return {
+      agree: false,
+      disagreeing: unreadable.map((r) => r.peer),
+      detail:
+        `record agreement is NOT CLAIMED: ${unreadable.map((r) => r.peer).join(", ")} could not be ` +
+        `read — ${unreadable[0].read.reason}`,
+    };
+  }
+  if (readings.length < 2) {
+    return {
+      agree: false,
+      disagreeing: [],
+      detail:
+        `record agreement is a statement about two or more peers and ${readings.length} reading(s) ` +
+        "were supplied",
+    };
+  }
+  const reference = readings[0];
+  const disagreeing: string[] = [];
+  const notes: string[] = [];
+  for (const other of readings.slice(1)) {
+    const differences: string[] = [];
+    if (other.read.ids.join("|") !== reference.read.ids.join("|")) {
+      differences.push(
+        `node id set [${other.read.ids.join(", ")}] != [${reference.read.ids.join(", ")}]`,
+      );
+    }
+    for (const node of expectedNodes) {
+      const mine = other.read.nodes[node.id];
+      const theirs = reference.read.nodes[node.id];
+      for (const field of RECORD_FIELDS) {
+        if (node[field] === undefined) continue;
+        const a = mine?.[field];
+        const b = theirs?.[field];
+        if (a !== b) differences.push(`${node.id}.${field}: ${String(a)} != ${String(b)}`);
+      }
+    }
+    if (differences.length > 0) {
+      disagreeing.push(other.peer);
+      notes.push(`${other.peer} — ${differences.join("; ")}`);
+    }
+  }
+  return {
+    agree: disagreeing.length === 0,
+    disagreeing,
+    detail:
+      disagreeing.length === 0
+        ? `all ${readings.length} peers hold the same node id set and the same value for every ` +
+          "named field, whatever spelling each of them wrote it in"
+        : `record divergence against ${reference.peer}: ${notes.join(" | ")}`,
+  };
 }
 
 /**
@@ -602,7 +946,62 @@ export function judgeFileAgainstExpectation(
     });
   }
 
-  // 5. THE STRUCTURAL CLAUSE — EMPTINESS MUST BE ASSERTED, NEVER INFERRED.
+  // 5. WP123 — THE RECORDS CLAUSE. The only clause here that is not about bytes.
+  //
+  // Three refusals before a single comparison happens, and each of them is a
+  // FAILURE rather than a silence:
+  //   ├── the expectation is malformed          → stated, NOT satisfied
+  //   ├── the reading could not be examined     → stated, NOT satisfied
+  //   └── otherwise compare the NAMED fields    → and say what was compared
+  //
+  // "Not satisfied" and not "unstated" on purpose: a caller who asked a question
+  // this clause could not read must never get the answer of a caller who asked
+  // nothing at all (S155).
+  const rawRecords = expected.records;
+  if (rawRecords === undefined || rawRecords === null) {
+    clauses.push({
+      clause: "records",
+      stated: false,
+      satisfied: null,
+      detail: "the expectation names no node whose records the board must hold",
+    });
+  } else {
+    const shape = readExpectedRecords(rawRecords);
+    if (!shape.ok) {
+      clauses.push({
+        clause: "records",
+        stated: true,
+        satisfied: false,
+        detail: `the records expectation CANNOT BE APPLIED: ${shape.reason}`,
+      });
+    } else {
+      const read = readCanvasRecords(file);
+      if (!read.readable) {
+        clauses.push({
+          clause: "records",
+          stated: true,
+          satisfied: false,
+          detail:
+            `the records were NOT EXAMINED, so ${shape.fields.length} named field(s) are ` +
+            `unjudged and none of them is satisfied — ${read.reason}`,
+        });
+      } else {
+        const mismatches = compareExpectedRecords(shape.nodes, read.nodes);
+        clauses.push({
+          clause: "records",
+          stated: true,
+          satisfied: mismatches.length === 0,
+          detail:
+            mismatches.length === 0
+              ? `compared ${shape.fields.join(", ")} against the board's ${read.ids.length} ` +
+                "record(s) and every named field holds"
+              : `record mismatch (compared ${shape.fields.join(", ")}): ${mismatches.join("; ")}`,
+        });
+      }
+    }
+  }
+
+  // 6. THE STRUCTURAL CLAUSE — EMPTINESS MUST BE ASSERTED, NEVER INFERRED.
   //
   // This one is ALWAYS stated, because the caller does not get to leave it out.
   // `S119` truncated files to nothing and every peer agreed on the result; a
@@ -643,6 +1042,15 @@ export function judgeFileAgainstExpectation(
  * The `S119` acceptance case lands on the last line: three peers agreeing on
  * `e3b0c442…` for a file that held 49 bytes is a FAILURE here, and was a pass
  * under every oracle this rig had before.
+ *
+ * WP123 — WHICH AGREEMENT THE FIRST LINE MEANS. "Peers agree" is BYTES unless
+ * the caller stated a usable `records` expectation, in which case it is RECORDS:
+ * the caller has then said in so many words that this board is to be judged by
+ * its records, and one board has three stable spellings on this build. Both
+ * facts are always reported — `peersAgree` (bytes) and `peersAgreeOnRecords`
+ * (`null` when nobody asked) — and `reason` names the one that decided. No
+ * pre-WP123 caller states `records`, so for every one of them the verdict is
+ * computed from exactly the value it was computed from before.
  */
 export function judgeConvergence(
   peers: PeerFileObservation[],
@@ -664,6 +1072,9 @@ export function judgeConvergence(
         "sha256",
         "contains",
         "atLeastBytes",
+        // WP123 — the records row is in the DO-NOTHING branch too. A branch that
+        // does nothing must not read the same as a branch that never ran (S155).
+        "records",
         "emptiness-must-be-asserted",
       ].map((clause) => ({
         clause,
@@ -676,10 +1087,37 @@ export function judgeConvergence(
   const violations = clauses.filter((c) => c.satisfied === false).map((c) => c.clause);
   const statedClauses = clauses.filter((c) => c.stated && c.clause !== "emptiness-must-be-asserted");
 
+  // WP123 — THE RECORD-LEVEL AGREEMENT, AND THE ONE THING IT CHANGES.
+  //
+  // `peersAgree` stays BYTES and keeps its meaning exactly. What changes is
+  // WHICH agreement the VERDICT is computed from, and only when the caller
+  // states a usable records expectation: they have then said in so many words
+  // that this board is to be judged by its records, and `S174`/`S177` measured
+  // three stable byte spellings of one identical board on this build — scoring
+  // that round on bytes is RED for a board that is in sync. No pre-WP123 caller
+  // states `records`, so `recordAgreement` is `null` for every one of them and
+  // the verdict is computed from exactly the value it was computed from before.
+  const recordShape =
+    safeExpectation.records === undefined || safeExpectation.records === null
+      ? null
+      : readExpectedRecords(safeExpectation.records);
+  const recordAgreement =
+    recordShape?.ok === true ? evaluateRecordAgreement(observations, recordShape.nodes) : null;
+  const peersAgreeOnRecords = recordAgreement === null ? null : recordAgreement.agree;
+  const agreeForVerdict = recordAgreement === null ? agreement.agree : recordAgreement.agree;
+  const disagreementReason =
+    recordAgreement === null
+      ? `peer(s) ${agreement.disagreeing.join(", ")} do not hold what ${names[0]} holds; ` +
+        "no claim is made here about which of them is right"
+      : `the peers do not hold the same RECORDS — ${recordAgreement.detail}. (Byte agreement, ` +
+        `reported separately, is ${agreement.agree}: one board has several spellings and neither ` +
+        "reading substitutes for the other)";
+
   const unjudgeable = (reason: string): ConvergenceJudgement => ({
     verdict: CONVERGENCE_VERDICT.UNJUDGEABLE,
     converged: false,
     peersAgree: agreement.agree,
+    peersAgreeOnRecords,
     matchesExpectation: null,
     peers: names,
     expectationOrigin: origin,
@@ -707,52 +1145,55 @@ export function judgeConvergence(
     );
   }
 
-  if (!agreement.agree) {
+  if (!agreeForVerdict) {
     return {
       verdict: CONVERGENCE_VERDICT.DIVERGED,
       converged: false,
-      peersAgree: false,
+      peersAgree: agreement.agree,
+      peersAgreeOnRecords,
       matchesExpectation: violations.length === 0,
       peers: names,
       expectationOrigin: origin,
       clauses,
       violations,
-      reason:
-        `peer(s) ${agreement.disagreeing.join(", ")} do not hold what ${names[0]} holds; ` +
-        "no claim is made here about which of them is right",
+      reason: disagreementReason,
     };
   }
+
+  const agreedOn = recordAgreement === null ? "bytes" : "records";
 
   if (violations.length > 0) {
     return {
       verdict: CONVERGENCE_VERDICT.AGREED_ON_WRONG_BYTES,
       converged: false,
-      peersAgree: true,
+      peersAgree: agreement.agree,
+      peersAgreeOnRecords,
       matchesExpectation: false,
       peers: names,
       expectationOrigin: origin,
       clauses,
       violations,
       reason:
-        `all ${names.length} peers agree, and the agreed state violates ${violations.join(", ")} ` +
-        `against the expectation stated by '${origin}'. Agreement is evidence of agreement, not ` +
-        "correctness: everyone having the right bytes and everyone having lost the same bytes " +
-        "read identically to a peer-to-peer oracle",
+        `all ${names.length} peers agree on the ${agreedOn}, and the agreed state violates ` +
+        `${violations.join(", ")} against the expectation stated by '${origin}'. Agreement is ` +
+        "evidence of agreement, not correctness: everyone having the right bytes and everyone " +
+        "having lost the same bytes read identically to a peer-to-peer oracle",
     };
   }
 
   return {
     verdict: CONVERGENCE_VERDICT.CONVERGED,
     converged: true,
-    peersAgree: true,
+    peersAgree: agreement.agree,
+    peersAgreeOnRecords,
     matchesExpectation: true,
     peers: names,
     expectationOrigin: origin,
     clauses,
     violations,
     reason:
-      `all ${names.length} peers agree, and the agreed state satisfies every clause of the ` +
-      `expectation stated by '${origin}'`,
+      `all ${names.length} peers agree on the ${agreedOn}, and the agreed state satisfies every ` +
+      `clause of the expectation stated by '${origin}'`,
   };
 }
 

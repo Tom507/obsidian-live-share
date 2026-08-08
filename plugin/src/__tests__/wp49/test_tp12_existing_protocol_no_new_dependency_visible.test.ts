@@ -49,6 +49,13 @@ const ALLOWED_IMPORTS = new Set([
   "yjs",
   "../canvas/canvas-binding",
   "../utils",
+  // §7 AMENDMENT (WP123, ledger entry A-123-4). The convergence oracle's records
+  // clause reads a `.canvas` with THE PRODUCTION PARSER (`parseCanvasReport` +
+  // `decodeCanvasDataToFlat`). The alternative is a second `.canvas` parser
+  // living inside the rig, which is the defect class this freeze exists to
+  // prevent, one file over. No new PACKAGE dependency and no new transport: the
+  // two assertions either side of this list are untouched.
+  "../files/canvas-sync",
 ]);
 
 const FORBIDDEN_TRANSPORTS = ["ws", "socket.io", "node:net", "node:tls", "node:dgram", "express"];

@@ -36,6 +36,13 @@ const ALLOWED_IMPORTS = new Set([
   "yjs",
   "../canvas/canvas-binding",
   "../utils",
+  // §7 AMENDMENT (WP123, ledger entry A-123-5) — the SAME entry as the one added
+  // to `wp49/test_tp12_…`'s copy of this list, and it must stay in step with it.
+  // The convergence oracle's records clause reads a `.canvas` with the
+  // PRODUCTION parser rather than a second one inside the rig. No new package
+  // dependency, no new transport, no canvas module made aware of the rig — the
+  // four assertions below are untouched and still green.
+  "../files/canvas-sync",
 ]);
 
 const CANVAS_MODULES = [
