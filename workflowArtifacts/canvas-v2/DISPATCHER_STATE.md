@@ -15,8 +15,8 @@ it. Nothing was carried over that could not be re-verified.
 | | |
 |---|---|
 | Branch | `fix-bugs-and-raceconditions` |
-| **Gate** (Dispatcher-measured, **quiet tree**, at WP120 / `aee4bb7`) | **3275 tests · 429 files · 0 failed · `tsc` 0 · `npm run build` 0 · register exit 0 with its control proved.** Re-measured by the Dispatcher after WP120's worker left the tree, not quoted from it — the worker's own figure was identical. Arithmetic checks: 3260/428 + 15 rows in 1 new file. |
-| Previous gate, for the arithmetic | **3260 tests · 428 files** at `488cf3a`. **One earlier run showed 1 failure and it is UNATTRIBUTED**: it overlapped a tester's final cleanup, the name was not captured, and later runs were clean. Kept rather than dismissed. |
+| **Gate** (Dispatcher-measured, **quiet tree**, at WP124 / `68debdc`) | **3375 tests · 444 files · `tsc` 0 · `npm run build` 0 · `pytest tools/e2e/test_ls_records.py` 38 passed · register exit 0 with its control proved.** Re-measured after each worker left, never quoted. **Read the caveat in the next row — this figure is not "0 failed" unconditionally.** |
+| ⚠ **The gate is INTERMITTENT, and it is now attributed — `S181`** | Two consecutive Dispatcher runs on a byte-identical quiet tree: **run 1 = 444/3375/0, run 2 = `1 failed \| 443 passed`.** The failure is `wp101/test_s123_canvas_mirror_race.test.ts:313`, *"re-arms exactly once… over 60 runs"* — **`Error: Test timed out in 5000ms`, not an assertion failure** — and the same test **passes in 1.4 s run alone**. It fails on contention. **This is very probably the earlier UNATTRIBUTED failure at `488cf3a`**, which was recorded but never named. **Do not read a single green run as proof, and never pipe a gate run through `tail` before you know it passed** — that is exactly how WP124's implementor lost the name. |
 | Deployed rig build | `d30f671979efaeb5` — **contains WP119**, verified live in all three renderers by code inspection (`pluginBuild` reads `0.6.1+e2e` on every build and proves nothing) |
 | Relay | redeployed 2026-08-08 for `S169`; `canvas-create-request` accepted |
 
@@ -258,12 +258,28 @@ a latency test.
   so a clause-only row **would have passed on the broken build**; `degraded` is load-bearing on the
   *agreement* side only.
 
-**Blocked, and needs the owner**
+- **WP124 — the live driver sends a records expectation. LANDED** in `ecad013` / `68debdc`. **`S179` is
+  closed at the driver.** `tools/e2e/ls_records.py` builds the clause, posts it over `convergence.judge`, and
+  returns green **only** when the row came back `stated:true/satisfied:true` **and** `peersAgreeOnRecords` is
+  true. Measured against the shipped oracle: three spellings of one board (132/102/118 B) → `peersAgree`
+  **false**, `peersAgreeOnRecords` **true**, green. **Purely additive — 5 new files, nothing modified.**
+  **It corrected my premise and did not need an escalation to do it:** `grep -rn "convergence|peersAgree|judge"
+  tools/ --include=*.py` returns **zero** — no repo-tracked driver has *ever* called `convergence.judge`. The
+  one that does is `H:\tmp\w4d_lib.py`, **untracked and re-typed every round**. So *"teach the drivers"* could
+  not mean editing the closed round scripts; it meant landing the capability in the repo, tested.
+  **The load-bearing break (BK1):** with the rig ignoring a stated `records` expectation, it **still returns
+  `converged: true`** — so a driver that merely *sent* the clause and read `converged` would have passed and
+  measured nothing. 18 of 38 rows red under that plant.
 
-- **`S179` — `S174` is closed at the RIG and still OPEN at the DRIVER.** `tools/e2e/*.py` sends no `records`
-  expectation, so **the oracle can now judge geometry and no live run does.** Small to close; **must be
-  closed before W4 validates WP120/121/122**, or those three land on the same hand-parsing that produced
-  `S158`.
+**Ready for live validation — needs the owner's go-ahead**
+
+- Everything above is **headless-green and never run in a real vault.** W4 is not dispatched and nothing has
+  touched ports 39431/39432/39433 this whole run.
+- **W4's standing instruction from WP124:** log `records_line(...)` for every canvas round and **grep it for
+  `NOT_JUDGED` before believing any green** — that string means the installed bundle predates WP123, i.e. a
+  **deploy** finding, not a product one.
+- **Still needs a human eye even now:** edges (invisible to the clause), unnamed fields (invisible), and
+  `origin` (still a discipline, not a proof).
 - **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
   in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
   copies are the owner's and were deliberately left untouched.**
