@@ -1,7 +1,7 @@
 # ImplementationReport WP113 — a failure that reports nothing lasts forever
 
 **Signals:** S143 (A) · S144 (B) · S157 (C) · **Branch:** `fix-bugs-and-raceconditions`
-**Base:** `7c029f2`, clean tree · **Worker:** 3i, sole occupant of this tree
+**Base:** `7c029f2`, clean tree · **Commit:** `31f7e26` · **Worker:** 3i, sole occupant of this tree
 **Signals allocated:** none. Every finding below is prose.
 
 ---
@@ -237,7 +237,7 @@ quietly fixed, because a break that reddens nothing is the report's most useful 
 |---|---|
 | `npx tsc --noEmit` | **exit 0** |
 | `npx vitest run`, pre-commit | **3183 passed / 1 failed · 421 files** — the single failure is **`S153`** |
-| `npx vitest run`, post-commit | **[3184 / 3184 · 421 files, 0 failed]** |
+| `npx vitest run`, post-commit | **[3184 / 3184 tests · 421 / 421 files · 0 failed]** — measured at `31f7e26` |
 | baseline (Dispatcher, `7c029f2`) | 3156 / 418 |
 | net | **+28 tests, +3 files** (all WP113) |
 | `check_signal_register.py` | **exit 0** — `clean - no NEW violations` |
