@@ -220,11 +220,35 @@ a latency test.
   the **entire** flush, so the guard needed a **branch skip, not an id exclusion** — an exclusion would have
   been a second rule free to drift. **Its residual is now `S176`** and it is the important half.
 
-**Chartered and committed, ready to dispatch**
+- **WP122 — a file with no writer cannot converge. LANDED** in `4a03ac7` / `93c079f`. The host now binds a
+  writer for the boards it created. **`S170` is CLOSED** — `armCanvasMirrorPass()` at the create result, with
+  `manifestWrites` exactly `["publish:…"]` before and after, so it arms without a manifest write.
+  **Arm (a) was built, and the choice is measured rather than asserted:** `coldOpen` is the **only** caller of
+  both `hydrateDurableRefusals` (WP90) and `preserveRecordsTheDocDoesNotKnow` (WP121), and `start()` installs
+  the observer regardless — so **(b) does not avoid the overwrite, it postpones it to the first remote delta
+  and strips both guards off it.** `test_tp05` composes arm (b) out of the real `CanvasPersistence` purely to
+  price it: same bytes land, `door.read` never called, **zero** conflict copies, the record gone.
+  **Safety demonstration measured, not assumed** (`tp03c`): doc `["g1","h1"]` vs disk `["f9","h1"]` → after
+  the bind the canvas holds `["g1","h1"]` and exactly one conflict copy holds `["f9","h1"]`; the control with
+  the door unwired loses `f9` with zero copies.
+  → **Headless only. Not live-validated. Nothing has been near the three vaults.**
+- **⚠ WP122 found that BOTH `main.ts` wiring hunks could be DELETED with the entire suite green** — the fix
+  absent from the product and every gate reporting success. Closed inside the package by a `tp06` source
+  census with `S53`'s two-half control. Recorded here because it is another instance of the run's dominant
+  defect class, and because it landed on *wiring*, which nothing else covers.
+- **The charter's own §5 plant does not fail the way it claimed**, and the implementor said so:
+  `attachCanvasWriter` early-returns without a doc handle and only the subscribe creates one, so a hoisted
+  attach attaches *nothing* rather than flushing. The destruction is real only on the mid-session
+  `isSubscribed` path — which is where WP121's guard was demonstrated firing, with a positive control.
 
-- **WP122 — a file with no writer cannot converge** (bind the writer on the host's own creates: R1+R2, plus
-  R5's one-line `armCanvasMirrorPass()`, which is the whole of `S170`). **Its precondition is now met.**
-  Its cold-open fork is the implementor's to pick, on the owner's condition — see the rulings below.
+**Blocked, and needs the owner**
+
+- **`S178` — the oracle's `records` clause could not be built**, so `S174` stays open and the convergence
+  oracle **still cannot judge geometry**. Two pins forced it, and the charter named the wrong one. Needs its
+  own package; must not be resolved by weakening a pin (`S162`'s shape).
+- **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
+  in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
+  copies are the owner's and were deliberately left untouched.**
 
 **Owner decisions taken 2026-08-08, and they override any inference**
 
@@ -261,7 +285,7 @@ a latency test.
 
 **Signal register:** `SIGNAL_REGISTER.md` is the allocation authority; the Dispatcher allocates.
 
-**Next free is S177.** <!-- signal-register: meta -->
+**Next free is S179.** <!-- signal-register: meta -->
 
 `NEXT_FREE` is hardcoded in `check_signal_register.py` **as well as** in the register — bump both or the
 checker fails every new allocation.
