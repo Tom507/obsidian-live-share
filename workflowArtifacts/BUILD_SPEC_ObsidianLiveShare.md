@@ -274,6 +274,32 @@ Requirements on the implementation:
    replaced by an adopt path.
 5. Import is explicitly in scope — the owner named *"new or imported"* canvases together.
 
+### `canvas-presence.ts` - the byte-unchanged pin is LIFTED for one repair - owner decision 2026-08-08
+
+**WP21 AC2 requires `canvas-presence.ts` byte-unchanged, enforced by a live SHA-256 pin, and the quality
+gates make any modification an automatic ESCALATE.** WP119 hit that gate: it built the presence-lock
+lifetime repair, measured it green over six rows, and then **reverted its own working fix** rather than
+break the pin. That was the correct behaviour and it is why this decision exists.
+
+**The owner has authorised the change.** The scope is exactly one repair:
+
+- **Authorised:** giving presence locks a lifetime - origin-tagged claims with idle expiry, swept on the
+  awareness change *before* `reconcileClaims`, with an injected clock. This is what makes the behaviour
+  self-heal again; without it a claim taken for every node a capture touches is never released.
+- **NOT authorised:** anything else in that file. The pin exists because this module is load-bearing for
+  `I11` and for the single-writer rule.
+
+**The pin must be RE-ESTABLISHED, not removed.** Update the digest to the new content in the same commit,
+so the guard keeps doing its job for the next change. **A pin deleted to make a change pass is a guard that
+silently stops guarding** - which is the `S162` shape, and this initiative has already been bitten by a test
+that pinned a defect.
+
+**Also settled by WP119, and it changes what the presence system is for:** the loser-revert's stated
+justification - that the lock seam denies the loser's edit so it never reaches the document - **has been
+false since WP21**, which *removed* the gate rather than rewriting it. `canWriteNode` / `canDeleteNode`
+have no production consumer. **The loser's edit does reach the document.** Whether a loser-revert should
+exist at all is therefore an open question for the canvas convergence remodel, not a settled design.
+
 ### Full convergence is PRIORITY 1 - owner decision 2026-08-08
 
 **Every peer's file must always be fully in sync. This outranks everything else in this document.**
