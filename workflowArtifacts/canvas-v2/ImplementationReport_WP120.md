@@ -291,8 +291,10 @@ From `plugin/`:
 | after adding this report | 246 | exit 1, **3** keys: `ImplementationReport_WP120.md` **(mine)** + `TaskCharter_WP121_…` + `TaskCharter_WP122_…` |
 | after marking my line `<!-- signal-register: meta -->` | 246 | exit 1, **2** keys — **`TaskCharter_WP121_WinningIsNotALicenceToDiscard.md:267` and `TaskCharter_WP122_AFileWithNoWriterCannotConverge.md:326`, both bare `S175`** |
 
-Those two charters are **untracked files the Dispatcher wrote into the shared tree while I was working**
-(`git status`: `?? …WP121…`, `?? …WP122…`). Neither is mine, neither is staged by me, and both are the
+Those two charters are **files the Dispatcher wrote into the shared tree while I was working** — untracked
+when I first measured, and committed by the Dispatcher as `e6909ee` shortly afterwards, one commit before
+mine. The checker still reports them at `HEAD` after my commit (fourth measurement, same two keys).
+Neither is mine, neither is staged by me, and both are the
 exact recurring form `SIGNAL_REGISTER.md` §5 documents — *"next free is S<n>"* without the meta marker,
 which §5 records as having caught the Dispatcher three times already. **Attribution is by the instrument's
 own per-file output, not by assumption:** zero violation keys name any file I touched. Adding the marker
@@ -334,7 +336,7 @@ reclaim defer, lowest-clientID tiebreak over three holders) are untouched and st
 authority without leaving the file. Both halves were proved still live: **B10** (one byte, caught on size)
 and **B9** (byte-length identical, caught on SHA).
 
-**Commit:** `__COMMIT_SHA__` — the digest change lands in the same commit as the source change it covers.
+**Commit:** `3befded` — the digest change lands in the same commit as the source change it covers.
 
 ---
 
