@@ -271,15 +271,46 @@ a latency test.
   `converged: true`** — so a driver that merely *sent* the clause and read `converged` would have passed and
   measured nothing. 18 of 38 rows red under that plant.
 
-**Ready for live validation — needs the owner's go-ahead**
+**B65 — LIVE VALIDATION, owner-authorised, three real vaults. VALIDATION_PASS on four of five.**
 
-- Everything above is **headless-green and never run in a real vault.** W4 is not dispatched and nothing has
-  touched ports 39431/39432/39433 this whole run.
-- **W4's standing instruction from WP124:** log `records_line(...)` for every canvas round and **grep it for
-  `NOT_JUDGED` before believing any green** — that string means the installed bundle predates WP123, i.e. a
-  **deploy** finding, not a product one.
-- **Still needs a human eye even now:** edges (invisible to the clause), unnamed fields (invisible), and
-  `origin` (still a discipline, not a proof).
+Build under test `de48fff4e9f7d58d`, installed on A, B and C. **Start sha `d30f671979efaeb5` → end sha
+`de48fff4e9f7d58d` on all three, and the Dispatcher re-read all three itself** rather than quoting the
+tester. No drift, so the run is valid.
+
+- **WP122 — CONFIRMED LIVE, and the owner's symptom is GONE.** Host-created canvas, host's board **closed**,
+  guest moves a card → **the host's own file at 2.03 s.** Baseline was **never**.
+  **Proved by A/B on one variable:** the same board, same gesture, host's bundle swapped back to
+  `d30f671979efaeb5` → host's file **byte-unchanged after 240.81 s** while both guests held the new value.
+  No manifest pass ran during either wait — `manifest.lastChange` counters identical before and after, so
+  this is not the old manifest-poke path in disguise.
+- **`S170` — CLOSED LIVE.** Originator adopted in **2.03 s** with **no unrelated file created**.
+- **WP120 — CONFIRMED LIVE.** Claims **5 → 0** on a single awareness change after 22 s idle. 10-minute /
+  49-round soak on an 11-node board ends **A=2 B=0 C=3, max 4, and the count falls repeatedly.**
+  Baseline: **14 and 15, never fell.** A re-touched claim survived **37 s** — A3 holds, nothing was expired
+  out from under a working user.
+- **WP123 + WP124 — CONFIRMED LIVE**, first real use of `ls_records.py`. **Zero `NOT_JUDGED` on the build
+  under test; EVERY round `NOT_JUDGED` through a pre-WP123 peer.** The deploy detector fired in the wild,
+  which is the only way to know it was ever load-bearing.
+- **WP121 — NOT DEMONSTRATED LIVE, and not refuted → `S184`.** The guard is wired and ran on every canvas
+  cold open, always `discarded=0`. The discard state could not be manufactured from outside the product.
+  **Recorded as untested live, not as safe.**
+
+**`S176` now has a number.** `getCanvasGuid == null` in **12/30 (40 %)** at rest on a cold cache — guests
+only, canvases untouched that session, manifest never null — and **0/30 (0 %) immediately after an attach**,
+which is where `main.ts:3730` actually reads it. **Tester's own caveat, kept:** nothing logs the value passed
+at each historical attach, so this is a census of the same expression, not a call-site log.
+
+**Five new signals from B65: `S182`–`S186`.** `S182` is the one that matters — the guest→guest mirror of the
+defect WP122 just fixed, and it was **invisible until the record oracle existed**.
+
+**Disclosed, unsoftened, and NOT the withdrawn 318-node claim:** ARM 4 opened every shared canvas on every
+peer, and the attach's `doc-wins` cold open **rewrote seven pre-existing boards on vault A** (`smoke.canvas`
+2 938 → 2 345 B, plus six). Re-parsed field by field on all three peers: **records identical on every one** —
+whitespace only, the third spelling, produced live by nothing but opening a board. Nothing restored, per the
+playground ruling. Filed as `S185`.
+
+**Rig left clean:** all 6 artefacts deleted (`b65-*` → `[]`), `.pre-v2-smoke` residue `[]` on all three,
+`data.json` never read as content.
 - **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
   in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
   copies are the owner's and were deliberately left untouched.**
