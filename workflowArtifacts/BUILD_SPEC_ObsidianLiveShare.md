@@ -237,9 +237,11 @@ manifest, including its own.** Three doors close at once and none of them is ind
 
 | Door | Refusal | Deliberate |
 |---|---|---|
-| manifest `updateFile` | `role === "host"` | yes — the host is the only manifest writer |
+| manifest write | **at the CALL SITES in `vault-events.ts`, not in `updateFile`** | yes — the host is the only manifest writer, **but see the correction below** |
 | content push | `skipsAutoTextSync` | yes — WP83; raw character-merge corrupts a canvas |
 | **guid mint** | `role !== "host" → null` | **this is the owner of the hole** |
+
+**⚠ CORRECTION (WP117, 2026-08-08), measured and pinned.** This table previously said the manifest door is `updateFile`'s own `role === "host"` test. **`ManifestManager.updateFile` has no role test at all** — it checks only `this.manifest` and `isSharedPath`. A guest's `updateFile`, called directly, lands the entry; that was measured, not reasoned about. **The invariant still holds** because no guest *calls* it — the gate is one layer further out, at the call sites. **This matters for anyone adding a new caller**, and host-mediated creation adds exactly one (on the host). A test now pins the correction so it cannot go stale.
 
 Without a guid the guest opens no canvas document at all, so its canvas has no CRDT identity, no manifest
 entry, and the mirror pass cannot see the path.
