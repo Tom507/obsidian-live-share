@@ -232,7 +232,7 @@ is **`S85` by name**: a fixed `sleep` used as a settle, so under load the re-cla
 assertion runs. It is the register's own example of the class and it touches nothing this package changed.
 
 `check_signal_register.py` exits **1** on exactly one new violation key:
-`UNKNOWN  ImplementationReport_WP110.md  S141  0 -> 1  (line 315)` — **the sibling's report citing the
+`UNKNOWN  ImplementationReport_WP110.md  S141  0 -> 1  (line 315)` <!-- signal-register: meta --> — **the sibling's report citing the
 next-free number**, which is §5's canonical trap and needs their `<!-- signal-register: meta -->` marker.
 Nothing under WP109 is named. I did not edit their file.
 

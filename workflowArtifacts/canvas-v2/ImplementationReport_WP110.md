@@ -234,7 +234,7 @@ W4's scope. Nothing in the unit evidence bears on it.
 | **after**, my last change | **410** | **3057** | 9, see below | clean | **exit 1 — not mine**, see below |
 
 **The register check exits 1 on a citation in the SIBLING's committed report**, not on anything in this
-package: `UNKNOWN ImplementationReport_WP109.md S141 (line 235)` — a bare "next free is S141" that needs the
+package: `UNKNOWN ImplementationReport_WP109.md S141 (line 235)` <!-- signal-register: meta --> — a bare "next free is S141" that needs the
 `<!-- signal-register: meta -->` marker §5 prescribes. This report's own equivalent line carries the marker
 and the checker accepts it. **I did not edit W3c's committed artefact**; the fix is one marker on one line
 and belongs to whoever owns that file. It exited **0** immediately before that commit landed.
