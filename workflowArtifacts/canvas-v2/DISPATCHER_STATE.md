@@ -15,7 +15,8 @@ it. Nothing was carried over that could not be re-verified.
 | | |
 |---|---|
 | Branch | `fix-bugs-and-raceconditions` |
-| **Gate** (Dispatcher-measured, **quiet tree**, at `488cf3a`) | **3260 tests · 428 files · 0 failed · `tsc` clean · register exit 0** — two consecutive clean runs with exit 0. **One earlier run showed 1 failure and it is UNATTRIBUTED**: it overlapped a tester's final cleanup, the name was not captured, and three later runs were clean. Recorded rather than dismissed. |
+| **Gate** (Dispatcher-measured, **quiet tree**, at WP120 / `aee4bb7`) | **3275 tests · 429 files · 0 failed · `tsc` 0 · `npm run build` 0 · register exit 0 with its control proved.** Re-measured by the Dispatcher after WP120's worker left the tree, not quoted from it — the worker's own figure was identical. Arithmetic checks: 3260/428 + 15 rows in 1 new file. |
+| Previous gate, for the arithmetic | **3260 tests · 428 files** at `488cf3a`. **One earlier run showed 1 failure and it is UNATTRIBUTED**: it overlapped a tester's final cleanup, the name was not captured, and later runs were clean. Kept rather than dismissed. |
 | Deployed rig build | `d30f671979efaeb5` — **contains WP119**, verified live in all three renderers by code inspection (`pluginBuild` reads `0.6.1+e2e` on every build and proves nothing) |
 | Relay | redeployed 2026-08-08 for `S169`; `canvas-create-request` accepted |
 
@@ -187,19 +188,49 @@ a latency test.
 
 - Nothing. The tree is quiet and the rig is idle.
 
-**Ready to dispatch on the owner's word**
+**Headless-done, NOT live-validated — W4 has not exercised any of this**
 
-- **WP120 — a presence lock needs a lifetime.** Owner-authorised; charter written; the design already exists and measured green in WP119 §4; baseline numbers measured live (14 and 15 claims on an 11-node board). **Not dispatched** — the owner asked to be prompted before decisions.
+- **WP120 — a presence lock needs a lifetime. LANDED** in `3befded` / `aee4bb7`. WP119 §4's reverted design
+  recovered and agreed with, plus four A3-protective additions; the load-bearing one is that
+  `onReconnect`/`reclaimStillFreeNodes` now carry each claim's **origin** across the withhold — without it a
+  claim the user is physically holding comes back expirable. Only `canvas-presence.ts` changed in production;
+  `main.ts` byte-unchanged. **Pin re-established, not deleted**, and the Dispatcher verified the digest
+  against the committed blob rather than quoting it: 29 831 LF bytes, sha256 `2cefc9a8…16c9`, proved
+  discriminating by a one-byte plant (caught on size) and a byte-length-**identical** plant (caught on SHA).
+  11-row break table including the charter's mandated mid-gesture plant.
+  → **Per §7, a green headless suite is a precondition, not a completion. WP120 is not done until W4 runs it.**
 
-**Needs an owner decision before it can be chartered**
+**Chartered and committed, ready to dispatch in this order**
 
-- **The canvas convergence remodel.** `WP79`'s *"a host's file is never rewritten by a pass"* collides head
-  on with the priority-1 ruling. At least three ways out: let the host's file follow like any peer; keep
-  the pass hands-off and guarantee convergence through the live writer; or canonicalise serialisation
-  everywhere so all copies match at birth. **Different blast radii — the owner picks.**
-  Second question with it: **canvas only, or the general file-sync model.**
-  Sequencing note: **a conflict copy for the canvas `doc-wins` path should land with or before the writer
-  attach**, since attaching writers to already-divergent boards exercises that path on all of them at once.
+1. **WP121 — winning is not a licence to discard** (the conflict copy under the canvas `doc-wins` arm).
+   **Hard precondition for WP122**, not merely a safety net — see the correction below.
+2. **WP122 — a file with no writer cannot converge** (bind the writer on the host's own creates: R1+R2, plus
+   R5's one-line `armCanvasMirrorPass()`, which is the whole of `S170`).
+
+**Owner decisions taken 2026-08-08, and they override any inference**
+
+- **The canvas convergence remodel: the NARROW option.** Bind the writer on the host's own creates. The broad
+  *"the host's file follows like any peer"* reading was **declined**, as was canonicalise-everywhere.
+- **Canvas only.** The second question — canvas-only vs the general file-sync model — was **deferred**, so
+  both charters are scoped to `.canvas`. `.md` is measured unaffected (first poll, 0.00 s).
+- **WP122's cold-open fork is delegated to the implementer, on condition.** (a) attach-and-flush vs
+  (b) attach with the cold open suppressed: W3 picks, but the decision must arrive **argued and broken** —
+  the reason, a break table for the arm built, and what it expects would have gone wrong had it built the
+  other. If (a), the exact WP79 AC4 re-wording comes back for the **owner** to approve at handover.
+
+**Two corrections the Dispatcher had to make against its own claims (see §6)**
+
+- **The investigation's §5 R1 safety argument is WRONG.** *"`PUBLISH` already seeds the doc from the host's
+  file, so an attach is a no-op and WP79 AC4 survives literally"* — verified false in the product source:
+  `attachCanvasPersistence` (`canvas-persistence.ts:974`) calls `coldOpen()` **unconditionally**, and
+  `coldOpen` on `docNonEmpty` runs `flush()` (`:613-620`, *"overwrite the (possibly stale) file so disk
+  matches shared truth"*). The host arm only runs when `localFileExists`, so `docNonEmpty` is true
+  essentially always. **A plain attach rewrites the host's file.** The host seed is also a **merge, not a
+  replace** (`canvas-sync.ts:4495-4499`), so `doc == file` is a special case, not the general one.
+- **The Dispatcher briefed both workers on the WITHDRAWN 318-node destruction** as *"the only demonstrated
+  data-loss route in the project"*, having read §6's retraction earlier in the same session. The
+  investigation predates the retraction; the Dispatcher did not. WP121's justification is now the honest one:
+  WP122 makes an **unmeasured** loss path reachable **by design**, on every already-divergent board at once.
 
 **Then, in order**
 

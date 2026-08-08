@@ -264,7 +264,7 @@ then `check_signal_register.py`, exit 0.
 4. **The gate figure you measured yourself**, with the tree state it was taken on.
 5. **Correct this charter if it is wrong.** Eight workers in a row have corrected the premise handed to them and
    every one of them was right. §0 is itself a correction of the brief that produced this file.
-6. **Signal numbers: next free is S175, and you allocate none.** Describe findings in prose; the Dispatcher
-   numbers them in `SIGNAL_REGISTER.md`. <!-- signal-register: meta -->
+6. **Signal numbers: next free is S175, and you allocate none.** <!-- signal-register: meta -->
+   Describe findings in prose; the Dispatcher numbers them in `SIGNAL_REGISTER.md`.
 </content>
 </invoke>

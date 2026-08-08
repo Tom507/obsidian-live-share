@@ -332,6 +332,6 @@ then `check_signal_register.py`, exit 0.
 6. **The gate figure you measured yourself**, with the tree state.
 7. **Correct this charter if it is wrong.** §2 is itself a correction of the investigation this package is built
    from.
-8. **Signal numbers: next free is S175, and you allocate none.** Describe findings in prose; the Dispatcher
-   numbers them in `SIGNAL_REGISTER.md`. <!-- signal-register: meta -->
+8. **Signal numbers: next free is S175, and you allocate none.** <!-- signal-register: meta -->
+   Describe findings in prose; the Dispatcher numbers them in `SIGNAL_REGISTER.md`.
 </content>
