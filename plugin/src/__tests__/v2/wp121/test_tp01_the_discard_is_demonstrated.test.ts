@@ -1,9 +1,11 @@
 // WP121 A1 — DEMONSTRATE THE LOSS BEFORE YOU REPAIR IT.
 //
 // The project did NOT have a demonstrated instance of this loss. The charter's
-// §0 withdraws the one it was written from (the "318 nodes" figure is our own
-// test spam, `DISPATCHER_STATE.md` §6), and §4 files the path under "traced in
-// code, NOT measured". This file is the measurement.
+// §0 WITHDRAWS the node-destruction figure it was written from — that snapshot
+// was our own test spam and the board is healthy (`DISPATCHER_STATE.md` §6) —
+// and §4 files this path under "traced in code, NOT measured". This file is the
+// measurement, produced rather than cited. The withdrawn figure is deliberately
+// not restated here, in any name, or in any comment.
 //
 // It drives the REAL `CanvasPersistence` over a REAL `Y.Doc` through the REAL
 // `attachCanvasPersistence` entry point. There is no double for `flush` and none
