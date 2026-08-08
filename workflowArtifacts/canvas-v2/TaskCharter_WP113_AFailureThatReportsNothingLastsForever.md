@@ -2,8 +2,8 @@
 
 **Signals:** S143 · S144 · S157 · **Worker:** fresh context · **Branch:** `fix-bugs-and-raceconditions`
 
-Both packages are failures the product **survives into a wrong steady state** because nothing records that
-they happened.
+All three packages are failures the product **survives into a wrong steady state** because nothing records
+that they happened.
 
 > **DISPATCHER NOTE -- THIS CHARTER WAS WRITTEN BEFORE THREE PACKAGES LANDED, AND THEY CHANGED ITS SUBJECT.
 > Re-establish the facts before trusting anything below.**
@@ -104,19 +104,22 @@ folding it in.
 
 ---
 
-## Both packages
+## All three packages
 
 **Falsifiability (Dispatcher Rule 11):** a break table per fix — plant, RED **for the right reason**,
 restore byte-identically by copy-aside, GREEN. Zero `.pre-v2-smoke` files at the end.
 
 **Gate:** full `vitest` + `tsc` clean, bracketed, and `check_signal_register.py` exit 0. Baseline is
-**3057 tests / 410 files**, measured on a quiet tree.
+**3156 tests / 418 files**, measured by the Dispatcher on a quiet tree at `c6cd35e`.
+**You are the only worker in this tree, so a failure you see is REAL** (`S146`). **`S153` is confirmed in both
+directions:** WP92's `no_collateral` asserts a file is absent from `git diff HEAD`, so it goes red while your
+work is uncommitted and green the moment you commit, unchanged. **Do not edit another package's test.**
 ⚠ `NEXT_FREE` is hardcoded at `check_signal_register.py:53` **and** in the register; that coupling is
 recorded and is not yours to fix.
 
 **Method rules:**
 
-1. **No partial test doubles** — five packages lost to them so far. Drive the real object or state exactly
+1. **No partial test doubles** — **six** packages lost to them so far. Drive the real object or state exactly
    which paths your double does not exercise.
 2. **Demonstrated beats argued.** The executed exit, the observed absence of an observer, the measured
    silence.
@@ -128,7 +131,8 @@ recorded and is not yours to fix.
 
 **Hard constraints:**
 
-- **Do not rebuild or deploy, and do not touch the vaults** — the live rig belongs to the validation round.
+- **Do not rebuild or deploy, and do not touch the vaults** — the rig stays on build `1ddad2155341adbd`
+  for the next live round.
 - **Never `npx biome check --write`.** Never commit to a default branch. **Explicit path staging only.**
 - `ARCHITECTURE.md`, `README.md`, `docs/security.md`, deleted `USER_STORIES.md` are the **owner's**.
 - **`data.json` holds live credentials** — never print, log, echo or fixture a value.
