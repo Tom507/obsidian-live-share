@@ -779,6 +779,10 @@ export interface E2EControlHost {
   emptyWriteRefusals?(): unknown;
   /** S125 AC10 — conflict copies written, by arm. */
   conflictCopies?(): unknown;
+  /** S141 — the PUBLISH floor's ledger: what this peer refused to SAY about a file. */
+  attestationDecisions?(): unknown;
+  /** S142 — writes declined because the editor owns that file's disk copy. */
+  singleWriterDeclines?(): unknown;
   /** S123 AC5 — the last canvas mirror pass's per-path verdicts. */
   canvasMirror?(): unknown;
   /** S129 AC5 — paths this peer refused to bind to an unproven-empty document. */
@@ -1177,6 +1181,22 @@ export async function routeCommand(
         }
         return ok(host.emptyWriteRefusals());
       }
+      // S141 — what this peer refused to PUBLISH, as distinct from what it
+      // refused to write. The empty-write floor above protects this peer's own
+      // disk; this one protects everybody else's.
+      case "sync.attestationDecisions": {
+        if (typeof host.attestationDecisions !== "function") {
+          throw new Error("sync.attestationDecisions unavailable on this host");
+        }
+        return ok(host.attestationDecisions());
+      }
+      // S142 — writes declined because the editor owns that file's disk copy.
+      case "sync.singleWriterDeclines": {
+        if (typeof host.singleWriterDeclines !== "function") {
+          throw new Error("sync.singleWriterDeclines unavailable on this host");
+        }
+        return ok(host.singleWriterDeclines());
+      }
       // --- `fileop.inject`, ADDITIVE ------------------------------------------
       //
       // ONE case and one optional host method, on the `link.break` /
@@ -1562,6 +1582,19 @@ export interface E2EPluginLike {
     failed: number;
     discarded: number;
   };
+  /**
+   * S141 — the attestation ledger. Every branch counted, both publishing ones
+   * included, so a zero can never be read as "the floor was never reached".
+   */
+  getAttestationDecisions?: () => {
+    total: number;
+    publishedNotEmpty: number;
+    publishedVerifiedEmpty: number;
+    refusedContradicted: number;
+    refusedUnverifiable: number;
+  };
+  /** S142 — the single-writer decline ledger, by `subscribe()` arm. */
+  getSingleWriterDeclines?: () => { total: number; byArm: Record<string, number> };
   /** S123 AC5 — the last canvas mirror report, or null if no pass has run. */
   getLastCanvasMirrorReport?: () => unknown;
   /** S129 AC5 — the collab bind refusal ledger. */
@@ -2371,6 +2404,24 @@ export function buildPluginHost(
         );
       }
       return plugin.getEmptyWriteRefusals();
+    },
+
+    attestationDecisions() {
+      if (typeof plugin.getAttestationDecisions !== "function") {
+        throw new Error(
+          "sync.attestationDecisions unavailable: this instance exposes no attestation ledger",
+        );
+      }
+      return plugin.getAttestationDecisions();
+    },
+
+    singleWriterDeclines() {
+      if (typeof plugin.getSingleWriterDeclines !== "function") {
+        throw new Error(
+          "sync.singleWriterDeclines unavailable: this instance exposes no single-writer ledger",
+        );
+      }
+      return plugin.getSingleWriterDeclines();
     },
 
     muteDrops() {

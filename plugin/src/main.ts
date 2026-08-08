@@ -37,12 +37,20 @@ import {
 } from "./canvas/canvas-editing-deferral";
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
+import {
+  type AttestationLedger,
+  getAttestationDecisions,
+} from "./files/attestation-guard";
 import { BackgroundSync } from "./files/background-sync";
 import {
   type ConflictCopyLedger,
   conflictsRootFor,
   getConflictCopies,
 } from "./files/conflict-copy";
+import {
+  type SingleWriterDeclines,
+  getSingleWriterDeclines,
+} from "./files/single-writer";
 import {
   getCollabBindFailures,
   getCollabBindRefusals,
@@ -1666,6 +1674,29 @@ export default class LiveSharePlugin extends Plugin {
    */
   getEmptyWriteRefusals(): { total: number; byArm: Record<string, number> } {
     return getEmptyWriteRefusals();
+  }
+
+  /**
+   * S141 — the PUBLISH floor's ledger. The write floor above answers "what did
+   * this peer refuse to write"; this one answers "what did this peer refuse to
+   * SAY", which is the half that turned out to be able to destroy a file on
+   * somebody else's disk.
+   *
+   * Every branch is counted, including both branches that publish, so a live
+   * reading can never be ambiguous between "the floor allowed it" and "the floor
+   * was never reached" — S155's lesson, in the ledger this package added.
+   */
+  getAttestationDecisions(): AttestationLedger {
+    return getAttestationDecisions();
+  }
+
+  /**
+   * S142 — the single-writer ledger. A declined write leaves no trace by
+   * construction: the file is unchanged, which is exactly what "the arm never
+   * ran" also looks like. Both `subscribe()` arms report here.
+   */
+  getSingleWriterDeclines(): SingleWriterDeclines {
+    return getSingleWriterDeclines();
   }
 
   /**

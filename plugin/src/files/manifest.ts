@@ -15,6 +15,7 @@ import {
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
+import { decideAttestation, noteAttestation } from "./attestation-guard";
 import { isSidecarPath } from "./canvas-sidecar";
 import {
   CONFLICT_PRESERVATION,
@@ -798,9 +799,90 @@ export class ManifestManager {
     this.manifest.observe(this.observer);
   }
 
+  /**
+   * S141 — how many units the NAMED FILE actually holds, or `null` when it
+   * cannot be read.
+   *
+   * Every failure mode collapses to `null` — a throw, a missing method, a vault
+   * double that does not implement the arm — and `null` REFUSES an empty
+   * attestation, so an unreadable file can never be attested empty. Only called
+   * when the attestation itself is empty, which is the one case where the
+   * answer can change a decision; the ordinary non-empty publication does no
+   * disk I/O at all.
+   */
+  private async attestedFileLength(
+    file: TFile,
+    binary: boolean,
+  ): Promise<number | null> {
+    try {
+      if (binary) {
+        const bytes = await this.vault.readBinary(file);
+        return typeof bytes?.byteLength === "number" ? bytes.byteLength : null;
+      }
+      const text = await this.vault.read(file);
+      return typeof text === "string" ? normalizeLineEndings(text).length : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * S141 — THE ATTESTATION FLOOR, AT THE FUNNEL EVERY PUBLISHER GOES THROUGH.
+   *
+   * This method is the manifest's single-entry publication path for one file's
+   * content: six call sites reach it (`setActiveFile`, `handleLocalTextModify`,
+   * two `vault-events` arms, two `control-handlers` arms). Five of them derive
+   * their content from the bytes they attest about; `setActiveFile` derived it
+   * from the CRDT DOCUMENT and published the result against the FILE, and the
+   * consumer's `hashContent(content) === entry.hash` test was then TRUE for `""`
+   * against `hash("")` — so the write was not empty-LOOKING to the S119 floor
+   * and every peer's copy was truncated to zero bytes.
+   *
+   * PLACED HERE RATHER THAN AT THE ONE BAD CALLER, deliberately. WP109 removed
+   * the producer it knew about and S141 was still left open, because **the path
+   * survives its producer**: any future caller that hands this method a length
+   * it did not read off the file re-opens the same hole. A floor at the funnel
+   * is the same discipline the WRITE path already has in `doWriteToDisk`, and it
+   * is the only shape that cannot be re-opened by a new call site.
+   *
+   * NOT a consumer fix. The guest's evidence test is not wrong — it is being
+   * told the truth about the wrong object, and hardening it would have made a
+   * legitimate emptying unsyncable (`S126`, the regression that cost this
+   * project a package the last time a floor was tightened at the reader).
+   *
+   * @returns `true` when the publication may proceed.
+   */
+  private async admitsAttestation(
+    file: TFile,
+    canonical: string,
+    attestedLength: number,
+    binary: boolean,
+  ): Promise<boolean> {
+    // The disk is consulted ONLY for an empty attestation. `decideAttestation`
+    // answers `PUBLISH_NOT_EMPTY` without reading `fileLength` at all, and a
+    // pure row pins that ordering so this short-circuit cannot silently become
+    // "every publish refuses".
+    const fileLength =
+      attestedLength > 0 ? null : await this.attestedFileLength(file, binary);
+    const verdict = decideAttestation({ attestedLength, fileLength });
+    // S155 — counted on EVERY branch, before any return. A ledger whose
+    // do-nothing case is silent makes "ran and allowed" and "was never called"
+    // the same reading, and that is the exact defect that cost WP115 a round.
+    noteAttestation(verdict, canonical, this.logger);
+    return !verdict.refused;
+  }
+
   async updateFile(file: TFile, content: string | ArrayBuffer): Promise<void> {
     if (!this.manifest || !this.isSharedPath(file.path)) return;
     const canonical = toCanonicalPath(normalizePath(file.path));
+    // S141 — the floor stands AHEAD of the parent-folder deletion below, not
+    // between it and the `set`. A refused publication must leave the manifest
+    // byte-unchanged; deleting the parent's directory entry and then declining
+    // to publish the file would announce an empty folder that has a file in it.
+    const binary = content instanceof ArrayBuffer;
+    const normalized = content instanceof ArrayBuffer ? "" : normalizeLineEndings(content);
+    const attestedLength = content instanceof ArrayBuffer ? content.byteLength : normalized.length;
+    if (!(await this.admitsAttestation(file, canonical, attestedLength, binary))) return;
     // Remove parent folder entry if it exists - folder is no longer empty
     const parentDir = canonical.substring(0, canonical.lastIndexOf("/"));
     if (parentDir && this.manifest.has(parentDir)) {
@@ -824,7 +906,9 @@ export class ManifestManager {
         ),
       );
     } else {
-      const normalized = normalizeLineEndings(content);
+      // Normalised ONCE, above, and the same value the floor judged — a second
+      // `normalizeLineEndings` here would let the published hash describe a
+      // string the floor never saw.
       this.manifest.set(
         canonical,
         carryGuid(

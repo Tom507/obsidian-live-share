@@ -31,6 +31,7 @@ import {
   noteProtectedRefusal,
   protectedRefusalMessage,
 } from "./protected-paths";
+import { noteSingleWriterDecline } from "./single-writer";
 import type { ManifestManager } from "./manifest";
 
 const DEBOUNCE_MS = 300;
@@ -336,6 +337,12 @@ export class BackgroundSync {
             // THE SINGLE-WRITER INVARIANT, unchanged and now explicit: the two
             // branches below both settle the file's DISK copy, and neither may
             // run for the file the editor owns.
+            //
+            // S142/S155 — AND NOW IT LEAVES A READING. WP109 made this an empty
+            // branch, which a test can point at but which no observer can
+            // distinguish from "the arm was never reached": both produce
+            // nothing at all, live and in a suite. See `single-writer.ts`.
+            noteSingleWriterDecline("subscribe-host", path, this.logger);
           } else if (remoteContent !== content) {
             // Remote has content (from guests or prior sync) - write remote to disk instead
             await this.writeToDisk(path, remoteContent);
@@ -370,7 +377,36 @@ export class BackgroundSync {
         const remoteContent = docHandle.text.toString();
         this.noteIfNonEmpty(path, remoteContent);
         const localContent = file ? normalizeLineEndings(await this.vault.read(file)) : "";
-        if (remoteContent !== localContent) {
+        if (remoteContent !== localContent && path === this.activeFile) {
+          // S142 — THE SINGLE-WRITER INVARIANT, IN THE ROLE THAT NEVER HAD IT.
+          //
+          // The host arm has stated this since WP109; the guest arm never has,
+          // and a guest's editor owns its disk copy exactly as a host's does.
+          // The write below is `adapter.write`, which goes straight past the
+          // `Vault` API and lands under an open editor's buffer. Measured on the
+          // real relay before this branch existed: a guest with the note open
+          // takes `adapter.write` on that very path during an ordinary
+          // mid-session `subscribe()`.
+          //
+          // PLACEMENT IS THE WHOLE OF S134'S LESSON. The invariant is about the
+          // DISK, so this stands immediately in front of the WRITE and not in
+          // front of the arm: `awaitSeed`, `noteIfNonEmpty` (S119's evidence)
+          // and the local read all still run for the active file, because none
+          // of them writes anything. The host's version of this guard used to
+          // sit one branch earlier, where it also killed SEEDING, and that is
+          // S134.
+          //
+          // `lastWrittenContent` IS DELIBERATELY NOT SET HERE — this is B3, and
+          // it is the whole convergence question. Recording the remote content
+          // as "already written" would make `writeToDisk`'s first line
+          // short-circuit the catch-up flush, and a guest that never switched
+          // away would keep a divergent disk copy for ever. Guests do not seed,
+          // so nothing else would repair it. The file converges the same way the
+          // host's active file does: the editor holds the document's content
+          // through yCollab, and `setActiveFile` flushes doc → disk the moment
+          // the user switches away.
+          noteSingleWriterDecline("subscribe-guest", path, this.logger);
+        } else if (remoteContent !== localContent) {
           // S148 — THE SECOND DOOR, and it had no lock at all.
           //
           // `S125` put a preservation seam in front of `syncFromManifest`'s
