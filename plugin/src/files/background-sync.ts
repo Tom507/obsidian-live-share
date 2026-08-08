@@ -20,11 +20,16 @@ import { isSidecarPath } from "./canvas-sidecar";
 import { yTextHeldContent } from "./ytext-history";
 import {
   EMPTY_WRITE_DECISION,
+  type EmptyWriteRefusalLogger,
   decideEmptyWrite,
   noteEmptyWriteRefusal,
 } from "./empty-write-guard";
 import type { FileOpsManager } from "./file-ops";
-import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
+import {
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "./protected-paths";
 import type { ManifestManager } from "./manifest";
 
 const DEBOUNCE_MS = 300;
@@ -96,6 +101,16 @@ export class BackgroundSync {
   private writeQueue: Promise<void> = Promise.resolve();
   private role: SessionRole = "host";
   private running = false;
+  /**
+   * S137 — the debug-log sink for this writer's REFUSALS.
+   *
+   * Null until `main.ts` wires it, and every use is `?.`-guarded, so a harness
+   * that constructs this class directly is unaffected. Wired AFTER the
+   * `DebugLogger` is assigned, never beside the constructor call — that is
+   * S104's lesson and it cost this project two signatures that were unreachable
+   * for its entire history.
+   */
+  private logger: EmptyWriteRefusalLogger | null = null;
 
   constructor(
     private vault: Vault,
@@ -103,6 +118,14 @@ export class BackgroundSync {
     private manifestManager: ManifestManager,
     private fileOpsManager: FileOpsManager,
   ) {}
+
+  /**
+   * S137 — wiring only. See {@link logger}: this must be called after the
+   * plugin's `DebugLogger` exists, not beside `new BackgroundSync(...)`.
+   */
+  setLogger(logger: EmptyWriteRefusalLogger | null): void {
+    this.logger = logger;
+  }
 
   isRunning(): boolean {
     return this.running;
@@ -549,7 +572,12 @@ export class BackgroundSync {
     // canvas paths out of this writer, and nothing under a protected root is a
     // shared text document.
     if (isProtectedPath(path)) {
+      // S137 (B2) — the SIBLING refusal, and it had the same defect: counted,
+      // never said. Four of the seven protected-path arms already emit the
+      // shared line; the three that did not were exactly the three modules that
+      // held no logger. Same emitter, same wording, no private idiom.
       noteProtectedRefusal("doc-write", path);
+      this.logger?.warn("file-op", protectedRefusalMessage("doc-write", path));
       return Promise.resolve();
     }
     if (this.lastWrittenContent.get(path) === content) return Promise.resolve();
@@ -618,8 +646,9 @@ export class BackgroundSync {
           evidenceLabel: "whether this document ever held content (CRDT tombstones)",
         });
         if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {
-          noteEmptyWriteRefusal("doc-write");
-          console.warn(`[live-share] empty-write refused for ${path}: ${verdict.reason}`);
+          // S137 — counted, LOGGED with the path and the arm, and still said on
+          // the console. One shared emitter; this arm has no private wording.
+          noteEmptyWriteRefusal("doc-write", path, verdict.reason, this.logger);
           return;
         }
       }

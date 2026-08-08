@@ -254,6 +254,7 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
       renamedPaths.add(oldPath);
 
       const prev = pendingRename ?? Promise.resolve();
+      const newPath = file.path;
       const task = prev.then(async () => {
         plugin.fileOpsManager.onFileRename(file, oldPath);
         plugin.backgroundSync.cancelSubscribe(oldPath);
@@ -272,8 +273,50 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
           plugin.onActiveFileChange();
         }
       });
-      pendingRename = task.finally(() => {
-        if (pendingRename === task) pendingRename = null;
+      // ------------------------------------------------------------- S135 ----
+      // THE CHAIN IS NOT ALLOWED TO DIE. This was `pendingRename =
+      // task.finally(...)` with no `catch` anywhere, and it is a permanent,
+      // silent, session-wide loss of the rename and delete channels.
+      //
+      // MEASURED, not argued: with the first task rejecting, three subsequent
+      // renames and one delete emitted NOTHING — one op instead of four — and
+      // the only trace was an unhandled rejection in the console. `prev.then(fn)`
+      // does not run `fn` when `prev` is rejected, so every later rename skipped
+      // `onFileRename` entirely (the op is never EMITTED, not refused), and the
+      // `delete` handler below chains on the same promise, so deletes went with
+      // them. Nothing counted it, nothing logged it, and nothing ever unwedged
+      // it: `pendingRename` is only cleared by the `finally` of the task that
+      // owns it, and a rejected chain keeps handing its rejection forward.
+      //
+      // The `catch` is placed on the value STORED IN `pendingRename`, not on
+      // `task` itself, so the chain the next event builds on is always a settled
+      // fulfilled promise. `renamedPaths.delete` already ran in the `finally`
+      // either way; what changes is only that the next `.then` fires.
+      //
+      // CONTAINED, NOT SWALLOWED (I11 / the S105 lesson): the failure is logged
+      // with BOTH endpoints and the error, and counted on the manager's ledger,
+      // because "the follow-up threw" and "nothing happened" were
+      // indistinguishable and that is precisely what made this survivable for so
+      // long. The optional call matches `noteMuteConsumed` above — several
+      // harnesses build a partial `fileOpsManager` double, and an observability
+      // line must not turn one of those into a TypeError.
+      //
+      // NOT retried and NOT re-emitted. The op itself is emitted by the FIRST
+      // statement of the task, before any await, so a rejection here never costs
+      // the op of the rename that failed — only the ones that would have come
+      // after it. Adding a retry would be a behaviour change this signal does
+      // not license.
+      const contained = task.catch((err: unknown) => {
+        plugin.fileOpsManager.noteRenameTaskFailure?.();
+        plugin.logger?.warn(
+          "file-op",
+          `RENAME FOLLOW-UP FAILED: ${oldPath} -> ${newPath}: ` +
+            `${err instanceof Error ? err.message : String(err)} ` +
+            "(the op was already emitted; the rename/delete channel stays open)",
+        );
+      });
+      pendingRename = contained.finally(() => {
+        if (pendingRename === contained) pendingRename = null;
         renamedPaths.delete(oldPath);
       });
     }),

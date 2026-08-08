@@ -135,7 +135,11 @@ import type { SidecarIndex, SidecarStore } from "./canvas-sidecar";
 // value import here would close a cycle.
 import type { SidecarLifecycle } from "./canvas-sidecar-lifecycle";
 import type { FileOpsManager } from "./file-ops";
-import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
+import {
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "./protected-paths";
 import type { ManifestManager } from "./manifest";
 
 // ---------------------------------------------------------------------------
@@ -4889,7 +4893,11 @@ export class CanvasSync {
     // entry (or its guid), and this method's sink is `vault.adapter.write`.
     // A `.canvas` under a protected root is not a thing this plugin writes.
     if (isProtectedPath(path)) {
+      // S137 (B2) — the seventh arm, and the last of the three that counted its
+      // refusal and never said it. This module already holds a logger, so the
+      // only thing that was missing was the line itself. Shared emitter.
       noteProtectedRefusal("canvas-write", path);
+      this.logger?.warn("canvas-sync", protectedRefusalMessage("canvas-write", path));
       return;
     }
     if (this.lastWrittenContent.get(path) === content) return;

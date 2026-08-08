@@ -213,6 +213,8 @@ export class FileOpsManager {
   private muteDrops = { total: 0, byKind: new Map<string, number>() };
   /** S124 — remote renames refused because their destination left the shared tree. */
   private refusedEscapingRenames = 0;
+  /** S135 — local rename follow-ups that threw and were contained. */
+  private failedRenameTasks = 0;
   /** Outbound reads currently between their entry check and their re-check. */
   private outboundReads = new Set<OutboundRead>();
   private muteStats = {
@@ -464,6 +466,26 @@ export class FileOpsManager {
   /** S124 — READ-ONLY. Renames refused for leaving the shared tree. */
   getEscapingRenameRefusals(): number {
     return this.refusedEscapingRenames;
+  }
+
+  /**
+   * S135 — record one rename FOLLOW-UP that threw.
+   *
+   * `vault-events.ts` runs the post-emit half of a local rename (the
+   * `BackgroundSync` re-subscribe, the manifest re-key, `CanvasSync.handleRename`)
+   * on a serialising promise chain. A rejection there used to poison that chain
+   * for the rest of the session; it is now contained, and this is the ledger
+   * that says it happened at all. Never the path, matching every sibling counter
+   * in this file — the path goes in the LOG line, where the user's filename
+   * belongs and a counter's value does not.
+   */
+  noteRenameTaskFailure(): void {
+    this.failedRenameTasks += 1;
+  }
+
+  /** S135 — READ-ONLY. Rename follow-ups that threw and were contained. */
+  getRenameTaskFailures(): number {
+    return this.failedRenameTasks;
   }
 
   /** S120 AC2 — READ-ONLY. What the mute has swallowed, for a live validator. */
@@ -1102,7 +1124,51 @@ export class FileOpsManager {
   onFileRename(file: TAbstractFile, oldPath: string) {
     const localNew = normalizePath(file.path);
     const localOld = normalizePath(oldPath);
-    if (this.isPathMuted(localNew) || this.isPathMuted(localOld) || !this.sendOp) return;
+    // ---------------------------------------------------------------- S135 --
+    // THE SECOND MUTE GATE ON THIS GESTURE, AND IT WAS STILL TYPE-BLIND.
+    //
+    // S120's repair converted the six gates in `vault-events.ts` from
+    // `isPathMuted` to `isPathMutedFor(path, kind)`, because a bare refcount
+    // knows a mute is held and nothing about what it is held FOR — so a user's
+    // rename arriving inside a window armed for a remote `create` was swallowed
+    // as if it were that create's echo. This line is the same question one
+    // function later, on the same gesture, and it was left asking the old one.
+    //
+    // MEASURED, through the REAL handler rather than the predicate: with the
+    // path muted and armed `consumes: ["create","modify"]`, the `vault-events`
+    // gate correctly admits the rename — and it then died HERE, emitting
+    // nothing. Worse than the gate it duplicates: that one counts its drop and
+    // logs `MUTE DROP:`, and this one returned in silence, so the ledger S120
+    // built said the gesture was never dropped.
+    //
+    // `isPathMutedFor` is FAIL-CLOSED where no release is armed (three sites
+    // still take a bare refcount), so this is never more permissive than the
+    // line it replaces except in exactly the case S120 identified and WP108
+    // validated: a mute armed for op kinds that cannot produce a rename.
+    //
+    // BOTH ENDPOINTS, unchanged: `applyRemoteOpInner` mutes `oldPath` AND
+    // `newPath` for a rename, so either can be the one holding the echo.
+    //
+    // `onFileCreate` and `onFileDelete` carry the identical blind check and are
+    // deliberately NOT converted here — see the report's residual. `onFileCreate`
+    // in particular has a second caller (`sync-request` in
+    // `sync/control-handlers.ts`) that is not a vault event at all, so "what
+    // kind of event is this" is not a well-posed question at that call site, and
+    // answering it wrongly would re-send a file into a window a remote apply is
+    // still holding.
+    if (
+      this.isPathMutedFor(localNew, "rename") ||
+      this.isPathMutedFor(localOld, "rename") ||
+      !this.sendOp
+    ) {
+      // S120 AC2 / S132 — counted on the SAME ledger as the outer gate, so a
+      // live reader sees one number for "renames the mute swallowed" instead of
+      // one per gate. A drop here is not necessarily a lost gesture (the outer
+      // gate refuses the ordinary echo before this line is reached), but a drop
+      // that nothing counts is exactly what made this invisible.
+      if (this.sendOp) this.noteMuteDrop("rename");
+      return;
+    }
     const wireOld = toCanonicalPath(localOld);
     const wireNew = toCanonicalPath(localNew);
     // ------------------------------------------------------------- WP68 AC1 --

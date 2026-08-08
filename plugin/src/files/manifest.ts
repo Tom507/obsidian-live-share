@@ -26,12 +26,17 @@ import {
 } from "./conflict-copy";
 import {
   EMPTY_WRITE_DECISION,
+  type EmptyWriteRefusalLogger,
   decideEmptyWrite,
   noteEmptyWriteRefusal,
 } from "./empty-write-guard";
 import type { ExclusionManager } from "./exclusion";
 import { PUBLICATION_DECISION, decidePublication } from "./manifest-purge-decision";
-import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
+import {
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "./protected-paths";
 
 export interface FileEntry {
   hash: string;
@@ -233,11 +238,29 @@ export class ManifestManager {
   private lastPublishDecision: ManifestPublishDecision | null = null;
 
   private exclusionManager: ExclusionManager | null = null;
+  /**
+   * S137 — the debug-log sink for this module's REFUSALS.
+   *
+   * Null until `main.ts` wires it, and every use is `?.`-guarded, so the many
+   * harnesses that construct a `ManifestManager` directly are unaffected. Wired
+   * AFTER the `DebugLogger` is assigned, never beside the constructor call —
+   * S104's lesson, and the reason `main.ts` groups every `setLogger` in one
+   * block below the sink rather than beside each `new`.
+   */
+  private logger: EmptyWriteRefusalLogger | null = null;
 
   constructor(
     private vault: Vault,
     private settings: LiveShareSettings,
   ) {}
+
+  /**
+   * S137 — wiring only. See {@link logger}: after the `DebugLogger` exists, not
+   * beside `new ManifestManager(...)`.
+   */
+  setLogger(logger: EmptyWriteRefusalLogger | null): void {
+    this.logger = logger;
+  }
 
   setExclusionManager(manager: ExclusionManager) {
     this.exclusionManager = manager;
@@ -588,7 +611,11 @@ export class ManifestManager {
       // directory branch runs `ensureFolder` on a peer-chosen path and would
       // otherwise create `.git/hooks` for the op that follows it.
       if (isProtectedPath(path)) {
+        // S137 (B2) — the SIBLING refusal on the same arm, with the same defect:
+        // counted, never said. Same shared emitter as the four arms that already
+        // log it, so the census is over arms and not over phrasings.
         noteProtectedRefusal("manifest-sync", path);
+        this.logger?.warn("file-op", protectedRefusalMessage("manifest-sync", path));
         continue;
       }
 
@@ -693,8 +720,11 @@ export class ManifestManager {
           evidenceLabel: "the host's published hash for this path",
         });
         if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {
-          noteEmptyWriteRefusal("manifest-sync");
-          console.warn(`[live-share] empty-write refused for ${path}: ${verdict.reason}`);
+          // S137 — THE ARM THAT FIRED TWICE ON AN ORDINARY REJOIN, and the two
+          // firings could not be attributed to a path because this line went to
+          // the console and nowhere else. Counted, LOGGED with the path and the
+          // arm, and still said on the console. One shared emitter.
+          noteEmptyWriteRefusal("manifest-sync", path, verdict.reason, this.logger);
           continue;
         }
 
@@ -1014,7 +1044,19 @@ export class ManifestManager {
       noteConflictCopy(arm);
       return true;
     } catch (err) {
+      // S137 (B2) — the third member of this family. Not a refusal but a FAILED
+      // SAFETY NET: the guest's about-to-be-overwritten bytes were not preserved
+      // and the sync proceeds regardless (by design — see the doc comment). It
+      // was counted and said on the console only, so the same "which file?"
+      // question was unanswerable here too. The `err` is NOT put in the debug
+      // log line: it can carry an adapter message quoting the path only, but the
+      // message shape stays fixed and content-free either way.
       noteConflictCopyFailure();
+      this.logger?.warn(
+        "file-op",
+        `CONFLICT COPY FAILED: path=${path} the local version was not preserved before ` +
+          "the host's content replaced it",
+      );
       console.warn(`[live-share] could not preserve local version of ${path}`, err);
       return false;
     }

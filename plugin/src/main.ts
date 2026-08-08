@@ -1382,6 +1382,19 @@ export default class LiveSharePlugin extends Plugin {
     // this project has ever run. It lives here now for the same reason
     // `syncManager` above does: after the sink exists, not before.
     this.fileOpsManager.setLogger(this.logger);
+    // S137 — the two writers that hold the EMPTY-WRITE FLOOR had no sink at all,
+    // so `EMPTY WRITE REFUSED:` (and three `PROTECTED PATH REFUSED:` arms) could
+    // only ever reach `console.warn`. The floor fired twice on an ordinary
+    // rejoin and the paths could not be attributed, which is the whole of S137.
+    //
+    // HERE, in this block, for the reason the two lines above already state: the
+    // sink has to exist before a consumer is handed it. Both managers are
+    // constructed roughly forty lines above `this.logger`, so wiring them at
+    // their `new` — which is where a reader would naturally put it — is exactly
+    // the S104 defect, and `?.` on the field would have hidden it just as well
+    // the second time.
+    this.manifestManager.setLogger(this.logger);
+    this.backgroundSync.setLogger(this.logger);
     this.connectionStateUnsub = this.connectionState.onChange(() => this.updateStatusBar());
 
     this.registerEditorExtension(this.collabManager.getBaseExtension());
