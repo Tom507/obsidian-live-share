@@ -783,6 +783,8 @@ export interface E2EControlHost {
   canvasMirror?(): unknown;
   /** S129 AC5 — paths this peer refused to bind to an unproven-empty document. */
   collabBindRefusals?(): unknown;
+  /** S134 AC3 — binds that FAILED, as distinct from binds this peer refused. */
+  collabBindFailures?(): unknown;
 }
 
 /**
@@ -1143,6 +1145,15 @@ export async function routeCommand(
           throw new Error("collab.bindRefusals unavailable on this host");
         }
         return ok(host.collabBindRefusals());
+      }
+      // S134 AC3 — a bind that FAILED (waitForSync rejected), as distinct from
+      // one this peer refused. Read-only, additive, and the only thing that
+      // makes "the editor is not bound to this note" observable at all.
+      case "collab.bindFailures": {
+        if (typeof host.collabBindFailures !== "function") {
+          throw new Error("collab.bindFailures unavailable on this host");
+        }
+        return ok(host.collabBindFailures());
       }
       // S123 AC5 — WHY a canvas did or did not materialise on THIS peer, per
       // path. The report already existed and was discarded at the call site;
@@ -1550,6 +1561,7 @@ export interface E2EPluginLike {
   getLastCanvasMirrorReport?: () => unknown;
   /** S129 AC5 — the collab bind refusal ledger. */
   getCollabBindRefusals?: () => { total: number; paths: string[] };
+  getCollabBindFailures?: () => { total: number; paths: string[] };
   /**
    * WP82 (AC2/AC3) — the real per-link report and the real break seam, invoked.
    * All three are optional so every hand-rolled fake plugin in the existing
@@ -2317,6 +2329,18 @@ export function buildPluginHost(
         throw new Error("collab.bindRefusals unavailable: this instance exposes no bind ledger");
       }
       return plugin.getCollabBindRefusals();
+    },
+
+    // S134 AC3 — the OTHER ledger: activations that ended in the `waitForSync`
+    // timeout, where the compartment went empty and `collabBoundFile` used to go
+    // on claiming the file was bound. Separate from the refusals above on S132's
+    // ground — a counter dominated by an expected class cannot report the class
+    // that still loses collaboration.
+    collabBindFailures() {
+      if (typeof plugin.getCollabBindFailures !== "function") {
+        throw new Error("collab.bindFailures unavailable: this instance exposes no bind ledger");
+      }
+      return plugin.getCollabBindFailures();
     },
 
     canvasMirror() {

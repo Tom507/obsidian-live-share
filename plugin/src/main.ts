@@ -39,7 +39,11 @@ import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
 import { conflictsRootFor, getConflictCopies } from "./files/conflict-copy";
-import { getCollabBindRefusals } from "./editor/collab-bind-decision";
+import {
+  getCollabBindFailures,
+  getCollabBindRefusals,
+  makeBindStateSink,
+} from "./editor/collab-bind-decision";
 import { getEmptyWriteRefusals } from "./files/empty-write-guard";
 import {
   type CanvasPersistence,
@@ -1348,6 +1352,22 @@ export default class LiveSharePlugin extends Plugin {
     // first placement handed a consumer `this.logger` before it existed. The
     // guard was right and the placement was wrong.
     this.collabManager.setLogger(this.logger);
+    // S134 AC3 — WIRING ONLY, and the whole point is that `collabBoundFile`
+    // stops lying. `onActiveFileChange` sets it SYNCHRONOUSLY before the async
+    // activation (deliberately — see the comment there) and nothing ever unset
+    // it when that activation failed, so a note whose bind timed out reported
+    // "bound" to every internal reader while its editor held no `yCollab` at all.
+    //
+    // Guarded on identity: an activation that resolves LATE must not clear a
+    // flag the user has already moved on from, which is the same stale-write
+    // trap the `.then()` at `onActiveFileChange` was removed to avoid.
+    //
+    // The single-writer invariant does not weaken: `setActiveFile(sharedPath)`
+    // is set on the line above `setCollabBoundFile(sharedPath)` and both
+    // consumers (`handleLocalTextModify`, the `Y.Text` observer) test the
+    // ACTIVE-file identity first, so an open-but-unbound file is still refused
+    // by the gate that precedes this one.
+    this.collabManager.setBindStateSink(makeBindStateSink(this.backgroundSync));
     // WP93 (C93 AC4) — WIRING ONLY. `MUTE OVERRUN:` has exactly one emitter, in
     // `files/file-ops.ts`; this is the only thing that gives it somewhere to
     // say it.
@@ -3245,6 +3265,16 @@ export default class LiveSharePlugin extends Plugin {
   /** S129 AC5 — notes this peer is NOT collaborating on, and why, for a live validator. */
   getCollabBindRefusals(): { total: number; paths: string[] } {
     return getCollabBindRefusals();
+  }
+
+  /**
+   * S134 AC3 — activations that ended in the `waitForSync` TIMEOUT, kept apart
+   * from the refusals above because one is a decision and the other is a
+   * failure, and a validator watching a rising number has to be able to tell
+   * which it is looking at (S132).
+   */
+  getCollabBindFailures(): { total: number; paths: string[] } {
+    return getCollabBindFailures();
   }
 
   /** S123 AC5 — the last mirror pass's per-path verdicts, for a live validator. */

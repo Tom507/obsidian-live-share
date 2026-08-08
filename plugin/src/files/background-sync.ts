@@ -154,17 +154,52 @@ export class BackgroundSync {
       if (docHandle.doc.isDestroyed) return;
 
       const diskPath = toLocalPath(path);
-      if (this.role === "host" && path !== this.activeFile) {
+      if (this.role === "host") {
         const file = getFileByPath(this.vault, diskPath);
         if (file) {
           const content = normalizeLineEndings(await this.vault.read(file));
           if (this.cancelledSubscribes.has(path)) return;
           const remoteContent = docHandle.text.toString();
           this.noteIfNonEmpty(path, remoteContent);
+          // S134 — SEEDING IS NOT WRITING, AND THE ACTIVE-FILE EXEMPTION STOPPED
+          // BOTH.
+          //
+          // This whole block used to be guarded by `path !== this.activeFile`.
+          // The guard exists for the SINGLE-WRITER invariant, which is about the
+          // DISK: the active file's copy on disk belongs to the editor/yCollab
+          // and background-sync must never write it. Seeding runs in the other
+          // direction — disk → CRDT — and `activateForFile`'s host arm already
+          // does exactly that from the editor buffer, so it was never what the
+          // guard was protecting.
+          //
+          // A note created DURING a session is, in Obsidian, the ACTIVE FILE the
+          // instant it exists, so this is the branch that decides every
+          // mid-session file. Session-start files never met it: `startAll` runs
+          // before `onActiveFileChange`, so `activeFile` is null there and every
+          // one of them IS seeded. That asymmetry — not the file's birth time —
+          // is why a Leave/Start/Join cycle "fixes" the same file.
+          //
+          // The consequence of not seeding is not a slow sync, it is NO sync:
+          // the document stays empty on every peer while the file has bytes on
+          // every peer's disk, the guest arm's write of "" is (correctly)
+          // refused by the S119 floor, and each peer then edits its own copy.
+          const isActive = path === this.activeFile;
           if (remoteContent.length === 0) {
-            // No remote content yet - host seeds the Y.Text
-            applyMinimalYTextUpdate(docHandle.doc, docHandle.text, content);
-            this.lastWrittenContent.set(path, content);
+            // S129 AC3's evidence, applied to the newly-reachable case. A doc
+            // that HELD content and no longer does was emptied by somebody; for
+            // the active file the user has that note open, so re-seeding it from
+            // disk would resurrect their deletion under their cursor. The
+            // non-active case is byte-unchanged, deliberately: widening a
+            // pre-existing branch is not this package's to do silently.
+            if (!isActive || !yTextHeldContent(docHandle.text)) {
+              // No remote content yet - host seeds the Y.Text
+              applyMinimalYTextUpdate(docHandle.doc, docHandle.text, content);
+              this.lastWrittenContent.set(path, content);
+            }
+          } else if (isActive) {
+            // THE SINGLE-WRITER INVARIANT, unchanged and now explicit: the two
+            // branches below both settle the file's DISK copy, and neither may
+            // run for the file the editor owns.
           } else if (remoteContent !== content) {
             // Remote has content (from guests or prior sync) - write remote to disk instead
             await this.writeToDisk(path, remoteContent);
@@ -251,6 +286,14 @@ export class BackgroundSync {
 
   setCollabBoundFile(path: string | null): void {
     this.collabBoundFile = path;
+  }
+
+  /**
+   * S134 AC3 — readable so a failed bind can clear the flag it set, and only if
+   * it is still the one it set. Read-only; nothing here decides anything.
+   */
+  getCollabBoundFile(): string | null {
+    return this.collabBoundFile;
   }
 
   async onFileAdded(rawPath: string): Promise<void> {
