@@ -3499,6 +3499,25 @@ type DiagRow = Record<string, unknown> & { t: number; kind: string };
  */
 const CANVAS_DIAG_RING_CAPACITY = 4000;
 
+/**
+ * A transaction origin, rendered. Named symbols report their `.description`;
+ * everything else is passed through verbatim, because an origin this package
+ * does not recognise is a finding rather than a rendering problem — and `null`
+ * with `local === true` is the loudest of them.
+ */
+function diagRenderOrigin(origin: unknown): string {
+  if (origin === null || origin === undefined) return "null";
+  if (typeof origin === "symbol") return origin.description ?? origin.toString();
+  if (typeof origin === "string") return origin;
+  if (typeof origin === "object") {
+    const described = (origin as { description?: unknown }).description;
+    if (typeof described === "string") return described;
+    const ctor = (origin as { constructor?: { name?: unknown } }).constructor;
+    if (ctor && typeof ctor.name === "string") return `[${ctor.name}]`;
+  }
+  return String(origin);
+}
+
 /** True when two geometry readings differ in any of the four numbers. */
 function diagGeoDiffers(a: DiagGeometry | undefined, b: DiagGeometry | undefined): boolean {
   if (!a || !b) return a !== b;
@@ -3796,6 +3815,107 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
   };
 
   /**
+   * I5 — THE Y TRANSACTION-ORIGIN LEDGER. The doc plane's "who moved it".
+   *
+   * One listener, no patch, and the highest yield per line in this package: it
+   * settles H3 and H6 outright, and it is the ONE instrument that can see H9 —
+   * the only shape that produces ACCUMULATION rather than a single jump.
+   *
+   * Origins are already a first-class named vocabulary in this codebase, eight
+   * symbols carrying `.description`: `canvas-capture-origin`,
+   * `canvas-capture-migration-origin`, `canvas-binding-origin`,
+   * `canvas-epoch-adopt-origin`, `canvas-migration-origin`,
+   * `canvas-import-seed-origin`, `canvas-seed-origin`, `sidecar-load-origin`.
+   * Anything unrecognised is passed through verbatim — a `null` origin with
+   * `local === true` is itself a finding.
+   *
+   * ⚠ WHAT TO LOOK FOR AND STOP ON: a `canvas-capture-origin` transaction with
+   * `local: true`, for a node the local user never touched, arriving right after
+   * an I2 row for that same node. That is the corrective view-write re-entering
+   * capture and being broadcast as this peer's own edit. `reconcileLiveCanvas`
+   * guards against exactly this with `mutePathEvents` (`main.ts:3176` — "so the
+   * reconcile never loops back into a sync"); `applyCanvasNodeRevert` does NOT
+   * (`main.ts:4095`, and it says so explicitly). One such row is sufficient on
+   * its own to explain error that GROWS per click.
+   *
+   * A row is emitted for EVERY transaction, geometry change or none (R6). That
+   * is what answers H6 as a straight yes/no: does a selection produce a doc
+   * transaction at all?
+   *
+   * It reads the doc through `diagDocCensus`, i.e. through `getCanvasSnapshot`,
+   * the SAME production read the census uses. A second decoder inside the rig
+   * would be `S158`'s family in a new place: the shared node records are not
+   * plain `{x,y}` maps, they are expanded by `toCanonicalFileRecord`, so a
+   * hand-rolled reader here would silently report a different board.
+   */
+  const installYTransactionLedger = (path: string): number => {
+    const cs = plugin.canvasSync;
+    if (!cs) {
+      notes.push("I5 y-transaction ledger NOT installed: this instance exposes no canvasSync");
+      return 0;
+    }
+    let handle: { doc: Y.Doc } | null = null;
+    try {
+      handle = cs.getCanvasDocHandle(path);
+    } catch {
+      handle = null;
+    }
+    if (!handle?.doc) {
+      notes.push(
+        `I5 y-transaction ledger NOT installed: no shared canvas doc handle for '${path}' on this peer (not subscribed?)`,
+      );
+      return 0;
+    }
+    const doc = handle.doc;
+    const lastSeen = new Map<string, DiagGeometry>();
+    const readAll = (): Map<string, DiagGeometry> => {
+      const out = new Map<string, DiagGeometry>();
+      const plane = diagDocCensus(plugin, path);
+      if (plane.available !== true) return out;
+      for (const [id, geo] of Object.entries(plane.nodes)) out.set(id, geo);
+      return out;
+    };
+    try {
+      for (const [id, geo] of readAll()) lastSeen.set(id, geo);
+    } catch {
+      notes.push(`I5: the baseline doc reading for '${path}' failed; the first row's deltas are against an empty board`);
+    }
+    const listener = (tr: Y.Transaction): void => {
+      try {
+        const current = readAll();
+        const changed: Array<{
+          nodeId: string;
+          from: DiagGeometry | null;
+          to: DiagGeometry | null;
+        }> = [];
+        for (const id of new Set([...lastSeen.keys(), ...current.keys()])) {
+          const from = lastSeen.get(id);
+          const to = current.get(id);
+          if (!diagGeoDiffers(from, to)) continue;
+          changed.push({ nodeId: id, from: from ?? null, to: to ?? null });
+        }
+        lastSeen.clear();
+        for (const [id, geo] of current) lastSeen.set(id, geo);
+        push({
+          t: Date.now(),
+          kind: "ytxn",
+          path,
+          origin: diagRenderOrigin((tr as { origin?: unknown }).origin),
+          local: tr.local === true,
+          changed: changed.sort((a, b) => a.nodeId.localeCompare(b.nodeId)),
+          changedCount: changed.length,
+          docClientId: doc.clientID,
+        });
+      } catch {
+        /* diagnostics must never break canvas interaction */
+      }
+    };
+    doc.on("afterTransaction", listener);
+    removers.push({ what: "listener", undo: () => doc.off("afterTransaction", listener) });
+    return 1;
+  };
+
+  /**
    * Install every hook for `path`. Each installer probes before it patches
    * (§4.2): an absent member is recorded as a note, never crashed on, because
    * the absence is itself the reading that names which bundle a peer is on.
@@ -3812,6 +3932,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
       patchedPaths.push(target.path);
       installViewWriteLedger(target);
     }
+    installYTransactionLedger(path);
   };
 
   const uninstall = (): { patchesRemoved: number; listenersRemoved: number } => {
