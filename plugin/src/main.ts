@@ -23,7 +23,7 @@ import { isCanvasPath } from "./canvas/canvas-epoch";
 // that module; this file holds calls into it.
 import type { CanvasUndoOutcome, CanvasUndoReport } from "./canvas/canvas-undo";
 import type { ImportAvailability } from "./canvas/canvas-import-command";
-import { canvasIds, planReconcile } from "./canvas/reconcile-plan";
+import { RECONCILE_GEOMETRY_KEYS, canvasIds, planReconcile } from "./canvas/reconcile-plan";
 import {
   CANVAS_EDIT_DRAIN_DELAY_MS,
   type CanvasWriteHoldQueue,
@@ -3907,11 +3907,47 @@ export default class LiveSharePlugin extends Plugin {
   }
 
   // WP4 (US2 AC7/AC8) — GAP-1 loser-revert. This client lost the lowest-clientID
-  // tiebreak on `nodeId`, so the lock seam denied its optimistic edit and that edit
-  // never reached the shared doc (canvas-sync holds its diff baseline back for the
-  // same reason). The LIVE view still shows the rejected position, so roll it back
-  // to shared truth with one authoritative full reconcile. A null snapshot (shared
-  // doc still empty) is a no-op — never wipe the view (BUILD_SPEC § 6).
+  // tiebreak on `nodeId`. The LIVE view may still show the rejected position, so
+  // roll THAT NODE back to shared truth. A null snapshot (shared doc still empty)
+  // is a no-op — never wipe the view (BUILD_SPEC § 6).
+  //
+  // WP119 — THE BLAST RADIUS IS THE DEFECT, AND IT WAS HERE.
+  //
+  // What this method used to do: take the node id, THROW IT AWAY, and hand the
+  // WHOLE snapshot to `reconcileLiveCanvas(..., {initial: true})`. `initial` is an
+  // unconditional `"structural"` (`reconcile-plan.ts:166`), so one contested card
+  // became `canvas.setData(entire board)` and every OTHER card on the board was
+  // re-laid-out from shared truth. The clicked card was typically the one card
+  // that did NOT move — it is the one both peers already agree about. That is the
+  // owner's report verbatim: *"I select cards on client one, other cards jump
+  // around on client 2"*, and it is why the arrows held still (`setData` reuses
+  // existing nodes, so an unchanged edge record is handed back identical and
+  // nothing re-routes it — see the note at `reconcileLiveCanvas`).
+  //
+  // ⚠ CORRECTION TO THIS METHOD'S OWN PREVIOUS DOC COMMENT. It claimed "the lock
+  // seam denied its optimistic edit and that edit never reached the shared doc
+  // (canvas-sync holds its diff baseline back for the same reason)". That has been
+  // FALSE since WP21, which removed the lock seam from the capture path outright —
+  // `canvas-sync.ts:4411` ("the lock-seam gate lived here. It is REMOVED, not
+  // rewritten") and `canvas-sync.ts:3705` (the echo baseline now advances
+  // unconditionally). Locks carry no write authority on this tree: the only
+  // consumers of `canWriteNode`/`canDeleteNode` are `CanvasBinding`'s optional
+  // gates, and `mountCanvasPresence` does not supply them. So the loser's edit
+  // DOES reach the shared doc, which means the node this method reverts is
+  // normally already equal to shared truth and the apply below is an honest
+  // `"unchanged"`. What remains is the VIEW rollback WP21 deliberately kept
+  // ("locks ... still revert the loser's VIEW"), and a view rollback of one node
+  // is a per-node operation. Whether the loser-revert should survive at all now
+  // that its justification has gone is a question for the canvas convergence
+  // remodel, NOT for this package.
+  //
+  // EXPRESSIBILITY (charter A1). `CanvasAdapter` has exactly one per-record write:
+  // `applyNodeGeometry`, i.e. x/y/width/height. A per-node revert of `text`,
+  // `color`, `type` or an edge field is NOT expressible through it — the only
+  // route is `reloadCanvasData`, which is the whole board. Such a difference is
+  // therefore REPORTED and not applied: escalating back to a whole-board reload
+  // to catch it is precisely the defect this package exists to remove, and since
+  // WP21 the loser's non-geometry edit is in the shared doc anyway.
   private revertCanvasNode(rawPath: string, nodeId: string, awareness: AwarenessLike): void {
     const canonical = toCanonicalPath(normalizePath(rawPath));
     let winner: number | null = null;
@@ -3920,14 +3956,136 @@ export default class LiveSharePlugin extends Plugin {
     } catch {
       /* awareness may be torn down mid-revert; the view rollback still runs */
     }
+    const who = `${canonical} node=${nodeId} winner=${winner ?? "unknown"}`;
     const snapshot = this.canvasSync?.getCanvasSnapshot(rawPath) ?? null;
-    const noSnapshot = snapshot ? "" : " (no shared snapshot yet; view left untouched)";
+    if (!snapshot) {
+      this.logger.warn(
+        "canvas",
+        `LOCK REVERT: ${who} (no shared snapshot yet; view left untouched)`,
+      );
+      return;
+    }
+    // The ONE record this revert is about. Nothing else on the board is read.
+    const desired =
+      snapshot.nodes.find(
+        (record) => record && typeof record.id === "string" && record.id === nodeId,
+      ) ?? null;
+    if (!desired) {
+      // Shared truth does not carry the node (deleted, or never captured). There
+      // is nothing to revert TO, and a full reload would be the old blast radius
+      // wearing a different hat. `onRemoteNodeDeleted` owns the delete case.
+      this.logger.warn(
+        "canvas",
+        `LOCK REVERT: ${who} (node absent from shared truth; view left untouched)`,
+      );
+      return;
+    }
+    this.applyCanvasNodeRevert(canonical, nodeId, desired, who);
+  }
+
+  /**
+   * WP119 — put ONE node back where shared truth says it is.
+   *
+   * Deliberately not a call into `reconcileLiveCanvas`: that method's contract is
+   * a WHOLE-BOARD pass (its planner compares the desired id set against the live
+   * one, so handing it a single-node payload would classify as a membership change
+   * and `setData` the rest of the board away). The pieces it shares with this one
+   * — the availability guard, the modify mute, and the WP5 receipt that advances
+   * the Surface-Shadow — are re-used directly, so the shadow bookkeeping is the
+   * same seam and cannot drift.
+   */
+  private applyCanvasNodeRevert(
+    canonical: string,
+    nodeId: string,
+    desired: Record<string, unknown>,
+    who: string,
+  ): void {
+    const adapter = this.canvasAdapters.get(canonical);
+    if (!adapter || !adapter.isAvailable()) return; // canvas not open → file sync suffices
+    const shadow = this.canvasSync?.getSurfaceShadow();
+    if (!shadow) return; // canvas sync torn down → nothing to reconcile against
+    const { x, y, width, height } = desired;
+    if (
+      typeof x !== "number" ||
+      typeof y !== "number" ||
+      typeof width !== "number" ||
+      typeof height !== "number"
+    ) {
+      this.logger.warn(
+        "canvas",
+        `LOCK REVERT: ${who} (shared record has no usable geometry; view left untouched)`,
+      );
+      return;
+    }
+    // WP87 (C87) — THE ONE editing/drag predicate, the same definer
+    // `reconcileLiveCanvas` consults and never a second one (rule 10). A revert is
+    // a remote change like any other and `applyNodeGeometry` is a
+    // `GUARDED-BY-CALLER` surface sink: every live caller of it must consult this
+    // and act on the answer, which `v2/wp87/test_tp01_surface_route_census` derives
+    // from the tree rather than from a list. Without this the loser-revert would be
+    // a route from a peer's selection straight onto a card the local user is typing
+    // in — WP87's destruction class, re-opened by a repair.
+    const gate = classifyBusyGate({
+      busy: adapter.isBusy(),
+      editingNodeId: adapter.getEditingNodeId?.() ?? null,
+    });
+    if (gate === "defer-drag") {
+      // Never reconcile mid-drag. Same arm, same reason, as `reconcileLiveCanvas`.
+      this.logger.debug("canvas", `LOCK REVERT: ${who} deferred (user dragging)`);
+      return;
+    }
+    if (gate === "editing") {
+      // An inline editor is open on this board. `applyNodeGeometry` reseats the
+      // card it is handed, and WP37 measured that reseating a card with an open
+      // editor discards its unflushed text. A lock revert is never worth that, and
+      // nothing is lost: since WP21 the loser's edit is in the shared doc, so the
+      // ordinary convergence path still carries the value.
+      this.logger.debug("canvas", `LOCK REVERT: ${who} withheld (inline editor open)`);
+      return;
+    }
+    // Diagnostics only (see the expressibility note above): which fields shared
+    // truth disagrees about that a per-node apply cannot carry. Never escalates.
+    const live = adapter.getNodeFields?.(nodeId) ?? null;
+    const unexpressible: string[] = [];
+    if (live) {
+      for (const key of new Set([...Object.keys(desired), ...Object.keys(live)])) {
+        if (key === "id" || RECONCILE_GEOMETRY_KEYS.has(key)) continue;
+        if (desired[key] !== live[key]) unexpressible.push(key);
+      }
+    }
+    // NO MUTE HERE, and that is a decision rather than an omission. The geometry
+    // branch of `reconcileLiveCanvas` brackets itself with
+    // `mutePathEvents`/`armMuteRelease`, and for a CANVAS-OWNED path that bracket
+    // is inert: the vault `modify` gate takes the canvas branch at
+    // `files/vault-events.ts:378-409`, whose WP91 note says in its own words that
+    // "THE MUTE AND THE DISK-WRITE WINDOW ARE NOT ASKED HERE" — the decision is the
+    // byte echo breaker instead. Arming a mute a canvas path never consults would
+    // add a refcount only the ceiling releases, and a release site to WP93's census,
+    // in exchange for nothing. This route is strictly FEWER writes than the
+    // whole-board reload it replaces, never more.
+    const outcome: ApplyOutcome = adapter.applyNodeGeometry(nodeId, { x, y, width, height });
+    // WP5 (C5 AC1/AC2/AC3): the same receipt seam every other apply route uses.
+    // `plan: "geometry"` ⇒ `exhaustive === false`, so this pass grants a licence
+    // for the one node it confirmed and revokes nothing — a per-node revert proves
+    // nothing about the membership of the rest of the board (S83).
+    const summary = advanceFromReceipt(
+      shadow,
+      buildApplyReceipt({
+        path: canonical,
+        desired: { nodes: [desired], edges: [] },
+        plan: "geometry",
+        nodeOutcomes: new Map<string, ApplyOutcome>([[nodeId, outcome]]),
+      }),
+    );
+    this.surfaceState.noteHandover(canonical, summary.handed, summary.revoked);
     this.logger.warn(
       "canvas",
-      `LOCK REVERT: ${canonical} node=${nodeId} winner=${winner ?? "unknown"}${noSnapshot}`,
+      `LOCK REVERT: ${who} geometry=${outcome}` +
+        (unexpressible.length > 0
+          ? ` [not applied: ${unexpressible.join(",")} — a per-node revert cannot ` +
+            "express non-geometry fields; shared truth carries them]"
+          : ""),
     );
-    if (!snapshot) return;
-    this.reconcileLiveCanvas(rawPath, snapshot, { initial: true });
   }
 
   private teardownCanvasPresences() {

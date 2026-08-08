@@ -1,9 +1,13 @@
-// INVESTIGATION — "selecting cards on client 1 makes other cards jump on client 2".
+// WP119 — "selecting cards on client 1 makes other cards jump on client 2".
 //
-// This file is EVIDENCE, not a fix. It drives the shipped code and measures what a
-// pure, read-only SELECT gesture does to a peer.
+// Filed by the investigation as EVIDENCE (T4 committed `it.fails`); WP119 repaired
+// the defect and this file is now the regression fence for it. Every row drives the
+// shipped code: the presence rows use two real `CanvasPresence` instances over one
+// shared awareness map, and the reconcile rows invoke the real `revertCanvasNode` /
+// `applyCanvasNodeRevert` / `reconcileLiveCanvas` off `LiveSharePlugin.prototype`
+// with a fake `this` (the `v2/wp85` precedent).
 //
-// The chain under measurement, entirely in production code:
+// THE CHAIN, all production code. The last three lines are what WP119 changed:
 //
 //   canvas-adapter.ts:874     patch("updateSelection", () => emitHeld(readSelectionIds()))
 //   canvas-presence.ts:320    onNodeInteractionStart(id => acquireLock(id))
@@ -11,27 +15,32 @@
 //   canvas-presence.ts:307    peer's awareness "change" listener -> reconcileClaims()
 //   canvas-presence.ts:372    reconcileClaims: a LOWER clientID co-holder => onRevert(nodeId)
 //   main.ts:3896              onRevert -> revertCanvasNode(path, nodeId, awareness)
-//   main.ts:3930              revertCanvasNode -> reconcileLiveCanvas(path, snapshot, {initial:true})
-//   reconcile-plan.ts:166     initial === true => plan "structural", unconditionally
-//   main.ts:3179              structural => adapter.reloadCanvasData(WHOLE BOARD) -> canvas.setData
+//   main.ts                   revertCanvasNode now KEEPS the node id and reverts THAT
+//                             record through `applyCanvasNodeRevert` -> one
+//                             `adapter.applyNodeGeometry(nodeId, ...)`.
 //
-// So the TRIGGER is one node and the EFFECT is the entire board. That is the shape
-// of the report: the user selects, and cards they never touched move.
+//   BEFORE: revertCanvasNode threw the id away and passed the WHOLE snapshot with
+//   `{initial: true}` -> `reconcile-plan.ts:166` returns "structural"
+//   unconditionally -> `canvas.setData(ENTIRE BOARD)`. The TRIGGER was one node and
+//   the EFFECT was every node, which is exactly the owner's report.
 //
 // VACUITY GUARDS (every row that must be able to go red has a control that does):
 //   * T1 has a NEGATIVE control (peer B holds the lowest id => no revert) and an
 //     UNRELATED-NODE control (a select of a node nobody contests => no revert).
 //   * T1 also asserts the gesture wrote NOTHING locally (no setData, no requestSave),
 //     so "read-only" is measured rather than assumed.
-//   * T2 has a NO-SNAPSHOT control (nothing to revert to => the view is untouched)
-//     and a NON-AUTHORITATIVE control (the same pass without `initial` is a noop and
-//     moves nothing), so the board-wide movement is attributable to the `initial:true`
-//     that `revertCanvasNode` passes and not to the harness.
+//   * T2's "nothing else moved" row is paired with a POSITIVE control in which the
+//     reverted node DOES disagree with shared truth and converges on it, so a
+//     plugin that had simply stopped reverting could not pass both.
+//   * T4's SANITY row proves the world is wired; its two WITNESS rows prove the
+//     revert still FIRED and the loser still CONVERGED, so the green on the headline
+//     row is attributable to the narrowed blast radius and not to a dead sync.
 //   * T3's leak row is paired with the release row that DOES work, so "locks are
-//     never released" cannot pass by accident.
+//     never released" cannot pass by accident. That leak is UNREPAIRED — see the
+//     ESCALATE note above T3.
 //
-// WHAT THIS FILE CANNOT SETTLE: whether Obsidian's own renderer re-routes the arrows
-// after the cards move. The CanvasDouble has no renderer. See the report.
+// WHAT THIS FILE CANNOT SETTLE: whether Obsidian's own renderer re-routes the arrows.
+// The CanvasDouble has no renderer. See the report.
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -63,7 +72,7 @@ vi.mock("obsidian", async (importOriginal) => {
   };
 });
 
-import { createCanvasAdapter } from "../../../canvas/canvas-adapter";
+import { type CanvasAdapter, createCanvasAdapter } from "../../../canvas/canvas-adapter";
 import { createEditingDeferralQueue } from "../../../canvas/canvas-editing-deferral";
 import { type AwarenessLike, CanvasPresence } from "../../../canvas/canvas-presence";
 import { advanceField, createSurfaceShadow } from "../../../canvas/canvas-shadow";
@@ -225,6 +234,8 @@ interface ReconcileHarness {
   // biome-ignore lint/suspicious/noExplicitAny: the fake stands in for LiveSharePlugin
   fake: any;
   double: CanvasDouble;
+  adapter: CanvasAdapter;
+  driver: InteractionDriver;
 }
 
 function makeReconcileHarness(opts: {
@@ -235,6 +246,12 @@ function makeReconcileHarness(opts: {
 }): ReconcileHarness {
   const double = new CanvasDouble({ nodes: BOARD, edges: EDGES });
   const adapter = createCanvasAdapter(double.view);
+  // The adapter installs its monkey-patches LAZILY, on first subscription
+  // (`canvas-adapter.ts:1175-1178`). In production `CanvasPresence.start()` always
+  // subscribes, so `setDragging` is always patched and `isBusy()` can answer; an
+  // unsubscribed adapter would report "not busy" for a live drag and the guard
+  // rows below would pass for the wrong reason.
+  adapter.onNodeInteractionStart(() => {});
   const canvasAdapters = new Map([[PATH, adapter]]);
 
   const shadow = createSurfaceShadow();
@@ -269,16 +286,27 @@ function makeReconcileHarness(opts: {
     logger: { debug: () => {}, warn: () => {}, log: () => {}, error: () => {} },
     // biome-ignore lint/suspicious/noExplicitAny: the fake stands in for LiveSharePlugin
   } as any;
-  // `revertCanvasNode` calls `this.reconcileLiveCanvas(...)`, so the real method has
-  // to be reachable on the fake. Both come off the prototype; neither is re-written.
-  fake.reconcileLiveCanvas = (
-    LiveSharePlugin.prototype as unknown as Record<string, (...a: unknown[]) => unknown>
-  ).reconcileLiveCanvas.bind(fake);
-  fake.revertCanvasNode = (
-    LiveSharePlugin.prototype as unknown as Record<string, (...a: unknown[]) => unknown>
-  ).revertCanvasNode.bind(fake);
+  bindShippedMethods(fake);
 
-  return { fake, double };
+  return { fake, double, adapter, driver: new InteractionDriver(double) };
+}
+
+/**
+ * `revertCanvasNode` calls `this.applyCanvasNodeRevert(...)` (WP119) and
+ * `reconcileLiveCanvas` is still driven directly by the controls, so all three
+ * real methods have to be reachable on the fake. Every one comes off
+ * `LiveSharePlugin.prototype` and none is re-written — that is what makes these
+ * rows a measurement of the SHIPPED code rather than of a double.
+ */
+// biome-ignore lint/suspicious/noExplicitAny: the fake stands in for LiveSharePlugin
+function bindShippedMethods(fake: any): void {
+  const proto = LiveSharePlugin.prototype as unknown as Record<
+    string,
+    (...a: unknown[]) => unknown
+  >;
+  for (const name of ["reconcileLiveCanvas", "revertCanvasNode", "applyCanvasNodeRevert"]) {
+    fake[name] = proto[name].bind(fake);
+  }
 }
 
 const AWARENESS_STUB = {
@@ -286,36 +314,121 @@ const AWARENESS_STUB = {
   getStates: () => new Map<number, Record<string, unknown>>(),
 } as unknown as AwarenessLike;
 
-describe("T2: one contested node re-lays out the whole board", () => {
-  it("reverting n2 moves n1 and n3 — cards the revert was never about", () => {
-    // Shared truth disagrees with the live view about n1 and n3. n2 — the ONLY node
-    // the revert names — is at the same place in both.
-    const snapshot = {
-      nodes: [
-        { id: "n1", x: -900, y: -700, width: 200, height: 100, type: "text", text: "one" },
-        { id: "n2", x: 400, y: 0, width: 200, height: 100, type: "text", text: "two" },
-        { id: "n3", x: 1500, y: 900, width: 200, height: 100, type: "text", text: "three" },
-      ],
-      edges: [{ id: "e1", fromNode: "n1", toNode: "n3" }],
-    };
-    const { fake, double } = makeReconcileHarness({ snapshot });
+describe("T2: a revert of one contested node touches THAT node and nothing else", () => {
+  // Shared truth disagrees with the live view about n1 and n3. n2 — the ONLY node
+  // the revert names — is at the same place in both. Before WP119 this snapshot
+  // made `revertCanvasNode("n2")` move n1 and n3 through one whole-board setData.
+  const DISAGREES_ABOUT_OTHERS = {
+    nodes: [
+      { id: "n1", x: -900, y: -700, width: 200, height: 100, type: "text", text: "one" },
+      { id: "n2", x: 400, y: 0, width: 200, height: 100, type: "text", text: "two" },
+      { id: "n3", x: 1500, y: 900, width: 200, height: 100, type: "text", text: "three" },
+    ],
+    edges: [{ id: "e1", fromNode: "n1", toNode: "n3" }],
+  };
+
+  it("reverting n2 leaves n1 and n3 alone — cards the revert was never about", () => {
+    const { fake, double } = makeReconcileHarness({ snapshot: DISAGREES_ABOUT_OTHERS });
 
     expect(double.getNode("n1")?.x).toBe(0);
     expect(double.getNode("n3")?.y).toBe(300);
 
     fake.revertCanvasNode(PATH, "n2", AWARENESS_STUB);
 
-    // The named node did not move. Two cards nobody contested did.
+    // n2 already agreed with shared truth, so the revert is an honest no-op...
     expect(double.getNode("n2")?.x).toBe(400);
-    expect(double.getNode("n1")?.x).toBe(-900);
-    expect(double.getNode("n1")?.y).toBe(-700);
-    expect(double.getNode("n3")?.x).toBe(1500);
-    expect(double.getNode("n3")?.y).toBe(900);
+    // ...and the two cards nobody contested are exactly where they were.
+    expect(double.getNode("n1")?.x).toBe(0);
+    expect(double.getNode("n1")?.y).toBe(0);
+    expect(double.getNode("n3")?.x).toBe(0);
+    expect(double.getNode("n3")?.y).toBe(300);
 
-    // ...and it happened through ONE whole-board setData, not a per-node move.
-    expect(double.setDataCount).toBe(1);
-    const handed = double.lastSetData as { nodes: unknown[]; edges: unknown[] };
-    expect(handed.nodes).toHaveLength(3);
+    // No whole-board reload. This is the assertion the defect failed.
+    expect(double.setDataCount).toBe(0);
+  });
+
+  it("POSITIVE CONTROL (A4): a node that DOES disagree is reverted — and only it", () => {
+    // Without this row the row above would pass for a plugin that had simply
+    // stopped reverting. The loser's view must still converge on shared truth.
+    const snapshot = {
+      nodes: [
+        // n2 is where the LOSER's rejected edit is NOT: shared truth says (777, 555).
+        { id: "n1", x: -900, y: -700, width: 200, height: 100, type: "text", text: "one" },
+        { id: "n2", x: 777, y: 555, width: 200, height: 100, type: "text", text: "two" },
+        { id: "n3", x: 1500, y: 900, width: 200, height: 100, type: "text", text: "three" },
+      ],
+      edges: [{ id: "e1", fromNode: "n1", toNode: "n3" }],
+    };
+    const { fake, double } = makeReconcileHarness({ snapshot });
+
+    fake.revertCanvasNode(PATH, "n2", AWARENESS_STUB);
+
+    // The contested card converged...
+    expect(double.getNode("n2")?.x).toBe(777);
+    expect(double.getNode("n2")?.y).toBe(555);
+    // ...through a per-node move, not a board reload...
+    expect(double.setDataCount).toBe(0);
+    // ...and the collateral is still zero even on a snapshot that disagrees
+    // about every card.
+    expect(double.getNode("n1")?.x).toBe(0);
+    expect(double.getNode("n3")?.y).toBe(300);
+  });
+
+  it("CONTROL: a node absent from shared truth leaves the whole view untouched", () => {
+    // There is nothing to revert TO. The old code reloaded the board anyway,
+    // because it never looked at the node id at all.
+    const { fake, double } = makeReconcileHarness({ snapshot: DISAGREES_ABOUT_OTHERS });
+
+    fake.revertCanvasNode(PATH, "nope-not-a-node", AWARENESS_STUB);
+
+    expect(double.setDataCount).toBe(0);
+    expect(double.getNode("n1")?.x).toBe(0);
+    expect(double.getNode("n2")?.x).toBe(400);
+    expect(double.getNode("n3")?.y).toBe(300);
+  });
+
+  // WP87's editing/drag predicate. `applyNodeGeometry` is a GUARDED-BY-CALLER
+  // surface sink and the per-node revert is a NEW caller of it, so it must consult
+  // the one definer and act on the answer. These two rows are the behavioural half
+  // of what `v2/wp87/test_tp01_surface_route_census` asserts structurally, and the
+  // POSITIVE CONTROL above them is the row that moves n2 when nothing is busy — a
+  // revert that withheld unconditionally would pass these two and fail that one.
+  const CONTESTED = {
+    nodes: [
+      { id: "n1", x: 0, y: 0, width: 200, height: 100, type: "text", text: "one" },
+      { id: "n2", x: 777, y: 555, width: 200, height: 100, type: "text", text: "two" },
+      { id: "n3", x: 0, y: 300, width: 200, height: 100, type: "text", text: "three" },
+    ],
+    edges: [{ id: "e1", fromNode: "n1", toNode: "n3" }],
+  };
+
+  it("GUARD: a revert is WITHHELD while an inline editor is open", () => {
+    const { fake, double, adapter } = makeReconcileHarness({ snapshot: CONTESTED });
+
+    adapter.noteEditingFocus?.("n1"); // the user is typing in a DIFFERENT card
+    fake.revertCanvasNode(PATH, "n2", AWARENESS_STUB);
+
+    // Nothing reseated. WP37 measured that reseating a card with an open editor
+    // discards its unflushed text, and a lock revert is never worth that.
+    expect(double.getNode("n2")?.x).toBe(400);
+    expect(double.setDataCount).toBe(0);
+
+    // ...and once the editor closes, the same revert lands.
+    adapter.noteEditingFocus?.(null);
+    fake.revertCanvasNode(PATH, "n2", AWARENESS_STUB);
+    expect(double.getNode("n2")?.x).toBe(777);
+  });
+
+  it("GUARD: a revert is DEFERRED while the user is dragging", () => {
+    const { fake, double, driver } = makeReconcileHarness({ snapshot: CONTESTED });
+
+    driver.beginDrag("n1");
+    fake.revertCanvasNode(PATH, "n2", AWARENESS_STUB);
+    expect(double.getNode("n2")?.x).toBe(400);
+
+    driver.endDrag();
+    fake.revertCanvasNode(PATH, "n2", AWARENESS_STUB);
+    expect(double.getNode("n2")?.x).toBe(777);
   });
 
   it("CONTROL: no shared snapshot => the view is left untouched", () => {
@@ -355,20 +468,43 @@ describe("T2: one contested node re-lays out the whole board", () => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// T4 — THE DEFECT, END TO END, AS A TEST THAT IS RED TODAY.
+// T4 — THE DEFECT, END TO END. RED BEFORE WP119, GREEN AFTER IT.
 //
 // Both halves are production code and they are joined at the seam `main.ts` joins
 // them at (`onRevert: nodeId => this.revertCanvasNode(...)`, main.ts:3896). Peer A
 // makes ONE read-only gesture; peer B's board is measured before and after.
 //
-// `it.fails` is used deliberately. The assertion inside is the CORRECT behaviour
-// and it genuinely fails on this tree, so this row is a red measurement — but it
-// does not wedge the shared gate for other workers. When the defect is fixed this
-// row goes RED by itself and whoever fixed it flips `it.fails` back to `it`.
+// This row was committed as `it.fails` by the investigation that filed the defect
+// (`expect(setDataCount).toBe(0)` receiving `1`). WP119 made it pass and converted
+// it to an ordinary `it`. Its two companion rows are KEPT and now carry the whole
+// attribution burden between them:
+//
+//   ├── SANITY  — the world is wired before the gesture, so a green cannot come
+//   │             from an exception in the harness.
+//   └── WITNESS — the presence machinery genuinely RAN for this gesture (B's
+//                 contested claim was resolved), so a green cannot come from a
+//                 plugin that simply stopped reverting. Its second row drives a
+//                 snapshot that disagrees about the CLICKED card and measures the
+//                 loser converging — charter A4, end to end.
 // ---------------------------------------------------------------------------
 
-describe("T4: selecting on peer A moves cards on peer B (RED — the defect)", () => {
-  function wire() {
+// Shared truth disagrees with B's view about n1 and n3 — the ordinary state of a
+// board whose peer has moved cards B has not applied yet. n2, the card A is about
+// to click, agrees.
+const T4_SNAPSHOT = {
+  nodes: [
+    { id: "n1", x: -900, y: -700, width: 200, height: 100, type: "text", text: "one" },
+    { id: "n2", x: 400, y: 0, width: 200, height: 100, type: "text", text: "two" },
+    { id: "n3", x: 1500, y: 900, width: 200, height: 100, type: "text", text: "three" },
+  ],
+  edges: [{ id: "e1", fromNode: "n1", toNode: "n3" }],
+};
+
+describe("T4: a read-only selection on peer A must not move cards on peer B", () => {
+  function wire(
+    snapshot: { nodes: Record<string, unknown>[]; edges: Record<string, unknown>[] } =
+      T4_SNAPSHOT,
+  ) {
     const net = makeNetwork();
 
     // Peer A: a plain peer with the LOWER clientID.
@@ -378,17 +514,6 @@ describe("T4: selecting on peer A moves cards on peer B (RED — the defect)", (
     const bDouble = new CanvasDouble({ nodes: BOARD, edges: EDGES });
     const bAdapter = createCanvasAdapter(bDouble.view);
     const canvasAdapters = new Map([[PATH, bAdapter]]);
-    // Shared truth disagrees with B's view about n1 and n3 — the ordinary state of
-    // a board whose peer has moved cards B has not applied yet. n2, the card A is
-    // about to click, agrees.
-    const snapshot = {
-      nodes: [
-        { id: "n1", x: -900, y: -700, width: 200, height: 100, type: "text", text: "one" },
-        { id: "n2", x: 400, y: 0, width: 200, height: 100, type: "text", text: "two" },
-        { id: "n3", x: 1500, y: 900, width: 200, height: 100, type: "text", text: "three" },
-      ],
-      edges: [{ id: "e1", fromNode: "n1", toNode: "n3" }],
-    };
     const shadow = createSurfaceShadow();
     const fake = {
       canvasAdapters,
@@ -402,21 +527,20 @@ describe("T4: selecting on peer A moves cards on peer B (RED — the defect)", (
       logger: { debug: () => {}, warn: () => {}, log: () => {}, error: () => {} },
       // biome-ignore lint/suspicious/noExplicitAny: the fake stands in for LiveSharePlugin
     } as any;
-    fake.reconcileLiveCanvas = (
-      LiveSharePlugin.prototype as unknown as Record<string, (...x: unknown[]) => unknown>
-    ).reconcileLiveCanvas.bind(fake);
-    fake.revertCanvasNode = (
-      LiveSharePlugin.prototype as unknown as Record<string, (...x: unknown[]) => unknown>
-    ).revertCanvasNode.bind(fake);
+    bindShippedMethods(fake);
 
     const bAwareness = net.client(2);
+    const reverted: string[] = [];
     const bPresence = new CanvasPresence({
       path: PATH,
       awareness: bAwareness,
       identity: { clientId: 2, name: "B", color: "#def" },
       adapter: bAdapter,
       // THE PRODUCTION SEAM, main.ts:3896.
-      onRevert: (nodeId: string) => fake.revertCanvasNode(PATH, nodeId, bAwareness),
+      onRevert: (nodeId: string) => {
+        reverted.push(nodeId);
+        fake.revertCanvasNode(PATH, nodeId, bAwareness);
+      },
       showCursors: false,
       showPresence: false,
     });
@@ -425,19 +549,19 @@ describe("T4: selecting on peer A moves cards on peer B (RED — the defect)", (
     // B's capture path has claimed n2 at some earlier point (canvas-sync.ts:4130).
     bPresence.onDiffInferredChange("n2");
 
-    return { a, bDouble, bPresence };
+    return { a, bDouble, bPresence, reverted };
   }
 
   it("SANITY: the world is wired and B's board starts where it started", () => {
-    // Without this row the `it.fails` below could pass for the wrong reason — e.g.
-    // an exception in the wiring rather than the defect.
+    // Without this row the assertion below could pass for the wrong reason — e.g.
+    // an exception in the wiring rather than the repair.
     const { bDouble } = wire();
     expect(bDouble.getNode("n1")?.x).toBe(0);
     expect(bDouble.getNode("n3")?.y).toBe(300);
     expect(bDouble.setDataCount).toBe(0);
   });
 
-  it.fails("a read-only selection on peer A must not move any card on peer B", () => {
+  it("a read-only selection on peer A must not move any card on peer B", () => {
     const { a, bDouble } = wire();
 
     // ONE gesture. No edit, no drag, no save, no doc write.
@@ -451,20 +575,64 @@ describe("T4: selecting on peer A moves cards on peer B (RED — the defect)", (
     expect(bDouble.getNode("n3")?.y).toBe(300);
   });
 
-  it("WITNESS: the same gesture, measured positively — B's cards DID move", () => {
-    // The other side of the `it.fails` row, so the failure above is attributable to
-    // this movement and not to any other assertion in it.
-    const { a, bDouble } = wire();
+  it("WITNESS: the contest was still RESOLVED — the row above is not a dead sync", () => {
+    // The other side of the row above. The gesture must still reach B's revert
+    // path and B must still drop the claim it lost; what changed is the blast
+    // radius, not whether presence works.
+    const { a, bDouble, bPresence, reverted } = wire();
 
     a.driver.select(["n2"]);
 
-    expect(bDouble.setDataCount).toBe(1);
-    expect(bDouble.getNode("n1")?.x).toBe(-900);
-    expect(bDouble.getNode("n3")?.y).toBe(900);
-    // The card that WAS clicked is the one card that did not move.
+    expect(reverted).toEqual(["n2"]);
+    expect(bPresence.isLockedByMe("n2")).toBe(false);
+    // ...and the clicked card is where shared truth says it is.
     expect(bDouble.getNode("n2")?.x).toBe(400);
   });
+
+  it("WITNESS (A4): when shared truth disagrees about the CLICKED card, B converges", () => {
+    // A genuinely contested edit: B's view of n2 is its own un-agreed position and
+    // shared truth says otherwise. The loser must still converge — on that card,
+    // and on no other.
+    const { a, bDouble, reverted } = wire({
+      nodes: [
+        { id: "n1", x: -900, y: -700, width: 200, height: 100, type: "text", text: "one" },
+        { id: "n2", x: 777, y: 555, width: 200, height: 100, type: "text", text: "two" },
+        { id: "n3", x: 1500, y: 900, width: 200, height: 100, type: "text", text: "three" },
+      ],
+      edges: [{ id: "e1", fromNode: "n1", toNode: "n3" }],
+    });
+
+    expect(bDouble.getNode("n2")?.x).toBe(400);
+
+    a.driver.select(["n2"]);
+
+    expect(reverted).toEqual(["n2"]);
+    // The loser converged on the contested card...
+    expect(bDouble.getNode("n2")?.x).toBe(777);
+    expect(bDouble.getNode("n2")?.y).toBe(555);
+    // ...without a whole-board reload and without touching anything else.
+    expect(bDouble.setDataCount).toBe(0);
+    expect(bDouble.getNode("n1")?.x).toBe(0);
+    expect(bDouble.getNode("n3")?.y).toBe(300);
+  });
 });
+
+// ---------------------------------------------------------------------------
+// T3 — WHY IT IS "EVERY TIME" RATHER THAN "SOMETIMES": the diff-inferred lock is
+// acquired by the capture path and there is NO path that releases it.
+//
+// ⚠ STILL RED IN SUBSTANCE AFTER WP119, AND DELIBERATELY SO. The leak these rows
+// measure is real and unrepaired. `canvas-presence.ts` is an initiative-wide
+// invariant — BUILD_SPEC §7 lists "`canvas-presence.ts` is modified (WP21 AC2
+// requires it byte-unchanged)" as an ESCALATE, enforced by a live digest pin in
+// `v2/wp21/test_tp04_awareness_liveness_unchanged_visible.test.ts` — so charter
+// A3 cannot be discharged inside this package. It is carried up as an ESCALATE
+// with a worked design in `ImplementationReport_WP119.md` §A3.
+//
+// What WP119 DID change is the cost of the leak: a stale claim now buys one
+// per-node `applyNodeGeometry` — almost always `"unchanged"` — instead of a
+// whole-board `setData`. The claim still leaks; it is no longer destructive.
+// ---------------------------------------------------------------------------
 
 describe("T3: a diff-inferred lock has no release", () => {
   it("a selection-acquired lock IS released when the selection is dropped", () => {
@@ -498,8 +666,9 @@ describe("T3: a diff-inferred lock has no release", () => {
 
     // Still held. `emitHeld` can only release ids it put in `held` itself, and a
     // diff-inferred claim was never there — so nothing but a later selection of n2
-    // in person can clear it, and until then every select of n2 by a lower-id peer
-    // re-triggers the board-wide revert measured in T2.
+    // in person can clear it. WP119 CORRECTION: what that costs is no longer the
+    // board-wide revert T2 used to measure. Every select of n2 by a lower-id peer
+    // still fires the loser-revert, but the revert is now scoped to n2 alone.
     expect(b.presence.isLockedByMe("n2")).toBe(true);
 
     // BOUND ON THE CLAIM (so the row above is not read as more than it is): the one
