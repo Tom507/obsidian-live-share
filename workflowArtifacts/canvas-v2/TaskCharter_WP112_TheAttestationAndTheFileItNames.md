@@ -88,9 +88,6 @@ restore byte-identically by copy-aside, GREEN. Zero `.pre-v2-smoke` files at the
 flaky without evidence. Two known instrument traps, neither yours to fix: `S153`, WP92's `no_collateral`
 asserts a file is absent from `git diff HEAD`, so it can fail while your work is uncommitted and pass once
 you commit; and `NEXT_FREE` is hardcoded in `check_signal_register.py` as well as in the register.
-⚠ **If the checker fails on a number you did not cite, note that `NEXT_FREE` is hardcoded at
-`check_signal_register.py:53` as well as in the register — that coupling is recorded, not yours to fix.**
-
 **Two things learned since this charter was written, both of which bear on it directly:**
 
 - **`S155` — a counter that does not increment on every branch makes silence ambiguous.** WP115 lost a
@@ -111,7 +108,7 @@ you commit; and `NEXT_FREE` is hardcoded in `check_signal_register.py` as well a
 4. **Report A and B separately**, each with its own evidence.
 5. **Correct this charter if it is wrong.** The last three workers all corrected the premise they were
    given and all three were right to. Say so in the report rather than working around it.
-6. **Signal numbers: next free is S147, and you allocate none.** <!-- signal-register: meta -->
+6. **Signal numbers: next free is S158, and you allocate none.** <!-- signal-register: meta -->
 
 **Hard constraints:**
 
