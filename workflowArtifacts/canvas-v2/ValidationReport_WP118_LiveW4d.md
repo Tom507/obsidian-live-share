@@ -1,9 +1,9 @@
 # WP118 — Live validation, W4d: the second live battery
 
 **Worker:** W4d · **Branch:** `fix-bugs-and-raceconditions` · **Charter base:** `7965268` (tree clean)
-**Date:** 2026-08-08, 09:13 – 10:25 local · **Machine idle, owner away for the measured window.**
+**Date:** 2026-08-08, 09:13 – 10:36 local · **Machine idle, owner away for the measured window.**
 **Interrupted once** by the Dispatcher at ~10:20 because the owner needed the machine; resumed and
-re-read the rig rather than assuming it had stood still. §7 states what that cost.
+re-read the rig rather than assuming it had stood still. §7 states what that cost and what was rerun.
 
 ---
 
@@ -195,7 +195,7 @@ claim either way. **`S165` is therefore UNMEASURED by this run**, and the reason
 for breaking a link also repairs the subscriptions when it is released. `sync.abandonedSubscribes` read `{}`
 on all three vaults in both arms, before and after.
 
-### P2 — `S148` (WP115): **CONFIRMED on both setups in Arm CLEAN. The Arm REAL row is VOID — see §7**
+### P2 — `S148` (WP115): **CONFIRMED — both setups, and both arms for setup (b)**
 
 The only variable between the two setups is whether Obsidian was **running** while the bytes changed
 underneath it, which is the mechanism `S148` names (the in-memory index mtime vs the on-disk mtime).
@@ -211,10 +211,31 @@ mtime **newer** than `lastSessionEndedAt` (branch 5a), the guest rejoins.
 | `sync.conflictCopies` on the guest | `{total: 1, byArm: {"text": 1}, failed: 0, discarded: 0}` | `{total: 1, byArm: {"text": 1}, failed: 0, discarded: 1}` |
 | the shared path afterwards, judged by the oracle | **CONVERGED in 0.00 s**, all three at 49 B, one digest | **CONVERGED in 0.24 s**, all three at 49 B, one digest |
 
+**And setup (b) again under Arm REAL**, after the first attempt at it was voided by a refused rejoin (§7).
+All three renderers `hidden`, the invite re-copied by the host and verified (`len 357`, prefix
+`obsliveshare:`) **before** the join, and the join's raw response read (`{"ok": true, "inviteLen": 357}`)
+before anything was judged:
+
+| | (b) under **Arm REAL**, windows backgrounded |
+|---|---|
+| `lastSessionEndedAt` / file mtime | 10:30:31 / 10:30:37 → **NEWER**, branch 5a |
+| the guest is genuinely back | `role: guest`, room `90faf3d5…`, `active: true`, 0.16 s after the join |
+| **the guest's offline work** | **SURVIVED** — `_liveshare-test (conflicts)/w4d-real-p2b-103031 (2026-08-08 10-30-38).md` |
+| the shared path afterwards | **CONVERGED in 0.09 s**, all three at 47 B, digest `d081aa8e0fe1` |
+
 **Verdict: CONFIRMED. On this build a guest's offline divergence is preserved as a conflict copy on BOTH
-setups, including the one WP111 reported as a silent overwrite.** WP111's `S125` REFUTED reading —
-*"no copy, `conflictCopies` `{total: 0, failed: 0}` on all three, the guest's line exists nowhere"* — does
-not reproduce.
+setups and in BOTH arms for the setup that lost the bytes, including the one WP111 reported as a silent
+overwrite.** WP111's `S125` REFUTED reading — *"no copy, `conflictCopies` `{total: 0, failed: 0}` on all
+three, the guest's line exists nowhere"* — does not reproduce.
+
+**A fifth data point arrived by accident and is the strongest of the five.** The void row (§7) left vault A
+out of the session with a divergent file on disk for **seventeen minutes** — far longer than any deliberate
+arm. When A finally rejoined at 10:30:06, the product **preserved those seventeen-minute-old guest bytes**
+as `_liveshare-test (conflicts)/w4d-real-p2b-101342 (2026-08-08 10-30-06).md` and converged the shared path
+to the host's 47 bytes on all three (`45b37f4ed687`, CONVERGED). A's final ledger reads
+`{total: 2, byArm: {"text": 2}, failed: 0, discarded: 1}` — two preserved, one documented discard, nothing
+failed. An accident is not a designed arm and I am not counting it as one, but it is the longest offline
+divergence this project has measured and nothing was lost.
 
 **`CONFLICT COPY SKIPPED:` fired, and it carries both clocks exactly as chartered.** It has never been seen
 live before. The whole line, verbatim:
@@ -411,7 +432,7 @@ DIVERGED across the share, and that somebody who owns that rule should decide wh
 | P1a mid-session notes left unsubscribed | **0 of 12** | **0 of 12** | WP111: 0 of 16 vs **16 of 16** |
 | P1b recovery after `link.restore` | +10 s | +10 s | `resubscribed` 9 vs 27 |
 | P1b subsequent host edit | CONVERGED 1.89 s | CONVERGED 2.05 s | |
-| P2 guest offline edit survives | **yes, both setups** | **VOID** (§7) | |
+| P2 guest offline edit survives | **yes, both setups** | **yes, setup (b)** — first attempt VOID (§7), rerun CONVERGED 0.09 s | |
 | P3 guest canvas → all three byte-identical | **3/3** | **3/3** | originator adopts late: >90 s / >240 s on 2 of 3 |
 | P5a `S134` four cells | 1.41–1.42 s | 1.44–1.50 s | 1.04× |
 | P5b `S135` cross-folder move, both roles | 0.00 s | 0.00 s | exact-digest clause |
@@ -489,14 +510,24 @@ raw response.
 **The fix is known and small** — the host must re-run `live-share:copy-invite` before a mid-run rejoin —
 and it is stated here so the next round does not rediscover it.
 
+**It was applied and the row was rerun, so the void is a disclosed detour rather than a hole.** After the
+resume, the host re-copied the invite, the clipboard was verified (`len 357`, sha `3bd39625a06e`, prefix
+`obsliveshare:`) **before** the join was attempted, the join answered `{"ok": true, "inviteLen": 357}`, and
+vault A was polled to `role: guest` with a room before anything was judged. The rig now refuses to score
+the row at all unless all three of those hold — the repaired `w4d_p2.py` returns a `VOID` result instead of
+a verdict. **The rerun's numbers are in §4 under P2 and they are the ones that count; the void row's numbers
+are quoted only to show what a refused gesture looks like when it is mistaken for a measurement.**
+
+**This also proves the refusal was the clipboard and not the product:** the same guest, the same session,
+the same command, one minute later, with the invite put back — joined in 5 ms.
+
 ---
 
 ## 8. What I did not get to
 
-- **P2 setup (a) — close-and-reopen — under Arm REAL.** Only setup (b) was attempted in REAL, and it is
-  void. Setup (a) ran under CLEAN only.
-- **P2 setup (b) under Arm REAL, valid.** Void as above; the rerun is the first thing the next round or
-  the remainder of this one should do.
+- **P2 setup (a) — close-and-reopen — under Arm REAL.** Setup (a) ran under **CLEAN only**. Reproducing it
+  in REAL costs a full kill-and-relaunch of all three vaults plus the ten minutes of backgrounding needed
+  before the clamp is deep again, and I stopped rather than take a shallow reading and call it REAL.
 - **`S165` separated from `link.restore`'s own resubscribe.** §4 explains why this run cannot answer it:
   the only severance instrument repairs the subscriptions when it is released. Answering it needs a break
   that is released **without** a resubscribe, or a reconnect driven from the relay side.
@@ -508,41 +539,73 @@ and it is stated here so the next round does not rediscover it.
 
 ---
 
-## 9. The state the rig is in as of 10:25
+## 9. The state the rig was left in, 10:36
+
+**Running and connected, which is what the charter asks for.**
 
 | | A | B | C |
 |---|---|---|---|
-| role | **`null` — out of session** (§7) | **host** | guest |
-| room | `""` | `90faf3d5-a6c6-4c13-8071-b8ac8dbd1411` | same |
-| `link.report` | `state: "no-session"`, both links `ABSENT`, `retryChainEnded: []`, `severance.halted: false` | `connected`, both links `OPEN`, `healthy: true` | `connected`, both links `OPEN`, `healthy: true` |
-| status bar | `Live Share: off` | `Live Share: hosting (2) 8ms` | `Live Share: joined (2) 8ms` |
+| role | guest | **host** | guest |
+| room | `90faf3d5-a6c6-4c13-8071-b8ac8dbd1411` | same | same |
+| `connected` / `sessionManager.isActive` | `true` / `true` | `true` / `true` | `true` / `true` |
 | `sharedFolder` | `"_liveshare-test"` | `"_liveshare-test"` | `"_liveshare-test"` |
 | `main.js` sha | `93c65f06a347e6cc` | `93c65f06a347e6cc` | `93c65f06a347e6cc` |
 | `data.json` sha-of-bytes | `c083bbb2ef1b37ac` | `875010c7c5e59048` | `ad0e62838d35e94f` |
 | `debugLogging` / `autoReconnect` | `true` / `true` | `true` / `true` | `true` / `true` |
+| empty-write ledger | `{total: 1, doc-write: 1}` | `{total: 0}` | `{total: 1, doc-write: 1}` |
+| conflict-copy ledger | `{total: 2, text: 2, failed: 0, discarded: 1}` | `{total: 0}` | `{total: 0}` |
 
-- **`sharedFolder` was `_liveshare-test` on all three at every reading in this run and was never empty.**
-- Three Obsidian windows are up, launched **without** the throttling flags (Arm REAL's configuration, which
-  is what the owner runs), with `--remote-debugging-port=9222 --remote-allow-origins=*`.
-- **45 `w4d-*` artefacts are still in the share on each vault**, and one `main.js.pre-v2-smoke-w4d` per
-  vault. Cleanup and the A rejoin are the remaining work; §10 records what must be removed.
-- The stray third vault registration in `obsidian.json` and `Projects/_external/FinaleAbgabe` were **never
-  touched**. `data.json` was never read, copied, printed or logged on any vault.
+- **`sharedFolder` was `"_liveshare-test"` on all three at every reading in this run and was never empty.**
+- Three Obsidian windows are up, launched **without** the throttling flags — Arm REAL's configuration,
+  which is what the owner runs, and the shape the rig was found in — with
+  `--remote-debugging-port=9222 --remote-allow-origins=*`.
+- **Build `93c65f06a347e6cc` installed on all three**, verified by read-back and re-read at cleanup.
+- The stray third vault registration in `obsidian.json` was **read and not repaired**.
+  `Projects/_external/FinaleAbgabe` was never touched. `data.json` was never read, copied, printed or
+  logged on any vault — sha-of-bytes only, at every point.
+- The relay is left on the **new** image with both rollback points in place (§1.4).
 
 ---
 
-## 10. Cleanup still owed
+## 10. Cleanup ledger
 
-- every `w4d-*` file and folder in `_liveshare-test` on all three vaults (45 entries each);
-- `_liveshare-test (conflicts)/w4d-clean-p2a-…md` and `w4d-clean-p2b-…md` — this run's `S148` evidence,
-  fully transcribed in §4 above, so nothing is lost by removing them;
-- **our namespace `.pre-v2-smoke-w4d`** — one `main.js.pre-v2-smoke-w4d` per vault, and **zero may remain**;
-- the pre-existing set to restore to is the 09:13 census: **A 10 entries** (including
-  `_liveshare-test (conflicts)/w4b-guestedit (2026-08-07 22-50-33).md`, which is a **predecessor's**
-  evidence and stays), **B 9**, **C 9**;
-- **not ours, to be left exactly as found and reported rather than removed:** `main.js.bak`,
-  `main.js.0.5.9.bak`, `manifest.json.bak`, `styles.css.bak` (the owner's), `data.json.wp88-b34.armed`,
-  `data.json.wp88-b34.pre`, and `main.js.pre-wp100 / .pre-wp102 / .pre-wp107` (other batches').
+**The share, after cleanup, read from each vault's own index — identical to the 09:13 census, with nothing
+extra and nothing missing:**
+
+| vault | entries | `EXTRA vs pre-existing` | `MISSING vs pre-existing` |
+|---|---|---|---|
+| A | **10** + the two folder objects | `_liveshare-test`, `_liveshare-test (conflicts)` (the census listed these by file, not by folder) | **empty** |
+| B | **9** + the folder object | `_liveshare-test` | **empty** |
+| C | **9** + the folder object | `_liveshare-test` | **empty** |
+
+Every `w4d-*` artefact this run created was deleted through Obsidian's own `app.vault.delete` on the vault
+that held it — 66/60/60 entries down to 12/10/10 — and deleting on the holder propagated to the peers.
+**All four of this run's conflict copies were removed** (`w4d-clean-p2a-…`, `w4d-clean-p2b-…`,
+`w4d-real-p2b-101342 …`, `w4d-real-p2b-103031 …`); they are transcribed in full in §4, so removing them
+costs no evidence. **`_liveshare-test (conflicts)/w4b-guestedit (2026-08-07 22-50-33).md` is a
+predecessor's evidence, pre-dates this run, and was left exactly as found.**
+
+**Our namespace — three files removed, zero remain:**
+
+| vault | removed |
+|---|---|
+| A, B, C | `main.js.pre-v2-smoke-w4d` (5 152 784 B each — WP111's displaced bundle) |
+
+`.pre-v2-smoke remaining: []` on all three, read back after the removals, as the charter requires.
+
+**Left exactly as found, reported rather than removed — these are not in our namespace:**
+
+| vault | left in place |
+|---|---|
+| A, B | `main.js.bak`, `main.js.0.5.9.bak`, `manifest.json.bak`, `styles.css.bak` — **the owner's** |
+| A, B | `data.json.wp88-b34.armed`, `data.json.wp88-b34.pre` — another batch's namespace |
+| A, B, C | `main.js.pre-wp100` (4 904 632 B), `main.js.pre-wp102` (5 029 152 B), `main.js.pre-wp107` (5 095 473 B) — another batch's namespace |
+
+Repeating WP111's note because it is still true and still a trap: **vault C has no `main.js.bak`**, so C's
+only restore points to a non-e2e bundle are the `pre-wp100/102/107` files, which are all e2e-sized.
+
+**Nothing was deliberately left behind as evidence this round.** Everything this run produced is either
+deleted and transcribed here, or is a rollback point on the relay named in §1.4.
 
 ---
 
@@ -569,6 +632,10 @@ Console transcripts, complete and unedited, under `tools/_console_runtime/`:
 | `6e5623d3` | Arm REAL battery 2, P2b (**the void row**), canvas check |
 | `6546fd3e` | REAL re-judgements |
 | `ff9fae8a` | post-interruption rig state |
+| `d2934d1e` | vault A restored to the session — the invite repair, proved by construction |
+| `9f8a25f1` | **Arm REAL P2b rerun**, the valid row |
+| `b9730d54` | the void row's file after A rejoined — the 17-minute offline divergence, preserved |
+| `3f4d89f4` | cleanup, the share restored to the 09:13 census, and the rig left running |
 
 Machine-readable results: `H:\tmp\w4d_battery_{clean,real}.json`, `w4d_battery2_{clean,real}.json`,
 `w4d_p2_clean_{a,b}.json`, `w4d_p2_real_b.json`, `w4d_recheck.json`, `w4d_canvascheck.json`.
