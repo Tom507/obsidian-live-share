@@ -2,6 +2,13 @@ import * as Y from "yjs";
 
 import { migrateV1ToV2 } from "../canvas/canvas-schema";
 import {
+  CANVAS_CONFLICT_ARM,
+  CANVAS_DISCARD,
+  type CanvasRecordRef,
+  decideCanvasDiscard,
+  describeDiscarded,
+} from "./canvas-discard-guard";
+import {
   NOTHING_KNOWS_DOC,
   SEED_DECISION,
   type SeedKnowledge,
@@ -22,6 +29,13 @@ import {
   seedRecordsIntoYMaps,
   serializeCanvas,
 } from "./canvas-sync";
+import {
+  conflictCopyPath,
+  isConflictsPath,
+  noteConflictCopy,
+  noteConflictCopyFailure,
+  noteConflictSkipped,
+} from "./conflict-copy";
 import type { DurableSeedRefusals } from "./seed-refusal-store";
 
 // ---------------------------------------------------------------------------
@@ -127,6 +141,52 @@ export type ColdOpenResult =
   | "seeded-from-file" // doc was empty → file parsed and seeded into the doc
   | "doc-wins" // doc non-empty → file NOT read; stale file overwritten from doc
   | "empty"; // doc empty AND file missing/empty → nothing to seed
+
+/**
+ * WP121 — the seam the `doc-wins` preservation copy travels through.
+ *
+ * DELIBERATELY NOT {@link PersistenceIO}, and the reason is not tidiness:
+ *
+ *   ├── `PersistenceIO.write` is the CANVAS WRITER's door. In production it is
+ *   │   decorated by WP87's editing-aware hold, which defers `.canvas` bytes
+ *   │   while an inline editor is open and re-plays them under the canvas path's
+ *   │   key. A one-shot additive copy to a DIFFERENT path has no business in
+ *   │   that queue, and `writeSnapshot`'s echo mute has no business around it
+ *   │   either — the conflicts root is not a watched canvas.
+ *   └── `PersistenceIO.read` is asserted ABSENT on the `doc-wins` branch by two
+ *       existing packages (`canvas-persistence.test.ts:424`, WP25 `tp08`), and
+ *       those assertions pin a real property: NO FILE→CRDT INPUT. Reading the
+ *       file for preservation does not violate that property, but it does
+ *       violate their proxy for it — and editing another package's test to make
+ *       room is exactly what this run forbids. A separate door keeps both true.
+ *
+ * OMITTING IT IS THE PRE-WP121 COMPOSITION, byte for byte: no read, no copy, no
+ * ledger entry. That default is what keeps every existing caller and every
+ * headless fixture behaving as it did — and it is why the PRODUCTION wiring is
+ * pinned structurally (`__tests__/v2/wp121/` census over `main.ts`) rather than
+ * left to a reviewer noticing an absent option.
+ */
+export interface CanvasDiscardPreservation {
+  /** `settings.sharedFolder` — the conflicts root is its SIBLING (`S125` AC7/AC9). */
+  sharedFolder: string;
+  /** The local `.canvas` bytes, or `null` when the file does not exist. */
+  read(diskPath: string): Promise<string | null>;
+  /**
+   * Write the preserved copy. Production routes this through the vault's
+   * path-safety + folder guards.
+   *
+   * The parameter is `copyPath`, NOT `diskPath`, and the name is load-bearing:
+   * WP87's surface-route census derives its file-writer vocabulary from
+   * `PersistenceIO`'s own declaration and uses the FIRST PARAMETER'S NAME to
+   * separate a live-canvas-surface write from the writes that merely share the
+   * verb — its own comment names "a markdown sink, a sidecar checkpoint and a
+   * conflict archive" as the three it must exclude. This is the conflict
+   * archive. It never writes the canvas path.
+   */
+  write(copyPath: string, content: string): Promise<void>;
+  /** Injected so the stamp in the copy's filename is testable. */
+  now?(): Date;
+}
 
 export interface CanvasPersistenceOpts {
   /** Injected clock/scheduler. Default: real globals (fake-timer friendly). */
@@ -236,6 +296,13 @@ export interface CanvasPersistenceOpts {
    * during `subscribe`.
    */
   seedKnowledge?: SeedKnowledge;
+  /**
+   * WP121 — where the local version is preserved before `doc-wins` overwrites it.
+   *
+   * See {@link CanvasDiscardPreservation} for why this is its own seam and what
+   * omitting it means.
+   */
+  preserveDiscarded?: CanvasDiscardPreservation;
 }
 
 export class CanvasPersistence {
@@ -275,6 +342,8 @@ export class CanvasPersistence {
   // caller supplied — including a field the caller failed to fill, which the
   // fail-closed rule must be able to notice.
   private readonly seedKnowledge: SeedKnowledge;
+  // WP121: the preservation door. Absent = the pre-WP121 composition exactly.
+  private readonly preserveDiscarded?: CanvasDiscardPreservation;
   // The `SEED REFUSED:` line last emitted at warn level, so the arming (and any
   // later change to the refused set) is narrated exactly once instead of on
   // every debounced flush.
@@ -343,6 +412,7 @@ export class CanvasPersistence {
     // that answered `null` stays an unanswered question instead of being
     // laundered into permission to seed.
     this.seedKnowledge = opts.seedKnowledge === undefined ? NOTHING_KNOWS_DOC : opts.seedKnowledge;
+    this.preserveDiscarded = opts.preserveDiscarded;
   }
 
   /**
@@ -580,8 +650,13 @@ export class CanvasPersistence {
    * SPEC_03 §4 cold-open load decision. Call BEFORE constructing the binding and
    * BEFORE `start()`, once the doc has synced:
    *
-   *  - Doc NON-EMPTY → the doc wins: the file is NOT read (no file→CRDT input).
+   *  - Doc NON-EMPTY → the doc wins: the file is NOT read AS A CRDT INPUT.
    *    The stale file is overwritten from the doc so disk reflects shared truth.
+   *    WP121: when a preservation door is wired it is read ONCE through that
+   *    separate seam, for a conflict copy only — no transaction, no record map
+   *    touched, no byte of it reaching the doc. `PersistenceIO.read` is still
+   *    never called on this branch, which is what the two existing "no file→CRDT
+   *    read" pins actually assert.
    *  - WP29: doc EMPTY but a sidecar or a peer KNOWS it → `"empty"`. The file is
    *    not read, nothing is written, no transaction is opened. An empty board
    *    somebody already holds is a cleared board, not a new one.
@@ -611,11 +686,32 @@ export class CanvasPersistence {
 
     const docNonEmpty = this.nodesMap.size > 0 || this.edgesMap.size > 0;
     if (docNonEmpty) {
-      // Doc wins. Never read the file. Migrate what the relay handed us, THEN
-      // overwrite the (possibly stale) file so disk matches shared truth — in
-      // that order, so the snapshot that reaches disk is the post-migration one
-      // and a second cold open has nothing left to write.
+      // Doc wins. Never read the file AS A CRDT INPUT. Migrate what the relay
+      // handed us, THEN overwrite the (possibly stale) file so disk matches
+      // shared truth — in that order, so the snapshot that reaches disk is the
+      // post-migration one and a second cold open has nothing left to write.
+      //
+      // WP121 — WINNING IS NOT A LICENCE TO DISCARD. Between the two, and only
+      // when a preservation door was wired, the file is read ONCE through a
+      // SEPARATE seam and copied beside the share if the projection about to
+      // land is missing records it holds. Who wins does not change by one byte:
+      // the copy is strictly additive and the flush below is unconditional, on
+      // `preserveLocalVersion`'s precedent — "a vault that refuses the copy must
+      // still receive the host's content, because failing the sync would turn a
+      // best-effort safety net into a new outage" (`manifest.ts:1196-1204`).
+      //
+      // The read is NOT a file→CRDT input: it opens no transaction, touches
+      // neither record map, and its bytes reach only the conflicts folder.
       this.migrateRecordBearingDoc();
+      // A6, MEASURED (`__tests__/v2/wp121/test_tp02`): a standing seed refusal
+      // withholds the ENTIRE flush — `writeIsWithheld` returns before the
+      // serializer — so on a withheld path the file is not overwritten at all
+      // and there is nothing to preserve against. Asking the SAME predicate the
+      // flush will ask, rather than a second one, is what keeps the two from
+      // disagreeing; it is idempotent (the lift prunes once and narrates once).
+      if (!this.writeIsWithheld()) {
+        await this.preserveRecordsTheDocDoesNotKnow();
+      }
       await this.flush();
       return "doc-wins";
     }
@@ -660,6 +756,111 @@ export class CanvasPersistence {
     this.seedDocFromCanvasData(data, seedOrigin);
     this.migrateRecordBearingDoc();
     return "seeded-from-file";
+  }
+
+  /**
+   * ── WP121: THE COPY THAT GOES UNDER THE `doc-wins` FLUSH ───────────────────
+   *
+   * NEVER THROWS, on `preserveLocalVersion`'s contract and for its reason: a
+   * vault that refuses the copy must still receive the document's content,
+   * because failing the cold open would turn a best-effort safety net into a new
+   * outage — and would leave the board WRITERLESS, which is exactly the defect
+   * WP122 exists to remove.
+   *
+   * EVERY BRANCH IS COUNTED (`S155`). `ConflictCopyLedger.discarded` exists
+   * because a guard that RAN and decided "nothing to preserve" used to be
+   * indistinguishable from a guard that was NEVER CALLED — both read
+   * `{total: 0, byArm: {}, failed: 0}` — and a live round measured exactly that
+   * on three vaults, producing a report and a charter that both concluded the
+   * wrong thing. Without a canvas arm here, the next live round could not
+   * attribute a canvas loss even if it saw one.
+   */
+  private async preserveRecordsTheDocDoesNotKnow(): Promise<void> {
+    const door = this.preserveDiscarded;
+    // Omitted = the pre-WP121 composition: no read, no copy, no ledger entry.
+    // Production wires it and `wp121/`'s census pins that structurally.
+    if (door === undefined) return;
+    // The conflicts root is an OWNED exclusion (`conflict-copy.ts:46-58`): a
+    // copy that ever counted as shared would be published, re-conflicted on the
+    // next join and multiply without bound. A canvas that somehow lives INSIDE
+    // that root must therefore never seed another copy into it.
+    if (isConflictsPath(this.diskPath, door.sharedFolder)) return;
+
+    let fileContent: string | null;
+    try {
+      fileContent = await door.read(this.diskPath);
+    } catch (err) {
+      // Reading failed: we cannot say what the file holds, and the flush is
+      // about to overwrite it. Counted as a FAILED safety net, never as "nothing
+      // to preserve" — the two must not read the same.
+      noteConflictCopyFailure();
+      this.logger?.warn?.(
+        "canvas-persistence",
+        `CONFLICT COPY FAILED: arm=${CANVAS_CONFLICT_ARM} path=${this.diskPath} ` +
+          `the local version could not be read (${String(err)}) before the document ` +
+          "replaced it",
+      );
+      return;
+    }
+
+    const verdict = decideCanvasDiscard({
+      fileContent,
+      docKnows: (ref) => this.docKnowsRecord(ref),
+    });
+    if (verdict.decision === CANVAS_DISCARD.NOTHING_TO_PRESERVE) {
+      noteConflictSkipped(
+        {
+          arm: CANVAS_CONFLICT_ARM,
+          path: this.diskPath,
+          reason: verdict.reason,
+          evidence: `fileRecords=${verdict.fileRecordCount} discarded=0`,
+        },
+        { warn: (c: string, m: string) => this.logger?.warn?.(c, m) },
+      );
+      return;
+    }
+
+    const bytes = fileContent ?? "";
+    try {
+      const when = door.now?.() ?? new Date();
+      const target = conflictCopyPath(this.diskPath, door.sharedFolder, when);
+      await door.write(target, bytes);
+      noteConflictCopy(CANVAS_CONFLICT_ARM);
+      this.logger?.warn?.(
+        "canvas-persistence",
+        `CONFLICT COPY: arm=${CANVAS_CONFLICT_ARM} path=${this.diskPath} ` +
+          `preserved before the document's projection replaced it — ` +
+          `${verdict.discarded.length} record(s) the document does not know: ` +
+          `${describeDiscarded(verdict.discarded)}`,
+      );
+    } catch (err) {
+      // `S137`'s third family member: not a refusal but a FAILED safety net.
+      // Counted, said, and the flush proceeds regardless — by design.
+      noteConflictCopyFailure();
+      this.logger?.warn?.(
+        "canvas-persistence",
+        `CONFLICT COPY FAILED: arm=${CANVAS_CONFLICT_ARM} path=${this.diskPath} ` +
+          `the local version was not preserved before the document replaced it ` +
+          `(${String(err)})`,
+      );
+    }
+  }
+
+  /**
+   * WP121 — does the document KNOW this id? Knowledge, never visibility.
+   *
+   * A tombstone counts. Deletion in V2 is a VALUE, not an absence (WP19), so a
+   * record the user deleted is a record the document knows about — and asking
+   * the PROJECTION instead (which suppresses tombstoned records) would put a
+   * conflict copy beside the board on every ordinary delete.
+   *
+   * The two id spaces are kept separate because they are separate: a node and an
+   * edge may share an id. The tombstone container is keyed by RECORD ID alone,
+   * exactly as `isRecordSuppressed` keys it, so it is consulted for both kinds.
+   */
+  private docKnowsRecord(ref: CanvasRecordRef): boolean {
+    if (this.deletedMap.has(ref.id)) return true;
+    return ref.kind === "node" ? this.nodesMap.has(ref.id) : this.edgesMap.has(ref.id);
   }
 
   /**

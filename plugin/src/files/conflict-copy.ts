@@ -128,9 +128,22 @@ export interface ConflictCopyLedger {
    * between a live round that attributes a data loss and one that cannot.
    */
   discarded: number;
+  /**
+   * WP121 — `discarded` BY ARM, for the same reason `byArm` exists beside
+   * `total`.
+   *
+   * `S148`'s lesson was that a guard which ran and decided "do nothing" must not
+   * read the same as a guard that was never called. With a third arm on the
+   * counter that lesson only half survives: `{discarded: 4}` on a vault running
+   * a guest join AND a canvas cold open cannot say which guard decided what, so
+   * the next live round would be back to attributing by inference. One map is
+   * the difference between a reading that attributes and one that does not.
+   */
+  discardedByArm: Record<string, number>;
 }
 
 const copiesByArm = new Map<string, number>();
+const discardsByArm = new Map<string, number>();
 let copyTotal = 0;
 let copyFailures = 0;
 let copyDiscards = 0;
@@ -139,6 +152,12 @@ let copyDiscards = 0;
 export function noteConflictCopy(arm: string): void {
   copyTotal += 1;
   copiesByArm.set(arm, (copiesByArm.get(arm) ?? 0) + 1);
+}
+
+/** The `discarded` counter, incremented for exactly one arm. */
+function countDiscard(arm: string): void {
+  copyDiscards += 1;
+  discardsByArm.set(arm, (discardsByArm.get(arm) ?? 0) + 1);
 }
 
 /** Record a preservation that could not be written. */
@@ -165,10 +184,36 @@ export function conflictDiscardMessage(input: {
   mtime: unknown;
   lastSessionEndedAt: unknown;
 }): string {
+  return conflictSkippedMessage({
+    arm: input.arm,
+    path: input.path,
+    reason: input.reason,
+    evidence:
+      `mtime=${String(input.mtime)} lastSessionEndedAt=${String(input.lastSessionEndedAt)}`,
+  });
+}
+
+/**
+ * WP121 — the SAME line, for an arm whose decision is not a clock comparison.
+ *
+ * The two clocks are `decideConflictPreservation`'s evidence and they are the
+ * whole point of the text/binary line. The canvas arm decides on a RECORD SET
+ * and has no clocks at all, so it carries its own evidence in the same slot —
+ * the record counts — rather than printing two `undefined`s to keep a shape.
+ *
+ * The PREFIX is shared deliberately: `S148`'s reason for one spelling was that a
+ * live grep must be a census over arms, not over phrasings. Two prefixes would
+ * put the canvas arm outside every grep the run already uses.
+ */
+export function conflictSkippedMessage(input: {
+  arm: string;
+  path: string;
+  reason: string;
+  evidence: string;
+}): string {
   return (
     `CONFLICT COPY SKIPPED: arm=${input.arm} path=${input.path} ` +
-    `mtime=${String(input.mtime)} lastSessionEndedAt=${String(input.lastSessionEndedAt)} ` +
-    `reason=${input.reason}`
+    `${input.evidence} reason=${input.reason}`
   );
 }
 
@@ -192,8 +237,24 @@ export function noteConflictDiscard(
   },
   logger?: { warn(category: string, message: string): void } | null,
 ): void {
-  copyDiscards += 1;
+  countDiscard(input.arm);
   const message = conflictDiscardMessage(input);
+  logger?.warn("file-op", message);
+  console.warn(`[live-share] ${message}`);
+}
+
+/**
+ * WP121 — record one deliberate decision NOT to preserve, for an arm that
+ * carries its own evidence. Same counter, same prefix, same reason as
+ * {@link noteConflictDiscard}: a branch that decides against preserving a user's
+ * file and leaves no trace is a branch nobody can audit after the fact.
+ */
+export function noteConflictSkipped(
+  input: { arm: string; path: string; reason: string; evidence: string },
+  logger?: { warn(category: string, message: string): void } | null,
+): void {
+  countDiscard(input.arm);
+  const message = conflictSkippedMessage(input);
   logger?.warn("file-op", message);
   console.warn(`[live-share] ${message}`);
 }
@@ -205,6 +266,7 @@ export function getConflictCopies(): ConflictCopyLedger {
     byArm: Object.fromEntries(copiesByArm),
     failed: copyFailures,
     discarded: copyDiscards,
+    discardedByArm: Object.fromEntries(discardsByArm),
   };
 }
 
@@ -214,6 +276,7 @@ export function resetConflictCopies(): void {
   copyFailures = 0;
   copyDiscards = 0;
   copiesByArm.clear();
+  discardsByArm.clear();
 }
 
 /**

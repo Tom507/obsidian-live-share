@@ -3735,6 +3735,34 @@ export default class LiveSharePlugin extends Plugin {
             }),
             role: this.settings.role === "host" ? "host" : "guest",
           },
+          // ── WP121 — WINNING IS NOT A LICENCE TO DISCARD ──────────────────
+          //
+          // The `doc-wins` branch overwrites the user's `.canvas` from the
+          // document. That decision is unchanged; what this adds is the copy
+          // the text arm has had since `S125`, for the case the document is
+          // missing records the file holds.
+          //
+          // It travels through `baseIo`, NOT through the decorated `io` above:
+          // the decoration is WP87's editing-aware hold, which defers `.canvas`
+          // bytes while an inline editor is open and re-plays them under THIS
+          // canvas path's key. A one-shot additive copy to a path in the
+          // conflicts root has nothing to do with that queue. `baseIo` still
+          // carries the two guarantees that matter for any vault write —
+          // `isPathSafe` and `ensureFolder` — so the copy cannot escape the
+          // vault and its folder is created for it.
+          //
+          // `copyPath`, never `diskPath`: WP87's surface-route census derives
+          // the live-canvas-surface vocabulary from `PersistenceIO`'s own
+          // declaration and discriminates on the FIRST PARAMETER'S NAME,
+          // because `write(` alone also matches "a markdown sink, a sidecar
+          // checkpoint and a conflict archive" (its words). This is the
+          // conflict archive, and it never writes the canvas path.
+          preserveDiscarded: {
+            sharedFolder: this.settings.sharedFolder,
+            read: async (diskPath) =>
+              (await baseIo.exists(diskPath)) ? await baseIo.read(diskPath) : null,
+            write: (copyPath, content) => baseIo.write(copyPath, content),
+          },
         },
       );
       // A session teardown may have raced the awaited cold open.
