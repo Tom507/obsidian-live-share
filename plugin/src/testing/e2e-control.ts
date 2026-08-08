@@ -3530,6 +3530,100 @@ function safeNodeGeometry(adapter: DiagAdapterLike, nodeId: string): DiagGeometr
   }
 }
 
+/**
+ * I6 — THE AWARENESS SNAPSHOT. A pure read of the wire.
+ *
+ * It supplies `holders` / `winner` context for I3 and I4, gives the claim leak's
+ * LIVE count per peer, and lets the reader prove the phantom `(typing)` pill:
+ * `resolveCursors` sets `typing: cs.nodeId !== null` (`canvas-presence.ts:192`),
+ * so a peer whose `nodeId` is non-null while it holds no gesture claim is
+ * rendering a pill about nothing.
+ *
+ * `epoch` is surfaced per lock entry because `S187` says it is in the wire shape
+ * and was never implemented — so `epoch: undefined` on every entry is itself the
+ * confirmation, and it can only be confirmed by looking.
+ *
+ * THE SNAPSHOT IS NEVER WRITTEN BACK, and no field is added to the wire. That is
+ * the constraint which forbids the obvious alternative design of broadcasting a
+ * diagnostic field: WP27 AC3 pins the awareness state's six keys, and a
+ * diagnostic on the wire would perturb exactly the mechanism under
+ * investigation. Every cross-peer correlation is done OUT OF BAND, in Python,
+ * from three independent dumps.
+ *
+ * R4 — nothing here reads, names or hashes `data.json`. `identity.name` and the
+ * lock colours are values this peer already broadcasts to every other peer.
+ */
+function diagAwarenessSnapshot(plugin: E2EPluginLike, path: string): Record<string, unknown> {
+  const awareness = resolveDiagAwareness(plugin, path);
+  if (!awareness) {
+    return {
+      available: false,
+      reason: `no awareness handle for '${path}' on this peer (not subscribed, or the doc handle carries none)`,
+    };
+  }
+  let states: Map<number, Record<string, unknown>>;
+  try {
+    states = awareness.getStates();
+  } catch (err) {
+    return { available: false, reason: `getStates threw: ${diagErrorText(err)}` };
+  }
+  const peers: Array<Record<string, unknown>> = [];
+  for (const [clientId, raw] of states) {
+    const state = (raw ?? {}) as {
+      canvasPath?: unknown;
+      nodeId?: unknown;
+      x?: unknown;
+      y?: unknown;
+      lockedNodes?: unknown;
+      identity?: { name?: unknown; color?: unknown };
+    };
+    const lockedRaw = state.lockedNodes;
+    const lockedNodes: Record<string, unknown> = {};
+    const epochs: Record<string, unknown> = {};
+    if (lockedRaw !== null && typeof lockedRaw === "object") {
+      for (const [nodeId, entry] of Object.entries(lockedRaw as Record<string, unknown>)) {
+        const e = (entry ?? {}) as { color?: unknown; name?: unknown; epoch?: unknown };
+        lockedNodes[nodeId] = { color: e.color ?? null, name: e.name ?? null };
+        epochs[nodeId] = e.epoch === undefined ? "undefined" : e.epoch;
+      }
+    }
+    peers.push({
+      clientId,
+      isMe: clientId === awareness.clientID,
+      canvasPath: typeof state.canvasPath === "string" ? state.canvasPath : null,
+      onThisPath: state.canvasPath === path,
+      nodeId: typeof state.nodeId === "string" ? state.nodeId : null,
+      x: typeof state.x === "number" ? state.x : null,
+      y: typeof state.y === "number" ? state.y : null,
+      lockCount: Object.keys(lockedNodes).length,
+      lockedNodes,
+      epochs,
+      identityName: typeof state.identity?.name === "string" ? state.identity.name : null,
+      // `resolveCursors` renders a peer as typing on exactly this condition.
+      rendersTypingPill: typeof state.nodeId === "string",
+    });
+  }
+  // The local claim provenance, through the same cast I3/I4 use. `"unreadable"`
+  // rather than `{}` when the private map is absent (R7).
+  let lockMeta: unknown = "unreadable";
+  const target = resolveDiagTargets(plugin, path)[0];
+  const rawMeta = target?.presence?.lockMeta;
+  if (rawMeta instanceof Map) {
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of rawMeta as Map<unknown, unknown>) out[String(key)] = value;
+    lockMeta = out;
+  }
+  return {
+    available: true,
+    path,
+    myClientId: awareness.clientID,
+    peerCount: peers.length,
+    peersOnThisPath: peers.filter((p) => p.onThisPath === true).length,
+    peers: peers.sort((a, b) => Number(a.clientId) - Number(b.clientId)),
+    lockMeta,
+  };
+}
+
 /** I1 — all three planes for one path, taken on demand. */
 async function diagCensus(plugin: E2EPluginLike, path: string): Promise<DiagCensus> {
   return {
@@ -4224,6 +4318,60 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
   };
 
   /**
+   * I7 — THE VIEWPORT LEDGER. `{x, y, zoom}` on every viewport change.
+   *
+   * Registering adds one callback to a subscriber set the product already fans
+   * out to; the callback calls `getViewport()` (`canvas-adapter.ts:949`, pure)
+   * and pushes a row. It calls `refresh()` on nothing and touches no node.
+   *
+   * It exists for H5, and H5 is already very narrow: `refresh()`
+   * (`canvas-presence.ts:596-631`) renders cursors and calls `applyRings`, which
+   * only toggles a CSS class, sets a custom property and appends/removes a
+   * `<div>` inside the card element — there is NO node-geometry write anywhere
+   * on that path. So the only shape H5 can still produce is a view-plane move
+   * with a viewport row within ~200 ms and NO I2 row, i.e. Obsidian's own layout
+   * perturbed by the overlay child. I8 plus this ledger will show it if it
+   * happens; rank it last.
+   *
+   * `zoom` is `log2(scale)`, clamped to [-4, 1] — logarithmic, never a
+   * multiplier. It is reported raw and is not converted here.
+   */
+  const installViewportLedger = (target: DiagTarget): number => {
+    const adapter = target.adapter;
+    if (!adapter || typeof adapter.onViewportChange !== "function") {
+      notes.push(`I7 viewport ledger NOT installed on '${target.path}': no onViewportChange`);
+      return 0;
+    }
+    const path = target.path;
+    const read = (): unknown => {
+      try {
+        return adapter.getViewport?.() ?? null;
+      } catch {
+        return null;
+      }
+    };
+    let dispose: (() => void) | null = null;
+    try {
+      dispose = adapter.onViewportChange(() => {
+        try {
+          push({ t: Date.now(), kind: "viewport", path, viewport: read() });
+        } catch {
+          /* diagnostics must never break canvas interaction */
+        }
+      });
+    } catch {
+      notes.push(`I7 on '${path}': onViewportChange refused the subscription`);
+      return 0;
+    }
+    if (typeof dispose !== "function") return 0;
+    const undo = dispose;
+    removers.push({ what: "listener", undo });
+    // The baseline, so the first change row has something to be a change FROM.
+    push({ t: Date.now(), kind: "viewport", path, viewport: read(), baseline: true });
+    return 1;
+  };
+
+  /**
    * Install every hook for `path`. Each installer probes before it patches
    * (§4.2): an absent member is recorded as a note, never crashed on, because
    * the absence is itself the reading that names which bundle a peer is on.
@@ -4240,6 +4388,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
       patchedPaths.push(target.path);
       installViewWriteLedger(target);
       installPresenceLedgers(target);
+      installViewportLedger(target);
     }
     installYTransactionLedger(path);
   };
@@ -4272,6 +4421,17 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
             diagProto: CANVAS_DIAG_PROTO,
             armed,
             census: await diagCensus(plugin, req.path),
+            awareness: diagAwarenessSnapshot(plugin, req.path),
+            mountedPaths: mountedPaths(),
+          };
+        }
+        // I6 on its own, for a peer that only needs the wire read.
+        case "awareness": {
+          if (!req.path) throw new Error("canvas.diag op 'awareness' requires a 'path'");
+          return {
+            diagProto: CANVAS_DIAG_PROTO,
+            armed,
+            awareness: diagAwarenessSnapshot(plugin, req.path),
             mountedPaths: mountedPaths(),
           };
         }
@@ -4305,6 +4465,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
             mountedPaths: mountedPaths(),
             ringCapacity: CANVAS_DIAG_RING_CAPACITY,
             census: armCensus,
+            awareness: diagAwarenessSnapshot(plugin, req.path),
             notes: [...notes],
           };
         }
@@ -4366,6 +4527,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
             events: [...ring],
             armCensus,
             census,
+            awareness: diagAwarenessSnapshot(plugin, path),
             unattributed: delta.unattributed,
             attributed: delta.attributed,
             notes: dumpNotes,
