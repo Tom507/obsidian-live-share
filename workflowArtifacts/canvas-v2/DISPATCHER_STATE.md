@@ -211,7 +211,7 @@ a latency test.
 
 **Signal register:** `SIGNAL_REGISTER.md` is the allocation authority; the Dispatcher allocates.
 
-**Next free is S173.** <!-- signal-register: meta -->
+**Next free is S175.** <!-- signal-register: meta -->
 
 `NEXT_FREE` is hardcoded in `check_signal_register.py` **as well as** in the register — bump both or the
 checker fails every new allocation.
