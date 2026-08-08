@@ -1555,8 +1555,13 @@ export interface E2EPluginLike {
   logger?: { getSinkState?: () => unknown };
   /** S119 AC5 — the empty-write refusal ledger. Optional, like every capability here. */
   getEmptyWriteRefusals?: () => { total: number; byArm: Record<string, number> };
-  /** S125 AC10 — the conflict-copy ledger. */
-  getConflictCopies?: () => { total: number; byArm: Record<string, number>; failed: number };
+  /** S125 AC10 / S148 — the conflict-copy ledger, `discarded` included. */
+  getConflictCopies?: () => {
+    total: number;
+    byArm: Record<string, number>;
+    failed: number;
+    discarded: number;
+  };
   /** S123 AC5 — the last canvas mirror report, or null if no pass has run. */
   getLastCanvasMirrorReport?: () => unknown;
   /** S129 AC5 — the collab bind refusal ledger. */

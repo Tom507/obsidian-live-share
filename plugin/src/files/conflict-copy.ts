@@ -113,11 +113,27 @@ export interface ConflictCopyLedger {
   byArm: Record<string, number>;
   /** Copies refused because the copy itself failed. A silent failure here is a loss. */
   failed: number;
+  /**
+   * S148 — DECISIONS NOT TO COPY. The field that had to exist and did not.
+   *
+   * `decideConflictPreservation` returning DISCARD used to return before every
+   * counter in this module, so a guard that RAN and decided "merely stale" was
+   * indistinguishable from a guard that was NEVER CALLED: both read
+   * `{total: 0, byArm: {}, failed: 0}`.
+   *
+   * That is not a hypothetical. A live round measured exactly that reading on
+   * three vaults, and the report it produced — and the charter written from it —
+   * both concluded "`preserveLocalVersion` did not run at all". The reading does
+   * not support that conclusion and never could. One counter is the difference
+   * between a live round that attributes a data loss and one that cannot.
+   */
+  discarded: number;
 }
 
 const copiesByArm = new Map<string, number>();
 let copyTotal = 0;
 let copyFailures = 0;
+let copyDiscards = 0;
 
 /** Record one preserved version. Takes the ARM; never the path, never content. */
 export function noteConflictCopy(arm: string): void {
@@ -130,15 +146,73 @@ export function noteConflictCopyFailure(): void {
   copyFailures += 1;
 }
 
+/**
+ * S148 — THE ONE SPELLING OF THE "DECIDED NOT TO COPY" LINE.
+ *
+ * Modelled on `empty-write-guard.ts`'s `emptyWriteRefusalMessage` rather than
+ * re-invented, for its reason: a live grep must be a census over arms, not over
+ * phrasings.
+ *
+ * It carries BOTH TIMESTAMPS, and that is the point of the line. The whole of
+ * `S148` was that nobody could say which of "the guard never ran" and "the guard
+ * ran and said discard" had happened — and the two clocks it compared were the
+ * only thing that could have answered. They are integers, never file content.
+ */
+export function conflictDiscardMessage(input: {
+  arm: string;
+  path: string;
+  reason: string;
+  mtime: unknown;
+  lastSessionEndedAt: unknown;
+}): string {
+  return (
+    `CONFLICT COPY SKIPPED: arm=${input.arm} path=${input.path} ` +
+    `mtime=${String(input.mtime)} lastSessionEndedAt=${String(input.lastSessionEndedAt)} ` +
+    `reason=${input.reason}`
+  );
+}
+
+/**
+ * S148 — record one deliberate decision NOT to preserve: COUNT it and LOG it.
+ *
+ * The discard branch is CORRECT (`S125` 5b demonstrated it live with its
+ * control) and this does not change it by one byte. What changes is that it is
+ * no longer invisible. A branch that decides against preserving a user's file
+ * and leaves no trace is a branch nobody can audit after the fact, and this one
+ * was audited after the fact by three people who all read its silence as
+ * "unreachable".
+ */
+export function noteConflictDiscard(
+  input: {
+    arm: string;
+    path: string;
+    reason: string;
+    mtime: unknown;
+    lastSessionEndedAt: unknown;
+  },
+  logger?: { warn(category: string, message: string): void } | null,
+): void {
+  copyDiscards += 1;
+  const message = conflictDiscardMessage(input);
+  logger?.warn("file-op", message);
+  console.warn(`[live-share] ${message}`);
+}
+
 /** READ-ONLY. What has been preserved, so a live validator can read it. */
 export function getConflictCopies(): ConflictCopyLedger {
-  return { total: copyTotal, byArm: Object.fromEntries(copiesByArm), failed: copyFailures };
+  return {
+    total: copyTotal,
+    byArm: Object.fromEntries(copiesByArm),
+    failed: copyFailures,
+    discarded: copyDiscards,
+  };
 }
 
 /** Tests only. */
 export function resetConflictCopies(): void {
   copyTotal = 0;
   copyFailures = 0;
+  copyDiscards = 0;
   copiesByArm.clear();
 }
 
@@ -192,6 +266,48 @@ export interface PreservationVerdict {
 
 function usableTimestamp(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+/**
+ * S148 — WHICH CLOCK THE GUARD IS ALLOWED TO BELIEVE, and this is the precondition
+ * nobody had written down.
+ *
+ * `decideConflictPreservation`'s entire job is to compare "when was this file last
+ * modified" against "when did our last session end". `preserveLocalVersion` fed it
+ * `TFile.stat.mtime` — Obsidian's IN-MEMORY INDEX of the file — five lines after
+ * `syncFromManifest` had established the file diverged by calling `vault.read()`,
+ * which is a fresh read of the DISK.
+ *
+ * Two different freshness regimes, on the same file, in the same function. The
+ * divergence test is uncached; the decision about what to do with the divergence
+ * was cached. That asymmetry is invisible when Obsidian has been restarted since
+ * the edit — the index is rebuilt from disk at load, so the two agree, and that is
+ * the setup in which `S125` was validated live. It is NOT invisible when Obsidian
+ * was left running while the bytes changed underneath it: the index can still hold
+ * the mtime from BEFORE the edit, which is a moment INSIDE the last session, i.e.
+ * `< lastSessionEndedAt` — so a file the user genuinely edited is classified
+ * "merely stale" and destroyed without a copy.
+ *
+ * The repair is to ask the filesystem and to take the LATER of the two. Never the
+ * disk value alone: an adapter that has no `stat`, throws, or answers `null` is an
+ * unknown, and `AC6b` says every unknown preserves. Never the cache alone: that is
+ * the defect. `Math.max` is the preserving direction on both sides — a cache that
+ * is somehow AHEAD of the filesystem (a write whose mtime the filesystem rounded
+ * down) also resolves to "modified more recently", which errs toward keeping.
+ *
+ * THE DISCARD BRANCH IS NOT WEAKENED. When both clocks say the file predates the
+ * last session end, this returns that value and the verdict is still DISCARD.
+ * Only a file with real evidence of a later modification changes side.
+ */
+export function observedModificationTime(input: { cached: unknown; onDisk: unknown }): unknown {
+  const cached = input.cached;
+  const onDisk = input.onDisk;
+  if (usableTimestamp(cached) && usableTimestamp(onDisk)) return Math.max(cached, onDisk);
+  if (usableTimestamp(onDisk)) return onDisk;
+  // Not merely `input.cached`: when neither is usable the CACHED value is
+  // returned so `decideConflictPreservation` reports the same "no usable
+  // modification time" it always did, from the same input it always had.
+  return input.cached;
 }
 
 export function decideConflictPreservation(input: {

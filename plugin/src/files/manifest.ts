@@ -23,6 +23,8 @@ import {
   isConflictsPath,
   noteConflictCopy,
   noteConflictCopyFailure,
+  noteConflictDiscard,
+  observedModificationTime,
 } from "./conflict-copy";
 import {
   EMPTY_WRITE_DECISION,
@@ -1009,6 +1011,32 @@ export class ManifestManager {
   }
 
   /**
+   * S148 — the filesystem's answer to "when was this file last modified", or
+   * `undefined` when the vault cannot say.
+   *
+   * `DataAdapter.stat` is optional on this structural `Vault` type and absent
+   * from many of the content-only vault doubles this suite builds, so every
+   * failure mode — no method, a throw, a `null`, a non-numeric `mtime` — comes
+   * back as `undefined` and is handled by the caller as an UNKNOWN. An unknown
+   * never discards.
+   */
+  private async diskModificationTime(vaultPath: string): Promise<number | undefined> {
+    const stat = (this.vault as { adapter?: { stat?: (p: string) => Promise<unknown> } }).adapter
+      ?.stat;
+    if (typeof stat !== "function") return undefined;
+    try {
+      const result = (await stat.call(
+        (this.vault as { adapter: unknown }).adapter,
+        vaultPath,
+      )) as { mtime?: unknown } | null;
+      const mtime = result?.mtime;
+      return typeof mtime === "number" ? mtime : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * S125 — copy the guest's about-to-be-overwritten version beside the share.
    *
    * NEVER THROWS. Preservation is strictly additive to the sync: a vault that
@@ -1017,7 +1045,7 @@ export class ManifestManager {
    * best-effort safety net into a new outage. The failure is counted instead,
    * so it is visible rather than silent.
    */
-  private async preserveLocalVersion(
+  async preserveLocalVersion(
     path: string,
     localFile: TFile,
     arm: "text" | "binary",
@@ -1026,11 +1054,34 @@ export class ManifestManager {
     // are staleness (the host edited while we were away), and copying those
     // would fill the folder with versions the user never touched until nobody
     // read it. Every uncertain input resolves to PRESERVE — see the decision.
+    //
+    // S148 — THE MTIME IS READ FROM THE FILESYSTEM, not only from Obsidian's
+    // index. `localFile.stat.mtime` is a cached value with no freshness
+    // guarantee, and the branch it decides is destructive; see
+    // `observedModificationTime` for what that cost and why the disk read is
+    // additive rather than a replacement.
+    const mtime = observedModificationTime({
+      cached: localFile.stat?.mtime,
+      onDisk: await this.diskModificationTime(localFile.path),
+    });
     const verdict = decideConflictPreservation({
-      mtime: localFile.stat?.mtime,
+      mtime,
       lastSessionEndedAt: this.settings.lastSessionEndedAt,
     });
-    if (verdict.decision === CONFLICT_PRESERVATION.DISCARD) return false;
+    if (verdict.decision === CONFLICT_PRESERVATION.DISCARD) {
+      // S148 — COUNTED AND SAID. The decision is unchanged; its silence is not.
+      noteConflictDiscard(
+        {
+          arm,
+          path,
+          reason: verdict.reason,
+          mtime,
+          lastSessionEndedAt: this.settings.lastSessionEndedAt,
+        },
+        this.logger,
+      );
+      return false;
+    }
     try {
       const target = conflictCopyPath(path, this.settings.sharedFolder, new Date());
       const parent = target.substring(0, target.lastIndexOf("/"));

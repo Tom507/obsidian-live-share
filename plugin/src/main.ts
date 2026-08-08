@@ -38,7 +38,11 @@ import {
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
 import { BackgroundSync } from "./files/background-sync";
-import { conflictsRootFor, getConflictCopies } from "./files/conflict-copy";
+import {
+  type ConflictCopyLedger,
+  conflictsRootFor,
+  getConflictCopies,
+} from "./files/conflict-copy";
 import {
   getCollabBindFailures,
   getCollabBindRefusals,
@@ -1678,8 +1682,15 @@ export default class LiveSharePlugin extends Plugin {
     return `${base}. ${copies} local version(s) differed and were preserved in "${root}"`;
   }
 
-  /** S125 AC10 — the conflict-copy ledger, for a live validator. */
-  getConflictCopies(): { total: number; byArm: Record<string, number>; failed: number } {
+  /**
+   * S125 AC10 — the conflict-copy ledger, for a live validator.
+   *
+   * S148 — `discarded` is part of the contract, not an extra. A live round read
+   * `{total: 0, byArm: {}, failed: 0}` off this surface and concluded the guard
+   * had never run; the reading was equally consistent with the guard running and
+   * deciding DISCARD, and nothing here could tell the two apart.
+   */
+  getConflictCopies(): ConflictCopyLedger {
     return getConflictCopies();
   }
 

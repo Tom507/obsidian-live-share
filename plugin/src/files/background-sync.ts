@@ -17,6 +17,7 @@ import {
   toLocalPath,
 } from "../utils";
 import { isSidecarPath } from "./canvas-sidecar";
+import { noteConflictCopyFailure } from "./conflict-copy";
 import { yTextHeldContent } from "./ytext-history";
 import {
   EMPTY_WRITE_DECISION,
@@ -370,7 +371,35 @@ export class BackgroundSync {
         this.noteIfNonEmpty(path, remoteContent);
         const localContent = file ? normalizeLineEndings(await this.vault.read(file)) : "";
         if (remoteContent !== localContent) {
-          await this.writeToDisk(path, remoteContent);
+          // S148 — THE SECOND DOOR, and it had no lock at all.
+          //
+          // `S125` put a preservation seam in front of `syncFromManifest`'s
+          // overwrite and nobody asked whether that was the ONLY way a guest's
+          // divergent file gets replaced on a join. It is not. This line is the
+          // other one, and it is reached by an ordinary ordering rather than an
+          // exotic one: `syncFromManifest`'s text branch declines whenever it
+          // cannot read the host's content at that instant — `getDoc` returns
+          // null, `waitForSync` rejects into a bare `catch`, or the `S119` floor
+          // refuses an empty document — and every one of those leaves the guest's
+          // bytes on disk for THIS arm to overwrite a moment later, with no copy,
+          // no ledger entry and (for two of the three) no trace of any kind.
+          // Measured end to end over the real relay: `syncFromManifest` returns
+          // 0, the file still holds the guest's bytes, and then this write
+          // destroys them.
+          //
+          // ONE SEAM, NOT A SECOND MECHANISM. It calls
+          // `ManifestManager.preserveLocalVersion`, the same function the
+          // manifest arm calls, so the mtime rule, the conflicts root, the
+          // stamping and the ledger cannot drift apart. `preserveLocal` is
+          // opt-in and set ONLY here: this is the one-off join reconciliation.
+          // The observer's debounced writer must never take it — that one runs
+          // on every remote delta of an ordinary session, and preserving there
+          // would fill the conflicts folder with a copy per keystroke burst.
+          //
+          // The flag is consumed at the BOTTOM of `doWriteToDisk`, after the
+          // empty-write floor, deliberately: `S125 AC6`'s order is that a
+          // refusal writes no copy, because a refusal destroys nothing.
+          await this.writeToDisk(path, remoteContent, undefined, { preserveLocal: true });
         } else {
           this.lastWrittenContent.set(path, localContent);
         }
@@ -771,7 +800,12 @@ export class BackgroundSync {
     );
   }
 
-  private writeToDisk(path: string, content: string, expectedSeq?: number): Promise<void> {
+  private writeToDisk(
+    path: string,
+    content: string,
+    expectedSeq?: number,
+    options?: { preserveLocal?: boolean },
+  ): Promise<void> {
     // Final defense-in-depth gate: every disk write funnels through here.
     if (!isPathSafe(path)) return Promise.resolve();
     // WP95 — the DOC-DRIVEN arm. `path` here is a Y.Doc key, and doc keys are
@@ -795,7 +829,9 @@ export class BackgroundSync {
       return Promise.resolve();
     }
     if (this.lastWrittenContent.get(path) === content) return Promise.resolve();
-    this.writeQueue = this.writeQueue.then(() => this.doWriteToDisk(path, content, expectedSeq));
+    this.writeQueue = this.writeQueue.then(() =>
+      this.doWriteToDisk(path, content, expectedSeq, options),
+    );
     return this.writeQueue;
   }
 
@@ -803,6 +839,7 @@ export class BackgroundSync {
     path: string,
     content: string,
     expectedSeq?: number,
+    options?: { preserveLocal?: boolean },
   ): Promise<void> {
     if (this.lastWrittenContent.get(path) === content) return;
     // Version/sequence gate (US5 AC1): if a remote delta was applied to this
@@ -864,6 +901,40 @@ export class BackgroundSync {
           // the console. One shared emitter; this arm has no private wording.
           noteEmptyWriteRefusal("doc-write", path, verdict.reason, this.logger);
           return;
+        }
+        // S148 — PRESERVE BEFORE THIS ARM DESTROYS, on the one caller that asks.
+        //
+        // Here rather than at the call site so it sits AFTER every floor above
+        // it (`lastWrittenContent`, the `remoteSeq` staleness gate, the
+        // identical-content short-circuit, `decideEmptyWrite`) and immediately
+        // before the write that does the damage. `S125 AC6`'s ordering rule,
+        // applied to the second arm: nothing that refuses writes a copy.
+        //
+        // CONTAINED, and the containment is not decoration. `S125`'s contract
+        // is that preservation is STRICTLY ADDITIVE — "a vault that refuses the
+        // copy must still receive the host's content, because failing the sync
+        // would turn a best-effort safety net into a new outage". This whole
+        // method's body sits inside one `catch` that answers a failure with a
+        // Notice and NO WRITE, so an unavailable collaborator here would not
+        // merely skip the copy: it would silently skip the SYNC. That is not
+        // hypothetical — it is what the first cut of this change did to
+        // `background-sync.test.ts`'s guest-write row, which had no
+        // `preserveLocalVersion` on its manifest double.
+        //
+        // `preserveLocalVersion` makes its own PRESERVE/DISCARD decision, so a
+        // file the guest never touched is still discarded silently and
+        // correctly, and a copy that cannot be written is already counted by the
+        // ledger inside it. The failure counted here is the other one: the seam
+        // itself being unreachable.
+        if (options?.preserveLocal) {
+          try {
+            // Deliberately NOT an optional call. `?.` would make an absent seam
+            // a SILENT skip, which is the class of defect this whole package is
+            // about; a throw here is contained, counted and visible.
+            await this.manifestManager.preserveLocalVersion(path, file, "text");
+          } catch {
+            noteConflictCopyFailure();
+          }
         }
       }
       // Re-check the sequence: a remote delta may have been integrated while we
