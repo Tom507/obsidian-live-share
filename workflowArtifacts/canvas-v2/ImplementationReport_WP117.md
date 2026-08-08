@@ -345,7 +345,8 @@ Every row went red **on assertions about the thing it broke**, named in the harn
 
 **S153 note:** WP92's `no_collateral` did **not** go red while this work was uncommitted, unlike the three
 previous reports. My changes touch none of the files it attributes on, which is consistent with the signal's
-mechanism rather than a contradiction of it. The post-commit figure is recorded in §7.
+mechanism rather than a contradiction of it. **Post-commit re-run at `a81b4ee`: 427 files / 3243 tests, 0
+failed — identical to the pre-commit figure, and the working tree is clean.**
 
 **Not in the gate:** `biome check` reports diagnostics on my new files **and on pre-existing ones**
 (`canvas-sync.ts`, `manifest.ts`), so it is not a clean gate in this tree. `biome check --write` was never
