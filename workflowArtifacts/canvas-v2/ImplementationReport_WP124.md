@@ -380,3 +380,39 @@ read, printed or fixtured; `disk_reading` refuses `data.json` structurally and `
 
 `workflowArtifacts/canvas-v2/temp.md` was untracked in the tree when I arrived and is **not mine** — left
 alone, not staged.
+
+**Commit:** one commit on `fix-bugs-and-raceconditions`, 5 files, staged explicitly with `git add -N` then
+`git commit -o`, never `git add -A`. All five committed blobs re-checked from the object store after the
+commit: **0 NUL bytes**, mode `100644`, no symlink (`S180` / §5.3). The gate above was re-run with this
+report on disk.
+
+---
+
+## 10. Readiness note for W4 — what a live run can now judge by machine, and what still needs a human
+
+**What is now automatic.** A canvas round can be scored **by records instead of by bytes**, end to end,
+without anyone reading a `.canvas` by eye: state the gesture and the node geometry *before* issuing the drag,
+call `judge_canvas_round(...)` or `wait_records_converged(...)`, and take `green`. A board written in the
+author's spelling on one peer and Obsidian's canonical spelling on the other is **one board** to this oracle
+and was three different answers to the old one; a card that moved 199 px is a named failure
+(`n1.y: expected 200, observed 399`) instead of a diff to squint at; a node that vanished is
+`node 'n1' is ABSENT from the board`; and two peers that both hold an unparseable file are
+`peersAgreeOnRecords: false` rather than the vacuous *"they agree"* that `S119`'s three clients produced.
+**Most importantly, the oracle can no longer fail silently at you:** if the installed bundle predates WP123,
+or a deploy went stale, or the clause ledger regresses, the driver reports `NOT_JUDGED` — which is what
+WP120's presence-lock lifetime, WP121's conflict copy and WP122's host-created-canvas writer each need, since
+all three are geometry-and-arrival questions and all three were going to be scored by the same hand-parsing
+that produced `S158`. **Run `records_line(...)` into the battery log for every canvas round and grep it for
+`NOT_JUDGED` before you believe a single green.**
+
+**What still needs a human eye.** Four things, precisely. (1) **This has never run against a live instance** —
+the transport is identical (`POST /command`, same envelope) but the first live call is the first live call,
+and if it comes back `NOT_JUDGED` on round one that is a **deploy** finding, not a product one: check the
+bundle digest before you check the plugin. (2) **Edges are invisible.** `ExpectedRecords` names nodes only, so
+an edge that was lost, duplicated or re-anchored will be judged `SATISFIED` by this driver — read edges by
+hand or say in the report that you did not. (3) **Unnamed fields are invisible.** Only `x`/`y`/`width`/
+`height` you actually name are compared; `text`, `color`, `type` and everything else can diverge under a green.
+Name every field the round is about. (4) **`origin` is still a discipline, not a proof** — nothing stops a
+driver deriving the expectation from a post-gesture peer read and writing an honest-looking `origin`, and this
+package did not change that. Write the expectation down **before** the gesture, in the same statement that
+issues it, and the discipline holds itself up.
