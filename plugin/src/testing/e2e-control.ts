@@ -26,6 +26,26 @@ import type * as http from "node:http";
 import { createServer } from "node:http";
 import * as Y from "yjs";
 import { setCanvasBindingInstrument } from "../canvas/canvas-binding";
+// B68 §7 AMENDMENT (`S188`, ledger entries A-68-1 / A-68-2). `wouldHaveReverted`
+// — the single boolean that settles H1 — needs "does a LOWER-id peer also hold
+// this node on this path?", which is `holdersOf`, exported and pure from
+// `canvas/canvas-presence.ts:118-130`. The alternative was five lines of
+// re-implementation inside the rig, i.e. a SECOND DEFINER of the predicate the
+// whole diagnosis turns on; this project has been burned by exactly that class
+// (`S158`, and WP87's rule 10). Same shape and same reasoning as WP123's
+// A-123-4/A-123-5 for `../files/canvas-sync`: a pure exported function, no new
+// package dependency, no new transport, and it REMOVES a duplicate rule rather
+// than adding one.
+//
+// `holdersOf` ONLY. Nothing here modifies `canvas-presence.ts`, which carries a
+// whole-file byte + SHA-256 pin (`v2/wp21/test_tp04…:77-78`) — the two sweeps
+// this package instruments are intercepted by patching the INSTANCE, so R1 and
+// the pin are untouched.
+//
+// The specifier was added to BOTH frozen allow-lists, which must stay in step:
+// `wp49/test_tp12_…:46-59` and `wp72/test_tp4_…:33-46`. (WP123 found that
+// WP122's report had missed `wp49` entirely; do not repeat that.)
+import { holdersOf } from "../canvas/canvas-presence";
 // WP123 — THE ONE PARSER. The records clause of the convergence oracle reads a
 // `.canvas` with THE PRODUCTION READER and no other. A rig that parses `.canvas`
 // differently from the plugin is `S158`'s family in a new place: it would be
@@ -3475,6 +3495,41 @@ async function diagFileCensus(plugin: E2EPluginLike, path: string): Promise<Diag
   }
 }
 
+/**
+ * The awareness behind one canvas path. `null` — with the reason left to the
+ * caller's note — rather than a fabricated empty state map, because "no peer
+ * holds this node" and "we could not ask" are the two readings H1 turns on.
+ *
+ * This is the doc handle's OWN awareness, the very object `mountCanvasPresence`
+ * hands to `CanvasPresence` (`main.ts:3921`), so the instrument and the
+ * mechanism cannot be looking at different wires.
+ */
+function resolveDiagAwareness(
+  plugin: E2EPluginLike,
+  path: string,
+): { clientID: number; getStates(): Map<number, Record<string, unknown>> } | null {
+  const cs = plugin.canvasSync;
+  if (!cs) return null;
+  try {
+    const handle = cs.getCanvasDocHandle(path);
+    const awareness = handle?.awareness;
+    if (!awareness || typeof awareness.getStates !== "function") return null;
+    if (typeof awareness.clientID !== "number") return null;
+    return awareness;
+  } catch {
+    return null;
+  }
+}
+
+/** One pure geometry read that cannot throw into a wrapper (R2-safe by type). */
+function safeNodeGeometry(adapter: DiagAdapterLike, nodeId: string): DiagGeometry | null {
+  try {
+    return adapter.getNodeGeometry(nodeId);
+  } catch {
+    return null;
+  }
+}
+
 /** I1 — all three planes for one path, taken on demand. */
 async function diagCensus(plugin: E2EPluginLike, path: string): Promise<DiagCensus> {
   return {
@@ -3916,6 +3971,259 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
   };
 
   /**
+   * I3 + I4 — THE REVERT-DECISION AND EXPIRY LEDGERS.
+   *
+   * Both are INSTANCE patches on the live `CanvasPresence`. `canvas-presence.ts`
+   * is byte + SHA-256 pinned and is not touched: its awareness listener calls
+   * `this.expireIdleInferredLocks()` (`:367`) and `this.reconcileClaims()`
+   * (`:370`), and `this.`-dispatch resolves an own property before the
+   * prototype, so an own-property wrapper intercepts both (R1).
+   *
+   * WHAT THEY MEASURE, and why both call sites emit a row EVERY time (R6,
+   * `S155`): a sweep that DECLINED must be distinguishable from one that never
+   * ran. `revertedCount: 0` and "no reconcile row at all" are different bugs.
+   *
+   * `wouldHaveReverted` (I4) is the discriminator for H1: "had this claim
+   * survived to `reconcileClaims()` two lines later, would the loser-revert have
+   * fired on it?" — evaluated BEFORE the original runs, because after it the
+   * claim is gone. If a click produces `expired: […]` with
+   * `wouldHaveReverted: true`, WP120's reordering is provably eating reverts
+   * that used to fire. If `expired: []` on every click, H1 is dead.
+   *
+   * NOTE H1's own arithmetic before building on it: `INFERRED_LOCK_IDLE_MS` is
+   * 15 000 ms, so a claim only expires after 15 s idle. H1 therefore REQUIRES
+   * claims that are already stale. That is a condition, not a given, and this
+   * ledger measures it rather than assuming it.
+   *
+   * `docPos` is read BEFORE the original, from `getCanvasSnapshot`, because that
+   * is exactly what `revertCanvasNode` will read (`main.ts:3999`) — so the row
+   * records the value the revert is about to aim AT, not one taken after.
+   *
+   * It emits NO awareness state. It must never call `presence.refresh()` or
+   * `emitLocalState()`, and it does not: every read below is `getStates()`, a
+   * `hasOwnProperty` test, or a private-map read through a cast.
+   */
+  const installPresenceLedgers = (target: DiagTarget): number => {
+    const presence = target.presence;
+    const path = target.path;
+    if (!presence) {
+      notes.push(
+        `I3/I4 presence ledgers NOT installed on '${path}': no CanvasPresence instance is mounted`,
+      );
+      return 0;
+    }
+    const awareness = resolveDiagAwareness(plugin, path);
+    if (!awareness) {
+      notes.push(
+        `I3/I4 on '${path}': no awareness handle — holders, winner and wouldHaveReverted will read "unreadable"`,
+      );
+    }
+
+    // TypeScript `private` is compile-time only. A cast here is honest: this is
+    // a diagnostic, and the alternative — inferring the claim set from
+    // `isLockedByMe` over the LIVE node ids — misses a claim on a node that is
+    // not in the view, which is precisely the leak's known shape (claims held on
+    // deleted cards). An absent field reports "unreadable", never `{}` (R7).
+    const readLockedNodes = (): string[] | "unreadable" => {
+      const raw = presence.lockedNodes;
+      if (raw === null || typeof raw !== "object") return "unreadable";
+      return Object.keys(raw as Record<string, unknown>).sort();
+    };
+    const readLockMeta = (): Record<string, unknown> | "unreadable" => {
+      const raw = presence.lockMeta;
+      if (!(raw instanceof Map)) return "unreadable";
+      const out: Record<string, unknown> = {};
+      for (const [key, value] of raw as Map<unknown, unknown>) out[String(key)] = value;
+      return out;
+    };
+    const states = (): Map<number, Record<string, unknown>> | null => {
+      try {
+        return awareness ? awareness.getStates() : null;
+      } catch {
+        return null;
+      }
+    };
+    const docPositions = (): Record<string, DiagGeometry> => {
+      const plane = diagDocCensus(plugin, path);
+      return plane.available === true ? plane.nodes : {};
+    };
+    /** Per-node tiebreak facts, taken from awareness BEFORE the original runs. */
+    const tiebreak = (
+      nodeIds: string[],
+      snapshot: Map<number, Record<string, unknown>> | null,
+      myId: number | null,
+    ): Record<string, Record<string, unknown>> => {
+      const out: Record<string, Record<string, unknown>> = {};
+      const doc = docPositions();
+      for (const nodeId of nodeIds) {
+        if (snapshot === null || myId === null) {
+          out[nodeId] = {
+            holders: "unreadable",
+            winner: null,
+            lower: null,
+            wouldHaveReverted: null,
+            docPos: doc[nodeId] ?? null,
+            viewPos: target.adapter ? safeNodeGeometry(target.adapter, nodeId) : null,
+          };
+          continue;
+        }
+        // THE PRODUCTION PREDICATE, not a copy of it (§7 amendment A-68-1/2).
+        const holders = holdersOf(path, nodeId, snapshot);
+        const lower = holders.some((id) => id !== myId && id < myId);
+        out[nodeId] = {
+          holders,
+          winner: holders.length > 0 ? Math.min(...holders) : null,
+          lower,
+          wouldHaveReverted: lower,
+          docPos: doc[nodeId] ?? null,
+          viewPos: target.adapter ? safeNodeGeometry(target.adapter, nodeId) : null,
+        };
+      }
+      return out;
+    };
+
+    let installed = 0;
+
+    // --- I3: reconcileClaims ------------------------------------------------
+    const undoReconcile = diagPatch(presence, "reconcileClaims", (original) =>
+      function (this: unknown, ...args: unknown[]): unknown {
+        const t = Date.now();
+        let candidates: string[] | "unreadable" = "unreadable";
+        let perNode: Record<string, Record<string, unknown>> = {};
+        let myId: number | null = null;
+        try {
+          myId = awareness ? awareness.clientID : null;
+          candidates = readLockedNodes();
+          perNode = tiebreak(candidates === "unreadable" ? [] : candidates, states(), myId);
+        } catch {
+          /* a failed pre-reading leaves the row honest about it below */
+        }
+        // The cause flag. `onRevert` → `revertCanvasNode` → `applyCanvasNodeRevert`
+        // → `applyNodeGeometry` is fully synchronous inside this call, so any I2
+        // row produced while this is set was produced BY a revert.
+        const previousCause = causeNow;
+        causeNow = "revert";
+        let result: unknown;
+        try {
+          result = original.apply(this, args);
+        } finally {
+          causeNow = previousCause;
+        }
+        try {
+          const reverted = Array.isArray(result) ? (result as string[]) : [];
+          const considered = candidates === "unreadable" ? [] : candidates;
+          push({
+            t,
+            kind: "reconcile",
+            path,
+            entered: true,
+            myClientId: myId,
+            candidates,
+            perNode: considered.map((nodeId) => ({
+              nodeId,
+              ...(perNode[nodeId] ?? {}),
+              reverted: reverted.includes(nodeId),
+            })),
+            reverted,
+            // R6 — BOTH counters, ALWAYS, even at zero.
+            revertedCount: reverted.length,
+            declinedCount: Math.max(0, considered.length - reverted.length),
+            heldAfter: readLockedNodes(),
+          });
+        } catch {
+          /* diagnostics must never break canvas interaction */
+        }
+        return result;
+      },
+    );
+    if (undoReconcile) {
+      removers.push({ what: "patch", undo: undoReconcile });
+      installed++;
+    } else {
+      notes.push(`I3: '${path}' presence exposes no reconcileClaims to wrap`);
+    }
+
+    // --- I4: expireIdleInferredLocks ---------------------------------------
+    // §4.2 — this member DOES NOT EXIST on a pre-WP120 bundle. Its absence is
+    // recorded as a reading (`present: false` in the probe row below), not
+    // crashed on and not silently omitted: it is how a dump proves which build
+    // the peer it came from is running.
+    const undoExpire = diagPatch(presence, "expireIdleInferredLocks", (original) =>
+      function (this: unknown, ...args: unknown[]): unknown {
+        const t = Date.now();
+        let heldBefore: string[] | "unreadable" = "unreadable";
+        let perNode: Record<string, Record<string, unknown>> = {};
+        let metaBefore: Record<string, unknown> | "unreadable" = "unreadable";
+        let myId: number | null = null;
+        try {
+          myId = awareness ? awareness.clientID : null;
+          heldBefore = readLockedNodes();
+          metaBefore = readLockMeta();
+          // Evaluated BEFORE the original: after it, the claim this counterfactual
+          // is about no longer exists.
+          perNode = tiebreak(heldBefore === "unreadable" ? [] : heldBefore, states(), myId);
+        } catch {
+          /* as above */
+        }
+        const result = original.apply(this, args);
+        try {
+          const expired = Array.isArray(result) ? (result as string[]) : [];
+          push({
+            t,
+            kind: "expire",
+            path,
+            entered: true,
+            present: true,
+            myClientId: myId,
+            heldBefore,
+            lockMetaBefore: metaBefore,
+            expired,
+            heldAfter: readLockedNodes(),
+            perExpired: expired.map((nodeId) => ({ nodeId, ...(perNode[nodeId] ?? {}) })),
+            // R6 — a zero row is still a row. An expire sweep that expired
+            // nothing is a DIFFERENT fact from a sweep that never ran, and only
+            // one of them refutes H1.
+            expiredCount: expired.length,
+            heldBeforeCount: heldBefore === "unreadable" ? null : heldBefore.length,
+          });
+        } catch {
+          /* diagnostics must never break canvas interaction */
+        }
+        return result;
+      },
+    );
+    if (undoExpire) {
+      removers.push({ what: "patch", undo: undoExpire });
+      installed++;
+    }
+
+    // THE PROBE ROW. Every member presence and every private-map readability,
+    // recorded at arm time. `expireSweepPresent: false` is a pre-WP120 bundle
+    // and is the deploy detector for the §4.2 A/B — the absence is the reading.
+    push({
+      t: Date.now(),
+      kind: "probe",
+      path,
+      hasPresence: true,
+      hasAwareness: awareness !== null,
+      myClientId: awareness ? awareness.clientID : null,
+      reconcileSweepPresent: undoReconcile !== null,
+      expireSweepPresent: undoExpire !== null,
+      lockedNodesReadable: readLockedNodes() !== "unreadable",
+      lockMetaReadable: readLockMeta() !== "unreadable",
+      lockedNodesAtArm: readLockedNodes(),
+      lockMetaAtArm: readLockMeta(),
+      viewSinksPatched: patchedPaths.includes(path),
+    });
+    if (undoExpire === null) {
+      notes.push(
+        `I4 on '${path}': expireIdleInferredLocks is ABSENT on this build (pre-WP120). That is a READING, not a failure — H1 cannot even be posed on this peer.`,
+      );
+    }
+    return installed;
+  };
+
+  /**
    * Install every hook for `path`. Each installer probes before it patches
    * (§4.2): an absent member is recorded as a note, never crashed on, because
    * the absence is itself the reading that names which bundle a peer is on.
@@ -3931,6 +4239,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
     for (const target of targets) {
       patchedPaths.push(target.path);
       installViewWriteLedger(target);
+      installPresenceLedgers(target);
     }
     installYTransactionLedger(path);
   };

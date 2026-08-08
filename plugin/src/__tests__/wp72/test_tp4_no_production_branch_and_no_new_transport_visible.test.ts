@@ -43,6 +43,15 @@ const ALLOWED_IMPORTS = new Set([
   // dependency, no new transport, no canvas module made aware of the rig — the
   // four assertions below are untouched and still green.
   "../files/canvas-sync",
+  // §7 AMENDMENT (B68 / `S188`, ledger entry A-68-2) — the SAME entry as the one
+  // added to `wp49/test_tp12_…`'s copy of this list (A-68-1), and it must stay
+  // in step with it. `holdersOf` is imported so the canvas-disjoint
+  // diagnostic's `wouldHaveReverted` uses THE production predicate rather than
+  // a second copy of it inside the rig. No new package dependency, no new
+  // transport, and no canvas module is made aware of the rig — the four
+  // assertions below are untouched and still green. `canvas-presence.ts` is
+  // byte-unchanged: the two sweeps are intercepted by patching the INSTANCE.
+  "../canvas/canvas-presence",
 ]);
 
 const CANVAS_MODULES = [

@@ -56,6 +56,17 @@ const ALLOWED_IMPORTS = new Set([
   // prevent, one file over. No new PACKAGE dependency and no new transport: the
   // two assertions either side of this list are untouched.
   "../files/canvas-sync",
+  // §7 AMENDMENT (B68 / `S188`, ledger entry A-68-1). The canvas-disjoint
+  // diagnostic's `wouldHaveReverted` field — the one boolean that settles H1 —
+  // is "does a LOWER-id peer also hold this node on this path?", i.e.
+  // `holdersOf`, exported and pure from `canvas/canvas-presence.ts`. The
+  // alternative is a SECOND DEFINER of the predicate the whole diagnosis turns
+  // on, living inside the rig: the defect class this freeze exists to prevent,
+  // one file over. `holdersOf` only. No new PACKAGE dependency and no new
+  // transport, and `canvas-presence.ts` itself is byte-unchanged — its
+  // whole-file SHA pin in `v2/wp21/test_tp04_…` is untouched. This entry MUST
+  // stay in step with its twin, A-68-2, in `wp72/test_tp4_…`.
+  "../canvas/canvas-presence",
 ]);
 
 const FORBIDDEN_TRANSPORTS = ["ws", "socket.io", "node:net", "node:tls", "node:dgram", "express"];
