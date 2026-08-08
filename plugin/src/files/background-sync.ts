@@ -1,7 +1,7 @@
 import { Notice, type Vault } from "obsidian";
 import type * as Y from "yjs";
 
-import type { SyncManager } from "../sync/sync";
+import { SYNC_RESOLUTION, type SyncManager, type SyncResolution } from "../sync/sync";
 import type { SessionRole } from "../types";
 import {
   VAULT_EVENT_SETTLE_MS,
@@ -36,6 +36,25 @@ const DEBOUNCE_MS = 300;
 // Cap so a continuous incoming stream still flushes to disk at least this often,
 // instead of the trailing debounce resetting on every update and starving it.
 const MAX_WAIT_MS = 500;
+
+/**
+ * S147 — HOW LONG A GUEST WILL WAIT FOR THE HOST'S SEED, AS A DEADLINE.
+ *
+ * This was `for (let i = 0; i < 20; i++) await setTimeout(…, 100)` — a fixed
+ * COUNT of timer hops, nominally 2 s. Chromium clamps timers in a backgrounded
+ * renderer, and Obsidian is Electron: measured on this project's own rig, a hop
+ * costs 12 ms in the foreground, **907 ms** after a minute hidden and
+ * **9 004 ms** after ten, and it keeps growing. Twenty hops is therefore not
+ * 2 s, it is 18 s, then 180 s, then unbounded — and in the ordinary
+ * three-window setup ALL THREE renderers are hidden.
+ *
+ * The budget below is the same 2 s. What changed is that it is an ABSOLUTE
+ * DEADLINE evaluated against the wall clock and raced against the EVENT the
+ * wait is actually about — the host's seed arriving, which is a mux message,
+ * and messages are never throttled. One timer, not twenty, and the ordinary
+ * case does not consult a timer at all.
+ */
+const SEED_WAIT_BUDGET_MS = 2_000;
 
 // WP6 / US5 AC1+AC2 — the `.canvas` skip consulted by all three event-driven
 // entry points below (`startAll`, `onFileAdded`, `onFileRenamed`) now lives in
@@ -91,6 +110,13 @@ export class BackgroundSync {
    * exactly the fact being remembered.
    */
   private observedNonEmpty = new Set<string>();
+  /**
+   * S147 — waiters parked in {@link awaitSeed}, so a cancellation, a teardown
+   * or a released document can END a wait instead of leaving it to expire on a
+   * clamped timer. A wait that can only be ended by a timer is a wait whose
+   * length the platform decides.
+   */
+  private seedWaiters = new Map<string, Set<() => void>>();
   // Per-file monotonic counter of remote (non-local) Y.Text deltas applied to
   // the doc. A whole-file disk flush snapshots this value when it captures its
   // content; if the counter has advanced by the time the flush actually reaches
@@ -135,10 +161,19 @@ export class BackgroundSync {
     this.running = true;
     this.role = role;
     const entries = this.manifestManager.getEntries();
+    const paths: string[] = [];
     for (const [path, entry] of entries) {
       if (!isTextFile(path) || entry.binary) continue;
       // US5 AC2 — manifest-replay entry point. See `skipsAutoTextSync`.
       if (skipsAutoTextSync(path)) continue;
+      paths.push(path);
+    }
+    // S147 — PHASE 1. Every announced path gets its document BEFORE any single
+    // path is settled. The loop below settles them one at a time and always
+    // did; what it must never again do is decide whether a LATER path is
+    // subscribed at all. See `registerAnnounced`.
+    this.registerAnnounced(paths);
+    for (const path of paths) {
       try {
         await this.subscribe(path);
       } catch {
@@ -147,11 +182,57 @@ export class BackgroundSync {
     }
   }
 
+  /**
+   * S147 — PHASE 1 OF AN ANNOUNCED BATCH, AND IT IS THE HALF THAT WAS MISSING.
+   *
+   * The live orphans read `docExists: false`: no `Y.Doc` had been created for
+   * those paths at all, so `subscribe()` had never reached `getDoc` for them.
+   * That is not a defect inside `subscribe()` — it is a defect in every caller
+   * that iterates announced paths SERIALLY and awaits each one
+   * (`startAll` above, `main.ts::processManifestChange`'s `actuallyAdded`
+   * loop). One path whose settle is slow — and under a clamp a two-second wait
+   * is a three-minute wait — decided whether every path behind it existed.
+   *
+   * This is synchronous and consults no timer. It creates the document and
+   * sends the relay's `MUX_SUBSCRIBE`, which is exactly what `subscribe()`'s
+   * first statement does, so nothing new happens to a path — it happens
+   * SOONER, and it can no longer be prevented by a neighbour. It also means
+   * `SyncManager.onopen`'s reconnect loop, which re-subscribes
+   * `this.docs.keys()`, has something to re-subscribe after an outage; a
+   * document that was never created is why a throttled guest never recovered.
+   *
+   * The filters are the same three the two callers already apply, restated here
+   * rather than trusted: an unsafe path, a non-text path and a `.canvas` or
+   * sidecar path must not acquire a raw `Y.Text` document (WP6/US5, WP26).
+   */
+  registerAnnounced(rawPaths: Iterable<string>): void {
+    for (const raw of rawPaths) {
+      const path = toCanonicalPath(normalizePath(raw));
+      if (!isPathSafe(path)) continue;
+      if (!isTextFile(path)) continue;
+      if (skipsAutoTextSync(path)) continue;
+      if (this.observers.has(path)) continue;
+      this.syncManager.getDoc(path);
+    }
+  }
+
   cancelSubscribe(rawPath: string): void {
     const path = toCanonicalPath(normalizePath(rawPath));
     if (this.subscribing.has(path)) {
       this.cancelledSubscribes.add(path);
+      // S147 — a cancellation is an EVENT. Waking the waiter here is what keeps
+      // a deliberate cancel from being held hostage by a clamped deadline; the
+      // caller re-checks `cancelledSubscribes` immediately afterwards, so this
+      // ends the wait and never turns it into a completion.
+      this.wakeSeedWaiters(path);
     }
+  }
+
+  /** S147 — release anything parked in {@link awaitSeed} for this path. */
+  private wakeSeedWaiters(path: string): void {
+    const waiters = this.seedWaiters.get(path);
+    if (!waiters) return;
+    for (const wake of [...waiters]) wake();
   }
 
   async subscribe(rawPath: string): Promise<void> {
@@ -166,14 +247,45 @@ export class BackgroundSync {
       const docHandle = this.syncManager.getDoc(path);
       if (!docHandle) return;
 
+      // S147 — SUBSCRIPTION IS OBSERVATION. SETTLEMENT IS SOMETHING ELSE.
+      //
+      // `attachObserver` used to be the LAST statement of this function, behind
+      // `waitForSync`, a disk read, a seed and (on the guest) a wait for the
+      // host's seed. Every one of those is slow or fallible: `S143` counted
+      // five early returns that leave `observers: false` with no retry, no
+      // counter and no log, and a clamped renderer makes two of them
+      // unbounded — the `waitForSync` timeout is a 10 s duration that a hidden
+      // window stretches to minutes, and the seed wait was twenty timer hops.
+      // So "is this file participating in the session at all" was decided by
+      // how long a settlement happened to take. That is the `observers: false`
+      // reading taken on sixteen of sixteen live guest/file pairs.
+      //
+      // Attaching here is not merely earlier, it is the right order. Hearing
+      // this document's remote deltas does not depend on the initial sync
+      // having completed, and WP42's replay gate already guarantees the doc is
+      // never observed half-replayed. The arms below are a one-off
+      // reconciliation of what was on disk when we arrived; with the observer
+      // on, anything that arrives afterwards — including everything that
+      // arrives after a link is restored — still reaches disk through
+      // `scheduleDiskWrite`. The file converges by the CRDT rather than by this
+      // function having been quick enough.
+      //
+      // It cannot echo this peer's own work: the observer returns immediately
+      // for `transaction.local`, which is what the host's seed below is. A
+      // cancellation arriving after this point is undone in the `finally`.
+      this.attachObserver(path, docHandle.text);
+
+      // S147 — the RESOLUTION is read, not discarded. See `awaitSeed`'s caller
+      // in the guest arm: `PEER_STATE` means a peer answered and its state has
+      // already been applied, so there is no arrival left to wait for.
+      let resolution: SyncResolution | null = null;
       try {
-        await this.syncManager.waitForSync(path);
+        resolution = await this.syncManager.waitForSync(path);
       } catch {
         return;
       }
 
       if (this.cancelledSubscribes.has(path)) return;
-      if (this.observers.has(path)) return;
       if (docHandle.doc.isDestroyed) return;
 
       const diskPath = toLocalPath(path);
@@ -231,14 +343,27 @@ export class BackgroundSync {
           }
         }
       } else if (this.role === "guest") {
-        // Wait for host to seed Y.Text if it's empty
-        if (docHandle.text.length === 0) {
-          for (let i = 0; i < 20; i++) {
-            await new Promise((resolve) => setTimeout(resolve, 100));
-            if (this.cancelledSubscribes.has(path)) return;
-            if (docHandle.doc.isDestroyed) return;
-            if (docHandle.text.length > 0) break;
-          }
+        // Wait for the host to seed the Y.Text if it is empty. S147 — this was
+        // twenty 100 ms hops; it is now the SAME 2 s budget expressed as a
+        // deadline and raced against the arrival itself. See `awaitSeed`.
+        //
+        // ...and it is not entered at all when the question has already been
+        // ANSWERED. `S128` named the two reasons a sync resolves, and this is
+        // the first consumer that needs the distinction for a WAIT rather than
+        // for a write:
+        //   ├── PEER_STATE — a peer replied and its state was applied above. An
+        //   │     empty text after that is the peer's actual content, not an
+        //   │     absence in flight. Waiting 2 s changes nothing, and it is
+        //   │     exactly the wait a vault full of empty notes pays once per
+        //   │     note, per pass, multiplied by the clamp.
+        //   └── NO_PEERS / ALREADY_SYNCED — nobody answered, so this really is
+        //         a document that may still be seeded a moment from now
+        //         (`S131`'s race). Wait, on the event, bounded by the deadline.
+        // Unknown resolves to the waiting branch: a wait never destroys.
+        if (docHandle.text.length === 0 && resolution !== SYNC_RESOLUTION.PEER_STATE) {
+          await this.awaitSeed(path, docHandle, SEED_WAIT_BUDGET_MS);
+          if (this.cancelledSubscribes.has(path)) return;
+          if (docHandle.doc.isDestroyed) return;
         }
         const file = getFileByPath(this.vault, diskPath);
         const remoteContent = docHandle.text.toString();
@@ -251,23 +376,107 @@ export class BackgroundSync {
         }
       }
 
-      if (this.cancelledSubscribes.has(path)) return;
-
-      this.attachObserver(path, docHandle.text);
     } finally {
       this.subscribing.delete(path);
+      // S147 — the observer now goes on BEFORE the arms above, so every exit
+      // from this function — including the four early `return`s inside them —
+      // has to answer for it. A DELIBERATE cancellation must leave nothing
+      // behind: this is the single place that undoes the attach, so no exit can
+      // forget. It detaches only; it does not flush, because a cancelled
+      // subscribe has no business writing anything to disk.
+      if (this.cancelledSubscribes.has(path)) this.detachObserver(path);
       this.cancelledSubscribes.delete(path);
+      this.seedWaiters.delete(path);
     }
   }
 
   unsubscribe(rawPath: string): void {
     const path = toCanonicalPath(normalizePath(rawPath));
     this.flushWrite(path);
+    this.detachObserver(path);
+  }
+
+  /** Detach this path's `Y.Text` observer, if one is installed. Writes nothing. */
+  private detachObserver(path: string): void {
     const unobserve = this.observers.get(path);
     if (unobserve) {
       unobserve();
       this.observers.delete(path);
     }
+  }
+
+  /**
+   * S147 — WAIT FOR THE HOST'S SEED ON THE EVENT, BOUNDED BY AN ABSOLUTE
+   * DEADLINE. The three rules the charter sets, in one function:
+   *
+   *   ├── EVENT-DRIVEN where an event exists. The seed arrives as a mux frame
+   *   │     and lands as a `Y.Text` change. Chromium does not throttle socket
+   *   │     delivery, so this path is unaffected by the clamp — in the ordinary
+   *   │     case no timer is consulted at all.
+   *   ├── DEADLINE-BASED, not duration-based, where a wait is unavoidable. The
+   *   │     budget is an absolute instant compared against the wall clock, and
+   *   │     the timer merely re-asks. A clamped fire cannot make the wait
+   *   │     longer than one hop past the deadline; an early fire re-arms for
+   *   │     the remainder rather than falling through.
+   *   └── ONE timer, never a hop count. A count multiplies by the clamp, and
+   *         the clamp grows without bound the longer the window stays hidden —
+   *         which is why lengthening the old loop would not have been a fix.
+   *
+   * Resolving is not a claim that content arrived. The caller re-reads the text
+   * and every existing floor (`decideEmptyWrite`, `yTextHeldContent`) still has
+   * its say, exactly as it did when this was a loop.
+   */
+  private awaitSeed(
+    path: string,
+    handle: { doc: Y.Doc; text: Y.Text },
+    budgetMs: number,
+  ): Promise<void> {
+    if (handle.text.length > 0) return Promise.resolve();
+    const deadline = Date.now() + budgetMs;
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const observer = () => {
+        if (handle.text.length > 0) finish();
+      };
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimeout(timer);
+        handle.text.unobserve(observer);
+        const waiters = this.seedWaiters.get(path);
+        if (waiters) {
+          waiters.delete(finish);
+          if (waiters.size === 0) this.seedWaiters.delete(path);
+        }
+        resolve();
+      };
+
+      let waiters = this.seedWaiters.get(path);
+      if (!waiters) {
+        waiters = new Set<() => void>();
+        this.seedWaiters.set(path, waiters);
+      }
+      waiters.add(finish);
+      handle.text.observe(observer);
+
+      // Re-read AFTER registering: a seed that landed between the length check
+      // above and the `observe` here would otherwise be waited for forever.
+      if (handle.text.length > 0 || handle.doc.isDestroyed) {
+        finish();
+        return;
+      }
+
+      // ONE timer, armed ONCE, for the WHOLE wait — that is the whole of the
+      // repair's timing half. A re-arming loop was written here first and then
+      // removed: under a clamp a timer can only fire LATE, never early, so the
+      // re-arm branch was unreachable by any test this facility can build, and
+      // `S101` is this project's own rule that a defence no test can redden is
+      // worse than none. The budget is expressed against `deadline` rather than
+      // as a bare duration because it must stay the cost of the WAIT, not the
+      // cost of each hop of it.
+      timer = setTimeout(finish, Math.max(0, deadline - Date.now()));
+    });
   }
 
   setActiveFile(rawPath: string | null): void {
@@ -338,11 +547,12 @@ export class BackgroundSync {
     }
     this.writeFirstScheduled.delete(path);
     this.remoteSeq.delete(path);
-    const unobserve = this.observers.get(path);
-    if (unobserve) {
-      unobserve();
-      this.observers.delete(path);
-    }
+    this.detachObserver(path);
+    // S147 — the document is about to be destroyed, so anything waiting for it
+    // to be seeded is waiting for an event that can no longer happen. Ending
+    // the wait here rather than letting a clamped deadline expire is the same
+    // rule as `cancelSubscribe`: a wait ends on the fact, not on the clock.
+    this.wakeSeedWaiters(path);
     this.syncManager.releaseDoc(path);
   }
 
@@ -357,11 +567,10 @@ export class BackgroundSync {
     }
     this.writeFirstScheduled.delete(normOld);
     this.remoteSeq.delete(normOld);
-    const unobserve = this.observers.get(normOld);
-    if (unobserve) {
-      unobserve();
-      this.observers.delete(normOld);
-    }
+    this.detachObserver(normOld);
+    // S147 — same reason as `onFileRemoved`: the old path's document is going
+    // away, so nothing may still be parked waiting for it to be seeded.
+    this.wakeSeedWaiters(normOld);
     this.syncManager.releaseDoc(normOld);
 
     if (this.activeFile === normOld) {
@@ -465,6 +674,11 @@ export class BackgroundSync {
       this.flushWrite(path);
     }
     this.writeFirstScheduled.clear();
+    // S147 — release every parked seed wait BEFORE tearing the observers down,
+    // so a teardown never leaves a `subscribe()` suspended on a clamped timer
+    // holding the caller's loop open. The waiters re-check their own state.
+    for (const path of [...this.seedWaiters.keys()]) this.wakeSeedWaiters(path);
+    this.seedWaiters.clear();
     for (const [, unobserve] of this.observers) {
       unobserve();
     }

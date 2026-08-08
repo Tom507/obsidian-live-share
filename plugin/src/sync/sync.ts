@@ -268,6 +268,7 @@ export class SyncManager {
     wasChainEnded: boolean;
     reconnectStarted: boolean;
     readyStateAfter: number;
+    resubscribed: number;
   } {
     const wasSilenced = this.silenced;
     this.silenced = false;
@@ -278,6 +279,9 @@ export class SyncManager {
       wasChainEnded: rearmed.wasChainEnded,
       reconnectStarted: rearmed.reconnectStarted,
       readyStateAfter: rearmed.readyStateAfter,
+      // S147 — a restore that re-asserts nothing is not a restore; carried up
+      // so the rig can read it instead of inferring it from a later arrival.
+      resubscribed: rearmed.resubscribed,
     };
   }
 
@@ -294,6 +298,7 @@ export class SyncManager {
     wasChainEnded: boolean;
     reconnectStarted: boolean;
     readyStateAfter: number;
+    resubscribed: number;
   } {
     const wasChainEnded = this.retryChainEnded || !this.shouldConnect;
     let reconnectStarted = false;
@@ -306,11 +311,39 @@ export class SyncManager {
         reconnectStarted = true;
       }
     }
+    // S147 — RE-ASSERT THE SUBSCRIPTIONS, IDEMPOTENTLY.
+    //
+    // `ws.onopen` re-subscribes every held doc, which is the whole recovery
+    // story after a socket drop. But an outage that never CLOSES the socket —
+    // a suppressed link, a relay that lost its room state, a `MUX_SUBSCRIBE`
+    // sent while the link was down and silently dropped — leaves the socket
+    // open with the relay believing this client subscribed to nothing, and
+    // `onopen` never fires again to correct it. There is no event to hang the
+    // recovery on and no deadline that helps, so this is the third of the
+    // charter's three shapes: an IDEMPOTENT RETRY, on the one gesture that
+    // exists to mean "try again" (`rearmSharing`, and the rig's `restoreLink`).
+    //
+    // Idempotent on both sides. The relay's `state.clients` is a `Set`, so a
+    // duplicate subscribe re-adds nothing; it answers `MUX_SUBSCRIBED` with a
+    // peer count that already includes this client, so it cannot manufacture a
+    // spurious `NO_PEERS`; and the replay it re-sends is Yjs updates, which are
+    // commutative and idempotent by construction.
+    //
+    // `synced` is deliberately NOT reset here — unlike `onopen`, where the
+    // socket really did go away. Nothing is un-known by asking again.
+    let resubscribed = 0;
+    if (!this.isDestroyed && !this.silenced && this.ws?.readyState === WebSocket.OPEN) {
+      for (const filePath of this.docs.keys()) {
+        this.sendSubscribe(filePath);
+        resubscribed++;
+      }
+    }
     return {
       link: "mux",
       wasChainEnded,
       reconnectStarted,
       readyStateAfter: this.ws === null ? LINK_READY_STATE.ABSENT : this.ws.readyState,
+      resubscribed,
     };
   }
 

@@ -1211,6 +1211,18 @@ export default class LiveSharePlugin extends Plugin {
         { skipText: true },
       );
       if (syncedCount > 0) this.notify(`Live Share: synced ${syncedCount} file(s)`);
+      // S147 — PHASE 1, and it is the other half of the defect. The loop below
+      // is SERIAL and it sits on `manifestHandlerQueue`, so before this line
+      // existed the second announced path's document was created only once the
+      // first one's settle had finished — and on a guest that settle waited for
+      // the host's seed with a fixed hop count, which a backgrounded renderer
+      // stretches from 2 s to minutes. Sixteen of sixteen live guest/file pairs
+      // read `docExists: false`: the loop had not reached them yet, and would
+      // not for as long as the window stayed hidden. Registering the whole
+      // batch first is synchronous, consults no timer, and does exactly what
+      // `subscribe()`'s own first statement does — only where a neighbour
+      // cannot prevent it. The loop is otherwise byte-unchanged.
+      this.backgroundSync.registerAnnounced(actuallyAdded);
       for (const path of actuallyAdded) {
         if (isTextFile(path)) {
           await this.backgroundSync.onFileAdded(path);

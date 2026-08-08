@@ -272,6 +272,13 @@ export function isTextFile(path: string): boolean {
  *
  * ==== CALL-SITE BLOCK — derived from the tree, a test holds it ==============
  *   files/background-sync.ts  startAll  ..... manifest replay
+ *                             registerAnnounced S147's phase 1 — the batch of
+ *                                             announced paths whose documents
+ *                                             are created BEFORE any one of
+ *                                             them is settled. It reaches
+ *                                             `getDoc` directly, so it needs
+ *                                             this guard itself and does not
+ *                                             inherit `subscribe()`'s
  *                             setActiveFile . the de-activation flush (WP27
  *                                             AC4), guarding the bare-path
  *                                             `getDoc` on the OUTGOING file
