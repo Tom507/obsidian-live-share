@@ -83,9 +83,24 @@ S134; do not reproduce it.
 restore byte-identically by copy-aside, GREEN. Zero `.pre-v2-smoke` files at the end.
 
 **Gate:** full `vitest` + `tsc` clean, bracketed, and `check_signal_register.py` exit 0. Baseline is
-**3057 tests / 410 files**, measured on a quiet tree.
+**3092 tests / 414 files**, measured by the Dispatcher on a quiet tree at `ab3741e`.
+**You are the only worker in this tree, so a failure you see is REAL** (`S146`) — do not dismiss one as
+flaky without evidence. Two known instrument traps, neither yours to fix: `S153`, WP92's `no_collateral`
+asserts a file is absent from `git diff HEAD`, so it can fail while your work is uncommitted and pass once
+you commit; and `NEXT_FREE` is hardcoded in `check_signal_register.py` as well as in the register.
 ⚠ **If the checker fails on a number you did not cite, note that `NEXT_FREE` is hardcoded at
 `check_signal_register.py:53` as well as in the register — that coupling is recorded, not yours to fix.**
+
+**Two things learned since this charter was written, both of which bear on it directly:**
+
+- **`S155` — a counter that does not increment on every branch makes silence ambiguous.** WP115 lost a
+  round to exactly this: a guard's do-nothing branch returned *before* every counter, so *"ran and
+  declined"* and *"was never called"* produced byte-identical readings and three readers in a row got it
+  wrong. **Any ledger you add or touch here must count the do-nothing case too.** This matters especially
+  for A1: you are hunting a floor that may be *deciding* rather than *absent*.
+- **`plugin/src/__tests__/support/timer-clamp.ts`** (WP114) runs a scenario under clamped timers with
+  growth and ordering jitter. If any path you touch is timer-scheduled, test it under the clamp — and
+  prove the facility can turn your passing scenario red before trusting a failure from it.
 
 **Method rules:**
 
