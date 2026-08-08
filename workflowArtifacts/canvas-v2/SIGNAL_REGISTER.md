@@ -31,7 +31,7 @@ uniqueness; nothing ever evaluated the assertion. §4 is the evaluation.
 
 | | |
 |---|---|
-| **Next free number** | **S147** |
+| **Next free number** | **S147** — ⚠ **also hardcoded as `NEXT_FREE` in `check_signal_register.py:53`. Bump BOTH or the checker fails every new allocation.** Two sources of truth for one number, which is the defect class this file exists to police; recorded here rather than silently tolerated. |
 | **Who may allocate** | The **Dispatcher only**. A worker that finds something new **describes it and asks**; it does not pick a number. |
 | **Never reused** | A number is burned forever once used, **withdrawn, or skipped**. See §3. |
 | **Citation form** | Bare `S<n>` is legal **only** for the numbers not listed in §2. |
