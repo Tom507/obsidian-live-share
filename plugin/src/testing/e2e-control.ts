@@ -3435,6 +3435,119 @@ async function diagCensus(plugin: E2EPluginLike, path: string): Promise<DiagCens
   };
 }
 
+/**
+ * One ledger row. `t` and `kind` are the two fields every row carries; the rest
+ * is the instrument's own vocabulary, rendered by `tools/e2e/canvas_diag.py`.
+ */
+type DiagRow = Record<string, unknown> & { t: number; kind: string };
+
+/**
+ * Ring capacity. Bounded on purpose: a diagnostic that OOMs a live vault is
+ * worse than no diagnostic. Eviction is COUNTED and surfaced as `dropped`, so a
+ * truncated ring can never be mistaken for a quiet one (R7).
+ */
+const CANVAS_DIAG_RING_CAPACITY = 4000;
+
+/** True when two geometry readings differ in any of the four numbers. */
+function diagGeoDiffers(a: DiagGeometry | undefined, b: DiagGeometry | undefined): boolean {
+  if (!a || !b) return a !== b;
+  return a.x !== b.x || a.y !== b.y || a.width !== b.width || a.height !== b.height;
+}
+
+interface DiagDeltaRow {
+  plane: "view" | "doc" | "file";
+  nodeId: string;
+  from: DiagGeometry | null;
+  to: DiagGeometry | null;
+  note: string;
+}
+
+/**
+ * I8 — THE UNATTRIBUTED DELTA. The honest catch-all, and the row to read first.
+ *
+ * `census(dump) − census(arm)`, minus every move a ledger row explains. What is
+ * left over is a move this plugin's own instruments cannot account for:
+ *
+ *   ├── an unattributed VIEW delta ⇒ something moved a card that neither of the
+ *   │   product's two view-geometry sinks moved — Obsidian itself, the user, or
+ *   │   a route nobody has enumerated. That last one is the most important
+ *   │   possible result of this whole package.
+ *   ├── an unattributed DOC delta ⇒ the transaction ledger dropped a row, or the
+ *   │   write came through a path the ledger is not watching.
+ *   └── an unattributed FILE delta ⇒ a disk write that no doc change preceded.
+ *       A file delta that a doc delta DOES explain is an ordinary flush and is
+ *       attributed as such rather than shouted about.
+ *
+ * The attribution rule is deliberately generous — ANY ledger row naming the node
+ * on that plane counts. A generous rule makes `UNATTRIBUTED` mean something: a
+ * row that survives it is one no instrument in this package saw at all.
+ */
+function diagUnattributed(
+  armCensus: DiagCensus | null,
+  dumpCensus: DiagCensus,
+  ring: readonly DiagRow[],
+): { unattributed: DiagDeltaRow[]; attributed: DiagDeltaRow[] } {
+  const unattributed: DiagDeltaRow[] = [];
+  const attributed: DiagDeltaRow[] = [];
+  if (!armCensus) return { unattributed, attributed };
+
+  /** The last ledger row that names `nodeId` on `plane`, as a short label. */
+  const explain = (plane: "view" | "doc" | "file", nodeId: string): string | null => {
+    let label: string | null = null;
+    for (const row of ring) {
+      if (plane === "view") {
+        if (row.kind === "applyGeom" && row.nodeId === nodeId) {
+          label = `applyGeom outcome=${String(row.outcome)} cause=${String(row.cause)}`;
+        } else if (row.kind === "setData" && Array.isArray(row.moved)) {
+          const hit = (row.moved as Array<{ nodeId?: unknown }>).some((m) => m?.nodeId === nodeId);
+          if (hit) label = `setData cause=${String(row.cause)}`;
+        }
+      } else if (plane === "doc") {
+        if (row.kind === "ytxn" && Array.isArray(row.changed)) {
+          const hit = (row.changed as Array<{ nodeId?: unknown }>).some(
+            (c) => c?.nodeId === nodeId,
+          );
+          if (hit) label = `ytxn origin=${String(row.origin)} local=${String(row.local)}`;
+        }
+      }
+    }
+    return label;
+  };
+
+  const docMoved = new Set<string>();
+  for (const planeName of ["view", "doc", "file"] as const) {
+    const before = armCensus[planeName];
+    const after = dumpCensus[planeName];
+    if (before.available !== true || after.available !== true) continue;
+    const ids = new Set([...Object.keys(before.nodes), ...Object.keys(after.nodes)]);
+    for (const nodeId of [...ids].sort()) {
+      const from = before.nodes[nodeId];
+      const to = after.nodes[nodeId];
+      if (!diagGeoDiffers(from, to)) continue;
+      if (planeName === "doc") docMoved.add(nodeId);
+      const row: DiagDeltaRow = {
+        plane: planeName,
+        nodeId,
+        from: from ?? null,
+        to: to ?? null,
+        note: from === undefined ? "APPEARED" : to === undefined ? "VANISHED" : "",
+      };
+      // The FILE plane's own attribution: a doc change that preceded it IS the
+      // explanation (`CanvasPersistence` wrote what the doc said), and there is
+      // no per-write disk ledger in this build to name it more precisely.
+      const label =
+        planeName === "file"
+          ? docMoved.has(nodeId)
+            ? "flush — the doc moved this node in the same window"
+            : null
+          : explain(planeName, nodeId);
+      if (label === null) unattributed.push(row);
+      else attributed.push({ ...row, note: `${row.note} ${label}`.trim() });
+    }
+  }
+  return { unattributed, attributed };
+}
+
 /** The request shape `canvas.diag` validates at the command boundary. */
 interface CanvasDiagRequest {
   op: string;
@@ -3448,22 +3561,197 @@ export interface CanvasDiagnostic {
 
 /**
  * The diagnostic, over one live plugin. One ring buffer, one arm census, one
- * set of patches — held in this closure so they die with the host and cannot
+ * set of removers — held in this closure so they die with the host and cannot
  * outlive the instance that owns the surfaces they wrap.
+ *
+ * Constructing it INSTALLS NOTHING. Every hook is installed by `op:"arm"` and
+ * removed by `op:"clear"`.
  */
 function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
-  /** Which paths this build could see mounted, for the arm/dump gap report (R7). */
+  let armed = false;
+  let armedAt = 0;
+  let armedPath: string | null = null;
+  let armCensus: DiagCensus | null = null;
+  const ring: DiagRow[] = [];
+  let dropped = 0;
+  /** Paths whose live surfaces this arm actually wrapped. Compared against `mountedPaths`. */
+  let patchedPaths: string[] = [];
+  /** Undo functions for every patch and every listener this arm installed. */
+  let removers: Array<{ what: "patch" | "listener"; undo: () => void }> = [];
+  /** Refusals, absences and re-arms. Never silent — R7. */
+  let notes: string[] = [];
+
+  /** Which paths this build can see mounted, for the arm/dump gap report (R7). */
   const mountedPaths = (): string[] => resolveDiagTargets(plugin).map((t) => t.path).sort();
+
+  const push = (row: DiagRow): void => {
+    ring.push(row);
+    while (ring.length > CANVAS_DIAG_RING_CAPACITY) {
+      ring.shift();
+      dropped++;
+    }
+  };
+
+  /**
+   * Install every hook for `path`. Step 2 installs none — the arm census and the
+   * unattributed delta need no hook at all, which is exactly why they come
+   * first. Later steps add their installers here, and each one probes before it
+   * patches (§4.2): an absent member is recorded as a note, never crashed on.
+   */
+  const install = (path: string): void => {
+    const targets = resolveDiagTargets(plugin, path);
+    if (targets.length === 0) {
+      notes.push(
+        `no canvas view is mounted for '${path}' on this peer: nothing to hook, and the VIEW plane will read unavailable`,
+      );
+      return;
+    }
+    for (const target of targets) {
+      patchedPaths.push(target.path);
+    }
+  };
+
+  const uninstall = (): { patchesRemoved: number; listenersRemoved: number } => {
+    let patchesRemoved = 0;
+    let listenersRemoved = 0;
+    for (const remover of removers) {
+      try {
+        remover.undo();
+        if (remover.what === "patch") patchesRemoved++;
+        else listenersRemoved++;
+      } catch {
+        /* a remover that throws must not strand the rest — diagnostics never break the vault */
+      }
+    }
+    removers = [];
+    patchedPaths = [];
+    return { patchesRemoved, listenersRemoved };
+  };
 
   return {
     async run(req: CanvasDiagRequest): Promise<unknown> {
       switch (req.op) {
+        // Pure. Takes no baseline, installs nothing, and is safe on any peer at
+        // any time — including one that was never armed.
         case "census": {
           if (!req.path) throw new Error("canvas.diag op 'census' requires a 'path'");
           return {
             diagProto: CANVAS_DIAG_PROTO,
+            armed,
             census: await diagCensus(plugin, req.path),
             mountedPaths: mountedPaths(),
+          };
+        }
+        // ARM. Takes the baseline census and installs every hook. Re-arming
+        // DESTROYS the previous baseline, so it says so loudly rather than
+        // quietly resetting the thing a running session is measuring against.
+        case "arm": {
+          if (!req.path) throw new Error("canvas.diag op 'arm' requires a 'path'");
+          const reArmed = armed;
+          if (armed) uninstall();
+          ring.length = 0;
+          dropped = 0;
+          notes = [];
+          if (reArmed) {
+            notes.push(
+              "RE-ARMED: the previous arm census and ring were discarded. Between gestures use op:'mark', not a second arm.",
+            );
+          }
+          armed = true;
+          armedAt = Date.now();
+          armedPath = req.path;
+          install(req.path);
+          armCensus = await diagCensus(plugin, req.path);
+          return {
+            diagProto: CANVAS_DIAG_PROTO,
+            armed: true,
+            reArmed,
+            armedAt,
+            path: req.path,
+            patchedPaths: [...patchedPaths].sort(),
+            mountedPaths: mountedPaths(),
+            ringCapacity: CANVAS_DIAG_RING_CAPACITY,
+            census: armCensus,
+            notes: [...notes],
+          };
+        }
+        // MARK. A labelled fence in the ring: this is what makes "which click did
+        // what" readable WITHOUT re-arming, and re-arming would destroy the I8
+        // baseline.
+        case "mark": {
+          if (!armed) throw new Error("canvas.diag op 'mark': not armed");
+          push({ t: Date.now(), kind: "mark", label: req.label ?? "" });
+          return {
+            diagProto: CANVAS_DIAG_PROTO,
+            armed,
+            marked: req.label ?? "",
+            eventCount: ring.length,
+            dropped,
+          };
+        }
+        // DUMP. Does NOT clear the ring — §3.1 step 6 depends on that.
+        case "dump": {
+          if (!armed) {
+            return {
+              diagProto: CANVAS_DIAG_PROTO,
+              armed: false,
+              reason:
+                "not armed: there is no baseline census to diff against, so no delta on this peer is evidence",
+              mountedPaths: mountedPaths(),
+            };
+          }
+          const path = req.path ?? armedPath;
+          if (!path) throw new Error("canvas.diag op 'dump' requires a 'path'");
+          const census = await diagCensus(plugin, path);
+          const delta = diagUnattributed(
+            path === armedPath ? armCensus : null,
+            census,
+            ring,
+          );
+          const dumpNotes = [...notes];
+          if (path !== armedPath) {
+            dumpNotes.push(
+              `dumped path '${path}' is not the armed path '${armedPath}': the arm baseline does not apply and the delta tables are EMPTY BY REFUSAL, not by agreement`,
+            );
+          }
+          const gap = mountedPaths().filter((p) => !patchedPaths.includes(p));
+          if (gap.length > 0) {
+            dumpNotes.push(`mounted but NOT patched by this arm: ${gap.join(", ")}`);
+          }
+          return {
+            diagProto: CANVAS_DIAG_PROTO,
+            armed: true,
+            path,
+            armedPath,
+            armedAt,
+            dumpedAt: Date.now(),
+            patchedPaths: [...patchedPaths].sort(),
+            mountedPaths: mountedPaths(),
+            ringCapacity: CANVAS_DIAG_RING_CAPACITY,
+            eventCount: ring.length,
+            dropped,
+            events: [...ring],
+            armCensus,
+            census,
+            unattributed: delta.unattributed,
+            attributed: delta.attributed,
+            notes: dumpNotes,
+          };
+        }
+        // TEARDOWN. Always run this before the owner keeps using the vault.
+        case "clear": {
+          const removed = uninstall();
+          armed = false;
+          armedPath = null;
+          armCensus = null;
+          ring.length = 0;
+          dropped = 0;
+          notes = [];
+          return {
+            diagProto: CANVAS_DIAG_PROTO,
+            armed: false,
+            patchesRemoved: removed.patchesRemoved,
+            listenersRemoved: removed.listenersRemoved,
           };
         }
         default:
