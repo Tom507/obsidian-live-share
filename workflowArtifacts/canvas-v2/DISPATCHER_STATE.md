@@ -76,9 +76,14 @@ The first five on build `93c65f06a347e6cc`, both throttling arms; **WP119 on `d3
 
 ## 4. Traced in code, NOT measured — do not cite these as facts
 
-- **`coldOpen` → `doc-wins` overwrites a canvas file with no conflict copy.** The path exists and the
-  equivalent guard exists for notes. **There is no demonstrated instance** — the one claimed case was
-  withdrawn (§6). Worth closing on principle; **not** a blocker, **not** a proven data-loss defect.
+- ~~**`coldOpen` → `doc-wins` overwrites a canvas file with no conflict copy.**~~ **MOVED OUT OF THIS
+  SECTION BY WP121 — it is now DEMONSTRATED, and then guarded.** The demonstration the project never had
+  exists: real `CanvasPersistence`, real `Y.Doc`, real `attachCanvasPersistence`, no double for `flush` or
+  the serializer — a record present in the file before is **gone from disk after, and gone from the whole
+  fake vault**. It was **green on unmodified HEAD before any WP121 code**, which is what makes it a
+  demonstration rather than a test of the fix. Same for a file-only edge, with a positive control.
+  **The withdrawn 318-node figure is NOT what moved it** — that claim stays withdrawn (§6) and was
+  deliberately not restated. See §3-CLOSED.
 - **`S160`** — publication is unconditional while the write that would make it true is conditional.
 - **`S156`** — `subscribe()`'s **host** arm carries the overwrite shape that was closed on the guest arm.
   WP115 declined to widen it because live evidence suggested host-side overwrite is currently *expected*.
@@ -200,12 +205,26 @@ a latency test.
   11-row break table including the charter's mandated mid-gesture plant.
   → **Per §7, a green headless suite is a precondition, not a completion. WP120 is not done until W4 runs it.**
 
-**Chartered and committed, ready to dispatch in this order**
+- **WP121 — winning is not a licence to discard. LANDED** in `a546d54` / `723058e`. The `doc-wins` cold open
+  now preserves the local `.canvas` beside the share when the projection about to land is missing records the
+  file holds. **Who wins does not change** — the copy is additive and the flush stays unconditional.
+  **The predicate is record-level and it is NOT `decideConflictPreservation`'s** (that one asks a
+  session-boundary question, `mtime` vs `lastSessionEndedAt`). It asks about doc **knowledge**: record keys
+  ∪ tombstones. **The charter's own wording was wrong and the implementor corrected it** — a *projection*
+  predicate would have fired a conflict copy on **every ordinary delete**, because `buildCanvasData`
+  suppresses tombstoned records and deletion in V2 is a value, not an absence (WP19).
+  **`main.ts` gained 12 lines of wiring** (an options block through `baseIo`, predicate in its own module) —
+  the Dispatcher read the diff against §7's *"logic, not wiring, is an ESCALATE"* criterion and it is wiring.
+  → **Headless only. Not live-validated.**
+- **A6 settled by measurement, and it inverted the charter's worry**: a standing durable refusal withholds
+  the **entire** flush, so the guard needed a **branch skip, not an id exclusion** — an exclusion would have
+  been a second rule free to drift. **Its residual is now `S176`** and it is the important half.
 
-1. **WP121 — winning is not a licence to discard** (the conflict copy under the canvas `doc-wins` arm).
-   **Hard precondition for WP122**, not merely a safety net — see the correction below.
-2. **WP122 — a file with no writer cannot converge** (bind the writer on the host's own creates: R1+R2, plus
-   R5's one-line `armCanvasMirrorPass()`, which is the whole of `S170`).
+**Chartered and committed, ready to dispatch**
+
+- **WP122 — a file with no writer cannot converge** (bind the writer on the host's own creates: R1+R2, plus
+  R5's one-line `armCanvasMirrorPass()`, which is the whole of `S170`). **Its precondition is now met.**
+  Its cold-open fork is the implementor's to pick, on the owner's condition — see the rulings below.
 
 **Owner decisions taken 2026-08-08, and they override any inference**
 
@@ -242,7 +261,7 @@ a latency test.
 
 **Signal register:** `SIGNAL_REGISTER.md` is the allocation authority; the Dispatcher allocates.
 
-**Next free is S175.** <!-- signal-register: meta -->
+**Next free is S177.** <!-- signal-register: meta -->
 
 `NEXT_FREE` is hardcoded in `check_signal_register.py` **as well as** in the register — bump both or the
 checker fails every new allocation.

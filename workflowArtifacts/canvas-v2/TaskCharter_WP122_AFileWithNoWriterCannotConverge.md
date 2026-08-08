@@ -332,6 +332,10 @@ then `check_signal_register.py`, exit 0.
 6. **The gate figure you measured yourself**, with the tree state.
 7. **Correct this charter if it is wrong.** §2 is itself a correction of the investigation this package is built
    from.
-8. **Signal numbers: next free is S175, and you allocate none.** <!-- signal-register: meta -->
+8. **Signal numbers: next free is S176, and you allocate none.** <!-- signal-register: meta -->
    Describe findings in prose; the Dispatcher numbers them in `SIGNAL_REGISTER.md`.
+   (S175 was allocated to WP121's finding — WP87's surface-route census parsing a call **argument** as a
+   unit signature. **That one may bite you**: it manufactures a false UNGUARDED sink *and* reclassifies a
+   real definer, so if you add a `write(`-shaped call near `main.ts`'s attach, name the first parameter
+   anything but `diskPath`. WP121 pinned its workaround with a test row; the parser defect is untouched.)
 </content>
