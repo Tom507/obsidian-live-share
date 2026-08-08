@@ -241,11 +241,29 @@ a latency test.
   attach attaches *nothing* rather than flushing. The destruction is real only on the mid-session
   `isSubscribed` path — which is where WP121's guard was demonstrated firing, with a positive control.
 
+- **WP123 — a board is judged by its records, not its spelling. LANDED** in `91afc3f`. **`S178` is CLOSED**
+  and the oracle can now judge a canvas by **records** — ids and positions — instead of by bytes.
+  **Arm (a) built** (amend both pin families with ledger entries), and arm (b) was **priced by construction**
+  rather than argued: a correct record oracle in a separate module produced **0** geometry rows in the object
+  the live tester actually reads, `converged:true` over the wire on a board whose card had moved 199 px, and
+  a 400 from `convergence.judgeRecords`. So *"no pin touched"* was false — arm (b) needed a `routeCommand`
+  edit anyway and bought a split ledger for it.
+  **Five §7 amendment-ledger rows entered**, 182 tests before and after, no matcher weakened.
+  **Two corrections to the charter's arithmetic, both by measurement:** the import freeze is **two**
+  allow-lists (`wp49` as well as `wp72` — WP122's report missed `wp49`), and the `wp116` amendment reddens
+  **six** tests, not five.
+  **The oracle's own discriminator** is `tp05d`: two peers holding **byte-identical unparseable** content —
+  where the byte oracle says they agree perfectly — must come back `peersAgreeOnRecords: false`.
+  **Reported subsumption, and it is the honest kind:** on the *clause* side the degraded check is subsumed,
+  so a clause-only row **would have passed on the broken build**; `degraded` is load-bearing on the
+  *agreement* side only.
+
 **Blocked, and needs the owner**
 
-- **`S178` — the oracle's `records` clause could not be built**, so `S174` stays open and the convergence
-  oracle **still cannot judge geometry**. Two pins forced it, and the charter named the wrong one. Needs its
-  own package; must not be resolved by weakening a pin (`S162`'s shape).
+- **`S179` — `S174` is closed at the RIG and still OPEN at the DRIVER.** `tools/e2e/*.py` sends no `records`
+  expectation, so **the oracle can now judge geometry and no live run does.** Small to close; **must be
+  closed before W4 validates WP120/121/122**, or those three land on the same hand-parsing that produced
+  `S158`.
 - **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
   in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
   copies are the owner's and were deliberately left untouched.**
