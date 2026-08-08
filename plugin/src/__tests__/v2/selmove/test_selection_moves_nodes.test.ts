@@ -621,17 +621,27 @@ describe("T4: a read-only selection on peer A must not move cards on peer B", ()
 // T3 — WHY IT IS "EVERY TIME" RATHER THAN "SOMETIMES": the diff-inferred lock is
 // acquired by the capture path and there is NO path that releases it.
 //
-// ⚠ STILL RED IN SUBSTANCE AFTER WP119, AND DELIBERATELY SO. The leak these rows
-// measure is real and unrepaired. `canvas-presence.ts` is an initiative-wide
-// invariant — BUILD_SPEC §7 lists "`canvas-presence.ts` is modified (WP21 AC2
-// requires it byte-unchanged)" as an ESCALATE, enforced by a live digest pin in
-// `v2/wp21/test_tp04_awareness_liveness_unchanged_visible.test.ts` — so charter
-// A3 cannot be discharged inside this package. It is carried up as an ESCALATE
-// with a worked design in `ImplementationReport_WP119.md` §A3.
+// ⚠ WAS AN OPEN ESCALATE AFTER WP119. CLOSED BY WP120 — READ THIS BEFORE THE ROWS.
 //
-// What WP119 DID change is the cost of the leak: a stale claim now buys one
-// per-node `applyNodeGeometry` — almost always `"unchanged"` — instead of a
-// whole-board `setData`. The claim still leaks; it is no longer destructive.
+// WP119 could not discharge charter A3 here: `canvas-presence.ts` was an
+// initiative-wide byte-unchanged invariant (BUILD_SPEC §7, enforced by the digest
+// pin in `v2/wp21/test_tp04_awareness_liveness_unchanged_visible.test.ts`), so the
+// leak was carried up with a worked design in `ImplementationReport_WP119.md` §4.
+// The owner then LIFTED that pin for this one repair (DISPATCHER_STATE.md §5) and
+// **WP120 landed the lifetime**: a diff-inferred claim now expires after
+// `INFERRED_LOCK_IDLE_MS` of not being re-touched, swept on the awareness change
+// BEFORE the tiebreak. The pin was re-established at the new digest, not removed.
+//
+// THESE TWO ROWS ARE UNCHANGED, ASSERTION FOR ASSERTION, AND STILL PASS — because
+// what they measure is a GESTURE bound, not a time bound: no *user action* other
+// than re-selecting n2 clears a diff-inferred claim. That is still true after
+// WP120, whose release is the passage of idle time and not a gesture. They remain
+// the fence that `emitHeld` never gained a release path it does not have.
+// The time-bound half is `v2/wp120/test_tp01_a_presence_lock_has_a_lifetime_visible`.
+//
+// What WP119 DID change is the cost of the leak: a stale claim bought one per-node
+// `applyNodeGeometry` — almost always `"unchanged"` — instead of a whole-board
+// `setData`. WP120 removed the cause on top of that bounded cost.
 // ---------------------------------------------------------------------------
 
 describe("T3: a diff-inferred lock has no release", () => {

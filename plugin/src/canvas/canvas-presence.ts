@@ -4,6 +4,10 @@
 //   * writes/reads the single shared awareness field
 //       { canvasPath, nodeId|null, x, y, lockedNodes: {[id]:{color,name,epoch?}} }
 //   * acquires locks hybrid: private Canvas API (adapter) → DIFF-INFERRED FALLBACK
+//   * WP120: gives the DIFF-INFERRED half of that a LIFETIME. It is the only
+//     acquisition path with no gesture to end it, so without one the claim is
+//     permanent, and with a session-fixed clientID tiebreak the higher-id peer
+//     then loses every contest on every card it has ever touched, forever.
 //   * resolves the lowest-clientID tiebreak with loser-revert (GAP-1)
 //   * exposes advisory canWriteNode / canDeleteNode gates (wired into the
 //     canvas-sync per-node diff path)
@@ -22,6 +26,37 @@ import type { CanvasOverlay, CursorMarker, HeldHighlight } from "./canvas-overla
 // resubscribe → peer-reemit round trip so a node a peer grabbed during the
 // outage is visible before we decide, yet stay well under a second.
 const RECONNECT_RECLAIM_DEFER_MS = 250;
+
+/**
+ * WP120 — WHERE A CLAIM COMES FROM DECIDES WHETHER IT CAN BE RETIRED.
+ *
+ *   `"gesture"`  the user is provably holding the card: the private Canvas API
+ *                reported a selection or a drag (`canvas-adapter.ts:845 emitHeld`
+ *                -> `onNodeInteractionStart`). Its release is the interaction END,
+ *                which that same `held` set issues. **Never expired** — expiring
+ *                one would drop the ring off a card the user has in hand and give
+ *                it to somebody else mid-gesture, which is worse than the leak.
+ *   `"inferred"` the capture path noticed the local diff touched this node
+ *                (`files/canvas-sync.ts:4130` -> `main.ts:2505` ->
+ *                {@link CanvasPresence.onDiffInferredChange}). `emitHeld` can only
+ *                release ids it put into `held` itself, so this claim has **no**
+ *                gesture that ends it — which is exactly the leak WP120 repairs.
+ */
+export type LockOrigin = "gesture" | "inferred";
+
+/**
+ * WP120 — the idle window after which a DIFF-INFERRED claim is retired.
+ *
+ * Derived from the capture cadence rather than picked: local capture runs on a
+ * `DEBOUNCE_MS = 200` trailing debounce with a `MAX_WAIT_MS = 500` cap
+ * (`files/canvas-sync.ts:318-319`), so a user who is still working on a card
+ * re-touches its claim at least twice a second and refreshes it. 15 s is 30x that
+ * worst-case cap — far outside anything a continuing interaction can produce, and
+ * far short of a session. It is also comfortably inside y-protocols' 30 s awareness
+ * prune window, so a claim is retired by its own idleness before the transport
+ * would drop the whole state carrying it.
+ */
+export const INFERRED_LOCK_IDLE_MS = 15_000;
 
 export interface LockEntry {
   color: string;
@@ -234,6 +269,13 @@ export interface CanvasPresenceOptions {
   // re-claims only still-free nodes (US4 AC3/AC4, GAP-4). Injectable so tests can
   // drive the defer deterministically; defaults to RECONNECT_RECLAIM_DEFER_MS.
   reclaimDeferMs?: number;
+  // WP120 — injected clock for the diff-inferred claim's idle budget, so its
+  // release is asserted by ADVANCING A NUMBER and never by sleeping. Defaults to
+  // `Date.now`. Same seam and same reason as `CanvasAdapterOpts.now`.
+  now?: () => number;
+  // WP120 — the idle budget itself (ms), injectable for the same reason.
+  // Defaults to INFERRED_LOCK_IDLE_MS.
+  inferredLockIdleMs?: number;
   // WP2/WP3 display toggles (default true). `showCursors` gates the free-cursor
   // overlay + local pointer broadcast; `showPresence` gates the per-node held
   // ring + name tag. Both respected live via setDisplayOptions().
@@ -261,6 +303,8 @@ export class CanvasPresence {
   private readonly adapter: CanvasAdapter | null;
   private readonly onRevert?: (nodeId: string) => void;
   private readonly reclaimDeferMs: number;
+  private readonly now: () => number;
+  private readonly inferredLockIdleMs: number;
   private showCursors: boolean;
   private showPresence: boolean;
   private readonly logger: { debug(category: string, message: string): void } | null;
@@ -269,6 +313,11 @@ export class CanvasPresence {
   private lastRenderLog = 0;
 
   private lockedNodes: Record<string, LockEntry> = {};
+  // WP120 — provenance + idle clock for each entry of `lockedNodes`, kept BESIDE
+  // it rather than inside `LockEntry`, so the awareness wire shape peers read is
+  // byte-for-byte what it was (WP27 AC3 pins its six keys). Local bookkeeping only:
+  // nothing here is broadcast and no peer can see or forge it.
+  private lockMeta = new Map<string, { origin: LockOrigin; touchedAt: number }>();
   private nodeId: string | null = null;
   private x = 0;
   private y = 0;
@@ -286,6 +335,8 @@ export class CanvasPresence {
     this.adapter = opts.adapter ?? null;
     this.onRevert = opts.onRevert;
     this.reclaimDeferMs = opts.reclaimDeferMs ?? RECONNECT_RECLAIM_DEFER_MS;
+    this.now = typeof opts.now === "function" ? opts.now : () => Date.now();
+    this.inferredLockIdleMs = opts.inferredLockIdleMs ?? INFERRED_LOCK_IDLE_MS;
     this.showCursors = opts.showCursors ?? true;
     this.showPresence = opts.showPresence ?? true;
     this.logger = opts.logger ?? null;
@@ -307,6 +358,13 @@ export class CanvasPresence {
     this.emitLocalState();
 
     const listener = () => {
+      // WP120 — RETIRE IDLE INFERRED CLAIMS BEFORE THE TIEBREAK, NOT AFTER.
+      // A stale claim is harmless right up to the instant it becomes a CONTEST,
+      // and the awareness `change` that could make it one is this very callback.
+      // Sweeping here therefore needs no timer: the claim is retired by the same
+      // event that would otherwise have cost the user a card. Ordering is
+      // load-bearing — after `reconcileClaims()` the revert has already fired.
+      this.expireIdleInferredLocks();
       // A remote claim may have superseded ours: settle the tiebreak first, then
       // repaint the overlay from the converged awareness snapshot.
       this.reconcileClaims();
@@ -337,12 +395,26 @@ export class CanvasPresence {
   // change of a node in the local diff path when the private API did not already
   // acquire the lock. This is a REAL acquisition path, not a stub.
   onDiffInferredChange(nodeId: string): void {
-    if (!hasKey(this.lockedNodes, nodeId)) this.acquireLock(nodeId);
+    if (!hasKey(this.lockedNodes, nodeId)) {
+      this.acquireLock(nodeId, "inferred");
+      return;
+    }
+    // WP120 — ALREADY OURS: this is the REFRESH, and it is what makes the idle
+    // window mean "the user stopped working on this card" instead of "15 s have
+    // passed". Capture fires at least every MAX_WAIT_MS while an edit continues,
+    // so a card under active work can never reach the budget. A `"gesture"` claim
+    // is left alone: it does not expire, so it has no clock to advance.
+    const meta = this.lockMeta.get(nodeId);
+    if (meta && meta.origin === "inferred") meta.touchedAt = this.now();
   }
 
-  acquireLock(nodeId: string): void {
+  acquireLock(nodeId: string, origin: LockOrigin = "gesture"): void {
     if (hasKey(this.lockedNodes, nodeId)) return;
     this.lockedNodes[nodeId] = { color: this.identity.color, name: this.identity.name };
+    // WP120: default `"gesture"` deliberately — an unqualified acquisition is a
+    // real hold by an interaction seam, and the SAFE default is the one that is
+    // never expired out from under a user.
+    this.lockMeta.set(nodeId, { origin, touchedAt: this.now() });
     this.nodeId = nodeId;
     this.emitLocalState();
   }
@@ -350,8 +422,51 @@ export class CanvasPresence {
   releaseLock(nodeId: string): void {
     if (!hasKey(this.lockedNodes, nodeId)) return;
     delete this.lockedNodes[nodeId];
+    this.lockMeta.delete(nodeId);
     if (this.nodeId === nodeId) this.nodeId = null;
     this.emitLocalState();
+  }
+
+  /**
+   * WP120 — A CLAIM HAS A LIFETIME. Retire every `"inferred"` claim that has not
+   * been re-touched for `inferredLockIdleMs`, broadcast the shrunken set once, and
+   * return the ids retired.
+   *
+   * Three properties, in the order they matter:
+   *
+   *   1. **`"gesture"` claims are never candidates.** A1 is worth nothing if it is
+   *      bought by A3: someone dragging a card keeps it for as long as they hold it,
+   *      however long that is. The same goes for a claim whose provenance is unknown
+   *      — the fall-through is "do not expire", so a bookkeeping gap can only ever
+   *      cost us the old leak, never a card out of a user's hand.
+   *   2. **It only ever claims LESS.** Since WP21 a lock carries no write authority
+   *      (`files/canvas-sync.ts:4127-4130`), so releasing one cannot cause a doc
+   *      write, a file write or a `coldOpen`. It strictly reduces how often
+   *      `onRevert` fires, and it touches nothing else.
+   *   3. **It is driven by an injected clock**, so its behaviour is asserted by
+   *      advancing a number rather than by sleeping.
+   *
+   * Public because the sweep is a fact about the object, not a private detail of
+   * one listener, and because a test must be able to drive it directly.
+   */
+  expireIdleInferredLocks(): string[] {
+    const cutoff = this.now() - this.inferredLockIdleMs;
+    const expired: string[] = [];
+    for (const nodeId of Object.keys(this.lockedNodes)) {
+      const meta = this.lockMeta.get(nodeId);
+      // Unknown provenance is treated as a gesture: never expire what you cannot
+      // prove nobody is holding.
+      if (!meta || meta.origin !== "inferred") continue;
+      if (meta.touchedAt > cutoff) continue; // still inside the window
+      delete this.lockedNodes[nodeId];
+      this.lockMeta.delete(nodeId);
+      if (this.nodeId === nodeId) this.nodeId = null;
+      expired.push(nodeId);
+    }
+    // One broadcast for the whole sweep, and none at all when nothing expired —
+    // an idle client must not turn this into an awareness heartbeat of its own.
+    if (expired.length > 0) this.emitLocalState();
+    return expired;
   }
 
   isLockedByMe(nodeId: string): boolean {
@@ -382,6 +497,7 @@ export class CanvasPresence {
       const lower = holders.some((id) => id !== myId && id < myId);
       if (lower) {
         delete this.lockedNodes[nodeId];
+        this.lockMeta.delete(nodeId);
         if (this.nodeId === nodeId) this.nodeId = null;
         reverted.push(nodeId);
         this.onRevert?.(nodeId);
@@ -418,9 +534,16 @@ export class CanvasPresence {
    *      took during the outage stays with that peer (no dual ownership).
    */
   onReconnect(): void {
-    const pending = Object.keys(this.lockedNodes);
+    // WP120: carry each claim's ORIGIN across the withhold. A claim the user is
+    // still holding must come back as `"gesture"` — re-acquiring it as `"inferred"`
+    // would arm an expiry on a card in somebody's hand, which is precisely A3's
+    // failure mode arriving by the back door.
+    const pending: Array<{ nodeId: string; origin: LockOrigin }> = Object.keys(
+      this.lockedNodes,
+    ).map((nodeId) => ({ nodeId, origin: this.lockMeta.get(nodeId)?.origin ?? "gesture" }));
     // (1) Withhold: clear our claims and broadcast a lock-free state now.
     this.lockedNodes = {};
+    this.lockMeta.clear();
     this.nodeId = null;
     this.emitLocalState();
     this.refresh();
@@ -438,13 +561,13 @@ export class CanvasPresence {
    * held nodes that no peer holds now. A node a peer acquired during the outage
    * is left with that peer — the returning client never steals it back.
    */
-  private reclaimStillFreeNodes(nodes: string[]): void {
+  private reclaimStillFreeNodes(nodes: Array<{ nodeId: string; origin: LockOrigin }>): void {
     const states = this.awareness.getStates();
     const myId = this.awareness.clientID;
-    for (const nodeId of nodes) {
+    for (const { nodeId, origin } of nodes) {
       if (hasKey(this.lockedNodes, nodeId)) continue; // already re-held
       const takenByPeer = holdersOf(this.path, nodeId, states).some((id) => id !== myId);
-      if (!takenByPeer) this.acquireLock(nodeId); // still free → safe to re-hold
+      if (!takenByPeer) this.acquireLock(nodeId, origin); // still free → safe to re-hold
     }
     this.refresh();
   }
@@ -579,6 +702,7 @@ export class CanvasPresence {
       this.awarenessListener = null;
     }
     this.lockedNodes = {};
+    this.lockMeta.clear();
     this.nodeId = null;
     // Remove every injected ring/tag from peer cards — no leaked DOM/classes.
     this.clearRings();
