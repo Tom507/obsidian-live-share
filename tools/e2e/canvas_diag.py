@@ -70,6 +70,17 @@ DIAG_DIR = Path(__file__).resolve().parents[2] / "workflowArtifacts" / "canvas-v
 
 PEER_NAMES = ["A", "B", "C", "D", "E", "F"]
 
+# The live session runs on a Windows console whose default codec is cp1252, and
+# `⚠` is not in it. An UnicodeEncodeError halfway through the table would lose
+# the rest of the reading — the `S186` failure wearing a new hat — so stdout is
+# reconfigured to UTF-8 and, if even that is refused, the flag degrades to ASCII
+# rather than taking the table down with it.
+FLAG = "⚠"
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    FLAG = "!!"
+
 
 # --------------------------------------------------------------------------- #
 # transport — one envelope, resolved fresh, raw response always kept
@@ -234,7 +245,7 @@ def print_census_table(peers: list[dict]) -> None:
                 (c.get("x"), c.get("y")) != (present[0].get("x"), present[0].get("y"))
                 for c in present
             ):
-                flag = f"⚠ {name.upper()} DISAGREES ACROSS PEERS"
+                flag = f"{FLAG} {name.upper()} DISAGREES ACROSS PEERS"
             print(row + flag)
 
 
@@ -301,6 +312,17 @@ def summarise(ev: dict) -> str:
     kind = ev.get("kind")
     if kind == "mark":
         return f"---- {ev.get('label')} ----"
+    if kind == "probe":
+        # The deploy detector. expireSweepPresent=False IS a pre-WP120 bundle;
+        # that absence is a reading, and §4.2's A/B turns on it.
+        return (
+            f"presence={ev.get('hasPresence')} awareness={ev.get('hasAwareness')} "
+            f"myClientId={ev.get('myClientId')} reconcileSweep={ev.get('reconcileSweepPresent')} "
+            f"expireSweep={ev.get('expireSweepPresent')} "
+            f"lockedNodesReadable={ev.get('lockedNodesReadable')} "
+            f"lockMetaReadable={ev.get('lockMetaReadable')} "
+            f"locksAtArm={ev.get('lockedNodesAtArm')}"
+        )
     if kind == "applyGeom":
         return (
             f"{ev.get('nodeId')} {fmt_geo(ev.get('from'))} -> {fmt_geo(ev.get('to'))} "
@@ -368,7 +390,7 @@ def print_awareness(peers: list[dict]) -> None:
               f"lockMeta={aw.get('lockMeta')}")
         for peer in aw.get("peers") or []:
             locked = peer.get("lockedNodes") or {}
-            phantom = " ⚠ PHANTOM (typing) PILL" if (
+            phantom = f" {FLAG} PHANTOM (typing) PILL" if (
                 peer.get("nodeId") is not None and not locked
             ) else ""
             print(
@@ -473,7 +495,7 @@ def main(argv: list[str]) -> int:
         for name, reason in bad:
             print(f"INCOMPLETE — {name}: {reason}")
         print()
-        print("The table is WITHHELD. An incomplete dump is not evidence. Re-run §3.")
+        print("The table is WITHHELD. An incomplete dump is not evidence. Re-run the arm.")
         return 1
 
     print_header(label, args.op, peers)
