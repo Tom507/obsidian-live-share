@@ -179,6 +179,39 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
       }
       if (renamedPaths.has(originalPath)) return;
       void plugin.fileOpsManager.onFileCreate(file);
+      // ------------------------------------------------------------- WP117 --
+      // S122 — THE GUEST'S HALF OF HOST-MEDIATED CANVAS CREATION.
+      //
+      // `onFileCreate` one line up refuses the content push for a `.canvas`
+      // (WP83, correct — a raw character-merge destroys edge endpoints) and the
+      // manifest arm below is host-only (correct — the host is the sole manifest
+      // writer). Between those two correct refusals a guest-authored canvas
+      // reached nobody and entered no client's manifest, not even its own.
+      //
+      // This is the third door, and it is not a fourth copy of either of the
+      // other two: it asks the HOST to create the canvas, with the whole file,
+      // over the control channel. The host validates, writes, mints and seeds —
+      // so seed authority, mint authority and manifest authority all stay
+      // exactly where they were.
+      //
+      // COVERS IMPORT AS WELL AS AUTHORING, and that is a property of the event
+      // rather than an extra branch: a canvas copied or moved into the shared
+      // folder raises the same `create`, carrying the same bytes.
+      //
+      // Fire-and-forget beside the call above it, and every refusal — including
+      // "this is not a canvas" and "this client is the host" — is decided,
+      // named and counted inside the coordinator (S155).
+      //
+      // OPTIONALLY CALLED, and the reason is the one stated on `noteMuteConsumed`
+      // above: several harnesses in this suite build a partial `plugin` double
+      // carrying only the members their subject reaches, and a hard call turns
+      // ten of those into a TypeError. The optionality is not allowed to become
+      // a silent absence in the product — `test_tp07` pins that the real
+      // `LiveSharePlugin` declares this method, so a rename or a deletion
+      // reddens rather than degrading into a no-op everywhere.
+      if (file instanceof TFile) {
+        void plugin.requestCanvasCreate?.(originalPath);
+      }
       if (plugin.settings.role === "host") {
         if (file instanceof TFile) {
           void (async () => {

@@ -81,7 +81,7 @@ export interface CanvasMirrorEntry {
    * They differ exactly when an admitted path could not be carried out, which is
    * the case I5 requires to degrade that path alone.
    */
-  readonly outcome: "published" | "materialised" | "skipped" | "failed";
+  readonly outcome: "published" | "materialised" | "adopted" | "skipped" | "failed";
   readonly reason?: string;
 }
 
@@ -96,6 +96,13 @@ export interface CanvasMirrorReport {
   readonly considered: number;
   readonly published: number;
   readonly materialised: number;
+  /**
+   * WP117 — paths whose EXISTING local file was handed to the writer because
+   * this peer originated the creation. Counted apart from `materialised`: one is
+   * a file that did not exist, the other is a file that did, and collapsing them
+   * would make "the mirror created nothing over a user file" unfalsifiable.
+   */
+  readonly adopted: number;
   readonly skippedLocalFile: number;
   readonly skippedNoSource: number;
   readonly failed: number;
@@ -148,6 +155,21 @@ export interface CanvasMirrorDeps {
    * behaviour rather than throwing.
    */
   watchForRecords?(path: string): void;
+  /**
+   * WP117 (S122) — did THIS peer ask the host to create this canvas, and did the
+   * host accept?
+   *
+   * Optional and read `=== true` by the verdict: a deps object without it
+   * degrades to exactly the pre-WP117 behaviour rather than throwing, and every
+   * path nobody asked about keeps `skip-local-file`.
+   */
+  originatedHere?(path: string): boolean;
+  /**
+   * WP117 — the adoption was carried out, so it must not be carried out again.
+   * One-shot: without this the flag would re-admit the path on every later pass
+   * and the writer attach would be re-entered for the life of the session.
+   */
+  noteAdopted?(path: string): void;
   readonly logger?: {
     log(category: string, message: string): void;
     warn(category: string, message: string, err?: unknown): void;
@@ -189,6 +211,7 @@ function empty(role: "host" | "guest"): CanvasMirrorReport {
     considered: 0,
     published: 0,
     materialised: 0,
+    adopted: 0,
     skippedLocalFile: 0,
     skippedNoSource: 0,
     failed: 0,
@@ -239,6 +262,7 @@ export async function mirrorSharedCanvases(deps: CanvasMirrorDeps): Promise<Canv
     considered: entries.length,
     published: entries.filter((e) => e.outcome === "published").length,
     materialised: entries.filter((e) => e.outcome === "materialised").length,
+    adopted: entries.filter((e) => e.outcome === "adopted").length,
     skippedLocalFile: entries.filter((e) => e.verdict === MIRROR_VERDICT.SKIP_LOCAL_FILE).length,
     skippedNoSource: entries.filter(
       (e) => e.verdict === MIRROR_VERDICT.SKIP_NO_SOURCE && e.outcome === "skipped",
@@ -250,6 +274,7 @@ export async function mirrorSharedCanvases(deps: CanvasMirrorDeps): Promise<Canv
     "canvas-mirror",
     `CANVAS MIRROR: role=${report.role} considered=${report.considered} ` +
       `published=${report.published} materialised=${report.materialised} ` +
+      `adopted=${report.adopted} ` +
       `skipped(local-file)=${report.skippedLocalFile} ` +
       `skipped(no-source)=${report.skippedNoSource} failed=${report.failed}`,
   );
@@ -261,10 +286,15 @@ async function mirrorOne(
   role: "host" | "guest",
   path: string,
 ): Promise<CanvasMirrorEntry> {
+  // WP117 — measured ONCE and used for both the admission gate and the verdict,
+  // so an adoption that is armed cannot be admitted and then re-decided as a
+  // skip (or the reverse) because the flag moved between two reads.
+  const originatedHere = deps.originatedHere?.(path) === true;
   const pre = {
     role,
     localFileExists: (await deps.localFileExists(path)) === true,
     identityResolves: isUsableGuid(deps.guidForPath(path)),
+    originatedHere,
   };
 
   if (!admitsCanvasMirror(pre)) {
@@ -300,8 +330,29 @@ async function mirrorOne(
     localFileExists: (await deps.localFileExists(path)) === true,
     identityResolves: isUsableGuid(deps.guidForPath(path)),
     docHasRecords: docHasRecords(deps.canvasSync.getCanvasDocHandle(path)?.doc ?? null),
+    originatedHere,
   };
   const verdict = decideCanvasMirror(post);
+
+  // WP117 — THE ADOPTION, and it is scored on DISK BYTES, never on the verdict
+  // (S138: `canvas.mirror` reports the last completed pass, not the current
+  // state). The file already exists, so "did it land" is not the question the
+  // materialise arm asks; the question is whether the writer took the path over,
+  // which is what `bytesAfter` witnesses.
+  if (verdict === MIRROR_VERDICT.ADOPT_LOCAL_FILE) {
+    await deps.materialise(path);
+    deps.noteAdopted?.(path);
+    const stillThere = (await deps.localFileExists(path)) === true;
+    return {
+      path,
+      verdict,
+      outcome: stillThere ? "adopted" : "failed",
+      reason: stillThere
+        ? undefined
+        : "the adoption left no file at the path, which an adoption must never do",
+    };
+  }
+
   if (verdict !== MIRROR_VERDICT.MATERIALISE) {
     // S123 — the ONE skip that is provably premature rather than final: this
     // guest has no local file and CAN resolve the identity, so the only thing

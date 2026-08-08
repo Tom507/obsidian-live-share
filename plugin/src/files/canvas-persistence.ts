@@ -6,6 +6,7 @@ import {
   SEED_DECISION,
   type SeedKnowledge,
   decideSeed,
+  explainSeed,
 } from "./canvas-seed-decision";
 import {
   DEBOUNCE_MS,
@@ -639,7 +640,16 @@ export class CanvasPersistence {
     // `.canvas` that still holds the user's cards is a second, worse data-loss
     // class than the one this branch exists to remove. It writes nothing, reads
     // nothing, and opens no transaction (I3).
-    if (decideSeed(this.seedKnowledge) === SEED_DECISION.LOAD_OR_MERGE) return "empty";
+    // WP117 (S155) — NARRATED, and on every branch. `explainSeed` is
+    // `decideSeed` plus the clause that produced the answer, so "a guest was
+    // refused the seed" and "this line was never reached" stop being the same
+    // reading in a live log. The DECISION is byte-identical to `decideSeed`.
+    const seedVerdict = explainSeed(this.seedKnowledge);
+    this.logger?.debug(
+      "canvas-persistence",
+      `SEED DECISION: ${this.diskPath} decision=${seedVerdict.decision} rule=${seedVerdict.rule}`,
+    );
+    if (seedVerdict.decision === SEED_DECISION.LOAD_OR_MERGE) return "empty";
     if (!(await this.io.exists(this.diskPath))) return "empty";
     const content = await this.io.read(this.diskPath);
     // WP16's decode bridge stays: the seed writes the FLAT file shape, exactly

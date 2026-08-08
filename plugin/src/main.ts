@@ -57,6 +57,7 @@ import {
   makeBindStateSink,
 } from "./editor/collab-bind-decision";
 import { getEmptyWriteRefusals } from "./files/empty-write-guard";
+import { isProtectedPath } from "./files/protected-paths";
 import { type PathOutcomeLedger, getPathOutcomes } from "./files/path-outcome";
 import {
   type CanvasPersistence,
@@ -74,11 +75,15 @@ import {
   mirrorSharedCanvases,
 } from "./files/canvas-mirror";
 import {
+  CanvasCreateCoordinator,
+  type CanvasCreateStats,
+} from "./files/canvas-create";
+import {
   type CanvasSidecarWiring,
   createVaultSidecarIO,
   wireCanvasSidecar,
 } from "./files/canvas-sidecar-lifecycle";
-import { CanvasSync } from "./files/canvas-sync";
+import { CanvasSync, parseCanvasReport } from "./files/canvas-sync";
 import {
   WRITER_ATTACH_VERDICT,
   decideCanvasWriterAttach,
@@ -198,6 +203,11 @@ export default class LiveSharePlugin extends Plugin {
   private testControlHandle: { close(): void } | null = null;
 
   canvasSync: CanvasSync | null = null;
+  // WP117 (S122): host-mediated guest canvas creation. Built with the session,
+  // torn down with it. Every decision it takes lives in `files/canvas-create.ts`
+  // and `files/canvas-create-decision.ts`; this file supplies measurements and
+  // actions and states no rule of its own.
+  canvasCreate: CanvasCreateCoordinator | null = null;
   // WP25: the sidecar store + lifecycle + identity store, built by
   // `wireCanvasSidecar`. Held only so the periodic compaction timer can be
   // stopped at teardown.
@@ -1586,6 +1596,9 @@ export default class LiveSharePlugin extends Plugin {
     this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
+    // WP117: in-flight requests and their timers belong to ONE session.
+    this.canvasCreate?.reset();
+    this.canvasCreate = null;
     // WP25: stop the periodic compaction timer with the session that armed it.
     void this.canvasSidecar?.lifecycle.destroy();
     this.canvasSidecar = null;
@@ -2119,6 +2132,9 @@ export default class LiveSharePlugin extends Plugin {
     this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
+    // WP117: in-flight requests and their timers belong to ONE session.
+    this.canvasCreate?.reset();
+    this.canvasCreate = null;
     // WP25: stop the periodic compaction timer with the session that armed it.
     void this.canvasSidecar?.lifecycle.destroy();
     this.canvasSidecar = null;
@@ -2402,6 +2418,85 @@ export default class LiveSharePlugin extends Plugin {
     // Authoritative enforcement is server-side in ws-handler; this stops a read-only
     // guest from diverging locally. `path` is the canonical canvas path.
     this.canvasSync.setCanWrite((path) => this.canWriteCanvasPath(path));
+    // WP117 (S122) — WIRING ONLY. Every member below is a measurement taken from
+    // the object that owns it or an action performed by it; there is no
+    // conditional over canvas state here and no second copy of any predicate.
+    this.canvasCreate = new CanvasCreateCoordinator({
+      role: () => (this.settings.role === "host" ? "host" : this.settings.role === "guest" ? "guest" : null),
+      send: (message) => {
+        const channel = this.controlChannel;
+        if (!channel) return false;
+        channel.send(message as never);
+        return true;
+      },
+      isSharedPath: (path) => this.manifestManager.isSharedPath(path),
+      manifestKnows: (path) =>
+        this.manifestManager.getEntries().has(toCanonicalPath(normalizePath(path))),
+      isPathSafe: (path) => isPathSafe(path),
+      isProtectedPath: (path) => isProtectedPath(path),
+      fileExists: (path) => this.app.vault.adapter.exists(toLocalPath(path)),
+      readFile: async (path) => {
+        try {
+          return await this.app.vault.adapter.read(toLocalPath(path));
+        } catch {
+          return null;
+        }
+      },
+      // The SHARED parser, imported — never a private `JSON.parse`. `degraded`
+      // is the one fact that separates "this is not a canvas" from "this is an
+      // empty canvas", and an empty canvas is a legitimate thing to create.
+      isCanvasDocument: (content) => parseCanvasReport(content).degraded === false,
+      createFile: async (path, content) => {
+        const diskPath = toLocalPath(path);
+        const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
+        if (parentDir) await ensureFolder(this.app.vault, parentDir, this.logger);
+        // `vault.create`, NOT `adapter.write`, and the difference is load-bearing
+        // here: the vault API registers the `TFile` before it resolves, and the
+        // manifest publication one step later needs one. It is the same call
+        // `applyRemoteOpInner`'s create arm makes.
+        //
+        // NO PATH MUTE, and that is a decision rather than an omission. Every
+        // other remote-originated write in this plugin takes one, because the
+        // vault `create` it raises would otherwise be re-emitted as this peer's
+        // own authoring gesture. For a `.canvas` on the HOST all three consumers
+        // of that event are already correct without one, and each refuses at a
+        // line a test can point at:
+        //
+        //   ├── `FileOpsManager.onFileCreate` refuses the content push for a
+        //   │      path `skipsAutoTextSync` claims (WP83);
+        //   ├── `BackgroundSync.onFileAdded` refuses the same path with the same
+        //   │      predicate, so no second raw `Y.Text` is installed; and
+        //   └── `requestCanvasCreate` declines `not-guest` on the host.
+        //
+        // What the event DOES do is re-publish the manifest entry this method
+        // publishes one step later, which is idempotent. A mute here would buy
+        // nothing and cost something real: the create would be counted as a
+        // `MUTE DROP` on the ledger a live validator reads for swallowed user
+        // gestures (S120), where it would be a false positive.
+        await this.app.vault.create(diskPath, content);
+      },
+      publishManifestEntry: async (path, content) => {
+        const file = this.app.vault.getAbstractFileByPath(toLocalPath(path));
+        if (!(file instanceof TFile)) {
+          // Fail LOUDLY rather than quietly leaving a file no peer can resolve.
+          // The coordinator turns this into a refusal the guest is shown, which
+          // is the whole of A4: a creation that did not work says so.
+          throw new Error(`the created canvas is not readable back at ${path}`);
+        }
+        await this.manifestManager.updateFile(file, content);
+      },
+      // WP6 AC8: the OBJECT, never a subscribe written in this file. The
+      // coordinator issues the call, for the same reason `canvas-mirror.ts`
+      // does. See `CanvasCreateEnv.canvasSync`.
+      canvasSync: () => this.canvasSync,
+      attachWriter: (path) => this.attachCanvasWriter(path),
+      identityFor: (path) => this.manifestManager.getCanvasGuid(path),
+      notify: (message) => {
+        new Notice(message);
+      },
+      newRequestId: () => crypto.randomUUID(),
+      logger: this.logger,
+    });
     // WP3: the diff-inferred lock-acquisition hook, backed by the per-canvas
     // CanvasPresence controllers. WP21 removed the per-node lock write/delete
     // gates that used to be injected alongside it — locks are pure UX and no
@@ -3427,6 +3522,29 @@ export default class LiveSharePlugin extends Plugin {
     return this.lastCanvasMirrorReport;
   }
 
+  /**
+   * S122 AC4 — what host-mediated canvas creation has done and refused, for a
+   * live validator. Counts and classes only; never a path, never content.
+   */
+  getCanvasCreateStats(): CanvasCreateStats | null {
+    return this.canvasCreate?.getStats() ?? null;
+  }
+
+  /**
+   * WP117 — the guest's half, called from the vault `create` event. Forwarding
+   * only: every branch, including the six that do nothing, is decided and
+   * counted inside the coordinator.
+   */
+  async requestCanvasCreate(rawPath: string): Promise<void> {
+    const coordinator = this.canvasCreate;
+    if (!coordinator) return;
+    try {
+      await coordinator.requestCreate(toCanonicalPath(normalizePath(rawPath)));
+    } catch (err) {
+      this.logger.error("canvas-create", `canvas creation request failed for ${rawPath}`, err);
+    }
+  }
+
   private armCanvasMirrorPass(): void {
     this.canvasMirrorQueue = this.canvasMirrorQueue
       .then(async () => {
@@ -3440,6 +3558,11 @@ export default class LiveSharePlugin extends Plugin {
           canvasSync,
           materialise: (path) => this.attachCanvasWriter(path),
           watchForRecords: (path) => this.watchCanvasForRecords(path),
+          // WP117 (A6): the ONE path per accepted request whose existing local
+          // file is adopted rather than skipped. Both are reads of the
+          // coordinator's own state; this file decides nothing.
+          originatedHere: (path) => this.canvasCreate?.originatedHere(path) === true,
+          noteAdopted: (path) => this.canvasCreate?.noteAdopted(path),
           logger: this.logger,
         });
       })
@@ -3597,7 +3720,21 @@ export default class LiveSharePlugin extends Plugin {
           // WP29 (I9/AC1): the two conditions were measured by `subscribe`,
           // which has already resolved by the time we get here — so the cold
           // open reads them from the object that took them.
-          seedKnowledge: this.canvasSync?.seedKnowledgeFor(canonical),
+          // WP117 (S122's residual): and the ROLE, stamped from the live session
+          // over whatever `subscribe` recorded. The two agree in the ordinary
+          // case; where they cannot — a path whose subscribe left by one of the
+          // early exits and therefore recorded nothing — `seedKnowledgeFor`
+          // answers `NOTHING_KNOWS_DOC`, which has no role and would fall
+          // through to the pre-WP117 table. Stamping here is what makes the
+          // "a guest never seeds" rule hold on EVERY cold open rather than on
+          // the ones that got as far as recording their knowledge.
+          seedKnowledge: {
+            ...(this.canvasSync?.seedKnowledgeFor(canonical) ?? {
+              sidecarKnowsDoc: false,
+              peerKnowsDoc: false,
+            }),
+            role: this.settings.role === "host" ? "host" : "guest",
+          },
         },
       );
       // A session teardown may have raced the awaited cold open.

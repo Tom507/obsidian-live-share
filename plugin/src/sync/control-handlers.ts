@@ -274,6 +274,32 @@ export function registerControlHandlers(plugin: LiveSharePlugin): void {
     });
   }
 
+  // ---------------------------------------------------------------- WP117 --
+  // S122 — HOST-MEDIATED GUEST CANVAS CREATION, both directions.
+  //
+  // Their own control message types rather than two new `FileOp` members, and
+  // the precedent is `sync-request` directly below: this is a REQUEST TO THE
+  // HOST, not a file operation to be applied. Keeping it off the `file-op`
+  // channel means `applyRemoteOp` never sees a canvas payload, so WP83's
+  // raw-content door is not widened by a single byte and the offline queue,
+  // the chunk assembler and WP95's two admission gates are all untouched.
+  //
+  // NO ROLE TEST HERE, deliberately. The relay broadcasts to everybody, so every
+  // peer receives both messages; the authority clause lives in the pure core
+  // (`decideCanvasCreate`, clause 1) and is COUNTED there, so a guest that
+  // received another guest's request is an observable branch and not a silent
+  // `return`. That is the S155 lesson applied at the moment it would have been
+  // easiest to write the cheap version.
+  channel.on("canvas-create-request", (msg) => {
+    void plugin.canvasCreate?.handleRequest(msg).catch((err) => {
+      plugin.logger.error("canvas-create", "failed to handle a canvas creation request", err);
+    });
+  });
+
+  channel.on("canvas-create-result", (msg) => {
+    plugin.canvasCreate?.handleResult(msg);
+  });
+
   channel.on("presence-update", (msg) => {
     // D2 — a guest may only delete against a manifest a live host published
     // DURING ITS SESSION, so somebody has to publish once the guest is listening.

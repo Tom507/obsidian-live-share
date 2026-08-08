@@ -38,6 +38,12 @@ const ALLOWED_TYPES = new Set([
   "host-transfer-decline",
   "host-changed",
   "host-disconnected",
+  // WP117 (S122) — host-mediated guest canvas creation. The relay stays
+  // content-blind: both types are broadcast verbatim and, with end-to-end
+  // encryption on, the request's `path` and `content` arrive here already
+  // ciphertext.
+  "canvas-create-request",
+  "canvas-create-result",
 ]);
 
 const MSG_RATE_WINDOW = 10_000;
@@ -137,6 +143,11 @@ export function createControlWSS(options?: ControlWSSOptions) {
     "session-end",
     "set-permission",
     "host-transfer-offer",
+    // WP117 — only the host answers a canvas creation request. The plugin's
+    // pure core already refuses to act on a non-host, but the two guards are
+    // independent on purpose: this one holds for an older or hostile client
+    // that never runs that code at all.
+    "canvas-create-result",
   ]);
 
   function determineHostStatus(
@@ -495,7 +506,11 @@ export function createControlWSS(options?: ControlWSSOptions) {
         msg.type === "file-op" ||
         msg.type === "file-chunk-start" ||
         msg.type === "file-chunk-data" ||
-        msg.type === "file-chunk-end";
+        msg.type === "file-chunk-end" ||
+        // WP117 — a canvas creation request asks the HOST to write a file into
+        // the shared tree, so it is a write by every meaning the permission
+        // model has. A read-only guest may not reach the host with one.
+        msg.type === "canvas-create-request";
       if (isFileWrite) {
         const filePath =
           msg.type === "file-op" && typeof msg.op === "object" && msg.op !== null

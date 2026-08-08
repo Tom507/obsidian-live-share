@@ -2997,6 +2997,17 @@ export class CanvasSync {
     if (!this.subscribedPaths.has(path)) return;
     // Recorded before the two early returns below, so a path whose observer is
     // already installed still reports what this subscribe measured.
+    // WP117 (S122's residual) LEAVES THIS LINE ALONE, deliberately. The role is
+    // the third input to `decideSeed`, and it was tempting to record it here
+    // beside the two witnesses. It is stamped at the WRITER ATTACH instead
+    // (`main.ts`, `attachCanvasWriter`) for a reason that is a correctness
+    // property rather than a preference: this method has five early exits that
+    // never reach this line, and a path that left by one of them answers
+    // `NOTHING_KNOWS_DOC` from `seedKnowledgeFor` — an object with no role, which
+    // would fall through to the pre-WP117 table on exactly the paths whose
+    // subscribe went wrong. Stamping over the top at the one place every cold
+    // open passes through covers those too. This object therefore keeps WP29's
+    // shape exactly: two measurements, no policy.
     this.seedKnowledgeByPath.set(path, { sidecarKnowsDoc, peerKnowsDoc });
     if (this.observers.has(path)) return;
 
