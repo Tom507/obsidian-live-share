@@ -1,0 +1,49 @@
+{
+  "peer": "C",
+  "port": 39433,
+  "op": "mark",
+  "path": "_liveshare-test/smoke.canvas",
+  "label": "rapid-clicks",
+  "wallClock": 1786264659.4997663,
+  "sessionInfo": {
+    "clientId": "4a99cf9a-9a6f-477c-8ef6-bfb8ffb9a448",
+    "role": "guest",
+    "roomId": "32883766-ec33-473d-b34a-e62a4685f293",
+    "connected": true,
+    "vaultId": "c44c0000947c0000",
+    "vaultName": "",
+    "vaultPath": null,
+    "pluginBuild": "0.6.1+e2e",
+    "canvasSurface": true
+  },
+  "sessionInfoRaw": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "result": {
+        "clientId": "4a99cf9a-9a6f-477c-8ef6-bfb8ffb9a448",
+        "role": "guest",
+        "roomId": "32883766-ec33-473d-b34a-e62a4685f293",
+        "connected": true,
+        "vaultId": "c44c0000947c0000",
+        "vaultName": "",
+        "vaultPath": null,
+        "pluginBuild": "0.6.1+e2e",
+        "canvasSurface": true
+      }
+    }
+  },
+  "raw": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "result": {
+        "diagProto": 1,
+        "armed": true,
+        "marked": "rapid-clicks",
+        "eventCount": 1,
+        "dropped": 0
+      }
+    }
+  }
+}

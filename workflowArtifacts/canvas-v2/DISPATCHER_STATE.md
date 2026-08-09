@@ -311,6 +311,59 @@ playground ruling. Filed as `S185`.
 
 **Rig left clean:** all 6 artefacts deleted (`b65-*` → `[]`), `.pre-v2-smoke` residue `[]` on all three,
 `data.json` never read as content.
+
+---
+
+## B69 — the owner's guided live session, and the finding that reframes the whole complaint
+
+**`S189` — the disjointed board is a VIEW-LAYER defect only. The data is never wrong.**
+
+The owner reported (`S188`) that a few clicks disjoint the board and the error accumulates. **It does not
+touch the data.** Measured with the owner at the keyboard, three real vaults, diag build `5054fde30be2c209`:
+
+| what was done | what the instruments said |
+|---|---|
+| owner drags `card1` on host **A** | `card1 (1110,100) → (975,390)`, Δ`(-135,+290)` — **identical in the doc AND on disk on all three peers**, and the **only** node that moved |
+| whole-share disk census immediately after | **all seven boards agree on records**; `smoke.canvas` **byte-identical at 2 938 B** on A, B and C |
+| owner closes the canvas tab and reopens it | **it renders correctly** |
+
+**So: the document and the files are always right; the RENDERER drifts, and a remount repaints it from
+truth.** That is why *"the error accumulates with every click"* looked like data loss and is not — the view
+drifts further from a document that stays intact.
+
+**Prime suspect: `H8`** — `main.ts:3231-3235`, where a moved **edge-endpoint** node escalates an ordinary
+remote change into a whole-board `reloadCanvasData`/`setData`. A **view** operation that repaints the entire
+board rather than one node. **`WP119` removed this escalation from the *revert* path and left it here.**
+`card1`'s board carries **6 edges**.
+
+**Two negative results that cost as much to get as the positive one:**
+
+- **A plain click damages nothing.** Awareness only, no doc transaction, no ledger rows — measured twice.
+  *"Already disjointed after the first real click"* — the word doing the work is **real**, i.e. a drag.
+- **Locks do NOT accumulate.** The claim **moves** to the newly-touched node and stays at exactly **1**,
+  never returning to 0. `epochs={<id>: 'undefined'}` on the wire — **GAP-7 confirmed live**, and it is why no
+  peer can clear another's claim (`S187`).
+
+**The Dispatcher's own framing in `S188` was wrong** — *"a feedback loop, each click applies a delta against
+a wrong baseline"* — and is kept unedited in the register as what was believed before measuring.
+
+### Blocking the final line-level attribution
+
+**The rig reports `VIEW UNAVAILABLE` on all three peers.** It cannot find the mounted canvas view to hook,
+although the board is plainly open and the plugin registers every click. **Doc and file planes work.**
+Fix that accessor and the next dump names the writer. **That is the single next task.**
+
+### Resume procedure for this investigation
+
+```text
+Build staged on all three vaults : 5054fde30be2c209   (diag; backups in H:\tmp\b68_backup_<sha>\)
+Pre-WP120 diag bundle for the A/B: h:\tmp\b68_preWP120_diag_main.js  (c77451af39d5a7b6, from e6909ee)
+Runbook                          : ImplementationReport_B68_Diagnostics.md §2
+Raw dumps already captured       : workflowArtifacts/canvas-v2/diag/{click-1,drag-desync}-{A,B,C}.json
+```
+
+Roles migrate — at B69 they were **A host, B guest, C guest**, room `32883766…`, having been B-host in the
+room before it. **Read `session.info`, never assume** (`S139`).
 - **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
   in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
   copies are the owner's and were deliberately left untouched.**
