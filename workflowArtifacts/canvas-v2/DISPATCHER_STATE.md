@@ -364,6 +364,73 @@ Raw dumps already captured       : workflowArtifacts/canvas-v2/diag/{click-1,dra
 
 Roles migrate — at B69 they were **A host, B guest, C guest**, room `32883766…`, having been B-host in the
 room before it. **Read `session.info`, never assume** (`S139`).
+
+---
+
+## B70 — the view plane is fixed. The blocker was a lost receiver, not a leaf lookup.
+
+**`S190`** — `e2e-control.ts:3373` read `const accessor = plugin.canvasDiagTargets;` and then called
+`accessor(rawPath)`. `canvasDiagTargets` (`main.ts:3659`) is a **prototype method** whose whole body is
+`this.canvasAdapters` / `this.canvasPresences`. The shipped bundle is `"use strict"`, so the detached call ran
+with `this === undefined` and threw on **every** invocation; a bare `catch { return []; }` rendered that as
+*"no canvas view is mounted for this path on this peer."*
+
+**The measurement that settles it** — same map, same process, same millisecond, three live vaults:
+
+| reading | invocation | A | B | C |
+|---|---|---|---|---|
+| `canvas.editingSignal` → `hasAdapter` / `liveNodeIds` | `plugin.canvasEditingSignal(path)` — **method** | true / **11** | true / **11** | true / **11** |
+| `canvas.diag` → `mountedPaths` / `view.available` | `accessor(rawPath)` — **detached** | `[]` / false | `[]` / false | `[]` / false |
+
+`mountedPaths` is computed with **no path filter**, so a canonicalisation mismatch cannot explain it. The map
+was never empty. **The Dispatcher's brief pointed at `resolveCanvasViews`/`getLeavesOfType` (`:3041`) — that
+helper is not on the view-plane path at all.** The contrast in the brief was the right thread, wrong mechanism.
+
+**Fix:** one file, `plugin/src/testing/e2e-control.ts`. **No production source touched.** Method-form call, and
+`resolveDiagTargetsResult` now returns a stated `accessorError`, so a **throw** and an **unmounted board** can
+never render alike again — that second half is R7, and its absence is why a one-line bug survived a whole
+measurement session wearing an honest answer's words.
+
+**Falsifiability (Rule 11), harness brace-matched verbatim out of the shipped bundles:** `BK1` re-detaches the
+receiver → `targets=0`, VIEW count `0`, **RED**, `accessorError` naming the `TypeError`. Restored **by
+copy-aside** — source `9d9a2244…` byte-identical, bundle rebuilt `02ea8cee…` byte-identical → `targets=1`,
+VIEW count **11**, **GREEN**. `BK2` (non-array return): old bundle silently `[]`, new bundle names the type.
+
+**Confound disclosed by the worker rather than hidden:** its first cycle died on an `S186`-class cp1252 decode
+error and left the planted bundle on disk, contaminating the next baseline into a false *"BUNDLE RESTORED:
+False"*. Re-run clean; both runs are in the report.
+
+**Gates re-run by the Dispatcher on a quiet tree** (`concurrent_workers_false_red`): `tsc` exit 0 ·
+**444 files / 3375 tests passed, 0 failed** · `check_signal_register.py` exit 0, control proved, 255 files.
+
+**`S191` — allocated, OPEN, not fixed.** The same receiver-losing shape survives at
+`safeCall(adapter?.getBasePath)` and `safeCall(plugin.app?.vault?.getName)`; demonstrated with `safeCall`
+extracted verbatim from the bundle, returning `""`/`null` — **exactly what live `session.info` reports on all
+three peers**, while `vaultId` (a *property* read) is populated. Consequence: the one field that could name
+which vault a dump came from is blank, and dumps are labelled A/B/C **by port order alone**. Worker's own
+caveat, kept: it did not read Obsidian's source, so *"members exist and lose `this`"* vs *"members absent"* is
+not fully excluded. `safeCall(plugin.hasCanvasSurface)` is a harmless third instance, folded in.
+
+**Why no test caught `S190`:** `canvasDiagTargets` has **zero test files and zero fixtures** in the tree, `tsc`
+cannot see a lost receiver, and a hand-rolled fake plugin is an object literal that closes over its data
+lexically — **such a double structurally cannot reproduce the failure.** §3.11's composition-root gap again.
+
+### The owner's next session — the `H8` attribution run
+
+Fixed bundle `02ea8ceea23f9a2b` (5 834 351 B) is **staged and byte-verified on all three vaults**; the old
+`5054fde3…` is backed up to `h:/tmp/b70_backup_5054fde/`. `data.json` / `manifest.json` / `styles.css`
+untouched. **All three processes still run the old bundle from memory** — there is no reload route in the
+control surface (all 43 `case` handlers checked).
+
+1. **Reload all three** Obsidian windows — `Ctrl+P` → *"Reload app without saving"*.
+2. `python h:/tmp/b70_view_plane_probe.py` → expect `view available=True count=11` on A, B and C.
+3. **`BK3`, do not skip it.** Close `smoke.canvas` on **C only** and re-probe: C must flip to
+   `available=False`, A and B must stay at 11. Reopen, re-probe. Without it, *"11 everywhere"* is a green
+   nobody has shown can fail — which is the exact failure mode this project has produced twelve-plus times.
+4. **The run:** B68 runbook — `arm` → **one ~100 px drag of `card1` on the host** → `dump` → `clear`.
+   **`H8` predicts more nodes moving on the VIEW plane than on the doc plane on the guests.** A view delta on
+   a node whose doc *and* file geometry did not change is `H8` caught in the act, and it will surface as an
+   `UNATTRIBUTED` view row. `patchedPaths` should also be non-empty for the first time.
 - **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
   in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
   copies are the owner's and were deliberately left untouched.**

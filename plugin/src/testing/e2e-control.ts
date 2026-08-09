@@ -3369,16 +3369,52 @@ function narrowDiagAdapter(value: unknown): DiagAdapterLike | null {
  * so an ordinary English sentence of that shape is read as an import and reds
  * two work packages. Measured, not guessed — it did.)
  */
-function resolveDiagTargets(plugin: E2EPluginLike, rawPath?: string): DiagTarget[] {
-  const accessor = plugin.canvasDiagTargets;
-  if (typeof accessor !== "function") return [];
+function resolveDiagTargetsResult(
+  plugin: E2EPluginLike,
+  rawPath?: string,
+): { targets: DiagTarget[]; accessorError: string | null } {
+  if (typeof plugin.canvasDiagTargets !== "function") {
+    return { targets: [], accessorError: null };
+  }
   let raw: unknown;
   try {
-    raw = accessor(rawPath);
-  } catch {
-    return [];
+    // ── B70 (`S190`) — THE INVOCATION IS THE WHOLE BUG, AND IT IS A RECEIVER ──
+    //
+    // This used to read `const accessor = plugin.canvasDiagTargets;` followed by
+    // `accessor(rawPath)`. `canvasDiagTargets` is a PROTOTYPE METHOD on
+    // `LiveSharePlugin` (`main.ts:3659`) whose body is nothing but
+    // `this.canvasAdapters` / `this.canvasPresences`. Detaching it drops the
+    // receiver; the bundle esbuild ships is `"use strict"`, so `this` is
+    // `undefined` and the first line of the loop threw
+    // `TypeError: Cannot read properties of undefined (reading 'canvasAdapters')`
+    // on EVERY call. The bare `catch` below then returned `[]`, and the VIEW
+    // plane rendered that as "no canvas view is mounted" — for three peers with
+    // eleven live nodes each. MEASURED, not reasoned: at one instant,
+    // `canvas.editingSignal` (which calls `plugin.canvasEditingSignal(path)` in
+    // METHOD form, `:5113`) reported `hasAdapter: true` and eleven
+    // `liveNodeIds`, while `canvas.diag` reported `mountedPaths: []`. Same map,
+    // same process, same millisecond — only the call shape differed.
+    //
+    // The call is now method-form, which is the shape every other accessor in
+    // this file already uses (`plugin.canvasEditingSignal(path)`,
+    // `plugin.canvasUndoReport()`, `cs.getCanvasSnapshot(path)`). It is not
+    // `.bind()` and not `.call()` on purpose: keeping a detached handle around
+    // is what made the defect possible, so the handle is gone rather than
+    // repaired.
+    raw = plugin.canvasDiagTargets(rawPath);
+  } catch (err) {
+    // R7 — the OTHER half of this defect. A throw and an unmounted board are
+    // different facts and must never render alike; the old bare `catch` erased
+    // that distinction and is why a one-line receiver bug survived a whole
+    // measurement session looking like an honest "nothing is open".
+    return { targets: [], accessorError: `canvasDiagTargets threw: ${diagErrorText(err)}` };
   }
-  if (!Array.isArray(raw)) return [];
+  if (!Array.isArray(raw)) {
+    return {
+      targets: [],
+      accessorError: `canvasDiagTargets returned ${raw === null ? "null" : typeof raw}, not an array`,
+    };
+  }
   const out: DiagTarget[] = [];
   for (const entry of raw) {
     if (entry === null || typeof entry !== "object") continue;
@@ -3402,7 +3438,15 @@ function resolveDiagTargets(plugin: E2EPluginLike, rawPath?: string): DiagTarget
           : "",
     });
   }
-  return out;
+  return { targets: out, accessorError: null };
+}
+
+/**
+ * The mounted-board list alone, for the call sites that have no way to render a
+ * refusal. Every site that CAN report one uses `resolveDiagTargetsResult`.
+ */
+function resolveDiagTargets(plugin: E2EPluginLike, rawPath?: string): DiagTarget[] {
+  return resolveDiagTargetsResult(plugin, rawPath).targets;
 }
 
 /**
@@ -3415,7 +3459,11 @@ function diagViewCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
       "this build exposes no canvasDiagTargets accessor (pre-B68 bundle)",
     );
   }
-  const targets = resolveDiagTargets(plugin, path);
+  const { targets, accessorError } = resolveDiagTargetsResult(plugin, path);
+  // B70 — the refusal is reported as the refusal it is. An accessor that FAILED
+  // and a peer with no board open are the two facts R7 exists to keep apart,
+  // and until this line existed the first one wore the second one's words.
+  if (accessorError !== null) return diagPlaneUnavailable(accessorError);
   if (targets.length === 0) {
     return diagPlaneUnavailable("no canvas view is mounted for this path on this peer");
   }
@@ -4377,7 +4425,16 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
    * the absence is itself the reading that names which bundle a peer is on.
    */
   const install = (path: string): void => {
-    const targets = resolveDiagTargets(plugin, path);
+    const { targets, accessorError } = resolveDiagTargetsResult(plugin, path);
+    // B70 — same R7 split as `diagViewCensus`. This note is what a live session
+    // reads first, and for the whole B68 run it said "nothing is open" about
+    // three peers that each had eleven live nodes.
+    if (accessorError !== null) {
+      notes.push(
+        `the mounted-board accessor FAILED on this peer, so nothing could be hooked and the VIEW plane will read unavailable — ${accessorError}`,
+      );
+      return;
+    }
     if (targets.length === 0) {
       notes.push(
         `no canvas view is mounted for '${path}' on this peer: nothing to hook, and the VIEW plane will read unavailable`,
