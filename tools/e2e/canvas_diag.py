@@ -3,8 +3,18 @@
 THE ONE SENTENCE
 ----------------
 The owner clicks ONCE; this prints what that click did, on all three peers, in
-all three planes, with a cause for every move it can attribute and a loud
+all FOUR planes, with a cause for every move it can attribute and a loud
 ``UNATTRIBUTED`` row for every move it cannot.
+
+B71 (`S192`) — THE FOURTH PLANE
+-------------------------------
+``view``, ``doc`` and ``file`` are three readings of ONE MODEL, so they agree
+with each other by construction whenever the sync is working. B70 measured
+exactly that — eleven nodes, three peers, three identical planes, taken twice,
+the second time while the owner's screen was visibly disjointed. The instrument
+could not see the symptom because it was never pointed at it. ``paint`` reads the
+card's own DOM element, so it is the only plane that can disagree, and
+``PAINT vs MODEL`` is printed before every other table.
 
 WHAT IT IS FOR
 --------------
@@ -69,6 +79,21 @@ from typing import Any, Optional
 DIAG_DIR = Path(__file__).resolve().parents[2] / "workflowArtifacts" / "canvas-v2" / "diag"
 
 PEER_NAMES = ["A", "B", "C", "D", "E", "F"]
+
+# B71 (`S192`) — FOUR PLANES, AND THE ORDER IS THE READING ORDER.
+#
+# `view`, `doc` and `file` are three readings of ONE MODEL — the canvas node
+# object, that record in the Y.Doc, that record on disk. When the sync works they
+# agree BY CONSTRUCTION, which is why B70's drag showed three identical planes on
+# three peers while the owner's screen was visibly disjointed. `paint` is the
+# pixels: the card's own DOM element. It is the only plane here that can disagree
+# with the other three, so it is printed FIRST and it is the one to read first.
+PLANES = ("paint", "view", "doc", "file")
+
+# The dump shape that first carried `paint`. A peer below this has three planes
+# and cannot answer a paint question; saying so is not the same as saying the
+# board is fine (R7).
+PAINT_PLANE_PROTO = 2
 
 # The live session runs on a Windows console whose default codec is cp1252, and
 # `⚠` is not in it. An UnicodeEncodeError halfway through the table would lose
@@ -192,16 +217,89 @@ def print_header(label: str, op: str, peers: list[dict]) -> None:
 def print_plane_availability(peers: list[dict]) -> None:
     """R7 — a plane that could not be read says why, before any cell is printed."""
     for p in peers:
-        census = census_of(p.get("result") or {})
-        for name in ("view", "doc", "file"):
+        result = p.get("result") or {}
+        census = census_of(result)
+        proto = result.get("diagProto")
+        for name in PLANES:
             pl = plane(census, name)
-            if pl and pl.get("available") is not True:
-                print(f"PLANE {p['name']} {name.upper():4} UNAVAILABLE — {pl.get('reason')}")
+            if not pl and name == "paint":
+                # B71/R7 — a peer with no paint plane must SAY it has none. Absent
+                # is not "agrees"; three model planes agreeing is exactly what the
+                # broken board already looked like.
+                print(
+                    f"PLANE {p['name']} PAINT ABSENT — this peer's dump is diagProto="
+                    f"{proto} (< {PAINT_PLANE_PROTO}); its bundle has no paint plane, "
+                    f"so NOTHING here has looked at the pixels on this peer"
+                )
+            elif pl and pl.get("available") is not True:
+                print(f"PLANE {p['name']} {name.upper():5} UNAVAILABLE — {pl.get('reason')}")
             elif pl.get("truncated"):
-                print(f"PLANE {p['name']} {name.upper():4} TRUNCATED at the node cap "
+                print(f"PLANE {p['name']} {name.upper():5} TRUNCATED at the node cap "
                       f"(count={pl.get('count')})")
             elif name == "file" and pl.get("degraded") is True:
                 print(f"PLANE {p['name']} FILE DEGRADED — parseCanvasReport could not read it")
+            elif name == "paint" and pl.get("available") is True:
+                lbl = pl.get("label") or {}
+                counts = lbl.get("sourceCounts") or {}
+                vp = lbl.get("viewport")
+                print(
+                    f"PLANE {p['name']} PAINT read from {lbl.get('primarySource')} — "
+                    f"sources={counts} viewport={vp} "
+                    f"rectTol={lbl.get('rectToleranceCanvasUnits')}"
+                )
+                if lbl.get("unreadableNodes"):
+                    print(
+                        f"PLANE {p['name']} PAINT UNREADABLE NODES "
+                        f"{lbl['unreadableNodes']} — these are BLANK cells below, "
+                        f"not stationary cards"
+                    )
+
+
+def print_paint_divergence(peers: list[dict]) -> None:
+    """B71 (`S192`) — THE HEADLINE. Model vs pixels, per node, per peer.
+
+    Printed before every other table because it is the only reading in this file
+    that compares two DIFFERENT things. ``view``/``doc``/``file`` are three
+    readings of one model and agree by construction; a divergence here is a card
+    whose model says one thing and whose element is somewhere else.
+    """
+    print()
+    print("PAINT vs MODEL  (nodeEl geometry vs canvas.nodes[id].x/y — the only cross-check here)")
+    saw_any = False
+    for p in peers:
+        result = p.get("result") or {}
+        pl = plane(census_of(result), "paint")
+        if not pl:
+            print(f"  {p['name']}: NO PAINT PLANE (diagProto={result.get('diagProto')}) — not measured")
+            continue
+        if pl.get("available") is not True:
+            print(f"  {p['name']}: UNAVAILABLE — {pl.get('reason')}")
+            continue
+        saw_any = True
+        lbl = pl.get("label") or {}
+        detail = lbl.get("nodesDetail") or {}
+        divergent = lbl.get("divergentNodes") or []
+        agree = sum(1 for d in detail.values() if d.get("verdict") == "agree")
+        unread = sum(1 for d in detail.values() if d.get("verdict") == "unreadable")
+        print(
+            f"  {p['name']}: {len(divergent)} DIVERGENT · {agree} agree · "
+            f"{unread} unreadable  (of {pl.get('count')} live nodes)"
+        )
+        for node in sorted(divergent):
+            d = detail.get(node) or {}
+            off = d.get("offset") or {}
+            print(
+                f"      {FLAG} {node[:20]:<21} model={fmt_geo(d.get('model'))} "
+                f"style={fmt_geo(d.get('styleTransform'))} rect={fmt_geo(d.get('rect'))} "
+                f"offset=({off.get('dx')},{off.get('dy')}) "
+                f"[style={d.get('styleVerdict')} rect={d.get('rectVerdict')}]"
+            )
+        for node, d in sorted(detail.items()):
+            if d.get("verdict") != "unreadable":
+                continue
+            print(f"      ?  {node[:20]:<21} UNREADABLE — {d.get('reason')}")
+    if not saw_any:
+        print("  (no peer produced a readable paint plane — see the reasons above)")
 
 
 def all_node_ids(peers: list[dict], keys: tuple[str, ...]) -> list[str]:
@@ -212,7 +310,7 @@ def all_node_ids(peers: list[dict], keys: tuple[str, ...]) -> list[str]:
             census = r.get(key)
             if not isinstance(census, dict):
                 continue
-            for name in ("view", "doc", "file"):
+            for name in PLANES:
                 nodes = plane(census, name).get("nodes")
                 if isinstance(nodes, dict):
                     ids.update(nodes.keys())
@@ -231,7 +329,7 @@ def print_census_table(peers: list[dict]) -> None:
     print()
     print(head + "FLAG")
     for node in ids:
-        for name in ("view", "doc", "file"):
+        for name in PLANES:
             cells = []
             for p in peers:
                 nodes = plane(census_of(p.get("result") or {}), name).get("nodes") or {}
@@ -258,7 +356,7 @@ def print_delta_table(peers: list[dict]) -> None:
     print()
     print(f"{'NODE':<14}{'PLANE':<7}{'PEER':<6}{'ARMED':<16}{'DUMPED':<16}DELTA")
     for node in ids:
-        for name in ("view", "doc", "file"):
+        for name in PLANES:
             for p in peers:
                 r = p.get("result") or {}
                 a = plane(r.get("armCensus") or {}, name).get("nodes") or {}
@@ -500,6 +598,8 @@ def main(argv: list[str]) -> int:
 
     print_header(label, args.op, peers)
     print_plane_availability(peers)
+    if args.op in ("census", "arm", "dump"):
+        print_paint_divergence(peers)
 
     if args.op == "clear":
         for p in peers:

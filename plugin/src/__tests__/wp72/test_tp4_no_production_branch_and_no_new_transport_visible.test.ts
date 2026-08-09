@@ -52,6 +52,15 @@ const ALLOWED_IMPORTS = new Set([
   // assertions below are untouched and still green. `canvas-presence.ts` is
   // byte-unchanged: the two sweeps are intercepted by patching the INSTANCE.
   "../canvas/canvas-presence",
+  // §7 AMENDMENT (B71 / `S192`, ledger entry A-71-2) — the SAME entry as the one
+  // added to `wp49/test_tp12_…`'s copy of this list (A-71-1), and it must stay in
+  // step with it. The paint plane de-transforms a card's client rect with the
+  // PRODUCTION inverse (`clientToCanvasManual` + `viewportScale`) rather than a
+  // second copy of the screen transform inside the rig. No new package
+  // dependency, no new transport, and no canvas module is made aware of the rig:
+  // `canvas-adapter.ts` is byte-unchanged and the four assertions below are
+  // untouched and still green.
+  "../canvas/canvas-adapter",
 ]);
 
 const CANVAS_MODULES = [

@@ -67,6 +67,19 @@ const ALLOWED_IMPORTS = new Set([
   // whole-file SHA pin in `v2/wp21/test_tp04_…` is untouched. This entry MUST
   // stay in step with its twin, A-68-2, in `wp72/test_tp4_…`.
   "../canvas/canvas-presence",
+  // §7 AMENDMENT (B71 / `S192`, ledger entry A-71-1). The PAINT plane turns a
+  // card's `getBoundingClientRect()` back into canvas coordinates, which needs
+  // the exact inverse of the transform Obsidian renders with —
+  // `clientToCanvasManual` + `viewportScale`, the two PRODUCTION definers of
+  // that arithmetic and the ones the presence overlay already places cards
+  // with. Re-deriving them inside the rig would make it a second definer of the
+  // plugin's own screen transform, and getting the `zoom` vs `scale` distinction
+  // wrong there does not fail loudly: it yields a paint plane that cries
+  // divergence on a healthy board. `canvas/canvas-adapter.ts` has NO imports of
+  // its own, so this adds no package dependency and no transport, and both
+  // functions are pure over numbers. This entry MUST stay in step with its twin,
+  // A-71-2, in `wp72/test_tp4_…`.
+  "../canvas/canvas-adapter",
 ]);
 
 const FORBIDDEN_TRANSPORTS = ["ws", "socket.io", "node:net", "node:tls", "node:dgram", "express"];

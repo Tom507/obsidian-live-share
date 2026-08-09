@@ -25,6 +25,30 @@ import { createHash } from "node:crypto";
 import type * as http from "node:http";
 import { createServer } from "node:http";
 import * as Y from "yjs";
+// B71 (`S192`) — THE PAINT PLANE'S TRANSFORM, AND WHY IT IS IMPORTED RATHER THAN
+// RE-DERIVED. To turn a card's `getBoundingClientRect()` back into canvas
+// coordinates the rig needs the EXACT inverse of the transform Obsidian renders
+// with — `(client - wrapperOrigin - halfSize) / scale + viewport`, where `scale`
+// is the LINEAR factor (`canvas.scale`, i.e. `2 ** canvas.zoom`) and NOT
+// `canvas.zoom` itself. Getting that wrong does not fail loudly: it produces a
+// plausible-looking number that is wrong by a factor of the zoom, i.e. a paint
+// plane that cries divergence on a board that is fine, which is the exact
+// uselessness this package is supposed to avoid.
+//
+// `clientToCanvasManual` and `viewportScale` are the PRODUCTION definers of that
+// arithmetic — the same two functions `canvas-adapter.ts` uses to place the
+// presence overlay over a real card, and the ones `__tests__/canvas-adapter.test.ts`
+// already covers. Re-deriving them here would make the rig a SECOND definer of
+// the plugin's own screen transform: `S158`'s family, and precisely what the
+// frozen import allow-list exists to force a decision about rather than prevent.
+//
+// Cost, stated: `canvas/canvas-adapter.ts` has NO imports of its own (verified —
+// zero `import` lines in the file), so this pulls in no package dependency, no
+// transport, and no Obsidian type. Both are pure functions over numbers.
+//
+// The specifier was added to BOTH frozen allow-lists, which must stay in step:
+// `wp49/test_tp12_…` and `wp72/test_tp4_…` (ledger entries A-71-1 / A-71-2).
+import { clientToCanvasManual, viewportScale } from "../canvas/canvas-adapter";
 import { setCanvasBindingInstrument } from "../canvas/canvas-binding";
 // B68 §7 AMENDMENT (`S188`, ledger entries A-68-1 / A-68-2). `wouldHaveReverted`
 // — the single boolean that settles H1 — needs "does a LOWER-id peer also hold
@@ -3178,8 +3202,15 @@ function resolveCommandRegistry(plugin: E2EPluginLike): {
 // proves which build a peer is on.
 // ===========================================================================
 
-/** Bumped when a dump's SHAPE changes. Its absence means "no diag on this peer". */
-const CANVAS_DIAG_PROTO = 1;
+/**
+ * Bumped when a dump's SHAPE changes. Its absence means "no diag on this peer".
+ *
+ * `2` — B71 (`S192`) added the fourth plane, `paint`. A dump with
+ * `diagProto: 1` has three planes and CANNOT answer a paint question; the
+ * driver must say so rather than render three planes as if that were the whole
+ * reading.
+ */
+const CANVAS_DIAG_PROTO = 2;
 
 /** Per-plane node cap. The owner's board is 11; 500 is the honesty ceiling (R7). */
 const CANVAS_DIAG_MAX_NODES = 500;
@@ -3210,6 +3241,20 @@ interface DiagPlaneCensus {
 interface DiagCensus {
   path: string;
   at: number;
+  /**
+   * B71 (`S192`) — THE PAINT PLANE, and the reason it exists.
+   *
+   * `view`, `doc` and `file` are three readings of ONE MODEL: `view` is
+   * `canvas.nodes.get(id).x/.y`, `doc` is the same record in the Y.Doc, `file`
+   * is the same record on disk. They agree with each other by construction
+   * whenever the sync is working — which is exactly what B70's drag measured,
+   * on eleven nodes and three peers, WHILE THE OWNER'S SCREEN WAS DISJOINT.
+   *
+   * `paint` is the pixels: the node's own DOM element. It is the only plane in
+   * this census that can disagree with the other three, and therefore the only
+   * one that can see the symptom the owner is actually reporting.
+   */
+  paint: DiagPlaneCensus;
   view: DiagPlaneCensus;
   doc: DiagPlaneCensus;
   file: DiagPlaneCensus;
@@ -3283,15 +3328,25 @@ function diagPlaneFrom(
  *   ├── `getLiveNodeIds()`  — `:989`, iterates `canvas.nodes.keys()`
  *   ├── `getNodeGeometry()` — `:1001`, four property reads
  *   ├── `getViewport()`     — `:949`, reads `canvas.x/y/zoom`
+ *   ├── `getNodeEl()`       — `:984`, ONE property read (`node.nodeEl`). B71.
+ *   ├── `getOverlayHost()`  — `:946`, `canvas.wrapperEl ?? canvas.canvasEl`. B71.
  *   └── `onViewportChange()`— `:1209`, adds a callback to an existing set
  * The two sinks are declared only so they can be WRAPPED; nothing in this file
  * calls either of them directly.
+ *
+ * B71 — `getNodeEl` and `getOverlayHost` are both OPTIONAL here on purpose. A
+ * peer running an older bundle simply does not have them, and the paint plane
+ * must then say *which member was missing*, never render an empty board.
  */
 interface DiagAdapterLike {
   isAvailable(): boolean;
   getLiveNodeIds(): Set<string>;
   getNodeGeometry(nodeId: string): DiagGeometry | null;
-  getViewport?(): { x: number; y: number; zoom: number } | null;
+  getViewport?(): { x: number; y: number; zoom: number; scale?: number } | null;
+  /** B71 — the card's DOM element. A pure `node.nodeEl` read; writes nothing. */
+  getNodeEl?(nodeId: string): unknown | null;
+  /** B71 — `canvas.wrapperEl`, the fixed screen-space container. Pure read. */
+  getOverlayHost?(): unknown | null;
   onViewportChange?(cb: () => void): () => void;
 }
 
@@ -3478,6 +3533,512 @@ function diagViewCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
     return diagPlaneFrom(ids, (id) => adapter.getNodeGeometry(id));
   } catch (err) {
     return diagPlaneUnavailable(`view read threw: ${diagErrorText(err)}`);
+  }
+}
+
+// ===========================================================================
+// B71 (`S192`) — THE PAINT PLANE. WHAT IS ON THE SCREEN, NOT WHAT THE MODEL SAYS.
+//
+// THE FINDING THAT MADE THIS NECESSARY. `view`, `doc` and `file` are three
+// readings of ONE MODEL. `diagViewCensus` calls `adapter.getNodeGeometry(id)`,
+// which is four property reads off `canvas.nodes.get(id)` — the canvas node
+// OBJECT. `doc` is that record in the Y.Doc and `file` is that record on disk.
+// So when the sync is working the three agree BY CONSTRUCTION, and B70's drag
+// measured exactly that: eleven nodes, three peers, all three planes identical,
+// twice, the second time while the owner's screen was visibly disjointed. The
+// instrument could not see the symptom because it was never pointed at it.
+//
+// The pixels come from a fourth thing: the node's `nodeEl`, which Obsidian
+// positions in its own render step. `model → element` is a step this census had
+// no reading of at all, so a defect that advances the model and never repaints
+// the element is INVISIBLE to `view`/`doc`/`file` and unmistakable here.
+//
+// THREE READINGS PER NODE, AND THEY ARE NOT REDUNDANT — each fails differently:
+//
+//   ├── `styleTransform` — `nodeEl.style.transform` parsed for its `translate`,
+//   │   plus `style.width` / `style.height`. This is the INSTRUCTION Obsidian
+//   │   wrote onto the element. Exact, integral, and directly comparable to the
+//   │   model's four numbers. Blind to anything that overrides it.
+//   ├── `computed`       — `getComputedStyle(nodeEl).transform`, i.e. the matrix
+//   │   the browser actually resolved. Sees a class or stylesheet rule that
+//   │   overrode the inline style; the inline reading cannot.
+//   └── `rect`           — `getBoundingClientRect()` de-transformed back into
+//       canvas space with the PRODUCTION inverse (`clientToCanvasManual` +
+//       `viewportScale`). This is the only one measured in real laid-out pixels,
+//       so it is the only one that can catch a card sitting under a STALE
+//       ANCESTOR TRANSFORM, a `display:none`, or a detached element — cases
+//       where both style readings look perfect and nothing is where it claims.
+//
+// THE VERDICT IS SPLIT ON PURPOSE, and this is the part that keeps the plane
+// from crying wolf:
+//   * `styleVerdict` compares all four numbers EXACTLY (±0.01) with the model,
+//     because both come from the same instruction path and any difference is
+//     real.
+//   * `rectVerdict` compares POSITION ONLY, with a tolerance of one device pixel
+//     divided by the live scale. Size is deliberately excluded: a border,
+//     padding or `box-sizing` difference would offset every card's rect width by
+//     a constant, and a plane that reports eleven divergences on a healthy board
+//     is exactly as useless as one that reports none on a broken one. The size
+//     numbers are still REPORTED (`rect.width`/`rect.height`); they just do not
+//     drive a verdict.
+//
+// R7 IS THE HARD CONSTRAINT HERE. Obsidian's canvas is private and undocumented
+// and every reach below can legitimately fail. Not one of them returns a zero,
+// an empty object, or a geometry that reads like "this node did not move":
+//   * a node whose element cannot be read is ABSENT from `nodes` (a blank cell)
+//     and carries its own `reason` in the detail map;
+//   * if NO node could be read, the whole plane goes UNAVAILABLE with the reason,
+//     rather than rendering as an empty board;
+//   * a missing adapter member is named — `getNodeEl` and `getOverlayHost` are
+//     optional in `DiagAdapterLike` precisely so an older bundle says which one
+//     it lacks instead of silently reading nothing.
+//
+// R3 — NOTHING HERE WRITES. Every call is a property read, a `getComputedStyle`,
+// or a `getBoundingClientRect`. Disclosed observation effect, since it is not
+// nothing: `getBoundingClientRect` forces a synchronous layout, so pending STYLE
+// changes are laid out at that moment. It cannot run Obsidian's render step and
+// cannot move a card, but a reader should know the instrument touches the layout
+// clock. It does not call `isBusy`/`getEditingNodeId` (R2) and does not exist on
+// `DiagAdapterLike` to do so.
+// ===========================================================================
+
+/** Style/model agreement tolerance. Both sides are written from the same numbers. */
+const DIAG_PAINT_EXACT_TOL = 0.01;
+
+/** One paint reading of one node, in CANVAS coordinates. */
+interface DiagPaintReading {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Everything the paint plane knows about one node, including why it knows less. */
+interface DiagPaintDetail {
+  source: "style" | "computed" | "rect" | "none";
+  model: DiagGeometry | null;
+  styleTransform: DiagPaintReading | null;
+  styleReason: string;
+  computed: DiagPaintReading | null;
+  computedReason: string;
+  rect: DiagPaintReading | null;
+  rectReason: string;
+  connected: boolean | null;
+  className: string;
+  styleVerdict: "agree" | "DIVERGENT" | "unreadable";
+  rectVerdict: "agree" | "DIVERGENT" | "unreadable";
+  verdict: "agree" | "DIVERGENT" | "unreadable";
+  /** The signed model→paint offset, when both sides were readable. */
+  offset: Record<string, number> | null;
+  reason: string;
+}
+
+/**
+ * Parse a CSS transform into its translation, in the element's own coordinate
+ * space. Handles the three spellings that reach us: the inline `translate(…px,
+ * …px)` Obsidian writes, and the `matrix(...)` / `matrix3d(...)` that
+ * `getComputedStyle` always returns. Anything else — including `none` — is
+ * `null`, never `{x: 0, y: 0}`: a transform this function cannot read is not a
+ * card at the origin.
+ */
+function diagParseTransformTranslate(text: unknown): { x: number; y: number } | null {
+  if (typeof text !== "string") return null;
+  const s = text.trim();
+  if (s.length === 0 || s === "none") return null;
+  const num = (v: string | undefined): number => Number.parseFloat((v ?? "").trim());
+  const m3 = /^matrix3d\(([^)]*)\)/.exec(s);
+  if (m3) {
+    const parts = m3[1].split(",");
+    if (parts.length >= 14) {
+      const x = num(parts[12]);
+      const y = num(parts[13]);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+    return null;
+  }
+  const m = /^matrix\(([^)]*)\)/.exec(s);
+  if (m) {
+    const parts = m[1].split(",");
+    if (parts.length >= 6) {
+      const x = num(parts[4]);
+      const y = num(parts[5]);
+      if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    }
+    return null;
+  }
+  const t = /translate(?:3d)?\(\s*(-?[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)(?:px)?\s*,\s*(-?[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)(?:px)?/i.exec(
+    s,
+  );
+  if (t) {
+    const x = Number.parseFloat(t[1]);
+    const y = Number.parseFloat(t[2]);
+    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+  }
+  return null;
+}
+
+/** A CSS length in px, or `null`. `""`, `auto` and `%` are all "cannot say". */
+function diagParsePx(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value !== "string") return null;
+  const m = /^(-?[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)px$/i.exec(value.trim());
+  if (!m) return null;
+  const n = Number.parseFloat(m[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** The private DOM shape this plane reaches into. Every member re-checked at use. */
+interface DiagElementLike {
+  isConnected?: unknown;
+  className?: unknown;
+  style?: { transform?: unknown; width?: unknown; height?: unknown };
+  getBoundingClientRect?: () => unknown;
+  closest?: (selector: string) => unknown;
+  ownerDocument?: {
+    defaultView?: { getComputedStyle?: (el: unknown) => unknown } | null;
+  } | null;
+}
+
+function diagAsElement(value: unknown): DiagElementLike | null {
+  if (value === null || typeof value !== "object") return null;
+  return value as DiagElementLike;
+}
+
+/** `getBoundingClientRect()`, validated. A rect with a non-finite number is `null`. */
+function diagReadRect(
+  el: DiagElementLike,
+): { left: number; top: number; width: number; height: number } | null {
+  if (typeof el.getBoundingClientRect !== "function") return null;
+  const raw = el.getBoundingClientRect();
+  if (raw === null || typeof raw !== "object") return null;
+  const r = raw as { left?: unknown; top?: unknown; width?: unknown; height?: unknown };
+  if (
+    typeof r.left !== "number" ||
+    typeof r.top !== "number" ||
+    typeof r.width !== "number" ||
+    typeof r.height !== "number" ||
+    !Number.isFinite(r.left) ||
+    !Number.isFinite(r.top) ||
+    !Number.isFinite(r.width) ||
+    !Number.isFinite(r.height)
+  ) {
+    return null;
+  }
+  return { left: r.left, top: r.top, width: r.width, height: r.height };
+}
+
+/** `getComputedStyle(el)` via the element's OWN document — never a global. */
+function diagComputedStyle(el: DiagElementLike): Record<string, unknown> | null {
+  const view = el.ownerDocument?.defaultView;
+  if (!view || typeof view.getComputedStyle !== "function") return null;
+  const cs = view.getComputedStyle(el);
+  if (cs === null || typeof cs !== "object") return null;
+  return cs as Record<string, unknown>;
+}
+
+/** Class name as a string, whatever the private shape stores it as (SVG uses an object). */
+function diagClassName(el: DiagElementLike): string {
+  const raw = el.className;
+  if (typeof raw === "string") return raw;
+  const baseVal = (raw as { baseVal?: unknown } | null | undefined)?.baseVal;
+  return typeof baseVal === "string" ? baseVal : "";
+}
+
+/**
+ * I1/B71 — the PAINT plane for one path.
+ *
+ * The whole point is that this is the ONLY plane not read off the canvas node
+ * object, so a `model advanced, element did not` defect appears here and nowhere
+ * else. `available: false` always carries the member or condition that stopped
+ * it, and a plane on which no single node could be read refuses rather than
+ * rendering eleven blank cells as a converged board (R7).
+ */
+function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
+  if (typeof plugin.canvasDiagTargets !== "function") {
+    return diagPlaneUnavailable(
+      "this build exposes no canvasDiagTargets accessor (pre-B68 bundle)",
+    );
+  }
+  const { targets, accessorError } = resolveDiagTargetsResult(plugin, path);
+  if (accessorError !== null) return diagPlaneUnavailable(accessorError);
+  if (targets.length === 0) {
+    return diagPlaneUnavailable("no canvas view is mounted for this path on this peer");
+  }
+  const target = targets[0];
+  if (!target.adapter) return diagPlaneUnavailable(target.adapterReason);
+  const adapter = target.adapter;
+  try {
+    if (adapter.isAvailable() !== true) {
+      return diagPlaneUnavailable("the adapter reports the private canvas API unavailable");
+    }
+    if (typeof adapter.getNodeEl !== "function") {
+      return diagPlaneUnavailable(
+        "this bundle's adapter exposes no getNodeEl — the paint plane needs the card element and will not guess one from the model",
+      );
+    }
+    const getNodeEl = adapter.getNodeEl.bind(adapter);
+    const ids = [...adapter.getLiveNodeIds()].sort();
+    const truncated = ids.length > CANVAS_DIAG_MAX_NODES;
+    const capped = ids.slice(0, CANVAS_DIAG_MAX_NODES);
+
+    // The viewport and the wrapper are needed for the RECT reading only. Their
+    // absence downgrades that one reading and is stated per node; it never takes
+    // the plane down, because the style readings are still perfectly valid.
+    const vpRaw = typeof adapter.getViewport === "function" ? adapter.getViewport() : null;
+    const vp =
+      vpRaw && typeof vpRaw.x === "number" && typeof vpRaw.y === "number" &&
+      typeof vpRaw.zoom === "number"
+        ? vpRaw
+        : null;
+    const scale = vp ? viewportScale(vp) : Number.NaN;
+    const scaleUsable = Number.isFinite(scale) && scale !== 0;
+    let wrapperEl: DiagElementLike | null = null;
+    let wrapperHow = "not resolved";
+    if (typeof adapter.getOverlayHost === "function") {
+      wrapperEl = diagAsElement(adapter.getOverlayHost());
+      wrapperHow = wrapperEl ? "adapter.getOverlayHost()" : "adapter.getOverlayHost() returned null";
+    } else {
+      wrapperHow = "this bundle's adapter exposes no getOverlayHost";
+    }
+    const wrapperRect = wrapperEl ? diagReadRect(wrapperEl) : null;
+    // The rect reading's tolerance, in CANVAS units: one device pixel of layout
+    // rounding, divided by the live scale, plus the exact-comparison epsilon.
+    const rectTol = scaleUsable ? 1 / Math.abs(scale) + DIAG_PAINT_EXACT_TOL : DIAG_PAINT_EXACT_TOL;
+
+    const nodes: Record<string, DiagGeometry> = {};
+    const detail: Record<string, DiagPaintDetail> = {};
+    const divergent: string[] = [];
+    const unreadable: string[] = [];
+    const sourceCounts: Record<string, number> = { style: 0, computed: 0, rect: 0, none: 0 };
+
+    for (const id of capped) {
+      const model = safeNodeGeometry(adapter, id);
+      let el: DiagElementLike | null = null;
+      let elReason = "";
+      try {
+        el = diagAsElement(getNodeEl(id));
+        if (!el) elReason = "getNodeEl returned null — this node has no card element";
+      } catch (err) {
+        elReason = `getNodeEl threw: ${diagErrorText(err)}`;
+      }
+
+      let styleTransform: DiagPaintReading | null = null;
+      let styleReason = elReason || "";
+      let computed: DiagPaintReading | null = null;
+      let computedReason = elReason || "";
+      let rect: DiagPaintReading | null = null;
+      let rectReason = elReason || "";
+      let connected: boolean | null = null;
+      let className = "";
+
+      if (el) {
+        connected = typeof el.isConnected === "boolean" ? el.isConnected : null;
+        className = diagClassName(el);
+
+        // ---- reading 1: the inline instruction --------------------------------
+        try {
+          const t = diagParseTransformTranslate(el.style?.transform);
+          const w = diagParsePx(el.style?.width);
+          const h = diagParsePx(el.style?.height);
+          if (!t) {
+            styleReason =
+              "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)";
+          } else if (w === null || h === null) {
+            // The position is readable and the size is not. Reported as a REFUSAL
+            // rather than as a position with two invented numbers: a `0x0` card
+            // would be indistinguishable from a real collapse.
+            styleReason = `nodeEl.style.width/height are not px lengths (width='${String(el.style?.width)}' height='${String(el.style?.height)}'); translate was readable at (${t.x},${t.y})`;
+          } else {
+            styleTransform = { x: t.x, y: t.y, width: w, height: h };
+            styleReason = "";
+          }
+        } catch (err) {
+          styleReason = `inline style read threw: ${diagErrorText(err)}`;
+        }
+
+        // ---- reading 2: what the browser actually resolved --------------------
+        try {
+          const cs = diagComputedStyle(el);
+          if (!cs) {
+            computedReason =
+              "no ownerDocument.defaultView.getComputedStyle on this element (non-DOM host?)";
+          } else {
+            const t = diagParseTransformTranslate(cs.transform);
+            const w = diagParsePx(cs.width);
+            const h = diagParsePx(cs.height);
+            if (!t) {
+              computedReason = `getComputedStyle(...).transform is '${String(cs.transform)}' — no readable translate`;
+            } else {
+              computed = {
+                x: t.x,
+                y: t.y,
+                width: w ?? Number.NaN,
+                height: h ?? Number.NaN,
+              };
+              computedReason = "";
+            }
+          }
+        } catch (err) {
+          computedReason = `getComputedStyle read threw: ${diagErrorText(err)}`;
+        }
+
+        // ---- reading 3: real laid-out pixels, de-transformed ------------------
+        try {
+          if (!vp) {
+            rectReason = "no live viewport (adapter.getViewport unavailable or malformed)";
+          } else if (!scaleUsable) {
+            rectReason = `viewport scale is unusable (${String(scale)})`;
+          } else if (!wrapperRect) {
+            rectReason = `no wrapper rect: ${wrapperHow}`;
+          } else {
+            const r = diagReadRect(el);
+            if (!r) {
+              rectReason = "getBoundingClientRect unavailable or returned a non-finite rect";
+            } else {
+              const p = clientToCanvasManual(r.left, r.top, vp, {
+                left: wrapperRect.left,
+                top: wrapperRect.top,
+                width: wrapperRect.width,
+                height: wrapperRect.height,
+              });
+              if (!p) {
+                rectReason = "clientToCanvasManual refused (degenerate scale)";
+              } else {
+                rect = {
+                  x: p.x,
+                  y: p.y,
+                  width: r.width / scale,
+                  height: r.height / scale,
+                };
+                rectReason = "";
+              }
+            }
+          }
+        } catch (err) {
+          rectReason = `rect read threw: ${diagErrorText(err)}`;
+        }
+      }
+
+      // ---- verdicts ---------------------------------------------------------
+      const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= tol;
+      let styleVerdict: "agree" | "DIVERGENT" | "unreadable" = "unreadable";
+      if (model && styleTransform) {
+        styleVerdict =
+          near(styleTransform.x, model.x, DIAG_PAINT_EXACT_TOL) &&
+          near(styleTransform.y, model.y, DIAG_PAINT_EXACT_TOL) &&
+          near(styleTransform.width, model.width, DIAG_PAINT_EXACT_TOL) &&
+          near(styleTransform.height, model.height, DIAG_PAINT_EXACT_TOL)
+            ? "agree"
+            : "DIVERGENT";
+      }
+      let rectVerdict: "agree" | "DIVERGENT" | "unreadable" = "unreadable";
+      if (model && rect) {
+        // POSITION ONLY, and the comment above says why size is excluded.
+        rectVerdict =
+          near(rect.x, model.x, rectTol) && near(rect.y, model.y, rectTol)
+            ? "agree"
+            : "DIVERGENT";
+      }
+      const verdict: "agree" | "DIVERGENT" | "unreadable" =
+        styleVerdict === "DIVERGENT" || rectVerdict === "DIVERGENT"
+          ? "DIVERGENT"
+          : styleVerdict === "agree" || rectVerdict === "agree"
+            ? "agree"
+            : "unreadable";
+
+      const primary = styleTransform ?? computed ?? rect;
+      const source: DiagPaintDetail["source"] = styleTransform
+        ? "style"
+        : computed
+          ? "computed"
+          : rect
+            ? "rect"
+            : "none";
+      sourceCounts[source] = (sourceCounts[source] ?? 0) + 1;
+
+      let reason = "";
+      if (!primary) {
+        reason =
+          elReason ||
+          `no readable paint geometry: style(${styleReason}) computed(${computedReason}) rect(${rectReason})`;
+        unreadable.push(id);
+      } else if (!model) {
+        reason = "the model side is unreadable, so no divergence verdict is possible";
+      }
+      if (verdict === "DIVERGENT") divergent.push(id);
+
+      if (primary) {
+        nodes[id] = {
+          x: primary.x,
+          y: primary.y,
+          width: primary.width,
+          height: primary.height,
+        };
+      }
+      detail[id] = {
+        source,
+        model,
+        styleTransform,
+        styleReason,
+        computed,
+        computedReason,
+        rect,
+        rectReason,
+        connected,
+        className,
+        styleVerdict,
+        rectVerdict,
+        verdict,
+        offset:
+          model && primary
+            ? {
+                dx: primary.x - model.x,
+                dy: primary.y - model.y,
+                dw: primary.width - model.width,
+                dh: primary.height - model.height,
+              }
+            : null,
+        reason,
+      };
+    }
+
+    // R7 — the refusal that matters most. Eleven live nodes and not one readable
+    // element is NOT an empty board; it is an instrument that could not read.
+    if (capped.length > 0 && Object.keys(nodes).length === 0) {
+      const sample = detail[capped[0]]?.reason ?? "no reason recorded";
+      return diagPlaneUnavailable(
+        `no card element could be read for any of ${capped.length} live nodes — first reason: ${sample}`,
+      );
+    }
+
+    return {
+      available: true,
+      reason: "",
+      count: ids.length,
+      truncated,
+      nodes,
+      degraded: null,
+      // The paint plane's LABEL (the field the file plane uses for size+sha) is
+      // this plane's whole audit trail: what it measured with, what disagreed,
+      // and what it could not read. Never a verdict on its own.
+      label: {
+        plane: "paint",
+        primarySource: "nodeEl.style.transform (falls back to computed, then rect)",
+        viewport: vp ? { x: vp.x, y: vp.y, zoom: vp.zoom, scale } : null,
+        wrapper: wrapperRect
+          ? { how: wrapperHow, className: wrapperEl ? diagClassName(wrapperEl) : "", ...wrapperRect }
+          : { how: wrapperHow },
+        rectToleranceCanvasUnits: rectTol,
+        exactTolerance: DIAG_PAINT_EXACT_TOL,
+        sourceCounts,
+        divergentNodes: divergent,
+        divergentCount: divergent.length,
+        unreadableNodes: unreadable,
+        nodesDetail: detail,
+      },
+    };
+  } catch (err) {
+    return diagPlaneUnavailable(`paint read threw: ${diagErrorText(err)}`);
   }
 }
 
@@ -3672,11 +4233,20 @@ function diagAwarenessSnapshot(plugin: E2EPluginLike, path: string): Record<stri
   };
 }
 
-/** I1 — all three planes for one path, taken on demand. */
+/**
+ * I1 — all FOUR planes for one path, taken on demand.
+ *
+ * `paint` is taken FIRST and deliberately: it is the only plane read off the
+ * DOM, and taking it before the doc read and the (async) file read keeps the
+ * smallest possible window between "what the model said" and "what was on the
+ * screen when we asked". The three model planes cannot move relative to each
+ * other in that window; the screen can.
+ */
 async function diagCensus(plugin: E2EPluginLike, path: string): Promise<DiagCensus> {
   return {
     path,
     at: Date.now(),
+    paint: diagPaintCensus(plugin, path),
     view: diagViewCensus(plugin, path),
     doc: diagDocCensus(plugin, path),
     file: await diagFileCensus(plugin, path),
@@ -3721,8 +4291,30 @@ function diagGeoDiffers(a: DiagGeometry | undefined, b: DiagGeometry | undefined
   return a.x !== b.x || a.y !== b.y || a.width !== b.width || a.height !== b.height;
 }
 
+/**
+ * B71 — the same test with a tolerance, for the PAINT plane only. The paint
+ * plane's primary reading is `nodeEl.style.transform`, which is exact, so this
+ * changes nothing for it; it exists for the fallback case where a node's only
+ * readable geometry came from `getBoundingClientRect`, whose de-transformed
+ * value carries sub-pixel layout rounding. `0.01` canvas units is far below any
+ * real move and far above that noise floor.
+ */
+function diagGeoDiffersTol(
+  a: DiagGeometry | undefined,
+  b: DiagGeometry | undefined,
+  tol: number,
+): boolean {
+  if (!a || !b) return a !== b;
+  return (
+    Math.abs(a.x - b.x) > tol ||
+    Math.abs(a.y - b.y) > tol ||
+    Math.abs(a.width - b.width) > tol ||
+    Math.abs(a.height - b.height) > tol
+  );
+}
+
 interface DiagDeltaRow {
-  plane: "view" | "doc" | "file";
+  plane: "paint" | "view" | "doc" | "file";
   nodeId: string;
   from: DiagGeometry | null;
   to: DiagGeometry | null;
@@ -3735,6 +4327,12 @@ interface DiagDeltaRow {
  * `census(dump) − census(arm)`, minus every move a ledger row explains. What is
  * left over is a move this plugin's own instruments cannot account for:
  *
+ *   ├── B71: an unattributed PAINT delta ⇒ a card whose PIXELS moved. Read it
+ *   │   against the VIEW row for the same node, because the pair is the whole
+ *   │   diagnosis: `view` moved and `paint` did not ⇒ the model advanced and
+ *   │   the element was never repainted (the `H9` shape). `paint` moved and
+ *   │   `view` did not ⇒ something moved the element behind the model's back.
+ *   │   Both moved ⇒ an ordinary, correctly rendered change.
  *   ├── an unattributed VIEW delta ⇒ something moved a card that neither of the
  *   │   product's two view-geometry sinks moved — Obsidian itself, the user, or
  *   │   a route nobody has enumerated. That last one is the most important
@@ -3759,10 +4357,16 @@ function diagUnattributed(
   if (!armCensus) return { unattributed, attributed };
 
   /** The last ledger row that names `nodeId` on `plane`, as a short label. */
-  const explain = (plane: "view" | "doc" | "file", nodeId: string): string | null => {
+  const explain = (plane: "paint" | "view" | "doc" | "file", nodeId: string): string | null => {
     let label: string | null = null;
     for (const row of ring) {
-      if (plane === "view") {
+      // B71 — PAINT is attributed by the VIEW ledger on purpose. The product's
+      // two view-geometry sinks (`applyNodeGeometry` → `moveAndResize`, and
+      // `reloadCanvasData` → `setData`) are the only routes that are SUPPOSED to
+      // repaint a card, so a paint move one of them explains is ordinary. A
+      // paint move neither explains is the interesting one, and it survives as
+      // UNATTRIBUTED exactly as a view move would.
+      if (plane === "view" || plane === "paint") {
         if (row.kind === "applyGeom" && row.nodeId === nodeId) {
           label = `applyGeom outcome=${String(row.outcome)} cause=${String(row.cause)}`;
         } else if (row.kind === "setData" && Array.isArray(row.moved)) {
@@ -3782,7 +4386,7 @@ function diagUnattributed(
   };
 
   const docMoved = new Set<string>();
-  for (const planeName of ["view", "doc", "file"] as const) {
+  for (const planeName of ["paint", "view", "doc", "file"] as const) {
     const before = armCensus[planeName];
     const after = dumpCensus[planeName];
     if (before.available !== true || after.available !== true) continue;
@@ -3790,7 +4394,13 @@ function diagUnattributed(
     for (const nodeId of [...ids].sort()) {
       const from = before.nodes[nodeId];
       const to = after.nodes[nodeId];
-      if (!diagGeoDiffers(from, to)) continue;
+      if (
+        planeName === "paint"
+          ? !diagGeoDiffersTol(from, to, DIAG_PAINT_EXACT_TOL)
+          : !diagGeoDiffers(from, to)
+      ) {
+        continue;
+      }
       if (planeName === "doc") docMoved.add(nodeId);
       const row: DiagDeltaRow = {
         plane: planeName,
