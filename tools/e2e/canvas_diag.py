@@ -95,6 +95,16 @@ PLANES = ("paint", "view", "doc", "file")
 # board is fine (R7).
 PAINT_PLANE_PROTO = 2
 
+# B72 (`S195`) — the dump shape whose paint plane can tell a DETACHED card from a
+# divergent one. Below this the plane counted every virtualized-away card as
+# DIVERGENT (a detached element's `getBoundingClientRect()` is `(0,0,0,0)`, and
+# de-transforming client (0,0) yields one canvas point per viewport — which is
+# why every "divergence" in the `b72-postreload` census sat at the same rect and
+# why the count tracked the zoom level). A proto-2 peer's divergence count is not
+# a lie the reader can spot, so this driver says so on its behalf rather than
+# printing the number bare.
+PAINT_DETACH_PROTO = 3
+
 # The live session runs on a Windows console whose default codec is cp1252, and
 # `⚠` is not in it. An UnicodeEncodeError halfway through the table would lose
 # the rest of the reading — the `S186` failure wearing a new hat — so stdout is
@@ -253,6 +263,15 @@ def print_plane_availability(peers: list[dict]) -> None:
                         f"{lbl['unreadableNodes']} — these are BLANK cells below, "
                         f"not stationary cards"
                     )
+                if isinstance(proto, int) and proto < PAINT_DETACH_PROTO:
+                    print(
+                        f"PLANE {p['name']} PAINT PRE-B72 (diagProto={proto} < "
+                        f"{PAINT_DETACH_PROTO}) — this plane counts cards that Obsidian "
+                        f"has VIRTUALIZED OFF SCREEN as DIVERGENT. Its divergent count "
+                        f"below is not trustworthy; a card at the same rect as every "
+                        f"other 'divergent' card on this peer is a detached element, "
+                        f"not a position"
+                    )
 
 
 def print_paint_divergence(peers: list[dict]) -> None:
@@ -281,10 +300,28 @@ def print_paint_divergence(peers: list[dict]) -> None:
         divergent = lbl.get("divergentNodes") or []
         agree = sum(1 for d in detail.values() if d.get("verdict") == "agree")
         unread = sum(1 for d in detail.values() if d.get("verdict") == "unreadable")
+        # B72 (`S195`) — the two categories that are NOT divergences. They are
+        # printed on their own line, never folded into the count, and never
+        # omitted: "3 of 11 cards are off screen" is a fact about the viewport
+        # that a reader needs in order to judge the other eight.
+        detached = lbl.get("detachedNodes") or []
+        unpainted = lbl.get("unpaintedNodes") or []
         print(
             f"  {p['name']}: {len(divergent)} DIVERGENT · {agree} agree · "
+            f"{len(detached)} detached(off-screen) · {len(unpainted)} never-painted · "
             f"{unread} unreadable  (of {pl.get('count')} live nodes)"
         )
+        if detached:
+            print(
+                f"      ·  detached (virtualize(): outside the viewport, nothing painted, "
+                f"NOT divergent): {sorted(node[:20] for node in detached)}"
+            )
+        for node in sorted(unpainted):
+            d = detail.get(node) or {}
+            print(
+                f"      !  {node[:20]:<21} NEVER PAINTED — attached with no transform "
+                f"render() could have written (`S193`). model={fmt_geo(d.get('model'))}"
+            )
         for node in sorted(divergent):
             d = detail.get(node) or {}
             off = d.get("offset") or {}
@@ -300,6 +337,52 @@ def print_paint_divergence(peers: list[dict]) -> None:
             print(f"      ?  {node[:20]:<21} UNREADABLE — {d.get('reason')}")
     if not saw_any:
         print("  (no peer produced a readable paint plane — see the reasons above)")
+
+
+def print_repaint_sweep(peers: list[dict]) -> None:
+    """B72 (WP3) — WHAT THE RESTORING SWEEP ACTUALLY DID.
+
+    A sweep that silently repaired everything would be worse than no sweep: the
+    board would look correct, the paint plane would find nothing, and the ability
+    to measure the CAUSE would be gone. ``repaired`` is the counter that keeps
+    that from happening — every repaint that landed on a card whose element was
+    demonstrably in the wrong place before it ran. A peer that cannot answer says
+    so; it never contributes a zero.
+    """
+    print()
+    print("REPAINT SWEEP  (B72 WP3 — the restoring force, and how much it had to restore)")
+    for p in peers:
+        result = p.get("result") or {}
+        census = census_of(result)
+        rep = (census or {}).get("repaint")
+        if not isinstance(rep, dict):
+            print(
+                f"  {p['name']}: NO SWEEP REPORT (diagProto={result.get('diagProto')}) — "
+                f"this peer's bundle is pre-B72; NOTHING is sweeping on it and this is "
+                f"not a zero"
+            )
+            continue
+        if rep.get("available") is not True:
+            print(f"  {p['name']}: UNAVAILABLE — {rep.get('reason')}")
+            continue
+        c = rep.get("counters") or {}
+        print(
+            f"  {p['name']}: REPAIRED={c.get('repaired')}  "
+            f"(ticks={c.get('ticks')} visited={c.get('visited')} "
+            f"repainted={c.get('repainted')} deferred={c.get('deferred')} "
+            f"requested={c.get('requested')} interacting={c.get('interacting')} "
+            f"missing={c.get('missing')} unsupported={c.get('unsupported')})"
+        )
+        print(
+            f"      skippedBusy={c.get('skippedBusy')} skippedEmpty={c.get('skippedEmpty')} "
+            f"cursor={c.get('cursor')} pending(off-screen)={c.get('pendingCount')} "
+            f"batch={c.get('lastBatchSize')}/{c.get('lastNodeCount')} nodes"
+        )
+        if c.get("ticks") == 0:
+            print(
+                f"      !  ticks=0 — the sweep exists but has NEVER RUN on this peer. "
+                f"Its zero repairs measure nothing."
+            )
 
 
 def all_node_ids(peers: list[dict], keys: tuple[str, ...]) -> list[str]:
@@ -600,6 +683,7 @@ def main(argv: list[str]) -> int:
     print_plane_availability(peers)
     if args.op in ("census", "arm", "dump"):
         print_paint_divergence(peers)
+        print_repaint_sweep(peers)
 
     if args.op == "clear":
         for p in peers:

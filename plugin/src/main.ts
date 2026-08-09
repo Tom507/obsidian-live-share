@@ -2,7 +2,11 @@ import type { EditorView } from "@codemirror/view";
 import { MarkdownView, Menu, Notice, Plugin, TFile, TFolder, requestUrl } from "obsidian";
 
 import { minimatch } from "minimatch";
-import { type CanvasAdapter, createCanvasAdapter } from "./canvas/canvas-adapter";
+import {
+  type CanvasAdapter,
+  REPAINT_SWEEP_PERIOD_MS,
+  createCanvasAdapter,
+} from "./canvas/canvas-adapter";
 import { CanvasBinding } from "./canvas/canvas-binding";
 import {
   type CanvasModelBridgeHandle,
@@ -227,6 +231,12 @@ export default class LiveSharePlugin extends Plugin {
   // that reseats every card. ⚠ This site is NOT in the WP89 charter's §3 table of
   // seven — it was DERIVED from the tree, which is what AC2 exists for.
   private canvasAdapters = new Map<string, CanvasAdapter>();
+  // B72 (WP3) — THE RESTORING FORCE. One interval per mounted canvas, driving
+  // `adapter.sweepRepaint()` at {@link REPAINT_SWEEP_PERIOD_MS}. Kept in lockstep
+  // with `canvasAdapters` (same mount, same teardown), and it is the ONLY clock
+  // this fix introduces: the batch selection, the busy gate and the counters all
+  // live in the adapter, so this map holds a timer handle and nothing else.
+  private canvasRepaintSweeps = new Map<string, ReturnType<typeof setInterval>>();
   // WP37 (C37) — the per-record deferral queue for view applies withheld while an
   // inline editor is focused. Constructed here and INJECTED; every rule about what
   // goes in, what coalesces and what comes out lives in
@@ -2791,6 +2801,8 @@ export default class LiveSharePlugin extends Plugin {
         presence.destroy();
         this.canvasPresences.delete(path);
         this.canvasAdapters.delete(path);
+        // B72 (WP3) — the sweep's only clock, stopped with the surface it swept.
+        this.stopCanvasRepaintSweep(path);
         // WP5 (C5 AC1): drop the HAND-OVER receipt with the adapter — nothing is
         // on a surface that no longer exists. The shared Surface-Shadow's path is
         // deliberately NOT cleared: it is also the capture basis, so dropping it
@@ -3222,6 +3234,14 @@ export default class LiveSharePlugin extends Plugin {
           nodeOutcomes.set(n.id, outcome);
           if (outcome === "applied") {
             applied++;
+            // B72 (WP2) — THE SECOND HALF OF AN APPLY. `applyNodeGeometry` wrote
+            // the model; Obsidian only ENQUEUES the pixels (`moveAndResize` calls
+            // `markMoved` and never touches `nodeEl`), behind a
+            // `requestAnimationFrame` that a hidden window suspends and behind an
+            // `isAttached` gate `virtualize()` controls. We hold the id right
+            // here, so this is O(1) and needs no sweep. `repaintNode` refuses on
+            // its own for a card the user is dragging or typing in.
+            adapter.repaintNode?.(n.id);
             if (edgeEndpoints.has(n.id)) movedEndpoint = true;
           } else if (outcome === "interacting") interacting++;
         }
@@ -3840,6 +3860,8 @@ export default class LiveSharePlugin extends Plugin {
       });
       // Register for live-view reconciliation (kept in lockstep with the presence).
       this.canvasAdapters.set(toCanonicalPath(normalizePath(rawPath)), adapter);
+      // B72 (WP3) — and the restoring sweep, in the same lockstep.
+      this.startCanvasRepaintSweep(toCanonicalPath(normalizePath(rawPath)), adapter);
       // WP37 (C37 AC5) — the BLUR exit of the deferral. Forwarding only: the
       // adapter reports that an inline editor ended, and the drain re-runs one
       // ordinary reconcile pass. Fires for a watchdog-released editor too, so a
@@ -4064,6 +4086,54 @@ export default class LiveSharePlugin extends Plugin {
    * the Surface-Shadow — are re-used directly, so the shadow bookkeeping is the
    * same seam and cannot drift.
    */
+  /**
+   * B72 (WP3) — start the low-rate repaint sweep for one mounted canvas.
+   *
+   * WHAT IT IS FOR, STATED AS THE WORKAROUND IT IS. WP2 repairs the damage this
+   * plugin's OWN applies can leave; this repairs damage from causes nobody has
+   * identified yet, by repainting a few cards per second from the model until
+   * every card has been visited, then starting again. It cannot fix a wrong
+   * MODEL — nothing here reads the doc or the file — so it can only ever repair
+   * a view that disagrees with a model that is already right, which is exactly
+   * the defect class `S189` measured and nothing else.
+   *
+   * WHAT IT MASKS, AND THE COUNTER THAT KEEPS IT FROM MASKING SILENTLY. A sweep
+   * that quietly repaired everything would destroy the ability to measure the
+   * cause: the board would look correct and the paint plane would find nothing.
+   * That is why `describeRepaintSweep().repaired` counts every repaint that
+   * landed on a card whose element was demonstrably in the wrong place BEFORE it
+   * ran. The damage rate stays visible even when the damage does not.
+   *
+   * Idempotent, and never two intervals for one path.
+   */
+  private startCanvasRepaintSweep(canonical: string, adapter: CanvasAdapter): void {
+    if (this.canvasRepaintSweeps.has(canonical)) return;
+    if (typeof adapter.sweepRepaint !== "function") return;
+    const handle = setInterval(() => {
+      const live = this.canvasAdapters.get(canonical);
+      // The adapter can be replaced or dropped between ticks; a sweep must never
+      // paint through a handle its own registry has moved on from.
+      if (!live || live !== adapter) {
+        this.stopCanvasRepaintSweep(canonical);
+        return;
+      }
+      try {
+        live.sweepRepaint?.();
+      } catch (err) {
+        this.logger.debug("canvas", `repaint sweep ${canonical}: tick threw — ${String(err)}`);
+      }
+    }, REPAINT_SWEEP_PERIOD_MS);
+    this.canvasRepaintSweeps.set(canonical, handle);
+  }
+
+  /** B72 (WP3) — stop it. Called from every path that drops an adapter. */
+  private stopCanvasRepaintSweep(canonical: string): void {
+    const handle = this.canvasRepaintSweeps.get(canonical);
+    if (handle === undefined) return;
+    clearInterval(handle);
+    this.canvasRepaintSweeps.delete(canonical);
+  }
+
   private applyCanvasNodeRevert(
     canonical: string,
     nodeId: string,
@@ -4134,6 +4204,11 @@ export default class LiveSharePlugin extends Plugin {
     // in exchange for nothing. This route is strictly FEWER writes than the
     // whole-board reload it replaces, never more.
     const outcome: ApplyOutcome = adapter.applyNodeGeometry(nodeId, { x, y, width, height });
+    // B72 (WP2) — the same second half, on the revert route. This method arms no
+    // mute (see the note above) and that difference is deliberate and unchanged:
+    // a repaint writes inline styles onto a card and produces no vault `modify`
+    // of its own, so it needs nothing from the mute either way.
+    if (outcome === "applied") adapter.repaintNode?.(nodeId);
     // WP5 (C5 AC1/AC2/AC3): the same receipt seam every other apply route uses.
     // `plan: "geometry"` ⇒ `exhaustive === false`, so this pass grants a licence
     // for the one node it confirmed and revokes nothing — a per-node revert proves
@@ -4221,6 +4296,10 @@ export default class LiveSharePlugin extends Plugin {
     // names, and this method cannot be async without changing two sync callers.
     void this.flushSeedRefusals();
     this.canvasPresences.clear();
+    // B72 (WP3) — every sweep interval, on BOTH destroy paths. A timer that
+    // outlived its adapter would keep a private-canvas reference alive and paint
+    // through a view the plugin has already let go of.
+    for (const path of [...this.canvasRepaintSweeps.keys()]) this.stopCanvasRepaintSweep(path);
     this.canvasAdapters.clear();
     // WP5 (C5 AC1): the hand-over receipt lives and dies with the adapters. The
     // shared Surface-Shadow belongs to CanvasSync and is torn down with it.

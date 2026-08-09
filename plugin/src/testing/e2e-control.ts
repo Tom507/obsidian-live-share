@@ -3210,7 +3210,7 @@ function resolveCommandRegistry(plugin: E2EPluginLike): {
  * driver must say so rather than render three planes as if that were the whole
  * reading.
  */
-const CANVAS_DIAG_PROTO = 2;
+const CANVAS_DIAG_PROTO = 3;
 
 /** Per-plane node cap. The owner's board is 11; 500 is the honesty ceiling (R7). */
 const CANVAS_DIAG_MAX_NODES = 500;
@@ -3258,6 +3258,21 @@ interface DiagCensus {
   view: DiagPlaneCensus;
   doc: DiagPlaneCensus;
   file: DiagPlaneCensus;
+  /**
+   * B72 (WP3) — the repaint sweep's own counters, so a reader can tell a board
+   * that was never damaged from a board the sweep quietly repaired. `available:
+   * false` with a stated reason whenever the peer's bundle has no sweep — the
+   * one thing this must never do is report zero repairs because it could not
+   * ask.
+   */
+  repaint: DiagRepaintReport;
+}
+
+/** B72 — the sweep's counters, or the reason there are none. Never a zero for "unknown". */
+interface DiagRepaintReport {
+  available: boolean;
+  reason: string;
+  counters: Record<string, unknown> | null;
 }
 
 function diagPlaneUnavailable(reason: string): DiagPlaneCensus {
@@ -3347,6 +3362,15 @@ interface DiagAdapterLike {
   getNodeEl?(nodeId: string): unknown | null;
   /** B71 — `canvas.wrapperEl`, the fixed screen-space container. Pure read. */
   getOverlayHost?(): unknown | null;
+  /**
+   * B72 (WP3) — the repaint sweep's counters. READ-ONLY BY CONSTRUCTION: the
+   * narrow `DiagAdapterLike` view names `describeRepaintSweep` and does NOT name
+   * `sweepRepaint` or `repaintNode`, so an instrument cannot drive the sweep it
+   * is measuring even by mistake (the same R2 argument that keeps `isBusy` off
+   * this interface). Optional, so a peer on an older bundle says the plane is
+   * absent rather than reading nothing.
+   */
+  describeRepaintSweep?(): Record<string, unknown>;
   onViewportChange?(cb: () => void): () => void;
 }
 
@@ -3613,6 +3637,48 @@ interface DiagPaintReading {
   height: number;
 }
 
+// ===========================================================================
+// B72 (`S195`) — WP1. A REFUSAL MUST NOT WEAR A MEASUREMENT'S CLOTHES.
+//
+// B71 shipped the plane above with one hole, and the very first live census
+// fell into it. Obsidian VIRTUALIZES its canvas: `Canvas.virtualize()` detaches
+// the `nodeEl` of every node outside the viewport (`nodeEl.detach()`), and
+// re-attaches at most ten per frame as they come back into view. A DETACHED
+// element:
+//
+//   ├── has NO inline `transform` if it was never rendered (`attach()` appends
+//   │   the card without positioning it; only `render()` writes the transform);
+//   ├── returns `""` from `getComputedStyle(...)` — there is no computed style
+//   │   for an element outside the document; and
+//   └── returns `{left:0, top:0, width:0, height:0}` from
+//       `getBoundingClientRect()` — the browser's way of saying "this has no box".
+//
+// The plane took that third one at face value, de-transformed client `(0,0)`
+// into canvas space, and reported a COORDINATE. Client `(0,0)` maps to exactly
+// ONE canvas point per viewport — which is why the b72 census showed every
+// "divergent" node on a peer at the SAME rect, and why the count tracked the
+// zoom level (further in ⇒ fewer cards on screen ⇒ more detached). Seventeen
+// "divergences" across three peers, and all seventeen were cards that are simply
+// not on screen. That is `S190`'s trap in a new place: the instrument rendered
+// a refusal as a reading.
+//
+// The fix is the same shape as `S190`'s: the rect reading REFUSES for a detached
+// element and for a zero-area box, with a stated reason, and the node lands in
+// its own category instead of in `divergentNodes`. Four categories now, and the
+// difference between the second and the other three is the entire point:
+//
+//   ├── attached + painted + agrees      → fine
+//   ├── attached + painted + DISAGREES   → THE REAL DEFECT (`S193`)
+//   ├── detached                         → virtualized off screen; not divergent
+//   └── attached + never painted         → `attach()` without `render()`; its own
+//                                          category, because it is a real state
+//                                          worth seeing but it is not a wrong
+//                                          COORDINATE — there is no coordinate.
+// ===========================================================================
+
+/** Where the card element is, as the DOM itself reports it. Never inferred. */
+type DiagPaintAttachment = "attached" | "detached" | "unknown";
+
 /** Everything the paint plane knows about one node, including why it knows less. */
 interface DiagPaintDetail {
   source: "style" | "computed" | "rect" | "none";
@@ -3624,10 +3690,23 @@ interface DiagPaintDetail {
   rect: DiagPaintReading | null;
   rectReason: string;
   connected: boolean | null;
+  /**
+   * B72 — `connected` restated as the three answers that exist, so a reader
+   * never has to know that `null` means "the element did not tell us".
+   */
+  attachment: DiagPaintAttachment;
+  /**
+   * B72 — has Obsidian's `render()` EVER written a position onto this card?
+   * Read from the inline transform, which `render()` is the only writer of.
+   * `false` with `attachment === "attached"` is `S193`'s `attach()`-without-
+   * `render()` state, and it is NOT a divergent coordinate: there is no
+   * coordinate at all.
+   */
+  everPainted: boolean;
   className: string;
   styleVerdict: "agree" | "DIVERGENT" | "unreadable";
   rectVerdict: "agree" | "DIVERGENT" | "unreadable";
-  verdict: "agree" | "DIVERGENT" | "unreadable";
+  verdict: "agree" | "DIVERGENT" | "detached" | "unpainted" | "unreadable";
   /** The signed model→paint offset, when both sides were readable. */
   offset: Record<string, number> | null;
   reason: string;
@@ -3809,6 +3888,9 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
     const detail: Record<string, DiagPaintDetail> = {};
     const divergent: string[] = [];
     const unreadable: string[] = [];
+    // B72 (`S195`) — the two categories that used to be counted as divergences.
+    const detached: string[] = [];
+    const unpainted: string[] = [];
     const sourceCounts: Record<string, number> = { style: 0, computed: 0, rect: 0, none: 0 };
 
     for (const id of capped) {
@@ -3830,6 +3912,11 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
       let rectReason = elReason || "";
       let connected: boolean | null = null;
       let className = "";
+      // B72 — "did a translate parse at all", tracked SEPARATELY from
+      // `styleTransform`. `styleTransform` is refused when the translate was
+      // readable but width/height were not, and folding those two together would
+      // report a perfectly painted card as never painted.
+      let styleTranslateSeen = false;
 
       if (el) {
         connected = typeof el.isConnected === "boolean" ? el.isConnected : null;
@@ -3840,6 +3927,7 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
           const t = diagParseTransformTranslate(el.style?.transform);
           const w = diagParsePx(el.style?.width);
           const h = diagParsePx(el.style?.height);
+          if (t) styleTranslateSeen = true;
           if (!t) {
             styleReason =
               "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)";
@@ -3884,7 +3972,16 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
 
         // ---- reading 3: real laid-out pixels, de-transformed ------------------
         try {
-          if (!vp) {
+          if (connected === false) {
+            // B72 (`S195`) — THE REFUSAL THAT USED TO BE A COORDINATE. A detached
+            // element has no box: `getBoundingClientRect()` answers
+            // `{0,0,0,0}` for every one of them, and de-transforming client
+            // (0,0) yields one canvas point per viewport — so every detached
+            // card "diverges" to the SAME place. That is not where the card is;
+            // it is the arithmetic image of "there is no card on screen".
+            rectReason =
+              "nodeEl.isConnected === false — Obsidian's virtualize() has detached this card (it is outside the viewport). A detached element's getBoundingClientRect() is (0,0,0,0), which is a REFUSAL, not a position";
+          } else if (!vp) {
             rectReason = "no live viewport (adapter.getViewport unavailable or malformed)";
           } else if (!scaleUsable) {
             rectReason = `viewport scale is unusable (${String(scale)})`;
@@ -3894,6 +3991,15 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
             const r = diagReadRect(el);
             if (!r) {
               rectReason = "getBoundingClientRect unavailable or returned a non-finite rect";
+            } else if (r.width === 0 && r.height === 0) {
+              // B72 — the same refusal for the case `isConnected` could not see:
+              // an element that IS in the document but has no box (`display:none`,
+              // never laid out, inside a hidden ancestor). Zero area means the
+              // browser placed nothing; its `left`/`top` are not a position. This
+              // is a SEPARATE arm from the detach one on purpose — an attached
+              // card with no box is a real anomaly and its reason says so, rather
+              // than being folded into "detached, nothing to see".
+              rectReason = `getBoundingClientRect returned a ZERO-AREA box at (${r.left},${r.top}) — the element is in the document (isConnected=${String(connected)}) but has no laid-out box, so its left/top are not a position`;
             } else {
               const p = clientToCanvasManual(r.left, r.top, vp, {
                 left: wrapperRect.left,
@@ -3939,12 +4045,34 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
             ? "agree"
             : "DIVERGENT";
       }
-      const verdict: "agree" | "DIVERGENT" | "unreadable" =
-        styleVerdict === "DIVERGENT" || rectVerdict === "DIVERGENT"
-          ? "DIVERGENT"
-          : styleVerdict === "agree" || rectVerdict === "agree"
-            ? "agree"
-            : "unreadable";
+      // B72 (`S195`) — the three facts the categories are cut on, each read from
+      // the DOM and none of them inferred from a coordinate.
+      const attachment: DiagPaintAttachment =
+        connected === true ? "attached" : connected === false ? "detached" : "unknown";
+      // `render()` is the ONLY writer of a card's inline transform (Obsidian's
+      // `CanvasNode.prototype.render`, quoted in B71 §1.2), so a readable inline
+      // translate is proof it ran at least once and its absence is proof it did
+      // not. The computed reading is accepted as a second witness because a
+      // stylesheet could in principle carry it; it is not accepted for a detached
+      // element, where `getComputedStyle` returns "" for everything.
+      const everPainted = styleTranslateSeen || (attachment !== "detached" && computed !== null);
+
+      // THE PRECEDENCE, AND IT IS THE WHOLE OF WP1. `detached` and `unpainted`
+      // are checked BEFORE any comparison, because in both states there is no
+      // painted position to compare — and a category is the honest answer where
+      // a verdict would be a fabrication.
+      const verdict: DiagPaintDetail["verdict"] =
+        el === null
+          ? "unreadable"
+          : attachment === "detached"
+            ? "detached"
+            : !everPainted
+              ? "unpainted"
+              : styleVerdict === "DIVERGENT" || rectVerdict === "DIVERGENT"
+                ? "DIVERGENT"
+                : styleVerdict === "agree" || rectVerdict === "agree"
+                  ? "agree"
+                  : "unreadable";
 
       const primary = styleTransform ?? computed ?? rect;
       const source: DiagPaintDetail["source"] = styleTransform
@@ -3956,8 +4084,22 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
             : "none";
       sourceCounts[source] = (sourceCounts[source] ?? 0) + 1;
 
+      // B72 — EXACTLY ONE bucket per node, chosen by the verdict and never by a
+      // coordinate. `divergent` now holds only what the phrase claims: cards that
+      // are on screen, have been painted, and are painted in the wrong place.
       let reason = "";
-      if (!primary) {
+      if (verdict === "detached") {
+        reason = `DETACHED — Obsidian's virtualize() has removed this card from the document because it is outside the viewport. Nothing is painted for it, so there is nothing that can diverge${
+          styleTranslateSeen
+            ? "; its last inline transform is still readable and is reported above"
+            : "; it has never been rendered, so it carries no inline transform either"
+        }`;
+        detached.push(id);
+      } else if (verdict === "unpainted") {
+        reason =
+          "NEVER PAINTED — the card is in the document but carries no transform Obsidian's render() could have written. This is attach()-without-render() (`S193`): a real state, and not a wrong coordinate — there is no coordinate";
+        unpainted.push(id);
+      } else if (!primary) {
         reason =
           elReason ||
           `no readable paint geometry: style(${styleReason}) computed(${computedReason}) rect(${rectReason})`;
@@ -3985,6 +4127,8 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
         rect,
         rectReason,
         connected,
+        attachment,
+        everPainted,
         className,
         styleVerdict,
         rectVerdict,
@@ -4004,7 +4148,13 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
 
     // R7 — the refusal that matters most. Eleven live nodes and not one readable
     // element is NOT an empty board; it is an instrument that could not read.
-    if (capped.length > 0 && Object.keys(nodes).length === 0) {
+    //
+    // B72 — the condition is now `unreadable`, not "nothing published". A board
+    // scrolled entirely away is legitimately all-detached and publishes no
+    // coordinates, and that is an ANSWER ("every card is off screen"), not a
+    // failure to read. Taking the plane down for it would have replaced one
+    // wrong reading with a different wrong reading.
+    if (capped.length > 0 && unreadable.length === capped.length) {
       const sample = detail[capped[0]]?.reason ?? "no reason recorded";
       return diagPlaneUnavailable(
         `no card element could be read for any of ${capped.length} live nodes — first reason: ${sample}`,
@@ -4033,6 +4183,15 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
         sourceCounts,
         divergentNodes: divergent,
         divergentCount: divergent.length,
+        // B72 (`S195`) — the two categories that are NOT divergences, reported
+        // separately so a reader can never add them back in by accident. The
+        // b72-postreload census read 3/6/8 "divergences" on A/B/C; every one of
+        // them lands here, and `divergentCount` on that same data is 0/0/0.
+        detachedNodes: detached,
+        detachedCount: detached.length,
+        unpaintedNodes: unpainted,
+        unpaintedCount: unpainted.length,
+        attachedCount: Object.values(detail).filter((d) => d.attachment === "attached").length,
         unreadableNodes: unreadable,
         nodesDetail: detail,
       },
@@ -4250,7 +4409,43 @@ async function diagCensus(plugin: E2EPluginLike, path: string): Promise<DiagCens
     view: diagViewCensus(plugin, path),
     doc: diagDocCensus(plugin, path),
     file: await diagFileCensus(plugin, path),
+    repaint: diagRepaintReport(plugin, path),
   };
+}
+
+/**
+ * B72 (WP3) — the sweep's counters for one path, and R7 all the way down.
+ *
+ * Every failure names itself and NONE of them returns a zeroed counter block:
+ * "the sweep has repaired nothing" and "this peer cannot tell us what the sweep
+ * did" are the whole difference between a fix that is working and a fix that is
+ * not installed, and the b71/b70 sessions each lost hours to exactly that
+ * confusion wearing an honest answer's words.
+ */
+function diagRepaintReport(plugin: E2EPluginLike, path: string): DiagRepaintReport {
+  const none = (reason: string): DiagRepaintReport => ({ available: false, reason, counters: null });
+  if (typeof plugin.canvasDiagTargets !== "function") {
+    return none("this build exposes no canvasDiagTargets accessor (pre-B68 bundle)");
+  }
+  const { targets, accessorError } = resolveDiagTargetsResult(plugin, path);
+  if (accessorError !== null) return none(accessorError);
+  if (targets.length === 0) return none("no canvas view is mounted for this path on this peer");
+  const adapter = targets[0].adapter;
+  if (!adapter) return none(targets[0].adapterReason);
+  if (typeof adapter.describeRepaintSweep !== "function") {
+    return none(
+      "this bundle's adapter exposes no describeRepaintSweep — it is pre-B72 and has NO repaint sweep at all; nothing here is repairing anything",
+    );
+  }
+  try {
+    const counters = adapter.describeRepaintSweep();
+    if (counters === null || typeof counters !== "object") {
+      return none(`describeRepaintSweep returned ${typeof counters}, not a counter record`);
+    }
+    return { available: true, reason: "", counters: { ...counters } };
+  } catch (err) {
+    return none(`describeRepaintSweep threw: ${diagErrorText(err)}`);
+  }
 }
 
 /**

@@ -261,6 +261,13 @@ export function createCanvasModelBridge(
         const geo = extractGeometry(next);
         if (geo) {
           const outcome = adapter.applyNodeGeometry(id, geo);
+          // B72 (WP2) — the second half of the apply, on the THIRD remote-apply
+          // seam. `useCanvasBinding` is off by default, so this route is not the
+          // one the live rig exercises; it is wired anyway because "after the
+          // plugin applies a remote change to a node, that node is repainted" is
+          // a property of every such seam or of none, and a seam that is right
+          // only while a flag is off is the wiring gap §3.11 keeps finding.
+          if (outcome === "applied") adapter.repaintNode?.(id);
           // Commit the shadow only when the move landed; a deferred move
           // ("interacting") or a missing/unsupported node retries next delta.
           if (outcome === "applied" || outcome === "unchanged") nodes.set(id, next);

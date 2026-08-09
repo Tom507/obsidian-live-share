@@ -1,0 +1,835 @@
+{
+  "peer": "C",
+  "port": 39433,
+  "op": "census",
+  "path": "_liveshare-test/smoke.canvas",
+  "label": "b72-postreload",
+  "wallClock": 1786273601.540198,
+  "sessionInfo": {
+    "clientId": "4a99cf9a-9a6f-477c-8ef6-bfb8ffb9a448",
+    "role": "guest",
+    "roomId": "32883766-ec33-473d-b34a-e62a4685f293",
+    "connected": true,
+    "vaultId": "c44c0000947c0000",
+    "vaultName": "",
+    "vaultPath": null,
+    "pluginBuild": "0.6.1+e2e",
+    "canvasSurface": true
+  },
+  "sessionInfoRaw": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "result": {
+        "clientId": "4a99cf9a-9a6f-477c-8ef6-bfb8ffb9a448",
+        "role": "guest",
+        "roomId": "32883766-ec33-473d-b34a-e62a4685f293",
+        "connected": true,
+        "vaultId": "c44c0000947c0000",
+        "vaultName": "",
+        "vaultPath": null,
+        "pluginBuild": "0.6.1+e2e",
+        "canvasSurface": true
+      }
+    }
+  },
+  "raw": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "result": {
+        "diagProto": 2,
+        "armed": false,
+        "census": {
+          "path": "_liveshare-test/smoke.canvas",
+          "at": 1786273601533,
+          "paint": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1820,
+                "y": -133,
+                "width": 250,
+                "height": 60
+              },
+              "90943d0a189fd75a": {
+                "x": 2680,
+                "y": -103,
+                "width": 250,
+                "height": 180
+              },
+              "b41O-023800-01-M": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "b41O-023800-01-n": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "card1": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "card2": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "ee601e293437bced": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "from-guest": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "from-guest-011125": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "w4e040790": {
+                "x": 1115.1887215160157,
+                "y": -635.377988968212,
+                "width": 0,
+                "height": 0
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": null,
+            "label": {
+              "plane": "paint",
+              "primarySource": "nodeEl.style.transform (falls back to computed, then rect)",
+              "viewport": {
+                "x": 2345.451600461379,
+                "y": 428.1294638122232,
+                "zoom": -0.8468983891041098,
+                "scale": 0.5559787356880634
+              },
+              "wrapper": {
+                "how": "adapter.getOverlayHost()",
+                "className": "canvas-wrapper node-insert-event",
+                "left": 344,
+                "top": 78.57500457763672,
+                "width": 680,
+                "height": 1025.425048828125
+              },
+              "rectToleranceCanvasUnits": 1.808629939978601,
+              "exactTolerance": 0.01,
+              "sourceCounts": {
+                "style": 3,
+                "computed": 0,
+                "rect": 8,
+                "none": 0
+              },
+              "divergentNodes": [
+                "b41O-023800-01-M",
+                "b41O-023800-01-n",
+                "card1",
+                "card2",
+                "ee601e293437bced",
+                "from-guest",
+                "from-guest-011125",
+                "w4e040790"
+              ],
+              "divergentCount": 8,
+              "unreadableNodes": [],
+              "nodesDetail": {
+                "208541a49dc66c4c": {
+                  "source": "style",
+                  "model": {
+                    "x": 1820,
+                    "y": -133,
+                    "width": 250,
+                    "height": 60
+                  },
+                  "styleTransform": {
+                    "x": 1820,
+                    "y": -133,
+                    "width": 250,
+                    "height": 60
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 1820,
+                    "y": -133,
+                    "width": 250,
+                    "height": 60
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 1819.9999881184012,
+                    "y": -133.3822279964287,
+                    "width": 250.00009316140034,
+                    "height": 59.999983661406134
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "className": "canvas-node is-themed mod-canvas-color-1",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                },
+                "90943d0a189fd75a": {
+                  "source": "style",
+                  "model": {
+                    "x": 2680,
+                    "y": -103,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "styleTransform": {
+                    "x": 2680,
+                    "y": -103,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 2680,
+                    "y": -103,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 2679.9999529075217,
+                    "y": -103.38224645756873,
+                    "width": 250.00009316140034,
+                    "height": 179.99999901281942
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                },
+                "b41O-023800-01-M": {
+                  "source": "rect",
+                  "model": {
+                    "x": 660,
+                    "y": -183,
+                    "width": 160,
+                    "height": 80
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": 455.1887215160157,
+                    "dy": -452.377988968212,
+                    "dw": -160,
+                    "dh": -80
+                  },
+                  "reason": ""
+                },
+                "b41O-023800-01-n": {
+                  "source": "rect",
+                  "model": {
+                    "x": -140,
+                    "y": -183,
+                    "width": 160,
+                    "height": 80
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": 1255.1887215160157,
+                    "dy": -452.377988968212,
+                    "dw": -160,
+                    "dh": -80
+                  },
+                  "reason": ""
+                },
+                "card1": {
+                  "source": "rect",
+                  "model": {
+                    "x": 975,
+                    "y": 390,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": 140.18872151601568,
+                    "dy": -1025.3779889682119,
+                    "dw": -250,
+                    "dh": -180
+                  },
+                  "reason": ""
+                },
+                "card2": {
+                  "source": "rect",
+                  "model": {
+                    "x": 2180,
+                    "y": 1520,
+                    "width": 250,
+                    "height": 120
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": -1064.8112784839843,
+                    "dy": -2155.377988968212,
+                    "dw": -250,
+                    "dh": -120
+                  },
+                  "reason": ""
+                },
+                "ee601e293437bced": {
+                  "source": "rect",
+                  "model": {
+                    "x": 320,
+                    "y": 300,
+                    "width": 400,
+                    "height": 666
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": 795.1887215160157,
+                    "dy": -935.377988968212,
+                    "dw": -400,
+                    "dh": -666
+                  },
+                  "reason": ""
+                },
+                "from-guest": {
+                  "source": "rect",
+                  "model": {
+                    "x": 900,
+                    "y": 120,
+                    "width": 200,
+                    "height": 100
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": 215.18872151601568,
+                    "dy": -755.377988968212,
+                    "dw": -200,
+                    "dh": -100
+                  },
+                  "reason": ""
+                },
+                "from-guest-011125": {
+                  "source": "rect",
+                  "model": {
+                    "x": -600,
+                    "y": 400,
+                    "width": 200,
+                    "height": 100
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": 1715.1887215160157,
+                    "dy": -1035.3779889682119,
+                    "dw": -200,
+                    "dh": -100
+                  },
+                  "reason": ""
+                },
+                "w4e040790": {
+                  "source": "rect",
+                  "model": {
+                    "x": 1210,
+                    "y": 896,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": {
+                    "x": 1115.1887215160157,
+                    "y": -635.377988968212,
+                    "width": 0,
+                    "height": 0
+                  },
+                  "rectReason": "",
+                  "connected": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "DIVERGENT",
+                  "verdict": "DIVERGENT",
+                  "offset": {
+                    "dx": -94.81127848398432,
+                    "dy": -1531.3779889682119,
+                    "dw": -220,
+                    "dh": -70
+                  },
+                  "reason": ""
+                },
+                "w4e041809": {
+                  "source": "style",
+                  "model": {
+                    "x": 1960,
+                    "y": 480,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "styleTransform": {
+                    "x": 1960,
+                    "y": 480,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 1960,
+                    "y": 480,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 1959.9999568562444,
+                    "y": 479.6177844987348,
+                    "width": 220.00001556533834,
+                    "height": 69.99999123015023
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                }
+              }
+            }
+          },
+          "view": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1820,
+                "y": -133,
+                "width": 250,
+                "height": 60
+              },
+              "90943d0a189fd75a": {
+                "x": 2680,
+                "y": -103,
+                "width": 250,
+                "height": 180
+              },
+              "b41O-023800-01-M": {
+                "x": 660,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "b41O-023800-01-n": {
+                "x": -140,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "card1": {
+                "x": 975,
+                "y": 390,
+                "width": 250,
+                "height": 180
+              },
+              "card2": {
+                "x": 2180,
+                "y": 1520,
+                "width": 250,
+                "height": 120
+              },
+              "ee601e293437bced": {
+                "x": 320,
+                "y": 300,
+                "width": 400,
+                "height": 666
+              },
+              "from-guest": {
+                "x": 900,
+                "y": 120,
+                "width": 200,
+                "height": 100
+              },
+              "from-guest-011125": {
+                "x": -600,
+                "y": 400,
+                "width": 200,
+                "height": 100
+              },
+              "w4e040790": {
+                "x": 1210,
+                "y": 896,
+                "width": 220,
+                "height": 70
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": null,
+            "label": null
+          },
+          "doc": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1820,
+                "y": -133,
+                "width": 250,
+                "height": 60
+              },
+              "90943d0a189fd75a": {
+                "x": 2680,
+                "y": -103,
+                "width": 250,
+                "height": 180
+              },
+              "b41O-023800-01-M": {
+                "x": 660,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "b41O-023800-01-n": {
+                "x": -140,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "card1": {
+                "x": 975,
+                "y": 390,
+                "width": 250,
+                "height": 180
+              },
+              "card2": {
+                "x": 2180,
+                "y": 1520,
+                "width": 250,
+                "height": 120
+              },
+              "ee601e293437bced": {
+                "x": 320,
+                "y": 300,
+                "width": 400,
+                "height": 666
+              },
+              "from-guest": {
+                "x": 900,
+                "y": 120,
+                "width": 200,
+                "height": 100
+              },
+              "from-guest-011125": {
+                "x": -600,
+                "y": 400,
+                "width": 200,
+                "height": 100
+              },
+              "w4e040790": {
+                "x": 1210,
+                "y": 896,
+                "width": 220,
+                "height": 70
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": null,
+            "label": null
+          },
+          "file": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1820,
+                "y": -133,
+                "width": 250,
+                "height": 60
+              },
+              "90943d0a189fd75a": {
+                "x": 2680,
+                "y": -103,
+                "width": 250,
+                "height": 180
+              },
+              "b41O-023800-01-M": {
+                "x": 660,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "b41O-023800-01-n": {
+                "x": -140,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "card1": {
+                "x": 975,
+                "y": 390,
+                "width": 250,
+                "height": 180
+              },
+              "card2": {
+                "x": 2180,
+                "y": 1520,
+                "width": 250,
+                "height": 120
+              },
+              "ee601e293437bced": {
+                "x": 320,
+                "y": 300,
+                "width": 400,
+                "height": 666
+              },
+              "from-guest": {
+                "x": 900,
+                "y": 120,
+                "width": 200,
+                "height": 100
+              },
+              "from-guest-011125": {
+                "x": -600,
+                "y": 400,
+                "width": 200,
+                "height": 100
+              },
+              "w4e040790": {
+                "x": 1210,
+                "y": 896,
+                "width": 220,
+                "height": 70
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": false,
+            "label": {
+              "size": 2938,
+              "sha256": "253f3bdb588b38abbd9459a21fe3ba1687a2a373fe2817e4dbc3e50536290bc9",
+              "hasNodesKey": true,
+              "hasEdgesKey": true
+            }
+          }
+        },
+        "awareness": {
+          "available": true,
+          "path": "_liveshare-test/smoke.canvas",
+          "myClientId": 2490622319,
+          "peerCount": 3,
+          "peersOnThisPath": 3,
+          "peers": [
+            {
+              "clientId": 2108810323,
+              "isMe": false,
+              "canvasPath": "_liveshare-test/smoke.canvas",
+              "onThisPath": true,
+              "nodeId": null,
+              "x": 264.1447063698306,
+              "y": -23.385835051383197,
+              "lockCount": 0,
+              "lockedNodes": {},
+              "epochs": {},
+              "identityName": "dude",
+              "rendersTypingPill": false
+            },
+            {
+              "clientId": 2490622319,
+              "isMe": true,
+              "canvasPath": "_liveshare-test/smoke.canvas",
+              "onThisPath": true,
+              "nodeId": null,
+              "x": 2944.0356225303253,
+              "y": 270.0748715590611,
+              "lockCount": 0,
+              "lockedNodes": {},
+              "epochs": {},
+              "identityName": "W4TestC",
+              "rendersTypingPill": false
+            },
+            {
+              "clientId": 3626790476,
+              "isMe": false,
+              "canvasPath": "_liveshare-test/smoke.canvas",
+              "onThisPath": true,
+              "nodeId": null,
+              "x": 2473.6445851804933,
+              "y": -290.4901519949334,
+              "lockCount": 0,
+              "lockedNodes": {},
+              "epochs": {},
+              "identityName": "Tom",
+              "rendersTypingPill": false
+            }
+          ],
+          "lockMeta": {}
+        },
+        "mountedPaths": [
+          "_liveshare-test/smoke.canvas"
+        ]
+      }
+    }
+  }
+}
