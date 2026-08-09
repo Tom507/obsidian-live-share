@@ -1,0 +1,906 @@
+{
+  "peer": "B",
+  "port": 39432,
+  "op": "census",
+  "path": "_liveshare-test/smoke.canvas",
+  "label": "census-142536",
+  "wallClock": 1786278336.676746,
+  "sessionInfo": {
+    "clientId": "e9e612b8-2574-4e33-8670-e2d0e27fb471",
+    "role": "host",
+    "roomId": "32883766-ec33-473d-b34a-e62a4685f293",
+    "connected": true,
+    "vaultId": "55a4253eb7a90dde",
+    "vaultName": "",
+    "vaultPath": null,
+    "pluginBuild": "0.6.1+e2e",
+    "canvasSurface": true
+  },
+  "sessionInfoRaw": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "result": {
+        "clientId": "e9e612b8-2574-4e33-8670-e2d0e27fb471",
+        "role": "host",
+        "roomId": "32883766-ec33-473d-b34a-e62a4685f293",
+        "connected": true,
+        "vaultId": "55a4253eb7a90dde",
+        "vaultName": "",
+        "vaultPath": null,
+        "pluginBuild": "0.6.1+e2e",
+        "canvasSurface": true
+      }
+    }
+  },
+  "raw": {
+    "status": 200,
+    "body": {
+      "ok": true,
+      "result": {
+        "diagProto": 3,
+        "armed": true,
+        "census": {
+          "path": "_liveshare-test/smoke.canvas",
+          "at": 1786278336672,
+          "paint": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1600,
+                "y": 220,
+                "width": 250,
+                "height": 60
+              },
+              "b41O-023800-01-M": {
+                "x": 660,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "b41O-023800-01-n": {
+                "x": -140,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "card1": {
+                "x": 975,
+                "y": 390,
+                "width": 250,
+                "height": 180
+              },
+              "card2": {
+                "x": 2180,
+                "y": 1520,
+                "width": 250,
+                "height": 120
+              },
+              "ee601e293437bced": {
+                "x": 320,
+                "y": 300,
+                "width": 400,
+                "height": 666
+              },
+              "from-guest": {
+                "x": 900,
+                "y": 120,
+                "width": 200,
+                "height": 100
+              },
+              "from-guest-011125": {
+                "x": -600,
+                "y": 400,
+                "width": 200,
+                "height": 100
+              },
+              "w4e040790": {
+                "x": 1210,
+                "y": 896,
+                "width": 220,
+                "height": 70
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": null,
+            "label": {
+              "plane": "paint",
+              "primarySource": "nodeEl.style.transform (falls back to computed, then rect)",
+              "viewport": {
+                "x": 1682.7949511168952,
+                "y": 610.7932369080881,
+                "zoom": -0.9342503462415586,
+                "scale": 0.5233143240523312
+              },
+              "wrapper": {
+                "how": "adapter.getOverlayHost()",
+                "className": "canvas-wrapper node-insert-event",
+                "left": 344,
+                "top": 78.57500457763672,
+                "width": 680,
+                "height": 1025.425048828125
+              },
+              "rectToleranceCanvasUnits": 1.9208974358974367,
+              "exactTolerance": 0.01,
+              "sourceCounts": {
+                "style": 10,
+                "computed": 0,
+                "rect": 0,
+                "none": 1
+              },
+              "divergentNodes": [],
+              "divergentCount": 0,
+              "detachedNodes": [
+                "90943d0a189fd75a",
+                "b41O-023800-01-M",
+                "b41O-023800-01-n",
+                "ee601e293437bced",
+                "from-guest-011125"
+              ],
+              "detachedCount": 5,
+              "unpaintedNodes": [],
+              "unpaintedCount": 0,
+              "attachedCount": 6,
+              "unreadableNodes": [],
+              "nodesDetail": {
+                "208541a49dc66c4c": {
+                  "source": "style",
+                  "model": {
+                    "x": 1600,
+                    "y": 220,
+                    "width": 250,
+                    "height": 60
+                  },
+                  "styleTransform": {
+                    "x": 1600,
+                    "y": 220,
+                    "width": 250,
+                    "height": 60
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 1600,
+                    "y": 220,
+                    "width": 250,
+                    "height": 60
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 1599.9999313117694,
+                    "y": 219.5939761817462,
+                    "width": 250.00006166115793,
+                    "height": 60.000035646634245
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "attachment": "attached",
+                  "everPainted": true,
+                  "className": "canvas-node is-themed is-focused mod-canvas-color-1",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                },
+                "90943d0a189fd75a": {
+                  "source": "none",
+                  "model": {
+                    "x": 2680,
+                    "y": -103,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "styleTransform": null,
+                  "styleReason": "nodeEl.style.transform carries no readable translate (empty, 'none', or a spelling this parser does not know)",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": null,
+                  "rectReason": "nodeEl.isConnected === false \u2014 Obsidian's virtualize() has detached this card (it is outside the viewport). A detached element's getBoundingClientRect() is (0,0,0,0), which is a REFUSAL, not a position",
+                  "connected": false,
+                  "attachment": "detached",
+                  "everPainted": false,
+                  "className": "canvas-node",
+                  "styleVerdict": "unreadable",
+                  "rectVerdict": "unreadable",
+                  "verdict": "detached",
+                  "offset": null,
+                  "reason": "DETACHED \u2014 Obsidian's virtualize() has removed this card from the document because it is outside the viewport. Nothing is painted for it, so there is nothing that can diverge; it has never been rendered, so it carries no inline transform either"
+                },
+                "b41O-023800-01-M": {
+                  "source": "style",
+                  "model": {
+                    "x": 660,
+                    "y": -183,
+                    "width": 160,
+                    "height": 80
+                  },
+                  "styleTransform": {
+                    "x": 660,
+                    "y": -183,
+                    "width": 160,
+                    "height": 80
+                  },
+                  "styleReason": "",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": null,
+                  "rectReason": "nodeEl.isConnected === false \u2014 Obsidian's virtualize() has detached this card (it is outside the viewport). A detached element's getBoundingClientRect() is (0,0,0,0), which is a REFUSAL, not a position",
+                  "connected": false,
+                  "attachment": "detached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "unreadable",
+                  "verdict": "detached",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": "DETACHED \u2014 Obsidian's virtualize() has removed this card from the document because it is outside the viewport. Nothing is painted for it, so there is nothing that can diverge; its last inline transform is still readable and is reported above"
+                },
+                "b41O-023800-01-n": {
+                  "source": "style",
+                  "model": {
+                    "x": -140,
+                    "y": -183,
+                    "width": 160,
+                    "height": 80
+                  },
+                  "styleTransform": {
+                    "x": -140,
+                    "y": -183,
+                    "width": 160,
+                    "height": 80
+                  },
+                  "styleReason": "",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": null,
+                  "rectReason": "nodeEl.isConnected === false \u2014 Obsidian's virtualize() has detached this card (it is outside the viewport). A detached element's getBoundingClientRect() is (0,0,0,0), which is a REFUSAL, not a position",
+                  "connected": false,
+                  "attachment": "detached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "unreadable",
+                  "verdict": "detached",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": "DETACHED \u2014 Obsidian's virtualize() has removed this card from the document because it is outside the viewport. Nothing is painted for it, so there is nothing that can diverge; its last inline transform is still readable and is reported above"
+                },
+                "card1": {
+                  "source": "style",
+                  "model": {
+                    "x": 975,
+                    "y": 390,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "styleTransform": {
+                    "x": 975,
+                    "y": 390,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 975,
+                    "y": 390,
+                    "width": 250,
+                    "height": 180
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 975.0000687386836,
+                    "y": 389.5939271384332,
+                    "width": 249.99997418721526,
+                    "height": 180.00001582121243
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "attachment": "attached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                },
+                "card2": {
+                  "source": "style",
+                  "model": {
+                    "x": 2180,
+                    "y": 1520,
+                    "width": 250,
+                    "height": 120
+                  },
+                  "styleTransform": {
+                    "x": 2180,
+                    "y": 1520,
+                    "width": 250,
+                    "height": 120
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 2180,
+                    "y": 1520,
+                    "width": 250,
+                    "height": 120
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 2179.999990390671,
+                    "y": 1519.5939819135738,
+                    "width": 249.9998867132726,
+                    "height": 119.99988176639268
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "attachment": "attached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                },
+                "ee601e293437bced": {
+                  "source": "style",
+                  "model": {
+                    "x": 320,
+                    "y": 300,
+                    "width": 400,
+                    "height": 666
+                  },
+                  "styleTransform": {
+                    "x": 320,
+                    "y": 300,
+                    "width": 400,
+                    "height": 666
+                  },
+                  "styleReason": "",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": null,
+                  "rectReason": "nodeEl.isConnected === false \u2014 Obsidian's virtualize() has detached this card (it is outside the viewport). A detached element's getBoundingClientRect() is (0,0,0,0), which is a REFUSAL, not a position",
+                  "connected": false,
+                  "attachment": "detached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "unreadable",
+                  "verdict": "detached",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": "DETACHED \u2014 Obsidian's virtualize() has removed this card from the document because it is outside the viewport. Nothing is painted for it, so there is nothing that can diverge; its last inline transform is still readable and is reported above"
+                },
+                "from-guest": {
+                  "source": "style",
+                  "model": {
+                    "x": 900,
+                    "y": 120,
+                    "width": 200,
+                    "height": 100
+                  },
+                  "styleTransform": {
+                    "x": 900,
+                    "y": 120,
+                    "width": 200,
+                    "height": 100
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 900,
+                    "y": 120,
+                    "width": 200,
+                    "height": 100
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 900.0000269139514,
+                    "y": 119.59393985409065,
+                    "width": 199.99995602338748,
+                    "height": 100.0000290381603
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "attachment": "attached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                },
+                "from-guest-011125": {
+                  "source": "style",
+                  "model": {
+                    "x": -600,
+                    "y": 400,
+                    "width": 200,
+                    "height": 100
+                  },
+                  "styleTransform": {
+                    "x": -600,
+                    "y": 400,
+                    "width": 200,
+                    "height": 100
+                  },
+                  "styleReason": "",
+                  "computed": null,
+                  "computedReason": "getComputedStyle(...).transform is '' \u2014 no readable translate",
+                  "rect": null,
+                  "rectReason": "nodeEl.isConnected === false \u2014 Obsidian's virtualize() has detached this card (it is outside the viewport). A detached element's getBoundingClientRect() is (0,0,0,0), which is a REFUSAL, not a position",
+                  "connected": false,
+                  "attachment": "detached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "unreadable",
+                  "verdict": "detached",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": "DETACHED \u2014 Obsidian's virtualize() has removed this card from the document because it is outside the viewport. Nothing is painted for it, so there is nothing that can diverge; its last inline transform is still readable and is reported above"
+                },
+                "w4e040790": {
+                  "source": "style",
+                  "model": {
+                    "x": 1210,
+                    "y": 896,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "styleTransform": {
+                    "x": 1210,
+                    "y": 896,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 1210,
+                    "y": 896,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 1210.0000403925485,
+                    "y": 895.593946505358,
+                    "width": 219.99999827849567,
+                    "height": 70.00005312944073
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "attachment": "attached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                },
+                "w4e041809": {
+                  "source": "style",
+                  "model": {
+                    "x": 1960,
+                    "y": 480,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "styleTransform": {
+                    "x": 1960,
+                    "y": 480,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "styleReason": "",
+                  "computed": {
+                    "x": 1960,
+                    "y": 480,
+                    "width": 220,
+                    "height": 70
+                  },
+                  "computedReason": "",
+                  "rect": {
+                    "x": 1959.9999921121753,
+                    "y": 479.5940006544964,
+                    "width": 220.0001003314288,
+                    "height": 69.99996565549804
+                  },
+                  "rectReason": "",
+                  "connected": true,
+                  "attachment": "attached",
+                  "everPainted": true,
+                  "className": "canvas-node",
+                  "styleVerdict": "agree",
+                  "rectVerdict": "agree",
+                  "verdict": "agree",
+                  "offset": {
+                    "dx": 0,
+                    "dy": 0,
+                    "dw": 0,
+                    "dh": 0
+                  },
+                  "reason": ""
+                }
+              }
+            }
+          },
+          "view": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1600,
+                "y": 220,
+                "width": 250,
+                "height": 60
+              },
+              "90943d0a189fd75a": {
+                "x": 2680,
+                "y": -103,
+                "width": 250,
+                "height": 180
+              },
+              "b41O-023800-01-M": {
+                "x": 660,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "b41O-023800-01-n": {
+                "x": -140,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "card1": {
+                "x": 975,
+                "y": 390,
+                "width": 250,
+                "height": 180
+              },
+              "card2": {
+                "x": 2180,
+                "y": 1520,
+                "width": 250,
+                "height": 120
+              },
+              "ee601e293437bced": {
+                "x": 320,
+                "y": 300,
+                "width": 400,
+                "height": 666
+              },
+              "from-guest": {
+                "x": 900,
+                "y": 120,
+                "width": 200,
+                "height": 100
+              },
+              "from-guest-011125": {
+                "x": -600,
+                "y": 400,
+                "width": 200,
+                "height": 100
+              },
+              "w4e040790": {
+                "x": 1210,
+                "y": 896,
+                "width": 220,
+                "height": 70
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": null,
+            "label": null
+          },
+          "doc": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1600,
+                "y": 220,
+                "width": 250,
+                "height": 60
+              },
+              "90943d0a189fd75a": {
+                "x": 2680,
+                "y": -103,
+                "width": 250,
+                "height": 180
+              },
+              "b41O-023800-01-M": {
+                "x": 660,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "b41O-023800-01-n": {
+                "x": -140,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "card1": {
+                "x": 975,
+                "y": 390,
+                "width": 250,
+                "height": 180
+              },
+              "card2": {
+                "x": 2180,
+                "y": 1520,
+                "width": 250,
+                "height": 120
+              },
+              "ee601e293437bced": {
+                "x": 320,
+                "y": 300,
+                "width": 400,
+                "height": 666
+              },
+              "from-guest": {
+                "x": 900,
+                "y": 120,
+                "width": 200,
+                "height": 100
+              },
+              "from-guest-011125": {
+                "x": -600,
+                "y": 400,
+                "width": 200,
+                "height": 100
+              },
+              "w4e040790": {
+                "x": 1210,
+                "y": 896,
+                "width": 220,
+                "height": 70
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": null,
+            "label": null
+          },
+          "file": {
+            "available": true,
+            "reason": "",
+            "count": 11,
+            "truncated": false,
+            "nodes": {
+              "208541a49dc66c4c": {
+                "x": 1600,
+                "y": 220,
+                "width": 250,
+                "height": 60
+              },
+              "90943d0a189fd75a": {
+                "x": 2680,
+                "y": -103,
+                "width": 250,
+                "height": 180
+              },
+              "b41O-023800-01-M": {
+                "x": 660,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "b41O-023800-01-n": {
+                "x": -140,
+                "y": -183,
+                "width": 160,
+                "height": 80
+              },
+              "card1": {
+                "x": 975,
+                "y": 390,
+                "width": 250,
+                "height": 180
+              },
+              "card2": {
+                "x": 2180,
+                "y": 1520,
+                "width": 250,
+                "height": 120
+              },
+              "ee601e293437bced": {
+                "x": 320,
+                "y": 300,
+                "width": 400,
+                "height": 666
+              },
+              "from-guest": {
+                "x": 900,
+                "y": 120,
+                "width": 200,
+                "height": 100
+              },
+              "from-guest-011125": {
+                "x": -600,
+                "y": 400,
+                "width": 200,
+                "height": 100
+              },
+              "w4e040790": {
+                "x": 1210,
+                "y": 896,
+                "width": 220,
+                "height": 70
+              },
+              "w4e041809": {
+                "x": 1960,
+                "y": 480,
+                "width": 220,
+                "height": 70
+              }
+            },
+            "degraded": false,
+            "label": {
+              "size": 2937,
+              "sha256": "dd76e5e7789244914fce5fbe25fe5f9ecd34ff322bc26c15f47e94d13dd0076f",
+              "hasNodesKey": true,
+              "hasEdgesKey": true
+            }
+          },
+          "repaint": {
+            "available": true,
+            "reason": "",
+            "counters": {
+              "ticks": 467,
+              "skippedBusy": 3,
+              "skippedEmpty": 0,
+              "visited": 1392,
+              "repaired": 0,
+              "repainted": 4,
+              "deferred": 1388,
+              "requested": 0,
+              "interacting": 0,
+              "missing": 0,
+              "unsupported": 0,
+              "lastBatchSize": 3,
+              "lastNodeCount": 11,
+              "cursor": 7,
+              "pendingCount": 3
+            }
+          }
+        },
+        "awareness": {
+          "available": true,
+          "path": "_liveshare-test/smoke.canvas",
+          "myClientId": 2115718395,
+          "peerCount": 3,
+          "peersOnThisPath": 3,
+          "peers": [
+            {
+              "clientId": 1084831678,
+              "isMe": false,
+              "canvasPath": "_liveshare-test/smoke.canvas",
+              "onThisPath": true,
+              "nodeId": null,
+              "x": 586.4960101329947,
+              "y": 1252.3047815072832,
+              "lockCount": 0,
+              "lockedNodes": {},
+              "epochs": {},
+              "identityName": "Tom",
+              "rendersTypingPill": false
+            },
+            {
+              "clientId": 2115718395,
+              "isMe": true,
+              "canvasPath": "_liveshare-test/smoke.canvas",
+              "onThisPath": true,
+              "nodeId": "208541a49dc66c4c",
+              "x": 2318.7415944571776,
+              "y": 355.73620456747585,
+              "lockCount": 1,
+              "lockedNodes": {
+                "208541a49dc66c4c": {
+                  "color": "#c8288d",
+                  "name": "dude"
+                }
+              },
+              "epochs": {
+                "208541a49dc66c4c": "undefined"
+              },
+              "identityName": "dude",
+              "rendersTypingPill": true
+            },
+            {
+              "clientId": 3640101367,
+              "isMe": false,
+              "canvasPath": "_liveshare-test/smoke.canvas",
+              "onThisPath": true,
+              "nodeId": null,
+              "x": 2946.913496302087,
+              "y": 249.93019427536885,
+              "lockCount": 0,
+              "lockedNodes": {},
+              "epochs": {},
+              "identityName": "W4TestC",
+              "rendersTypingPill": false
+            }
+          ],
+          "lockMeta": {
+            "208541a49dc66c4c": {
+              "origin": "gesture",
+              "touchedAt": 1786276977951
+            }
+          }
+        },
+        "mountedPaths": [
+          "_liveshare-test/smoke.canvas"
+        ]
+      }
+    }
+  }
+}

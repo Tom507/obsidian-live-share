@@ -23,20 +23,28 @@ they accumulate on screen while the underlying board stays perfectly in sync.
 
 **What v0.7.0 does about it.**
 
-- **Targeted repaint** — when a remote change is applied to a card, that card is repainted immediately. This
-  closes the common path.
-- **A background repair sweep** — a few cards per second, round-robin, are checked and repainted if their
-  pixels disagree with their stored position. This is a *restoring force*: damage from any path we have not
-  yet identified is repaired continuously instead of accumulating.
+- **Targeted repaint — this is what actually fixes it today.** When a remote change is applied to a card, that
+  card is repainted immediately. In live validation across three machines this fired **12 times** and every
+  single call found genuinely stale pixels and corrected them.
+- **A background repair sweep**, intended as a safety net for damage from paths we have not yet identified.
+  **It does not currently work — see below.** It is inert, not harmful.
 
 Both are suppressed while you are dragging a card or typing in one, so they cannot interfere with editing.
 
-**Why this is "mitigated" and not "fixed".** In live validation the sweep still found and repaired real
-mis-paints that the targeted repaint did not prevent — so **a producing path remains unidentified.** The board
-looks correct because the repair is running, not because the defect is gone. One path is already named and
-open: a whole-board reload (triggered by, among other things, moving a card that an arrow connects to) hands
-the entire board to Obsidian at once and has no single card to repaint, so it relies on the sweep rather than
-being repaired instantly.
+**The safety net is not working in 0.7.0.** Measured over 270 seconds on three peers: **0 repairs across 5538
+sweep calls.** Two independent causes, both confirmed:
+
+- The batch is filled from a priority list of off-screen cards that never empties, so the round-robin cursor
+  never advances past its starting position — the sweep re-examines the same few cards forever.
+- The 1-second timer is throttled by the browser engine to roughly **one tick per minute** when the window is
+  not in the foreground, so even a working sweep would take minutes rather than seconds to cover a board.
+
+**So: the visible improvement in 0.7.0 comes entirely from the targeted repaint.** That is a real fix for the
+common path and it is doing the work. The safety net is a stub until repaired.
+
+**Why this is still "mitigated" and not "fixed".** One producing path is named and open: a whole-board reload
+(triggered by, among other things, moving a card that an arrow connects to) hands the entire board to Obsidian
+at once and has no single card to repaint. It was meant to be covered by the sweep, and currently is not.
 
 **Workaround if you ever see it.** Close the canvas tab and reopen it. A remount rebuilds every card from the
 document, which is always correct.

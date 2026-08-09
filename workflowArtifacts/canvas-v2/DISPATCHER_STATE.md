@@ -460,15 +460,22 @@ B: REPAIRED=0   ticks=171  visited=504   skippedBusy=3   <- host, during the dra
 C: REPAIRED=1   ticks=159  visited=477   skippedBusy=0
 ```
 
-**`REPAIRED=1` on BOTH guests.** The sweep found a card whose pixels genuinely did not match its model and
-repaired it. **The underlying defect is still present — this single run produced two instances of it — and the
-board looks correct BECAUSE the restoring force is running.** This is exactly the reading B72 warned had to be
-made: a clean board with `REPAIRED > 0` is a damage *rate*, not a fix. `skippedBusy=3` on the host is the
-`isBusy` guard declining to repaint mid-drag, i.e. it did not fight the owner's cursor.
+**`REPAIRED=1` on BOTH guests.** Real stale pixels were found and corrected. **The underlying defect is still
+present — this single run produced two instances of it.** `skippedBusy=3` on the host is the `isBusy` guard
+declining to repaint mid-drag, i.e. it did not fight the owner's cursor.
 
-**The owner's own proposal is what caught them.** *"like randomly selecting a couple of nodes each frame and
-redrawing them, that would continuously repair the damage"* — built as round-robin rather than random, because
-random sampling's coverage is `n ln n` in expectation and unbounded per card.
+> **ATTRIBUTION CORRECTED BY B74 — `S201`. The Dispatcher's headline below was wrong and is struck.**
+>
+> ~~"The sweep found a card whose pixels did not match its model and repaired it. The board looks correct
+> BECAUSE the restoring force is running. The owner's own proposal is what caught them."~~
+>
+> `repaired` counts **both** the sweep and the apply seam. B74 split them by the identity
+> `seamCalls = Σoutcomes − visited`, which closed **exactly** on all three peers: **sweep 0, apply seam 12.**
+> **The sweep has never repaired anything** (`S199`); **WP2's targeted repaint did all of it**, and every one
+> of its 12 calls found genuinely stale pixels. The good news is inverted, not withdrawn — the targeted
+> repaint is *more* load-bearing than it was credited with, and the owner's restoring force is not yet
+> carrying any load. The general warning still stands: **a clean board with `repaired > 0` is a damage rate,
+> not a fix.**
 
 ### `S198` — do not read B73's divergence counts as a defect count
 
@@ -483,10 +490,56 @@ offset in the client→canvas inverse, not divergence. **Trust the `style` verdi
 - **`H8` is refuted** for both measured trials.
 - **The cause is still not named.** WP2 repaints the node it applied to; `S197` records that the whole-board
   `setData` branch has no targeted repaint and is covered only by the sweep's `ceil(n/batch)` ticks.
-- **`REPAIRED` is now the instrument for the residue.** Watch it over ordinary use: if it stays non-zero, the
-  producing path is still live and is worth naming; if it falls to zero once WP2's seams cover everything,
-  the sweep has become belt-and-braces rather than the load-bearing repair.
+- **`REPAIRED` is now the instrument for the residue** — but read it **split**, per `S201`: the aggregate
+  conflates the sweep with the apply seam and reads as a success for the wrong component.
 - Owner ruling stands: **nodes only, edges out of scope** (`S194` open and untouched).
+
+---
+
+## B74 — the release sweep. **v0.7.0 is safe. The safety net is not.**
+
+W4 swept every module reachable through the control surface, **without requesting a reload** — it took
+everything out of the processes still running `b55097a2` in memory, so ports 39431/39432/39433 survive.
+
+**VERDICT: no data-loss route, no crash, no re-entrancy fault, no timer leak, no test-build contamination.
+Do not pull the release.** Gates re-run by the Dispatcher on a quiet tree: `tsc` 0, **448 files / 3404 tests,
+0 failed**, register checker 0.
+
+**Published artefact verified independently and harder than the Dispatcher did.** 23 probes against the
+shipped bundle; **20 proved live** on two known-e2e bundles and read **zero** on the published build. The 3
+that never fire anywhere are reported as **useless, not as passes** — the distinction this project exists to
+enforce. All 4 hits resolved: three comments, one esbuild path comment, and the DCE residue
+`if (false) { void null.then(m => m.maybeStartE2EControlServer(this)) }` — unreachable, import elided to
+`null`. Zero node builtins. All three vaults byte-identical to the zip.
+
+| signal | severity | finding |
+|---|---|---|
+| **`S199`** | **HIGH** | **The repair sweep has repaired NOTHING, EVER.** `planRepaintSweep` fills the batch from `priority` (= `repaintPending`, which off-screen cards never leave) *before* the round-robin, so `cursor` never advances. Live: cursor frozen at 9/7/5 across 270 s on all three peers — **0 repairs in 5538 sweep calls**. It degrades with board size: 200 cards with 10 off-screen starves completely. |
+| **`S200`** | MEDIUM | **The 1 Hz clock runs at 0.017 Hz** — exactly 1 tick/minute over nine 60 s windows on three peers, from backgrounded-renderer throttling. The documented ~4 s full-board latency is really ~4 minutes. |
+| **`S201`** | MEDIUM | `repaired` conflates sweep and apply seam; B73's headline attribution was wrong. See the struck block above. |
+| **`S202`** | LOW | `link.report` reads `healthy=true, downLinks=[]` for a peer receiving nothing. |
+
+**What was proved working, each with a control that went red first:** the targeted repaint fires synchronously
+and repairs on all three peers (**negative control: an identical-coordinate no-op produced Δseam 0**); `.md`
+sync create/edit/delete at **0.5 / 1.0 / 1.5 s**, byte-identical (**two negative controls: an out-of-scope
+file stayed absent 45 s, a ghost file timed out**); the busy gate does not re-seat a card under an open editor
+(**control: the same move with no editor did repaint**); reconnect converged in 1.0 s. Timer lifecycle
+refuted as a leak via three independent stop routes.
+
+**W4's own disclosure, kept:** its first reconnect attempt sent a malformed `link.break`, got a 400, **and the
+arming control correctly voided the arm** rather than scoring it — the instrument caught its own operator.
+One planted break reddened nothing and is reported as a finding: `repaintNode`'s `interacting` guard is
+subsumed upstream by `applyNodeGeometry`.
+
+**Coverage gaps, stated rather than padded:** no real human gestures (all driven input); no focused-window
+tick rate; `onunload` argued from source, not executed; undo, locks/cursors/tiebreak (headless only),
+rename/move, `S197`'s whole-board `setData` branch, and large boards **not exercised**.
+
+### The next batch
+
+One W3 package covering **`S199` + `S200` + `S201`**: make the sweep actually advance its cursor, deal with
+the throttled clock, and split the counter so it can never again credit the wrong component.
+`docs/KNOWN_ISSUES.md` **has been corrected** to say the safety net is inert.
 - **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
   in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
   copies are the owner's and were deliberately left untouched.**
