@@ -15,6 +15,7 @@ import {
   toCanonicalPath,
   toLocalPath,
 } from "../utils";
+import { decideAttestation, noteAttestation } from "./attestation-guard";
 import { isSidecarPath } from "./canvas-sidecar";
 import {
   CONFLICT_PRESERVATION,
@@ -23,15 +24,23 @@ import {
   isConflictsPath,
   noteConflictCopy,
   noteConflictCopyFailure,
+  noteConflictDiscard,
+  observedModificationTime,
 } from "./conflict-copy";
 import {
   EMPTY_WRITE_DECISION,
+  type EmptyWriteRefusalLogger,
   decideEmptyWrite,
   noteEmptyWriteRefusal,
 } from "./empty-write-guard";
 import type { ExclusionManager } from "./exclusion";
 import { PUBLICATION_DECISION, decidePublication } from "./manifest-purge-decision";
-import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
+import { MANIFEST_SYNC_OUTCOMES, notePathOutcome } from "./path-outcome";
+import {
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "./protected-paths";
 
 export interface FileEntry {
   hash: string;
@@ -233,11 +242,29 @@ export class ManifestManager {
   private lastPublishDecision: ManifestPublishDecision | null = null;
 
   private exclusionManager: ExclusionManager | null = null;
+  /**
+   * S137 — the debug-log sink for this module's REFUSALS.
+   *
+   * Null until `main.ts` wires it, and every use is `?.`-guarded, so the many
+   * harnesses that construct a `ManifestManager` directly are unaffected. Wired
+   * AFTER the `DebugLogger` is assigned, never beside the constructor call —
+   * S104's lesson, and the reason `main.ts` groups every `setLogger` in one
+   * block below the sink rather than beside each `new`.
+   */
+  private logger: EmptyWriteRefusalLogger | null = null;
 
   constructor(
     private vault: Vault,
     private settings: LiveShareSettings,
   ) {}
+
+  /**
+   * S137 — wiring only. See {@link logger}: after the `DebugLogger` exists, not
+   * beside `new ManifestManager(...)`.
+   */
+  setLogger(logger: EmptyWriteRefusalLogger | null): void {
+    this.logger = logger;
+  }
 
   setExclusionManager(manager: ExclusionManager) {
     this.exclusionManager = manager;
@@ -588,7 +615,11 @@ export class ManifestManager {
       // directory branch runs `ensureFolder` on a peer-chosen path and would
       // otherwise create `.git/hooks` for the op that follows it.
       if (isProtectedPath(path)) {
+        // S137 (B2) — the SIBLING refusal on the same arm, with the same defect:
+        // counted, never said. Same shared emitter as the four arms that already
+        // log it, so the census is over arms and not over phrasings.
         noteProtectedRefusal("manifest-sync", path);
+        this.logger?.warn("file-op", protectedRefusalMessage("manifest-sync", path));
         continue;
       }
 
@@ -599,7 +630,7 @@ export class ManifestManager {
         if (!options?.skipText) {
           const existing = this.vault.getAbstractFileByPath(diskPath);
           if (!existing) {
-            await ensureFolder(this.vault, diskPath);
+            await ensureFolder(this.vault, diskPath, this.logger);
             synced++;
           }
         }
@@ -662,11 +693,44 @@ export class ManifestManager {
       }
 
       const tempHandle = this.syncManager.getDoc(path);
-      if (!tempHandle) continue;
+      if (!tempHandle) {
+        // S157 — THE FIRST OF THE TWO TRACELESS GIVE-UPS. `getDoc` answers
+        // `null` while the manager is neither connected nor connecting, or has
+        // no room id. This peer then cannot read the host's content for this
+        // path at all, leaves its own bytes on disk, and — until this line
+        // existed — said nothing whatsoever. `S148` was measured end to end
+        // through exactly this door: `syncFromManifest` returns 0, the file
+        // still holds the guest's bytes, and `subscribe()`'s guest arm
+        // overwrites them a moment later. WP115 made that outcome safe. The
+        // silence was untouched.
+        //
+        // THE DECISION IS UNCHANGED: this still `continue`s. C3 — observability,
+        // not behaviour.
+        notePathOutcome(
+          { arm: "manifest-sync", outcome: MANIFEST_SYNC_OUTCOMES.NO_DOC, path },
+          this.logger,
+        );
+        continue;
+      }
 
+      // S157 — WHICH STATEMENT THREW, WITHOUT NARROWING THE `try`.
+      //
+      // `S157` describes the `catch` below as being around `waitForSync`. IT IS
+      // NOT — it wraps the whole body: the wait, the document read, the
+      // empty-write decision (which itself reads the file and hashes it),
+      // `preserveLocalVersion`, `ensureFolder`, and the `vault.modify` /
+      // `vault.create`. So "the path threw" could mean a sync timeout or a
+      // failed write to the user's disk, and nothing distinguished them.
+      //
+      // Splitting the `try` would attribute the throw at the cost of changing
+      // control flow, which C3 forbids. A phase label costs nothing, changes no
+      // branch, and answers the same question. It is a fixed string per
+      // statement — never a path's contents and never a value read from disk.
+      let phase = "waiting for sync";
       try {
         await this.syncManager.waitForSync(path);
 
+        phase = "reading the shared document";
         const content = tempHandle.text.toString();
 
         // S119 — THE FLOOR. `waitForSync` resolving does NOT mean the document
@@ -686,6 +750,7 @@ export class ManifestManager {
         // Checked against the hash rather than merely against emptiness because
         // the hash is strictly stronger: it also refuses a half-replayed
         // document, which is the same failure one notch less visible.
+        phase = "deciding the empty-write floor";
         const verdict = decideEmptyWrite({
           incoming: content,
           existing: localFile ? normalizeLineEndings(await this.vault.read(localFile)) : null,
@@ -693,8 +758,24 @@ export class ManifestManager {
           evidenceLabel: "the host's published hash for this path",
         });
         if (verdict.decision !== EMPTY_WRITE_DECISION.ALLOW) {
-          noteEmptyWriteRefusal("manifest-sync");
-          console.warn(`[live-share] empty-write refused for ${path}: ${verdict.reason}`);
+          // S137 — THE ARM THAT FIRED TWICE ON AN ORDINARY REJOIN, and the two
+          // firings could not be attributed to a path because this line went to
+          // the console and nowhere else. Counted, LOGGED with the path and the
+          // arm, and still said on the console. One shared emitter.
+          noteEmptyWriteRefusal("manifest-sync", path, verdict.reason, this.logger);
+          // S155/C2 — AND IT IS RECORDED AS ONE OF THIS ARM'S FOUR EXITS TOO.
+          // The refusal ledger above is a census across WRITER ARMS; this one is
+          // a census across THIS FUNCTION'S EXITS, and only a closed one can
+          // answer "which door did this path leave by". The two counters are
+          // independent and must agree — a test asserts they do.
+          notePathOutcome(
+            {
+              arm: "manifest-sync",
+              outcome: MANIFEST_SYNC_OUTCOMES.EMPTY_WRITE_REFUSED,
+              path,
+            },
+            this.logger,
+          );
           continue;
         }
 
@@ -707,13 +788,16 @@ export class ManifestManager {
         // Only the destructive branch copies. A file that does not exist
         // locally is being CREATED, which destroys nothing; a file whose hash
         // already matched never reached this loop body at all.
+        phase = "preserving the local version";
         if (localFile && (await this.preserveLocalVersion(path, localFile, "text"))) {
           conflictCopies++;
         }
 
+        phase = "ensuring the parent folder";
         const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
-        if (parentDir) await ensureFolder(this.vault, parentDir);
+        if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
 
+        phase = "writing to disk";
         mute?.(diskPath);
         try {
           if (localFile) {
@@ -727,8 +811,30 @@ export class ManifestManager {
           }
         }
         synced++;
-      } catch {
-        // Failed to sync individual file, continue with rest
+        // S155/C2 — THE SUCCESS BRANCH, and it is what makes the three above
+        // readable. Without it a ledger showing no give-ups is equally
+        // consistent with "every path synced" and with "this function never ran
+        // for any of them", which is precisely the reading that cost WP115 a
+        // round. `synced` is returned to the caller but nothing keeps it, and it
+        // is a COUNT rather than an attribution: it cannot name a path.
+        notePathOutcome(
+          { arm: "manifest-sync", outcome: MANIFEST_SYNC_OUTCOMES.SYNCED, path },
+          this.logger,
+        );
+      } catch (err) {
+        // S157 — THE SECOND TRACELESS GIVE-UP. Failed to sync individual file,
+        // continue with rest — UNCHANGED, and now it says which path, which
+        // statement and what the error was. C3: the decision to continue is not
+        // this package's to alter.
+        notePathOutcome(
+          {
+            arm: "manifest-sync",
+            outcome: MANIFEST_SYNC_OUTCOMES.THREW,
+            path,
+            detail: `phase=${phase} error=${err instanceof Error ? err.message : String(err)}`,
+          },
+          this.logger,
+        );
       }
     }
 
@@ -766,9 +872,90 @@ export class ManifestManager {
     this.manifest.observe(this.observer);
   }
 
+  /**
+   * S141 — how many units the NAMED FILE actually holds, or `null` when it
+   * cannot be read.
+   *
+   * Every failure mode collapses to `null` — a throw, a missing method, a vault
+   * double that does not implement the arm — and `null` REFUSES an empty
+   * attestation, so an unreadable file can never be attested empty. Only called
+   * when the attestation itself is empty, which is the one case where the
+   * answer can change a decision; the ordinary non-empty publication does no
+   * disk I/O at all.
+   */
+  private async attestedFileLength(
+    file: TFile,
+    binary: boolean,
+  ): Promise<number | null> {
+    try {
+      if (binary) {
+        const bytes = await this.vault.readBinary(file);
+        return typeof bytes?.byteLength === "number" ? bytes.byteLength : null;
+      }
+      const text = await this.vault.read(file);
+      return typeof text === "string" ? normalizeLineEndings(text).length : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * S141 — THE ATTESTATION FLOOR, AT THE FUNNEL EVERY PUBLISHER GOES THROUGH.
+   *
+   * This method is the manifest's single-entry publication path for one file's
+   * content: six call sites reach it (`setActiveFile`, `handleLocalTextModify`,
+   * two `vault-events` arms, two `control-handlers` arms). Five of them derive
+   * their content from the bytes they attest about; `setActiveFile` derived it
+   * from the CRDT DOCUMENT and published the result against the FILE, and the
+   * consumer's `hashContent(content) === entry.hash` test was then TRUE for `""`
+   * against `hash("")` — so the write was not empty-LOOKING to the S119 floor
+   * and every peer's copy was truncated to zero bytes.
+   *
+   * PLACED HERE RATHER THAN AT THE ONE BAD CALLER, deliberately. WP109 removed
+   * the producer it knew about and S141 was still left open, because **the path
+   * survives its producer**: any future caller that hands this method a length
+   * it did not read off the file re-opens the same hole. A floor at the funnel
+   * is the same discipline the WRITE path already has in `doWriteToDisk`, and it
+   * is the only shape that cannot be re-opened by a new call site.
+   *
+   * NOT a consumer fix. The guest's evidence test is not wrong — it is being
+   * told the truth about the wrong object, and hardening it would have made a
+   * legitimate emptying unsyncable (`S126`, the regression that cost this
+   * project a package the last time a floor was tightened at the reader).
+   *
+   * @returns `true` when the publication may proceed.
+   */
+  private async admitsAttestation(
+    file: TFile,
+    canonical: string,
+    attestedLength: number,
+    binary: boolean,
+  ): Promise<boolean> {
+    // The disk is consulted ONLY for an empty attestation. `decideAttestation`
+    // answers `PUBLISH_NOT_EMPTY` without reading `fileLength` at all, and a
+    // pure row pins that ordering so this short-circuit cannot silently become
+    // "every publish refuses".
+    const fileLength =
+      attestedLength > 0 ? null : await this.attestedFileLength(file, binary);
+    const verdict = decideAttestation({ attestedLength, fileLength });
+    // S155 — counted on EVERY branch, before any return. A ledger whose
+    // do-nothing case is silent makes "ran and allowed" and "was never called"
+    // the same reading, and that is the exact defect that cost WP115 a round.
+    noteAttestation(verdict, canonical, this.logger);
+    return !verdict.refused;
+  }
+
   async updateFile(file: TFile, content: string | ArrayBuffer): Promise<void> {
     if (!this.manifest || !this.isSharedPath(file.path)) return;
     const canonical = toCanonicalPath(normalizePath(file.path));
+    // S141 — the floor stands AHEAD of the parent-folder deletion below, not
+    // between it and the `set`. A refused publication must leave the manifest
+    // byte-unchanged; deleting the parent's directory entry and then declining
+    // to publish the file would announce an empty folder that has a file in it.
+    const binary = content instanceof ArrayBuffer;
+    const normalized = content instanceof ArrayBuffer ? "" : normalizeLineEndings(content);
+    const attestedLength = content instanceof ArrayBuffer ? content.byteLength : normalized.length;
+    if (!(await this.admitsAttestation(file, canonical, attestedLength, binary))) return;
     // Remove parent folder entry if it exists - folder is no longer empty
     const parentDir = canonical.substring(0, canonical.lastIndexOf("/"));
     if (parentDir && this.manifest.has(parentDir)) {
@@ -792,7 +979,9 @@ export class ManifestManager {
         ),
       );
     } else {
-      const normalized = normalizeLineEndings(content);
+      // Normalised ONCE, above, and the same value the floor judged — a second
+      // `normalizeLineEndings` here would let the published hash describe a
+      // string the floor never saw.
       this.manifest.set(
         canonical,
         carryGuid(
@@ -979,6 +1168,32 @@ export class ManifestManager {
   }
 
   /**
+   * S148 — the filesystem's answer to "when was this file last modified", or
+   * `undefined` when the vault cannot say.
+   *
+   * `DataAdapter.stat` is optional on this structural `Vault` type and absent
+   * from many of the content-only vault doubles this suite builds, so every
+   * failure mode — no method, a throw, a `null`, a non-numeric `mtime` — comes
+   * back as `undefined` and is handled by the caller as an UNKNOWN. An unknown
+   * never discards.
+   */
+  private async diskModificationTime(vaultPath: string): Promise<number | undefined> {
+    const stat = (this.vault as { adapter?: { stat?: (p: string) => Promise<unknown> } }).adapter
+      ?.stat;
+    if (typeof stat !== "function") return undefined;
+    try {
+      const result = (await stat.call(
+        (this.vault as { adapter: unknown }).adapter,
+        vaultPath,
+      )) as { mtime?: unknown } | null;
+      const mtime = result?.mtime;
+      return typeof mtime === "number" ? mtime : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * S125 — copy the guest's about-to-be-overwritten version beside the share.
    *
    * NEVER THROWS. Preservation is strictly additive to the sync: a vault that
@@ -987,7 +1202,7 @@ export class ManifestManager {
    * best-effort safety net into a new outage. The failure is counted instead,
    * so it is visible rather than silent.
    */
-  private async preserveLocalVersion(
+  async preserveLocalVersion(
     path: string,
     localFile: TFile,
     arm: "text" | "binary",
@@ -996,15 +1211,38 @@ export class ManifestManager {
     // are staleness (the host edited while we were away), and copying those
     // would fill the folder with versions the user never touched until nobody
     // read it. Every uncertain input resolves to PRESERVE — see the decision.
+    //
+    // S148 — THE MTIME IS READ FROM THE FILESYSTEM, not only from Obsidian's
+    // index. `localFile.stat.mtime` is a cached value with no freshness
+    // guarantee, and the branch it decides is destructive; see
+    // `observedModificationTime` for what that cost and why the disk read is
+    // additive rather than a replacement.
+    const mtime = observedModificationTime({
+      cached: localFile.stat?.mtime,
+      onDisk: await this.diskModificationTime(localFile.path),
+    });
     const verdict = decideConflictPreservation({
-      mtime: localFile.stat?.mtime,
+      mtime,
       lastSessionEndedAt: this.settings.lastSessionEndedAt,
     });
-    if (verdict.decision === CONFLICT_PRESERVATION.DISCARD) return false;
+    if (verdict.decision === CONFLICT_PRESERVATION.DISCARD) {
+      // S148 — COUNTED AND SAID. The decision is unchanged; its silence is not.
+      noteConflictDiscard(
+        {
+          arm,
+          path,
+          reason: verdict.reason,
+          mtime,
+          lastSessionEndedAt: this.settings.lastSessionEndedAt,
+        },
+        this.logger,
+      );
+      return false;
+    }
     try {
       const target = conflictCopyPath(path, this.settings.sharedFolder, new Date());
       const parent = target.substring(0, target.lastIndexOf("/"));
-      if (parent) await ensureFolder(this.vault, parent);
+      if (parent) await ensureFolder(this.vault, parent, this.logger);
       if (arm === "binary") {
         const bytes = await this.vault.readBinary(localFile);
         await this.vault.createBinary(target, bytes);
@@ -1014,7 +1252,19 @@ export class ManifestManager {
       noteConflictCopy(arm);
       return true;
     } catch (err) {
+      // S137 (B2) — the third member of this family. Not a refusal but a FAILED
+      // SAFETY NET: the guest's about-to-be-overwritten bytes were not preserved
+      // and the sync proceeds regardless (by design — see the doc comment). It
+      // was counted and said on the console only, so the same "which file?"
+      // question was unanswerable here too. The `err` is NOT put in the debug
+      // log line: it can carry an adapter message quoting the path only, but the
+      // message shape stays fixed and content-free either way.
       noteConflictCopyFailure();
+      this.logger?.warn(
+        "file-op",
+        `CONFLICT COPY FAILED: path=${path} the local version was not preserved before ` +
+          "the host's content replaced it",
+      );
       console.warn(`[live-share] could not preserve local version of ${path}`, err);
       return false;
     }

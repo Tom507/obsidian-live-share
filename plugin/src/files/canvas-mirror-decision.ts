@@ -42,6 +42,35 @@ export const MIRROR_VERDICT = {
    */
   PUBLISH: "publish",
   /**
+   * WP122 (`S146`) — HOST, and the file is bound to the ONE existing writer as
+   * well as published.
+   *
+   * THE DEFECT THIS ANSWERS. {@link MIRROR_VERDICT.PUBLISH} binds a guid and
+   * nothing else, so a canvas the HOST created has no CRDT→disk writer for the
+   * life of the session: a guest's edit reaches the host's shared DOCUMENT in
+   * seconds and its FILE never — measured unchanged after 240 s and after four
+   * unrelated manifest changes, then converged the instant a human opened the
+   * board. A GUEST-created board takes 0.25 s, because its create handshake
+   * attaches the writer (`canvas-create.ts`, `attachWriter`). The deciding
+   * variable was who created the canvas, which is not a property any correctness
+   * argument should turn on.
+   *
+   * IT LICENSES NO WRITE OF ITS OWN, exactly like
+   * {@link MIRROR_VERDICT.MATERIALISE} and {@link MIRROR_VERDICT.ADOPT_LOCAL_FILE}:
+   * it hands the path to the ONE existing writer, whose cold open then decides.
+   * A doc holding records wins and the file is rewritten from it — under WP121's
+   * conflict copy, which is why WP122 depends on WP121 as a hard precondition
+   * and not as a safety net.
+   *
+   * FENCED BY A SECOND `=== true`, on the WP117 precedent. An observation that
+   * does not carry {@link CanvasMirrorObservation.bindsHostWriter} — every
+   * pre-WP122 caller, and any deps object with no writer seam to bind through —
+   * degrades to exactly {@link MIRROR_VERDICT.PUBLISH} rather than throwing, so
+   * the pre-WP122 verdict table is byte-unchanged for every input that does not
+   * ask for this.
+   */
+  PUBLISH_AND_BIND_WRITER: "publish-and-bind-writer",
+  /**
    * GUEST. There is no local file, an identity resolves, and the doc holds
    * records. This is the only verdict that ends in a file being created, and it
    * is created by the ONE existing writer through the ONE existing projection.
@@ -54,6 +83,25 @@ export const MIRROR_VERDICT = {
    * file to destroy (I11).
    */
   SKIP_LOCAL_FILE: "skip-local-file",
+  /**
+   * WP117 (S122) — GUEST, and the ONE case in which an existing local file is
+   * not a reason to leave the path alone: this peer asked the host to create
+   * this canvas, the host accepted, and the file on disk is the very file the
+   * host was seeded from. Skipping here would leave the originating guest
+   * holding a PRIVATE copy of a board every other peer shares — the file would
+   * be right today and drift from the first remote edit onwards.
+   *
+   * It licenses no write of its own. Like {@link MIRROR_VERDICT.MATERIALISE} it
+   * hands the path to the ONE existing writer, whose cold open then decides:
+   * a doc holding records wins and the file is rewritten from it, an empty doc
+   * writes nothing at all.
+   *
+   * FENCED BY TWO `=== true` CLAUSES. Nothing but an accepted creation request
+   * on THIS peer sets `originatedHere`, and an unresolvable identity still skips
+   * — so every other existing local file keeps {@link
+   * MIRROR_VERDICT.SKIP_LOCAL_FILE}, byte for byte.
+   */
+  ADOPT_LOCAL_FILE: "adopt-local-file",
   /**
    * Nothing to mirror FROM: no resolvable identity (the guest must never mint
    * one), or a doc holding no records. An empty doc materialises no file —
@@ -75,6 +123,23 @@ export interface CanvasMirrorObservation {
   readonly identityResolves: boolean;
   /** The shared doc for this path holds at least one node or edge record. */
   readonly docHasRecords: boolean;
+  /**
+   * WP117 — THIS peer asked the host to create this canvas and the host
+   * accepted. Optional, and read `=== true`: a deps object that does not supply
+   * it degrades to exactly the pre-WP117 verdict table rather than throwing.
+   */
+  readonly originatedHere?: boolean;
+  /**
+   * WP122 — does the caller have a writer seam to bind the HOST's own file
+   * through? Optional, and read `=== true`: a deps object that does not supply
+   * it degrades to exactly the pre-WP122 verdict table rather than throwing.
+   *
+   * It is a capability, not a preference. `canvas-mirror.ts` derives it from the
+   * presence of {@link CanvasMirrorDeps.bindHostWriter}, i.e. from the object
+   * that owns the answer, so a pass with nothing to bind through can never be
+   * told to bind.
+   */
+  readonly bindsHostWriter?: boolean;
 }
 
 /** The observation minus the one field that costs a doc subscription to measure. */
@@ -88,6 +153,11 @@ export type CanvasMirrorPreObservation = Omit<CanvasMirrorObservation, "docHasRe
  *   2. a role that is not exactly `"host"` or `"guest"` is likewise
  *   3. HOST — publishes only what it actually holds
  *   4. GUEST — the local file wins over everything, THEN identity, THEN records
+ *
+ * WP117 adds ONE row inside clause 4 and moves none of the others: a local file
+ * this peer itself asked the host to create, whose identity resolves, is
+ * `adopt-local-file` instead of `skip-local-file`. Every other combination of
+ * inputs answers exactly what it answered before.
  *
  * Clause 4's order is why `skip-local-file` and `skip-no-source` are two
  * verdicts and not one: a path skipped because the user already has the file is
@@ -104,20 +174,36 @@ export function decideCanvasMirror(observation: CanvasMirrorObservation): Mirror
     localFileExists?: unknown;
     identityResolves?: unknown;
     docHasRecords?: unknown;
+    originatedHere?: unknown;
+    bindsHostWriter?: unknown;
   };
 
   if (probe.role === "host") {
     // Nothing to publish for a path this client does not hold. `=== true`, so a
     // probe that could not answer does not make the host subscribe (and
     // therefore seed) a path it may not have.
-    return probe.localFileExists === true
-      ? MIRROR_VERDICT.PUBLISH
-      : MIRROR_VERDICT.SKIP_NO_SOURCE;
+    if (probe.localFileExists === true) {
+      // WP122 — and the SECOND `=== true`, on the WP117 precedent: an
+      // observation that does not carry the capability answers exactly what it
+      // answered before this package existed.
+      return probe.bindsHostWriter === true
+        ? MIRROR_VERDICT.PUBLISH_AND_BIND_WRITER
+        : MIRROR_VERDICT.PUBLISH;
+    }
+    return MIRROR_VERDICT.SKIP_NO_SOURCE;
   }
   if (probe.role !== "guest") return MIRROR_VERDICT.SKIP_NO_SOURCE;
 
   // `!== false`: present, or unknown, both mean "do not write here".
-  if (probe.localFileExists !== false) return MIRROR_VERDICT.SKIP_LOCAL_FILE;
+  if (probe.localFileExists !== false) {
+    // WP117 — the single exception, and it is fenced by two `=== true` clauses
+    // so an unanswered probe of either one keeps the old verdict. See
+    // MIRROR_VERDICT.ADOPT_LOCAL_FILE.
+    if (probe.originatedHere === true && probe.identityResolves === true) {
+      return MIRROR_VERDICT.ADOPT_LOCAL_FILE;
+    }
+    return MIRROR_VERDICT.SKIP_LOCAL_FILE;
+  }
   // The guest never mints. An unresolvable identity is a SKIP, never a fallback:
   // reaching for the R10 raw-text path here would install the second CRDT this
   // WP exists to keep out.
@@ -142,5 +228,18 @@ export function admitsCanvasMirror(pre: CanvasMirrorPreObservation): boolean {
     ...(pre as CanvasMirrorObservation),
     docHasRecords: true,
   });
-  return verdict === MIRROR_VERDICT.PUBLISH || verdict === MIRROR_VERDICT.MATERIALISE;
+  return (
+    verdict === MIRROR_VERDICT.PUBLISH ||
+    // WP122 — a host bind must be ADMITTED, or the pass would skip the path
+    // before ever asking `decideCanvasMirror` for the bind verdict. WP117 hit
+    // exactly this wall and left the comment below saying so; this is the same
+    // wall, one verdict later. Derived from the same function, not re-stated.
+    verdict === MIRROR_VERDICT.PUBLISH_AND_BIND_WRITER ||
+    verdict === MIRROR_VERDICT.MATERIALISE ||
+    // WP117 — an adoption must be ADMITTED, or the pass would skip the path
+    // before ever asking `decideCanvasMirror` for the adopt verdict. Derived
+    // from the same function rather than re-stated, exactly as the other two
+    // are, so the gate and the verdict cannot drift apart.
+    verdict === MIRROR_VERDICT.ADOPT_LOCAL_FILE
+  );
 }

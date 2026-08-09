@@ -11,9 +11,11 @@ import { yTextHeldContent } from "../files/ytext-history";
 import { applyMinimalYTextUpdate, normalizeLineEndings, skipsAutoTextSync } from "../utils";
 import {
   COLLAB_BIND,
+  clearCollabBindFailure,
   clearCollabBindRefusal,
   decideCollabBind,
   hostMaySeedFromEditor,
+  noteCollabBindFailure,
   noteCollabBindRefusal,
 } from "./collab-bind-decision";
 import { conflictExtension } from "./conflict-decoration";
@@ -34,10 +36,34 @@ export class CollabManager {
   private contentWatchers = new Map<string, () => void>();
   /** Optional, so every existing construction of this class stays valid. */
   private logger: { log(category: string, message: string): void } | null = null;
+  /** S134 AC3 — see {@link setBindStateSink}. Optional for the same reason. */
+  private bindStateSink: ((path: string, bound: boolean) => void) | null = null;
 
   /** S129 AC5 — wired by `main.ts` so a refusal reaches the debug log. */
   setLogger(logger: { log(category: string, message: string): void } | null): void {
     this.logger = logger;
+  }
+
+  /**
+   * S134 AC3 — THE BIND MUST NOT LIE.
+   *
+   * `main.ts` sets `backgroundSync.setCollabBoundFile(sharedPath)` SYNCHRONOUSLY,
+   * before this class is even called, and nothing ever unsets it when the
+   * activation fails. So a note whose `waitForSync` rejected at its 10 s timeout
+   * — compartment reconfigured to EMPTY, user shown `sync timed out` — was still
+   * reported as bound by every internal indicator, which is precisely how a
+   * three-way divergence stayed invisible for a day.
+   *
+   * This is a REPORT, not a gate: nothing in this class branches on it. The
+   * single-writer invariant does not rest on it either — `main.ts` sets
+   * `setActiveFile(sharedPath)` on the same line, and both `handleLocalTextModify`
+   * and the `Y.Text` observer gate on the active file FIRST, so clearing the
+   * collab-bound flag for a file that is still open cannot open a second-writer
+   * window. Verified against `background-sync.ts` `:369`/`:370` and `:449`/`:450`,
+   * where the two gates sit as a pair.
+   */
+  setBindStateSink(sink: ((path: string, bound: boolean) => void) | null): void {
+    this.bindStateSink = sink;
   }
 
   /**
@@ -70,6 +96,7 @@ export class CollabManager {
       fired = true;
       this.unwatchContent(filePath);
       clearCollabBindRefusal(filePath);
+      clearCollabBindFailure(filePath);
       this.logger?.log("collab", `content arrived for ${filePath}; re-activating`);
       void this.activateForFile(view, filePath, syncManager, role, permission, cursorUser);
     };
@@ -169,6 +196,24 @@ export class CollabManager {
       await syncManager.waitForSync(filePath);
     } catch {
       if (this.activationGen !== gen) return;
+      // S134 AC3 — THE HALF THAT MADE THE DEFECT INVISIBLE.
+      //
+      // What happens below has not changed: the compartment goes to EMPTY and
+      // the user is told. What used to happen NOWHERE is everything else —
+      // nothing counted this, nothing wrote a line, and `collabBoundFile` went
+      // on naming a file this editor is not bound to. The Notice was the single
+      // trace, it is transient, and `notificationsEnabled` can switch its
+      // siblings off (S117).
+      //
+      // Ordered before the dispatch: the report must survive a destroyed view,
+      // and the `try` below deliberately swallows that case.
+      noteCollabBindFailure(filePath);
+      this.logger?.log(
+        "collab",
+        `bind FAILED for ${filePath}: waitForSync rejected, so the editor is left ` +
+          "unbound and this file is NOT collaborating",
+      );
+      this.bindStateSink?.(filePath, false);
       new Notice("Live Share: sync timed out");
       this.currentAwareness = null;
       try {
@@ -176,6 +221,11 @@ export class CollabManager {
       } catch {
         // View may have been destroyed during sync
       }
+      // S123's lesson, same as the refusal path below: recover on the EVENT.
+      // A failed bind that needs the user to close and reopen the file is how
+      // three peers end up editing three copies of one note for a whole
+      // session — the document arriving is exactly the moment to try again.
+      this.watchForContent(view, filePath, syncManager, role, permission, cursorUser);
       return;
     }
 
@@ -218,6 +268,10 @@ export class CollabManager {
       if (verdict.decision !== COLLAB_BIND.BIND) {
         noteCollabBindRefusal(filePath);
         this.logger?.log("collab", `bind refused for ${filePath}: ${verdict.reason}`);
+        // S134 AC3 — a REFUSAL leaves the compartment empty too, so it tells the
+        // same lie. Counted separately above (it is a decision, not a failure);
+        // the bound-state report is identical because the fact is identical.
+        this.bindStateSink?.(filePath, false);
         // The buffer is left EXACTLY as it was: no `yCollab`, so nothing
         // reconciles the editor against the empty document.
         this.currentAwareness = null;
@@ -254,6 +308,11 @@ export class CollabManager {
 
     // S129 — this path is now collaborating, so it is no longer refused.
     clearCollabBindRefusal(filePath);
+    // S134 AC3 — and it is no longer a failed bind either. `total` is monotonic
+    // in both ledgers; only the live `paths` set clears, so a recovery can never
+    // erase the record that it happened.
+    clearCollabBindFailure(filePath);
+    this.bindStateSink?.(filePath, true);
     this.currentAwareness = docHandle.awareness;
     if (cursorUser) {
       docHandle.awareness.setLocalStateField("user", cursorUser);

@@ -1,6 +1,12 @@
 import { Platform, TFile, TFolder, type Vault } from "obsidian";
 
 import { isSidecarPath } from "./files/canvas-sidecar";
+import {
+  ENSURE_FOLDER_OUTCOMES,
+  type PathOutcomeLogger,
+  notePathOutcome,
+} from "./files/path-outcome";
+import { pairRenamesByIdentity } from "./files/rename-identity";
 
 export const VAULT_EVENT_SETTLE_MS = 250;
 
@@ -133,11 +139,21 @@ export function hashContent(content: string): Promise<string> {
 }
 
 /**
- * Pairs concurrently-removed manifest paths to concurrently-added ones by
- * matching content hash, so `removed=[A,C], added=[D,B]` renames A→B and C→D
- * (content identity) instead of A→D (iteration order). Returns a map of
- * oldPath -> newPath for the confident, hash-matched renames only; callers fall
- * back to positional pairing for anything left unmatched.
+ * S159 — the map-only view of `pairRenamesByIdentity`, which lives in the pure,
+ * zero-import `files/rename-identity.ts` so that `manifest-removal-decision.ts`
+ * can share its accepted-basis list without importing this module (this one
+ * imports `obsidian` on line 1).
+ *
+ * THE SIGNATURE IS UNCHANGED AND THE MEANING IS NOT. A key present in this map
+ * now asserts IDENTITY — a digest unique on both sides of the event, or a
+ * filename that survives inside an ambiguous digest class — where before it
+ * asserted only that two paths carried equal bytes. `hash("")` is a full digest
+ * like any other, so equal bytes made two empty notes, and any two identical
+ * notes, interchangeable to the old loop, which broke the tie by iteration
+ * order and then handed the answer to `vault.rename`.
+ *
+ * Callers that want to know WHY a key was or was not paired — and every refusal
+ * is recorded, S155 — should call `pairRenamesByIdentity` directly.
  */
 export function matchRenamesByHash(
   removed: string[],
@@ -145,21 +161,7 @@ export function matchRenamesByHash(
   removedHashOf: (path: string) => string | undefined,
   addedHashOf: (path: string) => string | undefined,
 ): Map<string, string> {
-  const pairs = new Map<string, string>();
-  const usedNew = new Set<string>();
-  for (const oldPath of removed) {
-    const oldHash = removedHashOf(oldPath);
-    if (!oldHash) continue;
-    for (const newPath of added) {
-      if (usedNew.has(newPath)) continue;
-      if (addedHashOf(newPath) === oldHash) {
-        pairs.set(oldPath, newPath);
-        usedNew.add(newPath);
-        break;
-      }
-    }
-  }
-  return pairs;
+  return pairRenamesByIdentity(removed, added, removedHashOf, addedHashOf).pairs;
 }
 
 const TEXT_EXTENSIONS = new Set([
@@ -272,6 +274,13 @@ export function isTextFile(path: string): boolean {
  *
  * ==== CALL-SITE BLOCK — derived from the tree, a test holds it ==============
  *   files/background-sync.ts  startAll  ..... manifest replay
+ *                             registerAnnounced S147's phase 1 — the batch of
+ *                                             announced paths whose documents
+ *                                             are created BEFORE any one of
+ *                                             them is settled. It reaches
+ *                                             `getDoc` directly, so it needs
+ *                                             this guard itself and does not
+ *                                             inherit `subscribe()`'s
  *                             setActiveFile . the de-activation flush (WP27
  *                                             AC4), guarding the bare-path
  *                                             `getDoc` on the OUTGOING file
@@ -434,20 +443,120 @@ export function getFileByPath(vault: Vault, path: string): TFile | null {
   return file instanceof TFile ? file : null;
 }
 
-export async function ensureFolder(vault: Vault, path: string): Promise<void> {
+/**
+ * S144 — CREATE THE FOLDER, AND SAY WHAT HAPPENED.
+ *
+ * THE DEFECT, and it is small in code and large in diagnosis: this function
+ * caught every `createFolder` error and discarded it. The `catch` was written
+ * for ONE case — a concurrent create, where the folder exists a moment later and
+ * the throw means nothing — and it silently absorbed every other case with it: a
+ * permission error, a full disk, a name that collides with a FILE, an adapter
+ * that is gone. The caller then failed at whatever it wanted the folder for, and
+ * the user was told THAT operation had failed. A folder that could not be
+ * created is reported as a **rename** failure.
+ *
+ * That is the same misattribution `S112`/`S138` criticised the rig for, in the
+ * product, and it sits directly on the path `WP110` just repaired — which is
+ * where the next diagnosis will happen.
+ *
+ * WHAT CHANGED AND WHAT DID NOT (B3). The caller's behaviour is BYTE-IDENTICAL:
+ * this still returns `void`, still never throws, and every call site is
+ * unaltered. Making the failure LEGIBLE is the whole package. Whether a caller
+ * *should* abort on a folder failure is a separate question, and one this
+ * package deliberately does not answer — see the report.
+ *
+ * HOW THE TWO CASES ARE TOLD APART, and it is positive evidence rather than
+ * an error-string test (`I11`'s discipline, applied to a diagnosis): after a
+ * throw, ask the vault whether the folder is there NOW. If it is, something else
+ * created it and the throw was the benign race the `catch` was written for. If
+ * it is not, the folder genuinely does not exist and the caller is about to
+ * fail. No error message is parsed, so no adapter's phrasing is depended on.
+ *
+ * ONE OUTCOME PER CALL, not per segment: the caller asked for one folder to
+ * exist. When segments disagree the WORST is reported, because a call that
+ * created two segments and failed on the third is a FAILED call.
+ *
+ * The `logger` is a PARAMETER and optional — `S104`, and it keeps all eleven
+ * existing call sites compiling unchanged while the two on the file-op path can
+ * pass the real sink.
+ */
+export async function ensureFolder(
+  vault: Vault,
+  path: string,
+  logger?: PathOutcomeLogger | null,
+): Promise<void> {
   const existing = vault.getAbstractFileByPath(path);
-  if (existing instanceof TFolder) return;
+  if (existing instanceof TFolder) {
+    notePathOutcome(
+      { arm: "ensure-folder", outcome: ENSURE_FOLDER_OUTCOMES.ALREADY_A_FOLDER, path },
+      logger,
+    );
+    return;
+  }
   const parts = path.split("/");
   let current = "";
+  let created = 0;
+  let raced: string | null = null;
+  let failed: { segment: string; detail: string } | null = null;
   for (const part of parts) {
     current = current ? `${current}/${part}` : part;
     const folder = vault.getAbstractFileByPath(current);
     if (!folder) {
       try {
         await vault.createFolder(current);
-      } catch {
-        // Folder may already exist from a concurrent create
+        created++;
+      } catch (err) {
+        // Folder may already exist from a concurrent create — ASK, rather than
+        // assume, which is the entire repair.
+        const message = err instanceof Error ? err.message : String(err);
+        if (vault.getAbstractFileByPath(current)) {
+          raced = current;
+        } else {
+          failed = { segment: current, detail: message };
+        }
       }
     }
   }
+
+  // S155 — EVERY branch reports, including the two that did nothing wrong.
+  // A ledger in which only failures increment cannot distinguish "no folder
+  // ever failed" from "this function was never called", and the second is
+  // exactly what a reader concludes from a row of zeros.
+  if (failed) {
+    notePathOutcome(
+      {
+        arm: "ensure-folder",
+        outcome: ENSURE_FOLDER_OUTCOMES.CREATE_FAILED,
+        // The FOLDER path, which is the fact the caller's own failure message
+        // does not contain and the reason this line exists.
+        path: failed.segment,
+        detail: `requested=${path} error=${failed.detail}`,
+      },
+      logger,
+    );
+    return;
+  }
+  if (raced) {
+    notePathOutcome(
+      {
+        arm: "ensure-folder",
+        outcome: ENSURE_FOLDER_OUTCOMES.CREATE_RACED,
+        path: raced,
+        detail: `requested=${path}`,
+      },
+      logger,
+    );
+    return;
+  }
+  notePathOutcome(
+    {
+      arm: "ensure-folder",
+      outcome:
+        created > 0
+          ? ENSURE_FOLDER_OUTCOMES.CREATED
+          : ENSURE_FOLDER_OUTCOMES.NOTHING_TO_CREATE,
+      path,
+    },
+    logger,
+  );
 }

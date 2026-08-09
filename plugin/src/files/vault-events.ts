@@ -169,12 +169,49 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
     plugin.app.vault.on("create", (file: TAbstractFile) => {
       const originalPath = file.path;
       if (!plugin.manifestManager.isSharedPath(originalPath)) return;
-      if (plugin.fileOpsManager.isPathMuted(originalPath)) {
+      if (plugin.fileOpsManager.isPathMutedFor(originalPath, "create")) {
+        // S120 — kind-aware. A mute armed for an op that cannot emit a `create`
+        // no longer swallows one.
         noteMuteConsumed(plugin, originalPath, "create");
+        plugin.fileOpsManager.noteMuteDrop("create");
+        plugin.logger.warn("file-op", `MUTE DROP: create suppressed as an echo`);
         return;
       }
       if (renamedPaths.has(originalPath)) return;
       void plugin.fileOpsManager.onFileCreate(file);
+      // ------------------------------------------------------------- WP117 --
+      // S122 — THE GUEST'S HALF OF HOST-MEDIATED CANVAS CREATION.
+      //
+      // `onFileCreate` one line up refuses the content push for a `.canvas`
+      // (WP83, correct — a raw character-merge destroys edge endpoints) and the
+      // manifest arm below is host-only (correct — the host is the sole manifest
+      // writer). Between those two correct refusals a guest-authored canvas
+      // reached nobody and entered no client's manifest, not even its own.
+      //
+      // This is the third door, and it is not a fourth copy of either of the
+      // other two: it asks the HOST to create the canvas, with the whole file,
+      // over the control channel. The host validates, writes, mints and seeds —
+      // so seed authority, mint authority and manifest authority all stay
+      // exactly where they were.
+      //
+      // COVERS IMPORT AS WELL AS AUTHORING, and that is a property of the event
+      // rather than an extra branch: a canvas copied or moved into the shared
+      // folder raises the same `create`, carrying the same bytes.
+      //
+      // Fire-and-forget beside the call above it, and every refusal — including
+      // "this is not a canvas" and "this client is the host" — is decided,
+      // named and counted inside the coordinator (S155).
+      //
+      // OPTIONALLY CALLED, and the reason is the one stated on `noteMuteConsumed`
+      // above: several harnesses in this suite build a partial `plugin` double
+      // carrying only the members their subject reaches, and a hard call turns
+      // ten of those into a TypeError. The optionality is not allowed to become
+      // a silent absence in the product — `test_tp07` pins that the real
+      // `LiveSharePlugin` declares this method, so a rename or a deletion
+      // reddens rather than degrading into a no-op everywhere.
+      if (file instanceof TFile) {
+        void plugin.requestCanvasCreate?.(originalPath);
+      }
       if (plugin.settings.role === "host") {
         if (file instanceof TFile) {
           void (async () => {
@@ -205,8 +242,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
     plugin.app.vault.on("delete", (file: TAbstractFile) => {
       const run = () => {
         if (!plugin.manifestManager.isSharedPath(file.path)) return;
-        if (plugin.fileOpsManager.isPathMuted(file.path)) {
+        if (plugin.fileOpsManager.isPathMutedFor(file.path, "delete")) {
           noteMuteConsumed(plugin, file.path, "delete");
+          plugin.fileOpsManager.noteMuteDrop("delete");
+          plugin.logger.warn("file-op", `MUTE DROP: delete suppressed as an echo`);
           return;
         }
         plugin.fileOpsManager.onFileDelete(file);
@@ -231,19 +270,24 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
       )
         return;
       if (
-        plugin.fileOpsManager.isPathMuted(file.path) ||
-        plugin.fileOpsManager.isPathMuted(oldPath)
+        plugin.fileOpsManager.isPathMutedFor(file.path, "rename") ||
+        plugin.fileOpsManager.isPathMutedFor(oldPath, "rename")
       ) {
         // Both endpoints: `applyRemoteOpInner` mutes oldPath AND newPath for a
         // rename, so one event consumes two armed releases.
         noteMuteConsumed(plugin, file.path, "rename");
         noteMuteConsumed(plugin, oldPath, "rename");
+        // S120 AC2 — the gesture that went missing in the live run. Counted and
+        // logged, so a permanent divergence can never again be invisible.
+        plugin.fileOpsManager.noteMuteDrop("rename");
+        plugin.logger.warn("file-op", `MUTE DROP: rename suppressed as an echo`);
         return;
       }
 
       renamedPaths.add(oldPath);
 
       const prev = pendingRename ?? Promise.resolve();
+      const newPath = file.path;
       const task = prev.then(async () => {
         plugin.fileOpsManager.onFileRename(file, oldPath);
         plugin.backgroundSync.cancelSubscribe(oldPath);
@@ -262,8 +306,50 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
           plugin.onActiveFileChange();
         }
       });
-      pendingRename = task.finally(() => {
-        if (pendingRename === task) pendingRename = null;
+      // ------------------------------------------------------------- S135 ----
+      // THE CHAIN IS NOT ALLOWED TO DIE. This was `pendingRename =
+      // task.finally(...)` with no `catch` anywhere, and it is a permanent,
+      // silent, session-wide loss of the rename and delete channels.
+      //
+      // MEASURED, not argued: with the first task rejecting, three subsequent
+      // renames and one delete emitted NOTHING — one op instead of four — and
+      // the only trace was an unhandled rejection in the console. `prev.then(fn)`
+      // does not run `fn` when `prev` is rejected, so every later rename skipped
+      // `onFileRename` entirely (the op is never EMITTED, not refused), and the
+      // `delete` handler below chains on the same promise, so deletes went with
+      // them. Nothing counted it, nothing logged it, and nothing ever unwedged
+      // it: `pendingRename` is only cleared by the `finally` of the task that
+      // owns it, and a rejected chain keeps handing its rejection forward.
+      //
+      // The `catch` is placed on the value STORED IN `pendingRename`, not on
+      // `task` itself, so the chain the next event builds on is always a settled
+      // fulfilled promise. `renamedPaths.delete` already ran in the `finally`
+      // either way; what changes is only that the next `.then` fires.
+      //
+      // CONTAINED, NOT SWALLOWED (I11 / the S105 lesson): the failure is logged
+      // with BOTH endpoints and the error, and counted on the manager's ledger,
+      // because "the follow-up threw" and "nothing happened" were
+      // indistinguishable and that is precisely what made this survivable for so
+      // long. The optional call matches `noteMuteConsumed` above — several
+      // harnesses build a partial `fileOpsManager` double, and an observability
+      // line must not turn one of those into a TypeError.
+      //
+      // NOT retried and NOT re-emitted. The op itself is emitted by the FIRST
+      // statement of the task, before any await, so a rejection here never costs
+      // the op of the rename that failed — only the ones that would have come
+      // after it. Adding a retry would be a behaviour change this signal does
+      // not license.
+      const contained = task.catch((err: unknown) => {
+        plugin.fileOpsManager.noteRenameTaskFailure?.();
+        plugin.logger?.warn(
+          "file-op",
+          `RENAME FOLLOW-UP FAILED: ${oldPath} -> ${newPath}: ` +
+            `${err instanceof Error ? err.message : String(err)} ` +
+            "(the op was already emitted; the rename/delete channel stays open)",
+        );
+      });
+      pendingRename = contained.finally(() => {
+        if (pendingRename === contained) pendingRename = null;
         renamedPaths.delete(oldPath);
       });
     }),
@@ -322,8 +408,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
           }
           return;
         }
-        if (plugin.fileOpsManager.isPathMuted(file.path)) {
+        if (plugin.fileOpsManager.isPathMutedFor(file.path, "modify")) {
           noteMuteConsumed(plugin, file.path, "modify");
+          plugin.fileOpsManager.noteMuteDrop("modify");
+          plugin.logger.warn("file-op", `MUTE DROP: modify suppressed as an echo`);
           return;
         }
         // Not canvas-owned: the text path runs exactly as before. For a `.canvas`
@@ -335,8 +423,10 @@ export function registerVaultEvents(plugin: LiveSharePlugin): void {
         void plugin.backgroundSync.handleLocalTextModify(file.path);
         return;
       }
-      if (plugin.fileOpsManager.isPathMuted(file.path)) {
+      if (plugin.fileOpsManager.isPathMutedFor(file.path, "modify")) {
         noteMuteConsumed(plugin, file.path, "modify");
+        plugin.fileOpsManager.noteMuteDrop("modify");
+        plugin.logger.warn("file-op", `MUTE DROP: modify suppressed as an echo`);
         return;
       }
       void plugin.fileOpsManager.onFileModify(file);

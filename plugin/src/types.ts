@@ -149,6 +149,20 @@ export interface ManifestChangeDisposition {
   removals: { path: string; verdict: string; reason: string }[];
   /** Per candidate rename pairing that was considered. */
   renames: { oldPath: string; newPath: string; verdict: string; reason: string }[];
+  /**
+   * S159 — the identity pairer's ledger: ONE ROW PER REMOVED KEY, in every
+   * branch, including the refusals and the do-nothing ones (S155). Optional
+   * only because a pass with no added-and-removed overlap never runs the pairer
+   * at all; when the pairer runs, every key it was handed is in here.
+   */
+  renamePairing?: {
+    oldPath: string;
+    newPath: string | null;
+    outcome: string;
+    reason: string;
+    candidates: string[];
+    rivals: string[];
+  }[];
   /** Paths actually moved by the rename arm. */
   renamed: string[];
   /**
@@ -513,6 +527,35 @@ export interface HostChangedMessage {
   displayName: string;
 }
 
+// WP117 (S122) — HOST-MEDIATED GUEST CANVAS CREATION.
+//
+// Two message types of their own rather than two new `FileOp` members, and the
+// precedent is `sync-request`: this is a REQUEST TO THE HOST, not a file
+// operation to be applied. Keeping it out of the `FileOp` union keeps
+// `applyRemoteOpInner`, the offline queue and WP83's emission census untouched,
+// none of which has any business seeing a canvas creation request.
+//
+// NO BLOCK COMMENT MAY APPEAR BELOW `DEFAULT_SETTINGS` IN THIS FILE. The `//`
+// comment inside it holds a directory glob that a naive comment-stripper reads
+// as the opening of a block comment, so the first closing marker below it
+// swallows `useCanvasBinding: false,` and reddens a dormancy test that has
+// nothing to do with this change. Line comments only, here and downwards.
+export interface CanvasCreateRequestMessage {
+  type: "canvas-create-request";
+  requestId: string;
+  path: string;
+  content: string;
+}
+
+export interface CanvasCreateResultMessage {
+  type: "canvas-create-result";
+  requestId: string;
+  path: string;
+  accepted: boolean;
+  reason: string;
+  detail: string;
+}
+
 export type ControlMessage =
   | FileOpMessage
   | ChunkStartMessage
@@ -540,7 +583,9 @@ export type ControlMessage =
   | HostTransferDeclineMessage
   | HostTransferCompleteMessage
   | HostDisconnectedMessage
-  | HostChangedMessage;
+  | HostChangedMessage
+  | CanvasCreateRequestMessage
+  | CanvasCreateResultMessage;
 
 export type ControlMessageType = ControlMessage["type"];
 
@@ -572,4 +617,6 @@ export interface ControlMessageMap {
   "host-transfer-complete": HostTransferCompleteMessage;
   "host-disconnected": HostDisconnectedMessage;
   "host-changed": HostChangedMessage;
+  "canvas-create-request": CanvasCreateRequestMessage;
+  "canvas-create-result": CanvasCreateResultMessage;
 }

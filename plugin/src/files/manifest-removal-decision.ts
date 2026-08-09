@@ -4,9 +4,10 @@
 // `files/canvas-seed-decision.ts`. No Obsidian, no filesystem, no clock, no Yjs.
 //
 // WP95 AMENDED THIS HEADER RATHER THAN QUIETLY CONTRADICTING IT. It used to say
-// "ZERO imports", and it now has exactly one: `isProtectedPath` /
-// `protectedRootFor` from `files/protected-paths.ts`, which is itself a
-// zero-import module of pure string predicates. The four things the contract
+// "ZERO imports", and it now has two: `isProtectedPath` / `protectedRootFor`
+// from `files/protected-paths.ts`, and (S159) `IDENTITY_BASES` from
+// `files/rename-identity.ts`. Both are themselves zero-import modules of pure
+// data and string predicates. The four things the contract
 // actually forbids — Obsidian, the filesystem, a clock, Yjs — remain absent, and
 // this core is still a total function of its argument.
 //
@@ -79,6 +80,13 @@
  * is no fourth outcome and, in particular, no silent one.
  */
 import { isProtectedPath, protectedRootFor } from "./protected-paths";
+// S159 — the second zero-import neighbour, added on exactly the WP95 precedent
+// two paragraphs above: the accepted identity bases are declared once, in the
+// module that produces them, and asked here rather than re-listed. A predicate
+// re-decided per call site is the shape of defect WP95 exists to close, and a
+// list of legal values re-typed per consumer is the same thing spelled with
+// strings.
+import { IDENTITY_BASES } from "./rename-identity";
 
 export const REMOVAL_DECISION = {
   /** Nothing exists at that path on this disk. Nothing to decide, nothing to do. */
@@ -135,11 +143,27 @@ export interface RenameKnowledge {
   oldPath?: unknown;
   newPath?: unknown;
   /**
-   * `true` only when `matchRenamesByHash` paired these two keys on EQUAL
-   * CONTENT. Without it the old branch fell back to positional pairing and
-   * renamed the user's file onto an arbitrary added key.
+   * `true` only when `matchRenamesByHash` paired these two keys.
+   *
+   * S159 AMENDED WHAT THIS FIELD MEANS, and the amendment is the repair. It used
+   * to say "on EQUAL CONTENT", and equal content is not identity: `hash("")` is
+   * a full digest like any other, so two empty notes — and any two identical
+   * notes — were interchangeable to the pairer, which resolved the tie by
+   * iteration order. `matchRenamesByHash` now refuses to pair at all when
+   * content is the only evidence, so `true` here asserts IDENTITY.
    */
   hasContentPair?: unknown;
+  /**
+   * S159 — WHICH kind of identity evidence the pairer found, as one of
+   * `IDENTITY_BASES`. Stated, it is checked and anything unrecognised is
+   * REFUSED; the ambiguity itself is not decidable here, because this core sees
+   * ONE pairing and ambiguity is a property of the whole event.
+   *
+   * Absent, the `hasContentPair` floor above stands alone — which is what keeps
+   * every pre-S159 caller and test valid. That every SHIPPED call site states it
+   * is asserted from the tree by `v2/wp116`, not left to hope.
+   */
+  identityBasis?: unknown;
   /** What the vault holds at the OLD path. Only a `file` may be moved. */
   oldKind?: unknown;
   /** Whether something already exists at the new path. */
@@ -282,6 +306,25 @@ export function decideManifestRename(knowledge: RenameKnowledge | null | undefin
     };
   }
 
+  // ------------------------------------------------------------------ S159 --
+  // A STATED BASIS THAT IS NOT AN IDENTITY BASIS IS REFUSED, fail-closed in the
+  // house style: anything that is not the literal expected value counts as "not
+  // established". `hasContentPair` above is a boolean and a boolean cannot say
+  // WHY; this says why, and the only two answers that mean identity are a digest
+  // that is unique on both sides of the event, and a filename that survives
+  // inside an ambiguous digest class.
+  if (probe.identityBasis !== undefined && !IDENTITY_BASES.includes(asString(probe.identityBasis))) {
+    return {
+      oldPath,
+      newPath,
+      verdict: RENAME_DECISION.REFUSED,
+      reason:
+        `the pairing states the identity basis '${asString(probe.identityBasis) || "<not a string>"}', ` +
+        "which is not one of the bases that establish that two keys are the same file; content " +
+        "equality alone never is, because identical files are ordinary in a vault",
+    };
+  }
+
   if (oldKind !== "file") {
     return {
       oldPath,
@@ -302,12 +345,19 @@ export function decideManifestRename(knowledge: RenameKnowledge | null | undefin
     };
   }
 
+  // S159 — THE REASON STRING USED TO BE THE DEFECT, WRITTEN OUT IN PROSE. It
+  // said: "the removed key's local content hashes to the added key's manifest
+  // hash, so this is the same file re-keyed by a rename". The `so` in that
+  // sentence is the false inference — hash agreement is evidence of agreement,
+  // not of identity — and it is the sentence the destructive half acted on.
   return {
     oldPath,
     newPath,
     verdict: RENAME_DECISION.RENAME,
     reason:
-      "the removed key's local content hashes to the added key's manifest hash, so this is the " +
-      "same file re-keyed by a rename",
+      "the pairer established identity for these two keys" +
+      (probe.identityBasis === undefined ? "" : ` (${asString(probe.identityBasis)})`) +
+      ": no other removed key could have become this added key in this event, so the local file " +
+      "may be moved rather than trashed and re-fetched",
   };
 }

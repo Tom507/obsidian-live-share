@@ -812,7 +812,14 @@ function makeRouter(canvasSync: unknown, opts: { useCanvasBinding?: boolean } = 
     settings: { role: "host", useCanvasBinding: opts.useCanvasBinding ?? false },
     logger: { warn, debug: vi.fn(), log: vi.fn(), error: vi.fn() },
     manifestManager: { isSharedPath: vi.fn(() => true), updateFile: vi.fn(async () => {}) },
-    fileOpsManager: { isPathMuted: vi.fn(() => false), onFileModify: vi.fn() },
+    fileOpsManager: {
+      isPathMuted: vi.fn(() => false),
+      // S120 — nothing is muted in this rig; the kind-aware gate answers the
+      // same, as the real one's fail-closed branch would.
+      isPathMutedFor: vi.fn(() => false),
+      noteMuteDrop: vi.fn(),
+      onFileModify: vi.fn(),
+    },
     backgroundSync: {
       isRecentDiskWrite: () => false,
       handleLocalTextModify,

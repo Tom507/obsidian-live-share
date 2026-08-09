@@ -36,6 +36,31 @@ const ALLOWED_IMPORTS = new Set([
   "yjs",
   "../canvas/canvas-binding",
   "../utils",
+  // §7 AMENDMENT (WP123, ledger entry A-123-5) — the SAME entry as the one added
+  // to `wp49/test_tp12_…`'s copy of this list, and it must stay in step with it.
+  // The convergence oracle's records clause reads a `.canvas` with the
+  // PRODUCTION parser rather than a second one inside the rig. No new package
+  // dependency, no new transport, no canvas module made aware of the rig — the
+  // four assertions below are untouched and still green.
+  "../files/canvas-sync",
+  // §7 AMENDMENT (B68 / `S188`, ledger entry A-68-2) — the SAME entry as the one
+  // added to `wp49/test_tp12_…`'s copy of this list (A-68-1), and it must stay
+  // in step with it. `holdersOf` is imported so the canvas-disjoint
+  // diagnostic's `wouldHaveReverted` uses THE production predicate rather than
+  // a second copy of it inside the rig. No new package dependency, no new
+  // transport, and no canvas module is made aware of the rig — the four
+  // assertions below are untouched and still green. `canvas-presence.ts` is
+  // byte-unchanged: the two sweeps are intercepted by patching the INSTANCE.
+  "../canvas/canvas-presence",
+  // §7 AMENDMENT (B71 / `S192`, ledger entry A-71-2) — the SAME entry as the one
+  // added to `wp49/test_tp12_…`'s copy of this list (A-71-1), and it must stay in
+  // step with it. The paint plane de-transforms a card's client rect with the
+  // PRODUCTION inverse (`clientToCanvasManual` + `viewportScale`) rather than a
+  // second copy of the screen transform inside the rig. No new package
+  // dependency, no new transport, and no canvas module is made aware of the rig:
+  // `canvas-adapter.ts` is byte-unchanged and the four assertions below are
+  // untouched and still green.
+  "../canvas/canvas-adapter",
 ]);
 
 const CANVAS_MODULES = [

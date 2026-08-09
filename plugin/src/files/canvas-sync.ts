@@ -135,7 +135,11 @@ import type { SidecarIndex, SidecarStore } from "./canvas-sidecar";
 // value import here would close a cycle.
 import type { SidecarLifecycle } from "./canvas-sidecar-lifecycle";
 import type { FileOpsManager } from "./file-ops";
-import { isProtectedPath, noteProtectedRefusal } from "./protected-paths";
+import {
+  isProtectedPath,
+  noteProtectedRefusal,
+  protectedRefusalMessage,
+} from "./protected-paths";
 import type { ManifestManager } from "./manifest";
 
 // ---------------------------------------------------------------------------
@@ -2705,7 +2709,7 @@ export class CanvasSync {
       );
     }
     const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
-    if (parentDir) await ensureFolder(this.vault, parentDir);
+    if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
     await this.vault.adapter.write(diskPath, content);
   }
 
@@ -2993,6 +2997,17 @@ export class CanvasSync {
     if (!this.subscribedPaths.has(path)) return;
     // Recorded before the two early returns below, so a path whose observer is
     // already installed still reports what this subscribe measured.
+    // WP117 (S122's residual) LEAVES THIS LINE ALONE, deliberately. The role is
+    // the third input to `decideSeed`, and it was tempting to record it here
+    // beside the two witnesses. It is stamped at the WRITER ATTACH instead
+    // (`main.ts`, `attachCanvasWriter`) for a reason that is a correctness
+    // property rather than a preference: this method has five early exits that
+    // never reach this line, and a path that left by one of them answers
+    // `NOTHING_KNOWS_DOC` from `seedKnowledgeFor` — an object with no role, which
+    // would fall through to the pre-WP117 table on exactly the paths whose
+    // subscribe went wrong. Stamping over the top at the one place every cold
+    // open passes through covers those too. This object therefore keeps WP29's
+    // shape exactly: two measurements, no policy.
     this.seedKnowledgeByPath.set(path, { sidecarKnowsDoc, peerKnowsDoc });
     if (this.observers.has(path)) return;
 
@@ -4889,7 +4904,11 @@ export class CanvasSync {
     // entry (or its guid), and this method's sink is `vault.adapter.write`.
     // A `.canvas` under a protected root is not a thing this plugin writes.
     if (isProtectedPath(path)) {
+      // S137 (B2) — the seventh arm, and the last of the three that counted its
+      // refusal and never said it. This module already holds a logger, so the
+      // only thing that was missing was the line itself. Shared emitter.
       noteProtectedRefusal("canvas-write", path);
+      this.logger?.warn("canvas-sync", protectedRefusalMessage("canvas-write", path));
       return;
     }
     if (this.lastWrittenContent.get(path) === content) return;
@@ -4906,7 +4925,7 @@ export class CanvasSync {
     this.fileOpsManager.mutePathEvents(diskPath);
     try {
       const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
-      if (parentDir) await ensureFolder(this.vault, parentDir);
+      if (parentDir) await ensureFolder(this.vault, parentDir, this.logger);
       // Re-check after the awaited folder ensure: a remote delta may have landed
       // during the await. Yield rather than clobber it.
       if (expectedSeq !== undefined && this.currentSeq(path) > expectedSeq) return;

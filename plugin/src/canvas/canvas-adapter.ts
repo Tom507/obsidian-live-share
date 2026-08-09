@@ -34,6 +34,14 @@
 //      the same `view.canvas` already installed instead of returning early, so the
 //      newest adapter always owns the patch. Mount outcome emits `ADAPTER PATCH:`.
 
+// B72 — the ONE busy/editing classifier, imported rather than re-implemented.
+// This is the file's first import and it is deliberate: `repaintNode` is a live
+// surface mutator, and rule 10 says a new mutator consults the definer every
+// other mutator consults, not a private lookalike that can drift from it.
+// `canvas-editing-deferral.ts` → `reconcile-plan.ts` is pure and package-free,
+// so this adds no runtime dependency and no transport.
+import { classifyBusyGate } from "./canvas-editing-deferral";
+
 // Live viewport transform. Read from canvas.x / canvas.y / canvas.zoom / canvas.scale.
 export interface CanvasViewport {
   x: number;
@@ -186,6 +194,32 @@ export interface CanvasAdapter {
     geo: NodeGeometry,
   ): "applied" | "unchanged" | "interacting" | "missing" | "unsupported";
   /**
+   * B72 (WP2) — REPAINT ONE CARD, NOW. The second half of an apply.
+   *
+   * `applyNodeGeometry` writes the model and Obsidian only ENQUEUES the pixels
+   * (see the B72 block above); this pushes them through synchronously for the one
+   * id we already hold, so it is O(1) and needs no sweep. Refuses — never acts —
+   * for a card the local user is dragging or typing in.
+   *
+   * OPTIONAL on the interface, on the `getEditingNodeId` / `canvasFile` /
+   * `clearFlags` precedent, so every hand-rolled adapter double in the existing
+   * tests stays valid. Callers read it as `adapter.repaintNode?.(id)`.
+   */
+  repaintNode?(nodeId: string): RepaintOutcome;
+  /**
+   * B72 (WP3) — ONE TICK of the low-rate restoring sweep. Caller-driven on
+   * purpose: the adapter owns no timer for it, so a test drives the coverage
+   * property directly and the only clock in the product is the single interval
+   * `main.ts` starts at mount and clears at unmount.
+   */
+  sweepRepaint?(): RepaintSweepTick;
+  /**
+   * B72 (WP3) — what the sweep has actually done. Counts only, no verdict. A
+   * sweep that cannot be shown to have repaired anything is a sweep that hides
+   * the defect instead of measuring it, so this is not optional in spirit.
+   */
+  describeRepaintSweep?(): RepaintSweepReport;
+  /**
    * Structural reload of the LIVE canvas from full canvas data (handles node/edge
    * add + remove that per-node patching cannot). Returns false if unsupported or
    * skipped because the user is busy.
@@ -268,6 +302,214 @@ export function clientToCanvasManual(
   };
 }
 
+// ===========================================================================
+// B72 (`S196`) — THE REPAINT PLANE. WHY A REMOTE APPLY NEEDS A SECOND STEP.
+//
+// Read out of Obsidian's shipped renderer (`obsidian.asar` → `app.js`), verbatim,
+// because every sentence below is a quotation and not a model of one:
+//
+//   CanvasNode.moveAndResize = function (e) {
+//     this.x = …; this.y = …; this.width = …; this.height = …;
+//     this.canvas.markMoved(this)          // ← the whole body. nodeEl is untouched.
+//   }
+//   Canvas.markMoved  = function (e) { this.moved.add(e), this.requestFrame() }
+//   Canvas.requestFrame = … requestAnimationFrame(function () { …
+//       t.virtualize();                                     // ← GATE 2
+//       for (… of Array.from(dirty)) { n.isAttached && (n.render(), dirty.delete(n)) }
+//   })
+//   CanvasNode.attach = function () { … e.parentNode || t.canvasEl.appendChild(e); … }
+//                                     // ← appends the card WITHOUT positioning it
+//   CanvasNode.render = function () { … t.setCssStyles({ transform: "translate(…)" … }) }
+//                                     // ← the ONLY writer of a card's position
+//
+// So the model and the pixels are written by TWO steps, and the second one is
+// asynchronous and doubly conditional:
+//
+//   ├── GATE 1 — the frame must run at all. `requestAnimationFrame` is suspended
+//   │   for a hidden or occluded window, and `requestFrame()` is guarded by
+//   │   `if (this.frame)`, so nothing re-schedules while one is pending.
+//   └── GATE 2 — the node must be ATTACHED when it does. `virtualize()` detaches
+//       every card outside the viewport and re-attaches at most TEN per frame.
+//       `render()` is skipped for a detached node.
+//
+// WHAT THIS FIX DOES AND DOES NOT CLAIM. Obsidian's own bookkeeping is better
+// than `S193` assumed and this file says so rather than overselling the repair:
+// the `dirty` set is only `.delete()`d for nodes that were actually rendered
+// (`moved` is drained INTO `dirty` first, then cleared), so a repaint enqueued
+// for a detached card is not forgotten — it is owed. `repaintNode` is therefore
+// not "the missing repaint"; it is the SYNCHRONOUS one. It writes the position
+// through `render()` in the same turn as the apply, so the pixels do not depend
+// on a frame that may never run and on a `virtualize()` pass that may never
+// re-attach the card while the user is looking at it.
+//
+// IT MUST NOT FIGHT THE USER. `render()` re-seats a card from the model, so on a
+// card the local user is dragging or typing in it would yank the thing out from
+// under their cursor. Every entry point consults the SAME predicate seam
+// `applyNodeGeometry` does (`isDragTarget`) plus the WP37 editing flag, and
+// answers `"interacting"` rather than acting. That is rule 10: one predicate,
+// not a second one that can disagree with the first.
+// ===========================================================================
+
+/** What one repaint attempt did. Never a boolean — the reasons are not the same. */
+export type RepaintOutcome =
+  /** Repainted, AND the element was demonstrably in the wrong place before. */
+  | "repaired"
+  /** Repainted; the element already agreed (or its staleness was not readable). */
+  | "repainted"
+  /**
+   * The card is DETACHED — `virtualize()` has it off screen. Nothing is painted,
+   * so nothing can be visibly wrong; the repaint is enqueued through Obsidian's
+   * own `markMoved` and will land when the card comes back. Deliberately NOT
+   * `render()`: rendering a detached card can run `initialize()` and mount
+   * content for a node the user cannot see, which on a large board is a real
+   * cost paid for no pixel.
+   */
+  | "deferred"
+  /** No `render()` on this private shape — enqueued through `markMoved` instead. */
+  | "requested"
+  /** The local user is dragging or typing in this exact card. Never touched. */
+  | "interacting"
+  | "missing"
+  | "unsupported";
+
+/** One sweep tick's tally. Every field is a count of outcomes actually returned. */
+export interface RepaintSweepTick {
+  /** Ids the plan selected this tick. */
+  visited: string[];
+  /** Outcome counts, keyed by {@link RepaintOutcome}. */
+  outcomes: Record<string, number>;
+  /** `null` unless the whole tick was skipped, in which case: why. */
+  skipped: "busy" | "no-nodes" | "unavailable" | null;
+}
+
+/** The sweep's whole history, for the diagnostic. Counts, never verdicts. */
+export interface RepaintSweepReport {
+  ticks: number;
+  skippedBusy: number;
+  skippedEmpty: number;
+  visited: number;
+  /**
+   * THE NUMBER THAT MATTERS. How many times the sweep repainted a card whose
+   * element was demonstrably in the wrong place. A sweep that silently hides the
+   * defect would be worse than no sweep, because it would destroy the ability to
+   * measure the cause; this counter is what keeps the damage rate observable.
+   * Zero here on a board that looks correct is the honest "nothing to repair".
+   */
+  repaired: number;
+  repainted: number;
+  deferred: number;
+  requested: number;
+  interacting: number;
+  missing: number;
+  unsupported: number;
+  /** Round-robin position, so a reader can see coverage advancing. */
+  cursor: number;
+  /** Ids waiting for a card that was off screen when its remote change landed. */
+  pendingCount: number;
+  /** The batch size the last tick used, and the node count it was derived from. */
+  lastBatchSize: number;
+  lastNodeCount: number;
+}
+
+/**
+ * The translation of an inline `transform`, in px. `null` — never `{x:0,y:0}` —
+ * for anything unreadable: a card at the origin is a real answer and must not be
+ * manufactured out of "there was no transform".
+ *
+ * Only the spelling Obsidian's own `render()` writes is accepted
+ * (`translate(<n>px, <n>px)`); a computed `matrix(...)` is deliberately NOT
+ * parsed here, because this function's only job is to answer "did `render()`
+ * write this, and with what", and `getComputedStyle` is not that witness.
+ */
+export function parseTranslatePx(text: unknown): { x: number; y: number } | null {
+  if (typeof text !== "string") return null;
+  const m =
+    /translate\(\s*(-?[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)px\s*,\s*(-?[0-9]*\.?[0-9]+(?:e[-+]?[0-9]+)?)px/i.exec(
+      text,
+    );
+  if (!m) return null;
+  const x = Number.parseFloat(m[1]);
+  const y = Number.parseFloat(m[2]);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+/** Ticks the sweep aims to need for one full pass over the board. */
+export const REPAINT_SWEEP_TARGET_TICKS = 20;
+/** Never fewer than this many cards per tick — a small board must still converge. */
+export const REPAINT_SWEEP_MIN_BATCH = 3;
+/** Never more than this many — the ceiling that keeps a huge board invisible. */
+export const REPAINT_SWEEP_MAX_BATCH = 25;
+/** The tick period main.ts drives the sweep at, in ms. */
+export const REPAINT_SWEEP_PERIOD_MS = 1000;
+
+/**
+ * How far a card's painted position may sit from its model before the repaint is
+ * counted as a REPAIR rather than a no-op. Obsidian `Math.round`s every geometry
+ * it accepts (`moveAndResize`, `setData`), so both sides are integral in
+ * practice; half a pixel is slack for a fractional value the plugin sent, not a
+ * tolerance for real drift.
+ */
+export const REPAINT_STALE_TOL_PX = 0.5;
+
+/**
+ * Cards per tick for a board of `n` nodes.
+ *
+ * BOUNDED WORST-CASE REPAIR LATENCY IS THE WHOLE POINT, and it is why this is
+ * not "a couple of random nodes each frame". Uniform random sampling has
+ * coupon-collector coverage — `n ln n` draws for one full pass in expectation,
+ * and NO bound at all on how long one particular card can stay broken. A
+ * round-robin over a sorted id list repairs every card within
+ * `ceil(n / batch)` ticks, always. On the 11-node test board that is one tick;
+ * on a 500-node board it is 20 ticks (20 s at {@link REPAINT_SWEEP_PERIOD_MS}),
+ * at a cost of 25 inline style writes per second.
+ */
+export function repaintBatchSize(n: number): number {
+  if (n <= 0) return 0;
+  const target = Math.ceil(n / REPAINT_SWEEP_TARGET_TICKS);
+  return Math.min(REPAINT_SWEEP_MAX_BATCH, Math.max(REPAINT_SWEEP_MIN_BATCH, target));
+}
+
+/**
+ * Which cards this tick repaints, and where the cursor lands. Pure — no DOM, no
+ * canvas, no clock — so the coverage property is a unit test and not a claim.
+ *
+ * `priority` ids go FIRST and do not consume round-robin progress: they are the
+ * cards whose remote change landed while they were off screen, so they are the
+ * ones most likely to be wrong the moment they come back. Ids in `priority` that
+ * are not (or no longer) live are dropped rather than carried forever.
+ */
+export function planRepaintSweep(input: {
+  ids: readonly string[];
+  cursor: number;
+  batchSize: number;
+  priority?: readonly string[];
+}): { ids: string[]; cursor: number } {
+  const live = [...input.ids].sort();
+  const n = live.length;
+  const batch = Math.max(0, Math.min(input.batchSize, n));
+  if (n === 0 || batch === 0) return { ids: [], cursor: 0 };
+  const liveSet = new Set(live);
+  const picked: string[] = [];
+  const seen = new Set<string>();
+  for (const id of input.priority ?? []) {
+    if (picked.length >= batch) break;
+    if (!liveSet.has(id) || seen.has(id)) continue;
+    picked.push(id);
+    seen.add(id);
+  }
+  // The round-robin resumes from the cursor and wraps exactly once, so no card
+  // is visited twice in one tick even when the batch is the whole board.
+  let cursor = Number.isInteger(input.cursor) && input.cursor >= 0 ? input.cursor % n : 0;
+  for (let step = 0; step < n && picked.length < batch; step++) {
+    const id = live[cursor];
+    cursor = (cursor + 1) % n;
+    if (seen.has(id)) continue;
+    picked.push(id);
+    seen.add(id);
+  }
+  return { ids: picked, cursor };
+}
+
 // ---- Private-shape typing (validated defensively at every access) -----------
 
 interface CanvasNode {
@@ -285,7 +527,20 @@ interface CanvasNode {
   height?: number;
   // Live reposition/resize of a node card (updates model + DOM). Present on the
   // real Obsidian CanvasNode; validated defensively before every call.
+  //
+  // ⚠ B72 — "updates model + DOM" is HALF TRUE and the half it gets wrong is the
+  // whole of this batch. Obsidian's `moveAndResize` writes the four numbers and
+  // calls `markMoved(this)`; it never touches `nodeEl`. The DOM half happens
+  // later, in `render()`, inside a `requestAnimationFrame` and only for an
+  // ATTACHED node. See the B72 block above.
   moveAndResize?: (geo: { x: number; y: number; width: number; height: number }) => void;
+  /**
+   * B72 — Obsidian's `CanvasNode.render()`: the ONLY writer of a card's inline
+   * `transform` / `width` / `height`, i.e. the only thing that moves the pixels.
+   * Normally called only by the canvas's `requestAnimationFrame` loop, and only
+   * for attached nodes. Calling it directly is what makes a repaint synchronous.
+   */
+  render?: () => void;
 }
 
 export interface NodeGeometry {
@@ -316,9 +571,16 @@ interface PrivateCanvas {
   //   setData(data)     → replace canvas contents (structural add/remove)
   //   requestFrame()    → schedule a re-render
   //   requestSave()     → persist to the .canvas file
+  //   markMoved(node)   → enqueue ONE node's repaint into the frame loop's set
   setData?: (data: unknown) => void;
   requestFrame?: () => void;
   requestSave?: () => void;
+  /**
+   * B72 — `Canvas.markMoved(node)`: `this.moved.add(node), this.requestFrame()`.
+   * The enqueue half of the repaint, used when a synchronous `render()` is not
+   * the right instrument (a detached card) or not available (shape drift).
+   */
+  markMoved?: (node: unknown) => void;
 }
 
 interface PrivateCanvasView {
@@ -455,6 +717,53 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
     pointer: false,
     editing: false,
   };
+
+  // ---- B72 (WP2/WP3) — repaint state, all of it per-adapter ----------------
+  //
+  // Ids whose remote change landed while the card was DETACHED (off screen). The
+  // sweep drains this first, so a card comes back already correct instead of
+  // waiting for its turn in the round-robin. Bounded by the node count: an entry
+  // is removed when the node is repainted or when it stops existing.
+  const repaintPending = new Set<string>();
+  let sweepCursor = 0;
+  const sweepCounters = {
+    ticks: 0,
+    skippedBusy: 0,
+    skippedEmpty: 0,
+    visited: 0,
+    repaired: 0,
+    repainted: 0,
+    deferred: 0,
+    requested: 0,
+    interacting: 0,
+    missing: 0,
+    unsupported: 0,
+    lastBatchSize: 0,
+    lastNodeCount: 0,
+  };
+
+  /** Record one repaint outcome and hand it straight back. Counting is not deciding. */
+  function tallyRepaint(outcome: RepaintOutcome): RepaintOutcome {
+    sweepCounters[outcome]++;
+    return outcome;
+  }
+
+  /**
+   * Obsidian's own enqueue, for the two cases a synchronous `render()` is the
+   * wrong instrument. `markMoved` puts the node in the frame loop's `moved` set,
+   * which that loop drains into `dirty` and only clears per RENDERED node — so an
+   * enqueue for a detached card is owed, not lost. `requestFrame` alone would
+   * schedule a frame that renders nothing new.
+   */
+  function enqueueRepaint(node: CanvasNode): void {
+    const c = canvas as PrivateCanvas | undefined;
+    try {
+      if (typeof c?.markMoved === "function") c.markMoved(node);
+      else c?.requestFrame?.();
+    } catch {
+      /* a private shape that refuses is not a reason to fail an apply */
+    }
+  }
 
   /** Refresh the watchdog: a real drag-related signal reached the adapter. */
   function noteDragSignal(): void {
@@ -1156,6 +1465,114 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
       }
     },
 
+    // ---- B72 (WP2/WP3) — the repaint half of an apply ----------------------
+
+    repaintNode(nodeId: string): RepaintOutcome {
+      const node = canvas?.nodes?.get(nodeId);
+      if (!node) {
+        repaintPending.delete(nodeId);
+        return tallyRepaint("missing");
+      }
+      // THE ONE DEFINER, not a second predicate (rule 10). `classifyBusyGate` is
+      // the same pure classifier `main.ts#reconcileLiveCanvas` and
+      // `main.ts#applyCanvasNodeRevert` execute, fed from the same two measured
+      // facts. A repaint re-seats a card from the model, and WP37 MEASURED that
+      // re-seating a card with an open inline editor destroys its unflushed
+      // text — so this refuses on the same verdicts the applies refuse on, and
+      // it refuses by returning rather than by acting differently.
+      const gate = classifyBusyGate({
+        busy: this.isBusy(),
+        editingNodeId: this.getEditingNodeId?.() ?? null,
+      });
+      if (gate === "defer-drag" || gate === "editing") return tallyRepaint("interacting");
+      // …and the per-card arm on top of the board-wide one, exactly as
+      // `applyNodeGeometry` has it: `dragTargetId` OUTLIVES a watchdog release,
+      // so the one card the user may still be holding stays protected after the
+      // board-wide flag has been let go.
+      if (isDragTarget(nodeId)) return tallyRepaint("interacting");
+
+      const el = node.nodeEl as (HTMLElement & { parentNode?: unknown }) | undefined;
+      const attached = !!el?.parentNode;
+      if (!attached) {
+        // Off screen. Nothing is painted for this card, so nothing can be
+        // visibly wrong — and `render()` here would risk mounting content for a
+        // node the user cannot see. Enqueue instead, and remember the id so the
+        // sweep repaints it first when it comes back (bounded by node count).
+        repaintPending.add(nodeId);
+        enqueueRepaint(node);
+        return tallyRepaint("deferred");
+      }
+      if (typeof node.render !== "function") {
+        enqueueRepaint(node);
+        return tallyRepaint("requested");
+      }
+      // Was it demonstrably wrong BEFORE we touched it? Read first, repaint
+      // second — this is the only moment the answer exists, and it is what makes
+      // the sweep's "repairs" counter a measurement rather than a claim.
+      const before = parseTranslatePx(
+        (el as unknown as { style?: { transform?: unknown } } | undefined)?.style?.transform,
+      );
+      const stale =
+        typeof node.x === "number" && typeof node.y === "number"
+          ? before === null ||
+            Math.abs(before.x - node.x) > REPAINT_STALE_TOL_PX ||
+            Math.abs(before.y - node.y) > REPAINT_STALE_TOL_PX
+          : false;
+      try {
+        node.render();
+      } catch {
+        return tallyRepaint("unsupported");
+      }
+      repaintPending.delete(nodeId);
+      return tallyRepaint(stale ? "repaired" : "repainted");
+    },
+
+    sweepRepaint(): RepaintSweepTick {
+      sweepCounters.ticks++;
+      const empty: RepaintSweepTick = { visited: [], outcomes: {}, skipped: null };
+      if (!this.isAvailable()) {
+        return { ...empty, skipped: "unavailable" };
+      }
+      // NEVER while the user is interacting — the same rule WP2 follows, and the
+      // reason a fix that makes dragging feel worse is a regression even if the
+      // board converges. `isBusy()` is the watchdog-aware seam, so a stuck flag
+      // cannot switch the sweep off for the lifetime of the view.
+      if (this.isBusy()) {
+        sweepCounters.skippedBusy++;
+        return { ...empty, skipped: "busy" };
+      }
+      const ids = [...this.getLiveNodeIds()];
+      sweepCounters.lastNodeCount = ids.length;
+      const batchSize = repaintBatchSize(ids.length);
+      sweepCounters.lastBatchSize = batchSize;
+      if (ids.length === 0) {
+        sweepCounters.skippedEmpty++;
+        return { ...empty, skipped: "no-nodes" };
+      }
+      const plan = planRepaintSweep({
+        ids,
+        cursor: sweepCursor,
+        batchSize,
+        priority: [...repaintPending],
+      });
+      sweepCursor = plan.cursor;
+      const outcomes: Record<string, number> = {};
+      for (const id of plan.ids) {
+        const outcome = this.repaintNode?.(id) ?? "unsupported";
+        outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
+      }
+      sweepCounters.visited += plan.ids.length;
+      return { visited: plan.ids, outcomes, skipped: null };
+    },
+
+    describeRepaintSweep(): RepaintSweepReport {
+      return {
+        ...sweepCounters,
+        cursor: sweepCursor,
+        pendingCount: repaintPending.size,
+      };
+    },
+
     reloadCanvasData(data: unknown): boolean {
       // Never yank the view out from under an ACTIVE drag — watchdog-aware, never the
       // raw flag (US4 AC12), so a flag nobody refreshed can no longer keep structural
@@ -1232,6 +1649,13 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
       viewportListeners.clear();
       editingEndListeners.clear();
       held.clear();
+      // B72 — a detached adapter must not keep a queue of ids for a view it can
+      // no longer paint. The COUNTERS are left alone on purpose: they are this
+      // adapter's record of what it did, and a torn-down adapter reporting zero
+      // repairs it actually made would be the "sweep that cannot be shown to
+      // work" this package exists to avoid.
+      repaintPending.clear();
+      sweepCursor = 0;
       patchState.selection = false;
       patchState.dragging = false;
       patchState.viewport = false;

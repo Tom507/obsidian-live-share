@@ -2,7 +2,11 @@ import type { EditorView } from "@codemirror/view";
 import { MarkdownView, Menu, Notice, Plugin, TFile, TFolder, requestUrl } from "obsidian";
 
 import { minimatch } from "minimatch";
-import { type CanvasAdapter, createCanvasAdapter } from "./canvas/canvas-adapter";
+import {
+  type CanvasAdapter,
+  REPAINT_SWEEP_PERIOD_MS,
+  createCanvasAdapter,
+} from "./canvas/canvas-adapter";
 import { CanvasBinding } from "./canvas/canvas-binding";
 import {
   type CanvasModelBridgeHandle,
@@ -23,7 +27,7 @@ import { isCanvasPath } from "./canvas/canvas-epoch";
 // that module; this file holds calls into it.
 import type { CanvasUndoOutcome, CanvasUndoReport } from "./canvas/canvas-undo";
 import type { ImportAvailability } from "./canvas/canvas-import-command";
-import { canvasIds, planReconcile } from "./canvas/reconcile-plan";
+import { RECONCILE_GEOMETRY_KEYS, canvasIds, planReconcile } from "./canvas/reconcile-plan";
 import {
   CANVAS_EDIT_DRAIN_DELAY_MS,
   type CanvasWriteHoldQueue,
@@ -37,10 +41,28 @@ import {
 } from "./canvas/canvas-editing-deferral";
 import { DebugLogger } from "./debug-logger";
 import { CollabManager } from "./editor/collab";
+import {
+  type AttestationLedger,
+  getAttestationDecisions,
+} from "./files/attestation-guard";
 import { BackgroundSync } from "./files/background-sync";
-import { conflictsRootFor, getConflictCopies } from "./files/conflict-copy";
-import { getCollabBindRefusals } from "./editor/collab-bind-decision";
+import {
+  type ConflictCopyLedger,
+  conflictsRootFor,
+  getConflictCopies,
+} from "./files/conflict-copy";
+import {
+  type SingleWriterDeclines,
+  getSingleWriterDeclines,
+} from "./files/single-writer";
+import {
+  getCollabBindFailures,
+  getCollabBindRefusals,
+  makeBindStateSink,
+} from "./editor/collab-bind-decision";
 import { getEmptyWriteRefusals } from "./files/empty-write-guard";
+import { isProtectedPath } from "./files/protected-paths";
+import { type PathOutcomeLedger, getPathOutcomes } from "./files/path-outcome";
 import {
   type CanvasPersistence,
   type PersistenceIO,
@@ -57,11 +79,15 @@ import {
   mirrorSharedCanvases,
 } from "./files/canvas-mirror";
 import {
+  CanvasCreateCoordinator,
+  type CanvasCreateStats,
+} from "./files/canvas-create";
+import {
   type CanvasSidecarWiring,
   createVaultSidecarIO,
   wireCanvasSidecar,
 } from "./files/canvas-sidecar-lifecycle";
-import { CanvasSync } from "./files/canvas-sync";
+import { CanvasSync, parseCanvasReport } from "./files/canvas-sync";
 import {
   WRITER_ATTACH_VERDICT,
   decideCanvasWriterAttach,
@@ -78,6 +104,7 @@ import {
   decideManifestRemoval,
   decideManifestRename,
 } from "./files/manifest-removal-decision";
+import { pairRenamesByIdentity } from "./files/rename-identity";
 import {
   canvasOwned,
   registerVaultEvents,
@@ -143,7 +170,6 @@ import {
   hashContent,
   isPathSafe,
   isTextFile,
-  matchRenamesByHash,
   normalizeLineEndings,
   normalizePath,
   parseJwtPayload,
@@ -181,6 +207,11 @@ export default class LiveSharePlugin extends Plugin {
   private testControlHandle: { close(): void } | null = null;
 
   canvasSync: CanvasSync | null = null;
+  // WP117 (S122): host-mediated guest canvas creation. Built with the session,
+  // torn down with it. Every decision it takes lives in `files/canvas-create.ts`
+  // and `files/canvas-create-decision.ts`; this file supplies measurements and
+  // actions and states no rule of its own.
+  canvasCreate: CanvasCreateCoordinator | null = null;
   // WP25: the sidecar store + lifecycle + identity store, built by
   // `wireCanvasSidecar`. Held only so the periodic compaction timer can be
   // stopped at teardown.
@@ -200,6 +231,12 @@ export default class LiveSharePlugin extends Plugin {
   // that reseats every card. ⚠ This site is NOT in the WP89 charter's §3 table of
   // seven — it was DERIVED from the tree, which is what AC2 exists for.
   private canvasAdapters = new Map<string, CanvasAdapter>();
+  // B72 (WP3) — THE RESTORING FORCE. One interval per mounted canvas, driving
+  // `adapter.sweepRepaint()` at {@link REPAINT_SWEEP_PERIOD_MS}. Kept in lockstep
+  // with `canvasAdapters` (same mount, same teardown), and it is the ONLY clock
+  // this fix introduces: the batch selection, the busy gate and the counters all
+  // live in the adapter, so this map holds a timer handle and nothing else.
+  private canvasRepaintSweeps = new Map<string, ReturnType<typeof setInterval>>();
   // WP37 (C37) — the per-record deferral queue for view applies withheld while an
   // inline editor is focused. Constructed here and INJECTED; every rule about what
   // goes in, what coalesces and what comes out lives in
@@ -867,6 +904,33 @@ export default class LiveSharePlugin extends Plugin {
     }
     const control = this.controlChannel.rearm();
     const mux = this.syncManager?.rearm() ?? null;
+    // S143 (A3) — RE-DRIVE THE PATHS `subscribe()` GAVE UP ON.
+    //
+    // The two links re-arm above; without this line the DOCUMENTS did not.
+    // `subscribe()` abandons a path when `getDoc` answers `null` (the manager
+    // was neither connected nor connecting) or when `waitForSync` times out,
+    // and nothing re-drove it until the next `startAll` — i.e. until the user
+    // left and rejoined. That is the permanence half of `S143`, and this is the
+    // gesture that already means "try again" (`WP88`, `WP114`), so the recovery
+    // belongs on it rather than on a timer a hidden renderer would clamp
+    // (`S147`).
+    //
+    // Only RETRYABLE give-ups are in that set: a cancelled subscribe and a
+    // released document never entered it. `I11` — refusal never destroys.
+    //
+    // GUARDED, and not for tidiness: this awaits `subscribe()` once per
+    // abandoned path, and each of those touches the vault and the relay. A
+    // recovery that can take down the re-arm it is part of — after both links
+    // have already been re-armed above — would be a worse defect than the one
+    // it repairs. It reports rather than swallows, which is this package's whole
+    // subject.
+    let resubscribed: Awaited<ReturnType<BackgroundSync["retryAbandonedSubscribes"]>> | null =
+      null;
+    try {
+      resubscribed = (await this.backgroundSync?.retryAbandonedSubscribes()) ?? null;
+    } catch (err) {
+      this.logger?.error("connection", "re-arm: re-subscribing abandoned paths failed", err);
+    }
     // The announcement re-arms, so a second outage announces again.
     this.severanceAnnouncement = NO_ANNOUNCEMENT;
     this.lastSeverance = null;
@@ -882,6 +946,10 @@ export default class LiveSharePlugin extends Plugin {
       via: "rearm",
       control,
       mux,
+      // S143 — carried up so the rig can READ the recovery instead of inferring
+      // it from a file that started changing again. `null` means the sync was
+      // not built yet, which is a different answer from `{attempted: 0}`.
+      resubscribed: resubscribed ?? null,
       reportBefore: before,
       reportAfter: this.linkReport(),
     };
@@ -1107,12 +1175,26 @@ export default class LiveSharePlugin extends Plugin {
         }
       }
       const manifestEntries = this.manifestManager.getEntries();
-      const preferredNew = matchRenamesByHash(
+      // S159 — the pairer now REFUSES when content equality is the only
+      // evidence, and it says so per removed key in every branch (S155). The
+      // ledger is logged below rather than dropped: a pairer that recorded only
+      // its successes would make "it ran and refused" byte-identical to "it
+      // never ran", which is the reading that cost this project a round.
+      const pairing = pairRenamesByIdentity(
         removed,
         added,
         (p) => removedHashes.get(p),
         (p) => manifestEntries.get(p)?.hash,
       );
+      const preferredNew = pairing.pairs;
+      disposition.renamePairing = pairing.ledger;
+      for (const row of pairing.ledger) {
+        this.logger.log(
+          "manifest",
+          `change[pass=${disposition.pass}] pairing ${row.outcome} ${row.oldPath} -> ` +
+            `${row.newPath ?? "<none>"} — ${row.reason}`,
+        );
+      }
 
       for (const oldPath of removed) {
         // The hash-matched target is tried first. WP86 — it is also the ONLY
@@ -1136,6 +1218,13 @@ export default class LiveSharePlugin extends Plugin {
               oldPath,
               newPath,
               hasContentPair: preferred === newPath,
+              // S159 — WHY the pairer believes these are the same file, so the
+              // core can refuse a basis that is not an identity basis instead
+              // of trusting a bare boolean it cannot interrogate.
+              identityBasis:
+                preferred === newPath
+                  ? pairing.ledger.find((row) => row.oldPath === oldPath)?.outcome
+                  : undefined,
               oldKind:
                 oldFile instanceof TFile ? "file" : oldFile instanceof TFolder ? "folder" : "other",
               newExists: false,
@@ -1156,7 +1245,7 @@ export default class LiveSharePlugin extends Plugin {
             this.fileOpsManager.mutePathEvents(localNew);
             try {
               const parentDir = localNew.substring(0, localNew.lastIndexOf("/"));
-              if (parentDir) await ensureFolder(this.app.vault, parentDir);
+              if (parentDir) await ensureFolder(this.app.vault, parentDir, this.logger);
               await this.app.vault.rename(oldFile, localNew);
               disposition.renamed.push(newPath);
             } finally {
@@ -1207,6 +1296,18 @@ export default class LiveSharePlugin extends Plugin {
         { skipText: true },
       );
       if (syncedCount > 0) this.notify(`Live Share: synced ${syncedCount} file(s)`);
+      // S147 — PHASE 1, and it is the other half of the defect. The loop below
+      // is SERIAL and it sits on `manifestHandlerQueue`, so before this line
+      // existed the second announced path's document was created only once the
+      // first one's settle had finished — and on a guest that settle waited for
+      // the host's seed with a fixed hop count, which a backgrounded renderer
+      // stretches from 2 s to minutes. Sixteen of sixteen live guest/file pairs
+      // read `docExists: false`: the loop had not reached them yet, and would
+      // not for as long as the window stayed hidden. Registering the whole
+      // batch first is synchronous, consults no timer, and does exactly what
+      // `subscribe()`'s own first statement does — only where a neighbour
+      // cannot prevent it. The loop is otherwise byte-unchanged.
+      this.backgroundSync.registerAnnounced(actuallyAdded);
       for (const path of actuallyAdded) {
         if (isTextFile(path)) {
           await this.backgroundSync.onFileAdded(path);
@@ -1348,6 +1449,22 @@ export default class LiveSharePlugin extends Plugin {
     // first placement handed a consumer `this.logger` before it existed. The
     // guard was right and the placement was wrong.
     this.collabManager.setLogger(this.logger);
+    // S134 AC3 — WIRING ONLY, and the whole point is that `collabBoundFile`
+    // stops lying. `onActiveFileChange` sets it SYNCHRONOUSLY before the async
+    // activation (deliberately — see the comment there) and nothing ever unset
+    // it when that activation failed, so a note whose bind timed out reported
+    // "bound" to every internal reader while its editor held no `yCollab` at all.
+    //
+    // Guarded on identity: an activation that resolves LATE must not clear a
+    // flag the user has already moved on from, which is the same stale-write
+    // trap the `.then()` at `onActiveFileChange` was removed to avoid.
+    //
+    // The single-writer invariant does not weaken: `setActiveFile(sharedPath)`
+    // is set on the line above `setCollabBoundFile(sharedPath)` and both
+    // consumers (`handleLocalTextModify`, the `Y.Text` observer) test the
+    // ACTIVE-file identity first, so an open-but-unbound file is still refused
+    // by the gate that precedes this one.
+    this.collabManager.setBindStateSink(makeBindStateSink(this.backgroundSync));
     // WP93 (C93 AC4) — WIRING ONLY. `MUTE OVERRUN:` has exactly one emitter, in
     // `files/file-ops.ts`; this is the only thing that gives it somewhere to
     // say it.
@@ -1362,6 +1479,19 @@ export default class LiveSharePlugin extends Plugin {
     // this project has ever run. It lives here now for the same reason
     // `syncManager` above does: after the sink exists, not before.
     this.fileOpsManager.setLogger(this.logger);
+    // S137 — the two writers that hold the EMPTY-WRITE FLOOR had no sink at all,
+    // so `EMPTY WRITE REFUSED:` (and three `PROTECTED PATH REFUSED:` arms) could
+    // only ever reach `console.warn`. The floor fired twice on an ordinary
+    // rejoin and the paths could not be attributed, which is the whole of S137.
+    //
+    // HERE, in this block, for the reason the two lines above already state: the
+    // sink has to exist before a consumer is handed it. Both managers are
+    // constructed roughly forty lines above `this.logger`, so wiring them at
+    // their `new` — which is where a reader would naturally put it — is exactly
+    // the S104 defect, and `?.` on the field would have hidden it just as well
+    // the second time.
+    this.manifestManager.setLogger(this.logger);
+    this.backgroundSync.setLogger(this.logger);
     this.connectionStateUnsub = this.connectionState.onChange(() => this.updateStatusBar());
 
     this.registerEditorExtension(this.collabManager.getBaseExtension());
@@ -1476,6 +1606,9 @@ export default class LiveSharePlugin extends Plugin {
     this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
+    // WP117: in-flight requests and their timers belong to ONE session.
+    this.canvasCreate?.reset();
+    this.canvasCreate = null;
     // WP25: stop the periodic compaction timer with the session that armed it.
     void this.canvasSidecar?.lifecycle.destroy();
     this.canvasSidecar = null;
@@ -1620,6 +1753,29 @@ export default class LiveSharePlugin extends Plugin {
   }
 
   /**
+   * S141 — the PUBLISH floor's ledger. The write floor above answers "what did
+   * this peer refuse to write"; this one answers "what did this peer refuse to
+   * SAY", which is the half that turned out to be able to destroy a file on
+   * somebody else's disk.
+   *
+   * Every branch is counted, including both branches that publish, so a live
+   * reading can never be ambiguous between "the floor allowed it" and "the floor
+   * was never reached" — S155's lesson, in the ledger this package added.
+   */
+  getAttestationDecisions(): AttestationLedger {
+    return getAttestationDecisions();
+  }
+
+  /**
+   * S142 — the single-writer ledger. A declined write leaves no trace by
+   * construction: the file is unchanged, which is exactly what "the arm never
+   * ran" also looks like. Both `subscribe()` arms report here.
+   */
+  getSingleWriterDeclines(): SingleWriterDeclines {
+    return getSingleWriterDeclines();
+  }
+
+  /**
    * S125 AC10 — the join notice, which used to read "synced N file(s)" while
    * quietly replacing the user's own edits with the host's. If any local
    * version was preserved, the notice says how many and where; a user who is
@@ -1633,9 +1789,41 @@ export default class LiveSharePlugin extends Plugin {
     return `${base}. ${copies} local version(s) differed and were preserved in "${root}"`;
   }
 
-  /** S125 AC10 — the conflict-copy ledger, for a live validator. */
-  getConflictCopies(): { total: number; byArm: Record<string, number>; failed: number } {
+  /**
+   * S125 AC10 — the conflict-copy ledger, for a live validator.
+   *
+   * S148 — `discarded` is part of the contract, not an extra. A live round read
+   * `{total: 0, byArm: {}, failed: 0}` off this surface and concluded the guard
+   * had never run; the reading was equally consistent with the guard running and
+   * deciding DISCARD, and nothing here could tell the two apart.
+   */
+  getConflictCopies(): ConflictCopyLedger {
     return getConflictCopies();
+  }
+
+  /**
+   * S143/S144/S157 — the give-up ledger, for a live validator.
+   *
+   * The three arms it covers all fail by SURVIVING: a path drops out of the
+   * session, a path's join reconciliation is skipped, a folder is not created —
+   * and in every case the product keeps running and reports healthy. There is
+   * no other trace to read, which is why this surface exists.
+   *
+   * Every branch of all three arms increments, including the successes, so a
+   * zero cell means "this arm did not run for this path" and nothing else
+   * (`S155`).
+   */
+  getPathOutcomes(): PathOutcomeLedger {
+    return getPathOutcomes();
+  }
+
+  /**
+   * S143 — which paths `subscribe()` gave up on and why, right now. The ledger
+   * above is cumulative; this is the CURRENT set that a re-arm would re-drive.
+   * Terminal give-ups (cancelled, released) are deliberately absent from it.
+   */
+  getAbandonedSubscribes(): Record<string, string> {
+    return this.backgroundSync?.getAbandonedSubscribes() ?? {};
   }
 
   notify(msg: string): void {
@@ -1954,6 +2142,9 @@ export default class LiveSharePlugin extends Plugin {
     this.teardownCanvasPresences();
     this.canvasSync?.destroy();
     this.canvasSync = null;
+    // WP117: in-flight requests and their timers belong to ONE session.
+    this.canvasCreate?.reset();
+    this.canvasCreate = null;
     // WP25: stop the periodic compaction timer with the session that armed it.
     void this.canvasSidecar?.lifecycle.destroy();
     this.canvasSidecar = null;
@@ -2237,6 +2428,89 @@ export default class LiveSharePlugin extends Plugin {
     // Authoritative enforcement is server-side in ws-handler; this stops a read-only
     // guest from diverging locally. `path` is the canonical canvas path.
     this.canvasSync.setCanWrite((path) => this.canWriteCanvasPath(path));
+    // WP117 (S122) — WIRING ONLY. Every member below is a measurement taken from
+    // the object that owns it or an action performed by it; there is no
+    // conditional over canvas state here and no second copy of any predicate.
+    this.canvasCreate = new CanvasCreateCoordinator({
+      role: () => (this.settings.role === "host" ? "host" : this.settings.role === "guest" ? "guest" : null),
+      send: (message) => {
+        const channel = this.controlChannel;
+        if (!channel) return false;
+        channel.send(message as never);
+        return true;
+      },
+      isSharedPath: (path) => this.manifestManager.isSharedPath(path),
+      manifestKnows: (path) =>
+        this.manifestManager.getEntries().has(toCanonicalPath(normalizePath(path))),
+      isPathSafe: (path) => isPathSafe(path),
+      isProtectedPath: (path) => isProtectedPath(path),
+      fileExists: (path) => this.app.vault.adapter.exists(toLocalPath(path)),
+      readFile: async (path) => {
+        try {
+          return await this.app.vault.adapter.read(toLocalPath(path));
+        } catch {
+          return null;
+        }
+      },
+      // The SHARED parser, imported — never a private `JSON.parse`. `degraded`
+      // is the one fact that separates "this is not a canvas" from "this is an
+      // empty canvas", and an empty canvas is a legitimate thing to create.
+      isCanvasDocument: (content) => parseCanvasReport(content).degraded === false,
+      createFile: async (path, content) => {
+        const diskPath = toLocalPath(path);
+        const parentDir = diskPath.substring(0, diskPath.lastIndexOf("/"));
+        if (parentDir) await ensureFolder(this.app.vault, parentDir, this.logger);
+        // `vault.create`, NOT `adapter.write`, and the difference is load-bearing
+        // here: the vault API registers the `TFile` before it resolves, and the
+        // manifest publication one step later needs one. It is the same call
+        // `applyRemoteOpInner`'s create arm makes.
+        //
+        // NO PATH MUTE, and that is a decision rather than an omission. Every
+        // other remote-originated write in this plugin takes one, because the
+        // vault `create` it raises would otherwise be re-emitted as this peer's
+        // own authoring gesture. For a `.canvas` on the HOST all three consumers
+        // of that event are already correct without one, and each refuses at a
+        // line a test can point at:
+        //
+        //   ├── `FileOpsManager.onFileCreate` refuses the content push for a
+        //   │      path `skipsAutoTextSync` claims (WP83);
+        //   ├── `BackgroundSync.onFileAdded` refuses the same path with the same
+        //   │      predicate, so no second raw `Y.Text` is installed; and
+        //   └── `requestCanvasCreate` declines `not-guest` on the host.
+        //
+        // What the event DOES do is re-publish the manifest entry this method
+        // publishes one step later, which is idempotent. A mute here would buy
+        // nothing and cost something real: the create would be counted as a
+        // `MUTE DROP` on the ledger a live validator reads for swallowed user
+        // gestures (S120), where it would be a false positive.
+        await this.app.vault.create(diskPath, content);
+      },
+      publishManifestEntry: async (path, content) => {
+        const file = this.app.vault.getAbstractFileByPath(toLocalPath(path));
+        if (!(file instanceof TFile)) {
+          // Fail LOUDLY rather than quietly leaving a file no peer can resolve.
+          // The coordinator turns this into a refusal the guest is shown, which
+          // is the whole of A4: a creation that did not work says so.
+          throw new Error(`the created canvas is not readable back at ${path}`);
+        }
+        await this.manifestManager.updateFile(file, content);
+      },
+      // WP6 AC8: the OBJECT, never a subscribe written in this file. The
+      // coordinator issues the call, for the same reason `canvas-mirror.ts`
+      // does. See `CanvasCreateEnv.canvasSync`.
+      canvasSync: () => this.canvasSync,
+      attachWriter: (path) => this.attachCanvasWriter(path),
+      identityFor: (path) => this.manifestManager.getCanvasGuid(path),
+      // WP122 (S170): an accepted result makes the path adoptable, and nothing
+      // else re-asks the mirror. The eleventh call site of this pass; forwarding
+      // only, exactly like the other ten.
+      armMirrorPass: () => this.armCanvasMirrorPass(),
+      notify: (message) => {
+        new Notice(message);
+      },
+      newRequestId: () => crypto.randomUUID(),
+      logger: this.logger,
+    });
     // WP3: the diff-inferred lock-acquisition hook, backed by the per-canvas
     // CanvasPresence controllers. WP21 removed the per-node lock write/delete
     // gates that used to be injected alongside it — locks are pure UX and no
@@ -2527,6 +2801,8 @@ export default class LiveSharePlugin extends Plugin {
         presence.destroy();
         this.canvasPresences.delete(path);
         this.canvasAdapters.delete(path);
+        // B72 (WP3) — the sweep's only clock, stopped with the surface it swept.
+        this.stopCanvasRepaintSweep(path);
         // WP5 (C5 AC1): drop the HAND-OVER receipt with the adapter — nothing is
         // on a surface that no longer exists. The shared Surface-Shadow's path is
         // deliberately NOT cleared: it is also the capture basis, so dropping it
@@ -2958,6 +3234,14 @@ export default class LiveSharePlugin extends Plugin {
           nodeOutcomes.set(n.id, outcome);
           if (outcome === "applied") {
             applied++;
+            // B72 (WP2) — THE SECOND HALF OF AN APPLY. `applyNodeGeometry` wrote
+            // the model; Obsidian only ENQUEUES the pixels (`moveAndResize` calls
+            // `markMoved` and never touches `nodeEl`), behind a
+            // `requestAnimationFrame` that a hidden window suspends and behind an
+            // `isAttached` gate `virtualize()` controls. We hold the id right
+            // here, so this is O(1) and needs no sweep. `repaintNode` refuses on
+            // its own for a card the user is dragging or typing in.
+            adapter.repaintNode?.(n.id);
             if (edgeEndpoints.has(n.id)) movedEndpoint = true;
           } else if (outcome === "interacting") interacting++;
         }
@@ -3247,9 +3531,42 @@ export default class LiveSharePlugin extends Plugin {
     return getCollabBindRefusals();
   }
 
+  /**
+   * S134 AC3 — activations that ended in the `waitForSync` TIMEOUT, kept apart
+   * from the refusals above because one is a decision and the other is a
+   * failure, and a validator watching a rising number has to be able to tell
+   * which it is looking at (S132).
+   */
+  getCollabBindFailures(): { total: number; paths: string[] } {
+    return getCollabBindFailures();
+  }
+
   /** S123 AC5 — the last mirror pass's per-path verdicts, for a live validator. */
   getLastCanvasMirrorReport(): CanvasMirrorReport | null {
     return this.lastCanvasMirrorReport;
+  }
+
+  /**
+   * S122 AC4 — what host-mediated canvas creation has done and refused, for a
+   * live validator. Counts and classes only; never a path, never content.
+   */
+  getCanvasCreateStats(): CanvasCreateStats | null {
+    return this.canvasCreate?.getStats() ?? null;
+  }
+
+  /**
+   * WP117 — the guest's half, called from the vault `create` event. Forwarding
+   * only: every branch, including the six that do nothing, is decided and
+   * counted inside the coordinator.
+   */
+  async requestCanvasCreate(rawPath: string): Promise<void> {
+    const coordinator = this.canvasCreate;
+    if (!coordinator) return;
+    try {
+      await coordinator.requestCreate(toCanonicalPath(normalizePath(rawPath)));
+    } catch (err) {
+      this.logger.error("canvas-create", `canvas creation request failed for ${rawPath}`, err);
+    }
   }
 
   private armCanvasMirrorPass(): void {
@@ -3264,7 +3581,19 @@ export default class LiveSharePlugin extends Plugin {
           guidForPath: (path) => this.manifestManager.getCanvasGuid(path),
           canvasSync,
           materialise: (path) => this.attachCanvasWriter(path),
+          // WP122 (S146): the HOST's own canvases get the single writer too, so
+          // a guest's edit reaches the host's FILE and not only its document.
+          // The SAME route as `materialise` above and as the guest-create
+          // handshake's `attachWriter` — `hasCanvasWriter` stays the one
+          // definition of "already attached", and this is a second reference to
+          // one route rather than a second route.
+          bindHostWriter: (path) => this.attachCanvasWriter(path),
           watchForRecords: (path) => this.watchCanvasForRecords(path),
+          // WP117 (A6): the ONE path per accepted request whose existing local
+          // file is adopted rather than skipped. Both are reads of the
+          // coordinator's own state; this file decides nothing.
+          originatedHere: (path) => this.canvasCreate?.originatedHere(path) === true,
+          noteAdopted: (path) => this.canvasCreate?.noteAdopted(path),
           logger: this.logger,
         });
       })
@@ -3331,6 +3660,37 @@ export default class LiveSharePlugin extends Plugin {
     };
   }
 
+  /**
+   * B68 (`S188`) — THE ONE ACCESSOR the canvas-disjoint diagnostic reads through.
+   *
+   * Wiring only, and read-only: it hands back the objects this class already
+   * holds in `canvasAdapters` / `canvasPresences`, keyed by the canonical path
+   * they are stored under, and decides nothing. It opens nothing, mounts
+   * nothing, and calls no method on either object — in particular it does NOT
+   * call `adapter.isBusy()` or `adapter.getEditingNodeId()`, both of which run
+   * the staleness sweep and can fire WP37's blur drain (the same reason
+   * `canvasEditingSignal` above states for avoiding them).
+   *
+   * `rawPath` filters to one board; omitting it reports every mounted board, so
+   * an armed diagnostic can say WHICH paths it could reach rather than
+   * silently reporting an empty view plane for a board that is simply not open
+   * on this peer.
+   */
+  canvasDiagTargets(
+    rawPath?: string,
+  ): Array<{ path: string; adapter: unknown; presence: unknown }> {
+    const wanted =
+      typeof rawPath === "string" && rawPath.length > 0
+        ? toCanonicalPath(normalizePath(rawPath))
+        : null;
+    const out: Array<{ path: string; adapter: unknown; presence: unknown }> = [];
+    for (const [path, adapter] of this.canvasAdapters) {
+      if (wanted !== null && path !== wanted) continue;
+      out.push({ path, adapter, presence: this.canvasPresences.get(path) ?? null });
+    }
+    return out;
+  }
+
   private async attachCanvasWriter(rawPath: string): Promise<void> {
     const canonical = toCanonicalPath(normalizePath(rawPath));
     if (this.hasCanvasWriter(canonical)) return;
@@ -3339,7 +3699,7 @@ export default class LiveSharePlugin extends Plugin {
     this.canvasWriterAttaching.add(canonical);
     const baseIo = createVaultPersistenceIO(this.app.vault.adapter, this.fileOpsManager, {
       isPathSafe: (diskPath) => isPathSafe(diskPath),
-      ensureFolder: (parentDir) => ensureFolder(this.app.vault, parentDir),
+      ensureFolder: (parentDir) => ensureFolder(this.app.vault, parentDir, this.logger),
     });
     // WP90 (I11): the durable refused set, over WP24's OWN vault I/O adapter —
     // not `baseIo`. `baseIo` is the canvas writer's seam and it is decorated by
@@ -3422,7 +3782,49 @@ export default class LiveSharePlugin extends Plugin {
           // WP29 (I9/AC1): the two conditions were measured by `subscribe`,
           // which has already resolved by the time we get here — so the cold
           // open reads them from the object that took them.
-          seedKnowledge: this.canvasSync?.seedKnowledgeFor(canonical),
+          // WP117 (S122's residual): and the ROLE, stamped from the live session
+          // over whatever `subscribe` recorded. The two agree in the ordinary
+          // case; where they cannot — a path whose subscribe left by one of the
+          // early exits and therefore recorded nothing — `seedKnowledgeFor`
+          // answers `NOTHING_KNOWS_DOC`, which has no role and would fall
+          // through to the pre-WP117 table. Stamping here is what makes the
+          // "a guest never seeds" rule hold on EVERY cold open rather than on
+          // the ones that got as far as recording their knowledge.
+          seedKnowledge: {
+            ...(this.canvasSync?.seedKnowledgeFor(canonical) ?? {
+              sidecarKnowsDoc: false,
+              peerKnowsDoc: false,
+            }),
+            role: this.settings.role === "host" ? "host" : "guest",
+          },
+          // ── WP121 — WINNING IS NOT A LICENCE TO DISCARD ──────────────────
+          //
+          // The `doc-wins` branch overwrites the user's `.canvas` from the
+          // document. That decision is unchanged; what this adds is the copy
+          // the text arm has had since `S125`, for the case the document is
+          // missing records the file holds.
+          //
+          // It travels through `baseIo`, NOT through the decorated `io` above:
+          // the decoration is WP87's editing-aware hold, which defers `.canvas`
+          // bytes while an inline editor is open and re-plays them under THIS
+          // canvas path's key. A one-shot additive copy to a path in the
+          // conflicts root has nothing to do with that queue. `baseIo` still
+          // carries the two guarantees that matter for any vault write —
+          // `isPathSafe` and `ensureFolder` — so the copy cannot escape the
+          // vault and its folder is created for it.
+          //
+          // `copyPath`, never `diskPath`: WP87's surface-route census derives
+          // the live-canvas-surface vocabulary from `PersistenceIO`'s own
+          // declaration and discriminates on the FIRST PARAMETER'S NAME,
+          // because `write(` alone also matches "a markdown sink, a sidecar
+          // checkpoint and a conflict archive" (its words). This is the
+          // conflict archive, and it never writes the canvas path.
+          preserveDiscarded: {
+            sharedFolder: this.settings.sharedFolder,
+            read: async (diskPath) =>
+              (await baseIo.exists(diskPath)) ? await baseIo.read(diskPath) : null,
+            write: (copyPath, content) => baseIo.write(copyPath, content),
+          },
         },
       );
       // A session teardown may have raced the awaited cold open.
@@ -3458,6 +3860,8 @@ export default class LiveSharePlugin extends Plugin {
       });
       // Register for live-view reconciliation (kept in lockstep with the presence).
       this.canvasAdapters.set(toCanonicalPath(normalizePath(rawPath)), adapter);
+      // B72 (WP3) — and the restoring sweep, in the same lockstep.
+      this.startCanvasRepaintSweep(toCanonicalPath(normalizePath(rawPath)), adapter);
       // WP37 (C37 AC5) — the BLUR exit of the deferral. Forwarding only: the
       // adapter reports that an inline editor ended, and the drain re-runs one
       // ordinary reconcile pass. Fires for a watchdog-released editor too, so a
@@ -3595,11 +3999,47 @@ export default class LiveSharePlugin extends Plugin {
   }
 
   // WP4 (US2 AC7/AC8) — GAP-1 loser-revert. This client lost the lowest-clientID
-  // tiebreak on `nodeId`, so the lock seam denied its optimistic edit and that edit
-  // never reached the shared doc (canvas-sync holds its diff baseline back for the
-  // same reason). The LIVE view still shows the rejected position, so roll it back
-  // to shared truth with one authoritative full reconcile. A null snapshot (shared
-  // doc still empty) is a no-op — never wipe the view (BUILD_SPEC § 6).
+  // tiebreak on `nodeId`. The LIVE view may still show the rejected position, so
+  // roll THAT NODE back to shared truth. A null snapshot (shared doc still empty)
+  // is a no-op — never wipe the view (BUILD_SPEC § 6).
+  //
+  // WP119 — THE BLAST RADIUS IS THE DEFECT, AND IT WAS HERE.
+  //
+  // What this method used to do: take the node id, THROW IT AWAY, and hand the
+  // WHOLE snapshot to `reconcileLiveCanvas(..., {initial: true})`. `initial` is an
+  // unconditional `"structural"` (`reconcile-plan.ts:166`), so one contested card
+  // became `canvas.setData(entire board)` and every OTHER card on the board was
+  // re-laid-out from shared truth. The clicked card was typically the one card
+  // that did NOT move — it is the one both peers already agree about. That is the
+  // owner's report verbatim: *"I select cards on client one, other cards jump
+  // around on client 2"*, and it is why the arrows held still (`setData` reuses
+  // existing nodes, so an unchanged edge record is handed back identical and
+  // nothing re-routes it — see the note at `reconcileLiveCanvas`).
+  //
+  // ⚠ CORRECTION TO THIS METHOD'S OWN PREVIOUS DOC COMMENT. It claimed "the lock
+  // seam denied its optimistic edit and that edit never reached the shared doc
+  // (canvas-sync holds its diff baseline back for the same reason)". That has been
+  // FALSE since WP21, which removed the lock seam from the capture path outright —
+  // `canvas-sync.ts:4411` ("the lock-seam gate lived here. It is REMOVED, not
+  // rewritten") and `canvas-sync.ts:3705` (the echo baseline now advances
+  // unconditionally). Locks carry no write authority on this tree: the only
+  // consumers of `canWriteNode`/`canDeleteNode` are `CanvasBinding`'s optional
+  // gates, and `mountCanvasPresence` does not supply them. So the loser's edit
+  // DOES reach the shared doc, which means the node this method reverts is
+  // normally already equal to shared truth and the apply below is an honest
+  // `"unchanged"`. What remains is the VIEW rollback WP21 deliberately kept
+  // ("locks ... still revert the loser's VIEW"), and a view rollback of one node
+  // is a per-node operation. Whether the loser-revert should survive at all now
+  // that its justification has gone is a question for the canvas convergence
+  // remodel, NOT for this package.
+  //
+  // EXPRESSIBILITY (charter A1). `CanvasAdapter` has exactly one per-record write:
+  // `applyNodeGeometry`, i.e. x/y/width/height. A per-node revert of `text`,
+  // `color`, `type` or an edge field is NOT expressible through it — the only
+  // route is `reloadCanvasData`, which is the whole board. Such a difference is
+  // therefore REPORTED and not applied: escalating back to a whole-board reload
+  // to catch it is precisely the defect this package exists to remove, and since
+  // WP21 the loser's non-geometry edit is in the shared doc anyway.
   private revertCanvasNode(rawPath: string, nodeId: string, awareness: AwarenessLike): void {
     const canonical = toCanonicalPath(normalizePath(rawPath));
     let winner: number | null = null;
@@ -3608,14 +4048,189 @@ export default class LiveSharePlugin extends Plugin {
     } catch {
       /* awareness may be torn down mid-revert; the view rollback still runs */
     }
+    const who = `${canonical} node=${nodeId} winner=${winner ?? "unknown"}`;
     const snapshot = this.canvasSync?.getCanvasSnapshot(rawPath) ?? null;
-    const noSnapshot = snapshot ? "" : " (no shared snapshot yet; view left untouched)";
+    if (!snapshot) {
+      this.logger.warn(
+        "canvas",
+        `LOCK REVERT: ${who} (no shared snapshot yet; view left untouched)`,
+      );
+      return;
+    }
+    // The ONE record this revert is about. Nothing else on the board is read.
+    const desired =
+      snapshot.nodes.find(
+        (record) => record && typeof record.id === "string" && record.id === nodeId,
+      ) ?? null;
+    if (!desired) {
+      // Shared truth does not carry the node (deleted, or never captured). There
+      // is nothing to revert TO, and a full reload would be the old blast radius
+      // wearing a different hat. `onRemoteNodeDeleted` owns the delete case.
+      this.logger.warn(
+        "canvas",
+        `LOCK REVERT: ${who} (node absent from shared truth; view left untouched)`,
+      );
+      return;
+    }
+    this.applyCanvasNodeRevert(canonical, nodeId, desired, who);
+  }
+
+  /**
+   * WP119 — put ONE node back where shared truth says it is.
+   *
+   * Deliberately not a call into `reconcileLiveCanvas`: that method's contract is
+   * a WHOLE-BOARD pass (its planner compares the desired id set against the live
+   * one, so handing it a single-node payload would classify as a membership change
+   * and `setData` the rest of the board away). The pieces it shares with this one
+   * — the availability guard, the modify mute, and the WP5 receipt that advances
+   * the Surface-Shadow — are re-used directly, so the shadow bookkeeping is the
+   * same seam and cannot drift.
+   */
+  /**
+   * B72 (WP3) — start the low-rate repaint sweep for one mounted canvas.
+   *
+   * WHAT IT IS FOR, STATED AS THE WORKAROUND IT IS. WP2 repairs the damage this
+   * plugin's OWN applies can leave; this repairs damage from causes nobody has
+   * identified yet, by repainting a few cards per second from the model until
+   * every card has been visited, then starting again. It cannot fix a wrong
+   * MODEL — nothing here reads the doc or the file — so it can only ever repair
+   * a view that disagrees with a model that is already right, which is exactly
+   * the defect class `S189` measured and nothing else.
+   *
+   * WHAT IT MASKS, AND THE COUNTER THAT KEEPS IT FROM MASKING SILENTLY. A sweep
+   * that quietly repaired everything would destroy the ability to measure the
+   * cause: the board would look correct and the paint plane would find nothing.
+   * That is why `describeRepaintSweep().repaired` counts every repaint that
+   * landed on a card whose element was demonstrably in the wrong place BEFORE it
+   * ran. The damage rate stays visible even when the damage does not.
+   *
+   * Idempotent, and never two intervals for one path.
+   */
+  private startCanvasRepaintSweep(canonical: string, adapter: CanvasAdapter): void {
+    if (this.canvasRepaintSweeps.has(canonical)) return;
+    if (typeof adapter.sweepRepaint !== "function") return;
+    const handle = setInterval(() => {
+      const live = this.canvasAdapters.get(canonical);
+      // The adapter can be replaced or dropped between ticks; a sweep must never
+      // paint through a handle its own registry has moved on from.
+      if (!live || live !== adapter) {
+        this.stopCanvasRepaintSweep(canonical);
+        return;
+      }
+      try {
+        live.sweepRepaint?.();
+      } catch (err) {
+        this.logger.debug("canvas", `repaint sweep ${canonical}: tick threw — ${String(err)}`);
+      }
+    }, REPAINT_SWEEP_PERIOD_MS);
+    this.canvasRepaintSweeps.set(canonical, handle);
+  }
+
+  /** B72 (WP3) — stop it. Called from every path that drops an adapter. */
+  private stopCanvasRepaintSweep(canonical: string): void {
+    const handle = this.canvasRepaintSweeps.get(canonical);
+    if (handle === undefined) return;
+    clearInterval(handle);
+    this.canvasRepaintSweeps.delete(canonical);
+  }
+
+  private applyCanvasNodeRevert(
+    canonical: string,
+    nodeId: string,
+    desired: Record<string, unknown>,
+    who: string,
+  ): void {
+    const adapter = this.canvasAdapters.get(canonical);
+    if (!adapter || !adapter.isAvailable()) return; // canvas not open → file sync suffices
+    const shadow = this.canvasSync?.getSurfaceShadow();
+    if (!shadow) return; // canvas sync torn down → nothing to reconcile against
+    const { x, y, width, height } = desired;
+    if (
+      typeof x !== "number" ||
+      typeof y !== "number" ||
+      typeof width !== "number" ||
+      typeof height !== "number"
+    ) {
+      this.logger.warn(
+        "canvas",
+        `LOCK REVERT: ${who} (shared record has no usable geometry; view left untouched)`,
+      );
+      return;
+    }
+    // WP87 (C87) — THE ONE editing/drag predicate, the same definer
+    // `reconcileLiveCanvas` consults and never a second one (rule 10). A revert is
+    // a remote change like any other and `applyNodeGeometry` is a
+    // `GUARDED-BY-CALLER` surface sink: every live caller of it must consult this
+    // and act on the answer, which `v2/wp87/test_tp01_surface_route_census` derives
+    // from the tree rather than from a list. Without this the loser-revert would be
+    // a route from a peer's selection straight onto a card the local user is typing
+    // in — WP87's destruction class, re-opened by a repair.
+    const gate = classifyBusyGate({
+      busy: adapter.isBusy(),
+      editingNodeId: adapter.getEditingNodeId?.() ?? null,
+    });
+    if (gate === "defer-drag") {
+      // Never reconcile mid-drag. Same arm, same reason, as `reconcileLiveCanvas`.
+      this.logger.debug("canvas", `LOCK REVERT: ${who} deferred (user dragging)`);
+      return;
+    }
+    if (gate === "editing") {
+      // An inline editor is open on this board. `applyNodeGeometry` reseats the
+      // card it is handed, and WP37 measured that reseating a card with an open
+      // editor discards its unflushed text. A lock revert is never worth that, and
+      // nothing is lost: since WP21 the loser's edit is in the shared doc, so the
+      // ordinary convergence path still carries the value.
+      this.logger.debug("canvas", `LOCK REVERT: ${who} withheld (inline editor open)`);
+      return;
+    }
+    // Diagnostics only (see the expressibility note above): which fields shared
+    // truth disagrees about that a per-node apply cannot carry. Never escalates.
+    const live = adapter.getNodeFields?.(nodeId) ?? null;
+    const unexpressible: string[] = [];
+    if (live) {
+      for (const key of new Set([...Object.keys(desired), ...Object.keys(live)])) {
+        if (key === "id" || RECONCILE_GEOMETRY_KEYS.has(key)) continue;
+        if (desired[key] !== live[key]) unexpressible.push(key);
+      }
+    }
+    // NO MUTE HERE, and that is a decision rather than an omission. The geometry
+    // branch of `reconcileLiveCanvas` brackets itself with
+    // `mutePathEvents`/`armMuteRelease`, and for a CANVAS-OWNED path that bracket
+    // is inert: the vault `modify` gate takes the canvas branch at
+    // `files/vault-events.ts:378-409`, whose WP91 note says in its own words that
+    // "THE MUTE AND THE DISK-WRITE WINDOW ARE NOT ASKED HERE" — the decision is the
+    // byte echo breaker instead. Arming a mute a canvas path never consults would
+    // add a refcount only the ceiling releases, and a release site to WP93's census,
+    // in exchange for nothing. This route is strictly FEWER writes than the
+    // whole-board reload it replaces, never more.
+    const outcome: ApplyOutcome = adapter.applyNodeGeometry(nodeId, { x, y, width, height });
+    // B72 (WP2) — the same second half, on the revert route. This method arms no
+    // mute (see the note above) and that difference is deliberate and unchanged:
+    // a repaint writes inline styles onto a card and produces no vault `modify`
+    // of its own, so it needs nothing from the mute either way.
+    if (outcome === "applied") adapter.repaintNode?.(nodeId);
+    // WP5 (C5 AC1/AC2/AC3): the same receipt seam every other apply route uses.
+    // `plan: "geometry"` ⇒ `exhaustive === false`, so this pass grants a licence
+    // for the one node it confirmed and revokes nothing — a per-node revert proves
+    // nothing about the membership of the rest of the board (S83).
+    const summary = advanceFromReceipt(
+      shadow,
+      buildApplyReceipt({
+        path: canonical,
+        desired: { nodes: [desired], edges: [] },
+        plan: "geometry",
+        nodeOutcomes: new Map<string, ApplyOutcome>([[nodeId, outcome]]),
+      }),
+    );
+    this.surfaceState.noteHandover(canonical, summary.handed, summary.revoked);
     this.logger.warn(
       "canvas",
-      `LOCK REVERT: ${canonical} node=${nodeId} winner=${winner ?? "unknown"}${noSnapshot}`,
+      `LOCK REVERT: ${who} geometry=${outcome}` +
+        (unexpressible.length > 0
+          ? ` [not applied: ${unexpressible.join(",")} — a per-node revert cannot ` +
+            "express non-geometry fields; shared truth carries them]"
+          : ""),
     );
-    if (!snapshot) return;
-    this.reconcileLiveCanvas(rawPath, snapshot, { initial: true });
   }
 
   private teardownCanvasPresences() {
@@ -3681,6 +4296,10 @@ export default class LiveSharePlugin extends Plugin {
     // names, and this method cannot be async without changing two sync callers.
     void this.flushSeedRefusals();
     this.canvasPresences.clear();
+    // B72 (WP3) — every sweep interval, on BOTH destroy paths. A timer that
+    // outlived its adapter would keep a private-canvas reference alive and paint
+    // through a view the plugin has already let go of.
+    for (const path of [...this.canvasRepaintSweeps.keys()]) this.stopCanvasRepaintSweep(path);
     this.canvasAdapters.clear();
     // WP5 (C5 AC1): the hand-over receipt lives and dies with the adapters. The
     // shared Surface-Shadow belongs to CanvasSync and is torn down with it.

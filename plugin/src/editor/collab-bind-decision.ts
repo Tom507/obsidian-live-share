@@ -166,3 +166,80 @@ export function resetCollabBindRefusals(): void {
   refusalTotal = 0;
   refusedPaths.clear();
 }
+
+/**
+ * S134 AC3 — A BIND THAT FAILED IS NOT A BIND THAT WAS REFUSED, AND THE TWO GET
+ * SEPARATE LEDGERS.
+ *
+ * A refusal above is a DECISION this peer took on evidence it holds. What this
+ * ledger counts is the other thing entirely: `waitForSync` REJECTED, the
+ * activation never reached a decision at all, and the `catch` reconfigured the
+ * CodeMirror compartment to empty while `collabBoundFile` still named the file.
+ * Every internal indicator said "bound" and nothing anywhere moved.
+ *
+ * Kept apart from {@link getCollabBindRefusals} on S132's ground: a ledger
+ * dominated by a benign, expected class cannot report the one class that still
+ * loses collaboration. A validator watching `refusals` must be able to read
+ * "this peer decided not to bind" and nothing else.
+ */
+export interface CollabBindFailures {
+  /** Total activations that ended in the timeout `catch`. Never decremented. */
+  total: number;
+  /** Vault paths whose bind failed and has not since succeeded. */
+  paths: string[];
+}
+
+const failedPaths = new Set<string>();
+let failureTotal = 0;
+
+export function noteCollabBindFailure(path: string): void {
+  failureTotal += 1;
+  failedPaths.add(path);
+}
+
+/** Called when a failed path later binds, so `paths` reflects live state. */
+export function clearCollabBindFailure(path: string): void {
+  failedPaths.delete(path);
+}
+
+export function getCollabBindFailures(): CollabBindFailures {
+  return { total: failureTotal, paths: Array.from(failedPaths) };
+}
+
+/** Tests only. */
+export function resetCollabBindFailures(): void {
+  failureTotal = 0;
+  failedPaths.clear();
+}
+
+/** The half of `BackgroundSync` the sink below touches. Structural, so no import. */
+export interface CollabBoundFileFlag {
+  getCollabBoundFile(): string | null;
+  setCollabBoundFile(path: string | null): void;
+}
+
+/**
+ * S134 AC3 — THE GLUE, OWNED HERE SO IT HAS EXACTLY ONE DEFINITION.
+ *
+ * `main.ts` sets `collabBoundFile` synchronously, before the activation it
+ * describes has even started, and had no path back. This is that path, and it is
+ * deliberately a function rather than a closure written inline at the call site:
+ * a rule spelled out at its only caller is a rule no test can drive, and this
+ * codebase has paid for that more than once.
+ *
+ * Two properties, both load-bearing:
+ *
+ *   - IDENTITY-GUARDED. A late-resolving activation must not clear a flag the
+ *     user has already moved past — the same stale-write trap that got the
+ *     `.then()` removed from `onActiveFileChange`.
+ *   - IT NEVER SETS. A successful bind is reported too, and does nothing: the
+ *     flag was already set synchronously by the caller, and re-asserting it here
+ *     would let a stale activation re-claim a file the user left.
+ */
+export function makeBindStateSink(flag: CollabBoundFileFlag): (path: string, bound: boolean) => void {
+  return (path, bound) => {
+    if (bound) return;
+    if (flag.getCollabBoundFile() !== path) return;
+    flag.setCollabBoundFile(null);
+  };
+}

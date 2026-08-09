@@ -413,7 +413,12 @@ export class ControlChannel {
       msg.type === "file-chunk-start" ||
       msg.type === "file-chunk-data" ||
       msg.type === "file-chunk-end" ||
-      msg.type === "file-chunk-resume";
+      msg.type === "file-chunk-resume" ||
+      // WP117 (I8 — the relay remains content-blind). A canvas creation request
+      // carries a whole user file. Leaving it off this list would put the one
+      // payload this feature exists to move across the wire in PLAINTEXT
+      // through the relay, which is the invariant, not a nicety.
+      msg.type === "canvas-create-request";
     if (this.e2e?.enabled && encryptable) {
       void this.encryptAndSend(msg);
     } else {
@@ -530,6 +535,18 @@ export class ControlChannel {
       } else if (msg.type === "file-chunk-resume" && typeof msg.path === "string") {
         const encrypted = await this.e2e.encryptString(msg.path);
         this.ws.send(JSON.stringify({ ...msg, path: encrypted, encrypted: true }));
+      } else if (msg.type === "canvas-create-request") {
+        // WP117 — the path AND the content. `requestId` is a random uuid this
+        // peer minted and carries no user data, so it travels in the clear and
+        // stays usable as the correlation key on an encrypted round trip.
+        this.ws.send(
+          JSON.stringify({
+            ...msg,
+            path: await this.e2e.encryptString(msg.path),
+            content: await this.e2e.encryptString(msg.content),
+            encrypted: true,
+          }),
+        );
       } else if (msg.type === "file-op") {
         const op = msg.op as unknown as Record<string, unknown>;
         if (op && typeof op.content === "string") {
@@ -590,6 +607,12 @@ export class ControlChannel {
       } else if (msg.type === "file-chunk-resume" && typeof msg.path === "string") {
         const decryptedPath = await this.e2e.decryptString(msg.path);
         decryptedMsg = { ...msg, path: decryptedPath };
+      } else if (msg.type === "canvas-create-request") {
+        decryptedMsg = {
+          ...msg,
+          path: await this.e2e.decryptString(msg.path),
+          content: await this.e2e.decryptString(msg.content),
+        };
       } else if (msg.type === "file-op") {
         const op = msg.op as unknown as Record<string, unknown>;
         if (op && typeof op.content === "string") {

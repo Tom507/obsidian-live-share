@@ -52,11 +52,30 @@ import {
 const PATH = "ops/runbook.canvas";
 
 /**
- * `canvas-presence.ts` as of the WP21 charter, LF-normalised. Regenerate ONLY by
- * ESCALATING the `canvas-presence.ts` invariant — never by pasting the new hash.
+ * `canvas-presence.ts`, LF-normalised. Regenerate ONLY by ESCALATING the
+ * `canvas-presence.ts` invariant — never by pasting the new hash.
+ *
+ * ── AMENDMENT LEDGER ─────────────────────────────────────────────────────────
+ * | when | digest | authority |
+ * |---|---|---|
+ * | WP21 charter | `40528ad8…db29dd9`, 22 551 B | the original pin |
+ * | **WP120**, 2026-08-08 | `2cefc9a8…f07ff16c9`, 29 831 B | **owner decision**, on
+ * |   record in `workflowArtifacts/canvas-v2/DISPATCHER_STATE.md` §5: *"`canvas-
+ * |   presence.ts`'s byte-unchanged pin is LIFTED for the lock-lifetime repair
+ * |   only. The pin must be re-established with a new digest, not deleted."* |
+ *
+ * THE PIN IS NOT WEAKENED AND MUST NEVER BE DELETED. It is re-established at the
+ * new content, so the very next unauthorised byte still reddens this row. A pin
+ * removed to let a change through is a guard that silently stops guarding, which
+ * is `S162`'s shape; the lift was for ONE repair (the diff-inferred claim's
+ * lifetime) and nothing else in that file is authorised.
+ *
+ * The three behavioural pins below are the reason a digest is worth having, and
+ * WP120 changed none of them: the deadline pulse, the reconnect reclaim defer and
+ * the lowest-clientID tiebreak are all still asserted against the real object.
  */
-const PRESENCE_SHA256_LF = "40528ad8083a0f706dc045e64d0039887cbbaacc4d0db2e7246ccba22db29dd9";
-const PRESENCE_BYTES_LF = 22551;
+const PRESENCE_SHA256_LF = "2cefc9a88bb407bfd4a28b432ad901c20be6cc1f8a6e0c936e61b86f07ff16c9";
+const PRESENCE_BYTES_LF = 29831;
 
 function makeAwarenessNetwork() {
   const states = new Map<number, Record<string, unknown>>();

@@ -2,7 +2,7 @@
 
 > **Current architecture reference.** Rewritten on 2026-08-07 against the committed Canvas CRDT V2 implementation and the settled WP1–WP95 feature baseline. Active S104–S113 investigations remain working-state notes in the build specification and are not used to redefine the architecture here.
 >
-> For exact product verdicts, incomplete work, and release blockers, see [BUILD_SPEC_ObsidianLiveShare.md](BUILD_SPEC_ObsidianLiveShare.md). Historical engineering records are intentionally excluded from the release branch and do not override this document.
+> For exact product verdicts, incomplete work, and release blockers, see [BUILD_SPEC_ObsidianLiveShare.md](workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md). Historical design papers remain under `workflowArtifacts/` and do not override this document.
 
 ![Runtime architecture](docs/assets/architecture-overview.svg)
 
@@ -336,7 +336,7 @@ The deployment can combine independent controls:
 
 These controls are not interchangeable. In particular, browser SSO or reverse-proxy forward authentication does not automatically authenticate Obsidian's WebSocket client: Electron does not carry the browser's SSO cookie into the plugin's MUX and CONTROL connections. A deployment may safely place a credential/download landing page behind SSO while routing the WebSocket and relay REST paths around that browser gate, but those bypassed paths must still enforce the relay's own `SERVER_PASSWORD`, room token, and optional JWT policy.
 
-A self-hosted deployment can use that external pattern with any compatible reverse proxy or identity provider. Proxy configuration, credential landing pages, secret generation, and network isolation remain deployment concerns outside this repository; no proprietary identity provider or provider-specific header contract is compiled into the plugin or relay. The distributable uses the server password and optional GitHub OAuth/JWT flow regardless of the surrounding infrastructure.
+The NeuralAngels deployment uses exactly that external pattern. Its SSO proxy, landing page, secret generation, and network isolation live outside this repository; no NeuralAngels identity provider or proprietary header contract is compiled into the public plugin or relay. The distributable remains self-hostable with the upstream-style server password and optional GitHub OAuth/JWT flow.
 
 ### Encryption
 
@@ -409,9 +409,7 @@ obsidian-live-share/
 │   └── src/
 ├── tools/obsidian_e2e/             ← real two-vault orchestration utilities
 ├── docs/                           ← user/developer documentation and diagrams
-├── BUILD_SPEC_ObsidianLiveShare.md ← authoritative product and release contract
-├── CONCEPT_V2.md                   ← Canvas V2 design rationale
-├── REPO_MAP.md                     ← structural source map
+├── workflowArtifacts/              ← specification and historical engineering record
 ├── ARCHITECTURE.md                 ← this document
 ├── README.md                       ← public project entry point
 └── LICENSE                         ← MIT license and upstream notice
@@ -432,7 +430,7 @@ obsidian-live-share/
 
 ## Known incomplete areas
 
-The architecture is implemented far beyond the original upstream design, but the project is still under active stabilization. The authoritative list is maintained in the [build specification](BUILD_SPEC_ObsidianLiveShare.md). At the current settled baseline:
+The architecture is implemented far beyond the original upstream design, but the project is still under active stabilization. The authoritative list is maintained in the [build specification](workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md). At the current settled baseline:
 
 - Room-mode consensus and Receive-and-Persist are incomplete as a full phase.
 - Operation capture is not yet promoted as the universal primary Canvas source.

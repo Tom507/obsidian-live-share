@@ -151,6 +151,12 @@ function makePeer(name: string, role: "host" | "guest", canvasDoc: Y.Doc): FakeP
       else muted.set(p, n);
     }),
     isPathMuted: vi.fn((p: string) => (muted.get(p) ?? 0) > 0),
+    // S120 — the kind-aware gate. This double arms no release, so the real
+    // `isPathMutedFor` takes its FAIL-CLOSED branch and answers exactly what
+    // `isPathMuted` answers. Mirroring that here keeps the double faithful
+    // instead of quietly making the muted rows unreachable.
+    isPathMutedFor: vi.fn((p: string) => (muted.get(p) ?? 0) > 0),
+    noteMuteDrop: vi.fn(),
     onFileCreate: vi.fn(),
     onFileDelete: vi.fn(),
     onFileRename: vi.fn(),
@@ -486,6 +492,10 @@ function makeRouter(opts: { withCanvasSync?: boolean } = {}): RouterFixture {
     },
     fileOpsManager: {
       isPathMuted: vi.fn(() => false),
+      // S120 — nothing is muted in this rig, and the kind-aware gate must say
+      // the same thing rather than throwing.
+      isPathMutedFor: vi.fn(() => false),
+      noteMuteDrop: vi.fn(),
       onFileModify: vi.fn(),
       onFileCreate: vi.fn(),
       onFileDelete: vi.fn(),

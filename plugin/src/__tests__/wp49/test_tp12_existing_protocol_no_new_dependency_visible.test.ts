@@ -49,6 +49,37 @@ const ALLOWED_IMPORTS = new Set([
   "yjs",
   "../canvas/canvas-binding",
   "../utils",
+  // §7 AMENDMENT (WP123, ledger entry A-123-4). The convergence oracle's records
+  // clause reads a `.canvas` with THE PRODUCTION PARSER (`parseCanvasReport` +
+  // `decodeCanvasDataToFlat`). The alternative is a second `.canvas` parser
+  // living inside the rig, which is the defect class this freeze exists to
+  // prevent, one file over. No new PACKAGE dependency and no new transport: the
+  // two assertions either side of this list are untouched.
+  "../files/canvas-sync",
+  // §7 AMENDMENT (B68 / `S188`, ledger entry A-68-1). The canvas-disjoint
+  // diagnostic's `wouldHaveReverted` field — the one boolean that settles H1 —
+  // is "does a LOWER-id peer also hold this node on this path?", i.e.
+  // `holdersOf`, exported and pure from `canvas/canvas-presence.ts`. The
+  // alternative is a SECOND DEFINER of the predicate the whole diagnosis turns
+  // on, living inside the rig: the defect class this freeze exists to prevent,
+  // one file over. `holdersOf` only. No new PACKAGE dependency and no new
+  // transport, and `canvas-presence.ts` itself is byte-unchanged — its
+  // whole-file SHA pin in `v2/wp21/test_tp04_…` is untouched. This entry MUST
+  // stay in step with its twin, A-68-2, in `wp72/test_tp4_…`.
+  "../canvas/canvas-presence",
+  // §7 AMENDMENT (B71 / `S192`, ledger entry A-71-1). The PAINT plane turns a
+  // card's `getBoundingClientRect()` back into canvas coordinates, which needs
+  // the exact inverse of the transform Obsidian renders with —
+  // `clientToCanvasManual` + `viewportScale`, the two PRODUCTION definers of
+  // that arithmetic and the ones the presence overlay already places cards
+  // with. Re-deriving them inside the rig would make it a second definer of the
+  // plugin's own screen transform, and getting the `zoom` vs `scale` distinction
+  // wrong there does not fail loudly: it yields a paint plane that cries
+  // divergence on a healthy board. `canvas/canvas-adapter.ts` has NO imports of
+  // its own, so this adds no package dependency and no transport, and both
+  // functions are pure over numbers. This entry MUST stay in step with its twin,
+  // A-71-2, in `wp72/test_tp4_…`.
+  "../canvas/canvas-adapter",
 ]);
 
 const FORBIDDEN_TRANSPORTS = ["ws", "socket.io", "node:net", "node:tls", "node:dgram", "express"];

@@ -291,7 +291,18 @@ describe("matchRenamesByHash", () => {
     expect(pairs.get("C")).toBe("D");
   });
 
-  it("does not reuse an added path for two removed paths", () => {
+  // S159 — THIS ROW ASSERTED THE DEFECT AND HAS BEEN CHANGED ON PURPOSE.
+  //
+  // It used to read `expect(pairs.get("A")).toBe("B")`, i.e. it PINNED the rule
+  // that when two removed keys carry the identical bytes and only one added key
+  // does, the FIRST removed key in array order wins. That is exactly S159: hash
+  // equality read as file identity, resolved by iteration order, with
+  // `vault.rename` acting on the answer. A and C are indistinguishable by
+  // content; nothing in this event says which of them became B.
+  //
+  // The second half of the old row — "C is left unmatched" — is unchanged and
+  // still asserted. The change is that A is now unmatched too.
+  it("refuses BOTH when two removed keys carry the same bytes and one added key does", () => {
     const hashes: Record<string, string> = { A: "h", C: "h", B: "h", D: "hx" };
     const pairs = matchRenamesByHash(
       ["A", "C"],
@@ -299,9 +310,20 @@ describe("matchRenamesByHash", () => {
       (p) => hashes[p],
       (p) => hashes[p],
     );
-    expect(pairs.get("A")).toBe("B");
-    // C has no remaining hash-matching target -> left unmatched for positional fallback.
+    expect(pairs.has("A")).toBe(false);
     expect(pairs.has("C")).toBe(false);
+    expect(pairs.size).toBe(0);
+  });
+
+  it("the answer does not depend on the order the keys arrive in", () => {
+    const hashes: Record<string, string> = { A: "h1", B: "h1", C: "h2", D: "h2" };
+    const call = (removed: string[], added: string[]) =>
+      [...matchRenamesByHash(removed, added, (p) => hashes[p], (p) => hashes[p])].sort();
+    expect(call(["A", "C"], ["D", "B"])).toStrictEqual(call(["C", "A"], ["B", "D"]));
+    expect(call(["A", "C"], ["D", "B"])).toStrictEqual([
+      ["A", "B"],
+      ["C", "D"],
+    ]);
   });
 
   it("skips removed paths whose hash is unknown", () => {

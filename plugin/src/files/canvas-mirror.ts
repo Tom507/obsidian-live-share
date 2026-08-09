@@ -81,7 +81,13 @@ export interface CanvasMirrorEntry {
    * They differ exactly when an admitted path could not be carried out, which is
    * the case I5 requires to degrade that path alone.
    */
-  readonly outcome: "published" | "materialised" | "skipped" | "failed";
+  readonly outcome:
+    | "published"
+    | "bound"
+    | "materialised"
+    | "adopted"
+    | "skipped"
+    | "failed";
   readonly reason?: string;
 }
 
@@ -95,7 +101,29 @@ export interface CanvasMirrorReport {
   readonly role: "host" | "guest";
   readonly considered: number;
   readonly published: number;
+  /**
+   * WP122 — host paths whose file was handed to the ONE existing writer as well
+   * as published. Counted APART from `published`, and the reason is `S138`:
+   * throughout the 240-second stall the host's mirror read
+   * `role=host considered=14 published=14 failed=0` — a completely healthy pass
+   * on a peer whose file was two records behind its own document. `published`
+   * means "the guid is bound" and nothing more, and collapsing the two would
+   * make "the host's boards have writers" unfalsifiable from the receipt in
+   * exactly the way it already was.
+   *
+   * It is still not the oracle for AC B1. A number this pass writes about its
+   * own last completed run cannot witness the writer's CURRENT state; that is
+   * read from the writer registry itself.
+   */
+  readonly bound: number;
   readonly materialised: number;
+  /**
+   * WP117 — paths whose EXISTING local file was handed to the writer because
+   * this peer originated the creation. Counted apart from `materialised`: one is
+   * a file that did not exist, the other is a file that did, and collapsing them
+   * would make "the mirror created nothing over a user file" unfalsifiable.
+   */
+  readonly adopted: number;
   readonly skippedLocalFile: number;
   readonly skippedNoSource: number;
   readonly failed: number;
@@ -125,6 +153,31 @@ export interface CanvasMirrorDeps {
   /** Attach the ONE existing writer, which cold-opens and flushes the doc to disk. */
   materialise(path: string): Promise<void>;
   /**
+   * WP122 (`S146`) — THE HOST'S OWN FILE, handed to the ONE existing writer.
+   *
+   * Optional, and its PRESENCE is the capability the verdict reads (`=== true`
+   * on `bindsHostWriter`): a deps object without it degrades to exactly the
+   * pre-WP122 behaviour — `PUBLISH`, no attach, no cold open — rather than
+   * throwing. Every pre-WP122 caller and every pre-WP122 test double is such an
+   * object, which is why this package changes none of their verdicts.
+   *
+   * SEPARATE FROM {@link CanvasMirrorDeps.materialise} because the two are
+   * different acts on different populations: `materialise` gives a guest a file
+   * that does not exist yet (or adopts one the guest itself authored), and this
+   * binds a writer to a file the HOST already holds and has just seeded the
+   * document from. Production points both at the SAME `attachCanvasWriter`, so
+   * `hasCanvasWriter` remains the single definition of "already attached" and
+   * this is a second REFERENCE to one route rather than a second route.
+   *
+   * ORDERING IS THE SAFETY ARGUMENT AND IT IS NOT ENFORCED BY ANY TYPE: this
+   * runs AFTER `canvasSync.subscribe`, whose host arm merges the local file into
+   * the document. Hoisting it above the subscribe would cold-open a document
+   * that is empty-or-peer-only and flush a board missing everything the host
+   * authored. Nothing in the codebase catches a refactor that reorders those two
+   * statements except `__tests__/v2/wp122/`'s hoisted-attach row.
+   */
+  bindHostWriter?(path: string): Promise<void>;
+  /**
    * S123 — RE-ASK WHEN THE RECORDS ARRIVE.
    *
    * `docHasRecords` below is a ONE-SHOT PROBE of a value that is still in
@@ -148,6 +201,21 @@ export interface CanvasMirrorDeps {
    * behaviour rather than throwing.
    */
   watchForRecords?(path: string): void;
+  /**
+   * WP117 (S122) — did THIS peer ask the host to create this canvas, and did the
+   * host accept?
+   *
+   * Optional and read `=== true` by the verdict: a deps object without it
+   * degrades to exactly the pre-WP117 behaviour rather than throwing, and every
+   * path nobody asked about keeps `skip-local-file`.
+   */
+  originatedHere?(path: string): boolean;
+  /**
+   * WP117 — the adoption was carried out, so it must not be carried out again.
+   * One-shot: without this the flag would re-admit the path on every later pass
+   * and the writer attach would be re-entered for the life of the session.
+   */
+  noteAdopted?(path: string): void;
   readonly logger?: {
     log(category: string, message: string): void;
     warn(category: string, message: string, err?: unknown): void;
@@ -188,7 +256,9 @@ function empty(role: "host" | "guest"): CanvasMirrorReport {
     role,
     considered: 0,
     published: 0,
+    bound: 0,
     materialised: 0,
+    adopted: 0,
     skippedLocalFile: 0,
     skippedNoSource: 0,
     failed: 0,
@@ -238,7 +308,9 @@ export async function mirrorSharedCanvases(deps: CanvasMirrorDeps): Promise<Canv
     role,
     considered: entries.length,
     published: entries.filter((e) => e.outcome === "published").length,
+    bound: entries.filter((e) => e.outcome === "bound").length,
     materialised: entries.filter((e) => e.outcome === "materialised").length,
+    adopted: entries.filter((e) => e.outcome === "adopted").length,
     skippedLocalFile: entries.filter((e) => e.verdict === MIRROR_VERDICT.SKIP_LOCAL_FILE).length,
     skippedNoSource: entries.filter(
       (e) => e.verdict === MIRROR_VERDICT.SKIP_NO_SOURCE && e.outcome === "skipped",
@@ -249,7 +321,9 @@ export async function mirrorSharedCanvases(deps: CanvasMirrorDeps): Promise<Canv
   deps.logger?.log(
     "canvas-mirror",
     `CANVAS MIRROR: role=${report.role} considered=${report.considered} ` +
-      `published=${report.published} materialised=${report.materialised} ` +
+      `published=${report.published} bound=${report.bound} ` +
+      `materialised=${report.materialised} ` +
+      `adopted=${report.adopted} ` +
       `skipped(local-file)=${report.skippedLocalFile} ` +
       `skipped(no-source)=${report.skippedNoSource} failed=${report.failed}`,
   );
@@ -261,10 +335,21 @@ async function mirrorOne(
   role: "host" | "guest",
   path: string,
 ): Promise<CanvasMirrorEntry> {
+  // WP117 — measured ONCE and used for both the admission gate and the verdict,
+  // so an adoption that is armed cannot be admitted and then re-decided as a
+  // skip (or the reverse) because the flag moved between two reads.
+  const originatedHere = deps.originatedHere?.(path) === true;
+  // WP122 — the CAPABILITY, taken from the object that owns it rather than
+  // stated by the caller as a preference. Measured once, beside `originatedHere`
+  // and for the same reason: the admission gate and the verdict must be asked
+  // the same question.
+  const bindsHostWriter = typeof deps.bindHostWriter === "function";
   const pre = {
     role,
     localFileExists: (await deps.localFileExists(path)) === true,
     identityResolves: isUsableGuid(deps.guidForPath(path)),
+    originatedHere,
+    bindsHostWriter,
   };
 
   if (!admitsCanvasMirror(pre)) {
@@ -280,15 +365,74 @@ async function mirrorOne(
   if (role === "host") {
     // The host already holds the file; the point of the subscribe is that
     // `resolveGuidForSubscribe` mints and BINDS the guid, which is the only way
-    // a peer can resolve this path at all. No write, no attach, no cold open:
-    // the host's file must not be rewritten by this pass (AC4 is absolute, and
-    // it does not carve out the host).
-    const bound = isUsableGuid(deps.guidForPath(path));
+    // a peer can resolve this path at all.
+    //
+    // The identity is re-measured AFTER the subscribe, never carried over from
+    // `pre`: on the mint case there was nothing to resolve before it.
+    const published = isUsableGuid(deps.guidForPath(path));
+    // ASKED, not re-stated. The host arm of `decideCanvasMirror` reads `role`,
+    // `localFileExists` and `bindsHostWriter` and nothing else, so `pre` is a
+    // complete input for it and the doc probe is genuinely not part of this
+    // question — the same `docHasRecords: false` the not-admitted branch above
+    // passes, for the same reason.
+    const verdict = decideCanvasMirror({ ...pre, docHasRecords: false });
+    if (!published) {
+      return {
+        path,
+        verdict,
+        outcome: "failed",
+        reason: "the subscribe did not leave a resolvable identity",
+      };
+    }
+    if (verdict !== MIRROR_VERDICT.PUBLISH_AND_BIND_WRITER || deps.bindHostWriter === undefined) {
+      // The pre-WP122 answer, byte for byte: no write, no attach, no cold open.
+      return { path, verdict, outcome: "published" };
+    }
+
+    // ── WP122 (`S146`) — THE BIND, AND ITS POSITION IS THE WHOLE SAFETY ──────
+    //
+    // AFTER the subscribe above, never before it. `CanvasSync.subscribe`'s host
+    // arm reads the file and MERGES it into the document (`applyCanvasToYMaps`),
+    // so by this line the doc is the union of what the peers hold and what the
+    // host's file names. The writer's cold open then finds a non-empty doc,
+    // takes `doc-wins`, and flushes that union to the host's disk — which is the
+    // fix: the guest's edit is already in the doc and now reaches the file.
+    //
+    // Hoisted above the subscribe, the doc would be empty-or-peer-only and the
+    // same flush would write a board MISSING EVERYTHING THE HOST AUTHORED. No
+    // type enforces this ordering; only the order of two statements in this
+    // function does.
+    //
+    // THE FLUSH IS NOT UNGUARDED. It travels the same `attachCanvasWriter`
+    // route the guest-create handshake has used since WP117, so WP121's
+    // conflict copy — the only caller of which is `coldOpen` — runs immediately
+    // before it whenever the projection about to land is missing records the
+    // file holds. WP122 depends on WP121 as a hard PRECONDITION, not as a
+    // safety net: this pass fires `doc-wins` on every host-held canvas in the
+    // manifest, including boards that are already divergent today.
+    try {
+      await deps.bindHostWriter(path);
+    } catch (err) {
+      // I5 — degrade THIS path. The publication above really happened and the
+      // receipt must not pretend otherwise, so the reason names both facts.
+      deps.logger?.warn("canvas-mirror", `the host writer bind failed for ${path}`, err);
+      return {
+        path,
+        verdict,
+        outcome: "failed",
+        reason:
+          "the path was published but the host writer could not be bound: " +
+          (err instanceof Error ? err.message : String(err)),
+      };
+    }
+    const stillThere = (await deps.localFileExists(path)) === true;
     return {
       path,
-      verdict: MIRROR_VERDICT.PUBLISH,
-      outcome: bound ? "published" : "failed",
-      reason: bound ? undefined : "the subscribe did not leave a resolvable identity",
+      verdict,
+      outcome: stillThere ? "bound" : "failed",
+      reason: stillThere
+        ? undefined
+        : "the bind left no file at the host's own path, which a bind must never do",
     };
   }
 
@@ -300,8 +444,29 @@ async function mirrorOne(
     localFileExists: (await deps.localFileExists(path)) === true,
     identityResolves: isUsableGuid(deps.guidForPath(path)),
     docHasRecords: docHasRecords(deps.canvasSync.getCanvasDocHandle(path)?.doc ?? null),
+    originatedHere,
   };
   const verdict = decideCanvasMirror(post);
+
+  // WP117 — THE ADOPTION, and it is scored on DISK BYTES, never on the verdict
+  // (S138: `canvas.mirror` reports the last completed pass, not the current
+  // state). The file already exists, so "did it land" is not the question the
+  // materialise arm asks; the question is whether the writer took the path over,
+  // which is what `bytesAfter` witnesses.
+  if (verdict === MIRROR_VERDICT.ADOPT_LOCAL_FILE) {
+    await deps.materialise(path);
+    deps.noteAdopted?.(path);
+    const stillThere = (await deps.localFileExists(path)) === true;
+    return {
+      path,
+      verdict,
+      outcome: stillThere ? "adopted" : "failed",
+      reason: stillThere
+        ? undefined
+        : "the adoption left no file at the path, which an adoption must never do",
+    };
+  }
+
   if (verdict !== MIRROR_VERDICT.MATERIALISE) {
     // S123 — the ONE skip that is provably premature rather than final: this
     // guest has no local file and CAN resolve the identity, so the only thing
