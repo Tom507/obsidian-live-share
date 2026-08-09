@@ -431,6 +431,62 @@ control surface (all 43 `case` handlers checked).
    **`H8` predicts more nodes moving on the VIEW plane than on the doc plane on the guests.** A view delta on
    a node whose doc *and* file geometry did not change is `H8` caught in the act, and it will surface as an
    `UNATTRIBUTED` view row. `patchedPaths` should also be non-empty for the first time.
+
+---
+
+## B73 — the repaint fix, validated live with the owner at the keyboard. IT WORKS.
+
+Bundle `b55097a2ede87556` on all three vaults. Roles had migrated again: **B host, A and C guests** — read from
+`session.info`, not assumed (`S139`). Board `_liveshare-test/smoke.canvas`, 11 nodes.
+
+**The owner dragged `208541a49dc66c4c` on the host with BOTH GUESTS OCCLUDED** — the hard case, because an
+occluded window's `requestAnimationFrame` is suspended and that is the most plausible way to starve a repaint.
+
+`(1820,-133) → (1600,220)`, Δ`(-220,+353)`. **Twelve cells, all agreeing:**
+
+| plane | A | B (host) | C |
+|---|---|---|---|
+| **paint** | `(1600,220)` | `(1600,220)` | `(1600,220)` |
+| view / doc / file | `(1600,220)` | `(1600,220)` | `(1600,220)` |
+
+Before B71 the paint row did not exist, and the other three would have read identical while the screen was
+wrong. The owner's word, unprompted: *"wow dragged it and it works"*.
+
+### The result that matters more than the green board
+
+```text
+A: REPAIRED=1   ticks=164  visited=492   skippedBusy=0
+B: REPAIRED=0   ticks=171  visited=504   skippedBusy=3   <- host, during the drag
+C: REPAIRED=1   ticks=159  visited=477   skippedBusy=0
+```
+
+**`REPAIRED=1` on BOTH guests.** The sweep found a card whose pixels genuinely did not match its model and
+repaired it. **The underlying defect is still present — this single run produced two instances of it — and the
+board looks correct BECAUSE the restoring force is running.** This is exactly the reading B72 warned had to be
+made: a clean board with `REPAIRED > 0` is a damage *rate*, not a fix. `skippedBusy=3` on the host is the
+`isBusy` guard declining to repaint mid-drag, i.e. it did not fight the owner's cursor.
+
+**The owner's own proposal is what caught them.** *"like randomly selecting a couple of nodes each frame and
+redrawing them, that would continuously repair the damage"* — built as round-robin rather than random, because
+random sampling's coverage is `n ln n` in expectation and unbounded per card.
+
+### `S198` — do not read B73's divergence counts as a defect count
+
+A reported `4 DIVERGENT`, C reported `2`, and **all six read `[style=agree rect=DIVERGENT]` with
+`offset=(0,0)`**: the authoritative transform agrees exactly while the de-transformed rect sits **~59.86 px
+lower, with zero X error**, constant across two peers at different zooms. That is an unaccounted container
+offset in the client→canvas inverse, not divergence. **Trust the `style` verdict until it is corrected.**
+
+### Where this leaves the investigation
+
+- **`S189` still stands** — the data is never wrong; the defect is view-layer only.
+- **`H8` is refuted** for both measured trials.
+- **The cause is still not named.** WP2 repaints the node it applied to; `S197` records that the whole-board
+  `setData` branch has no targeted repaint and is covered only by the sweep's `ceil(n/batch)` ticks.
+- **`REPAIRED` is now the instrument for the residue.** Watch it over ordinary use: if it stays non-zero, the
+  producing path is still live and is worth naming; if it falls to zero once WP2's seams cover everything,
+  the sweep has become belt-and-braces rather than the load-bearing repair.
+- Owner ruling stands: **nodes only, edges out of scope** (`S194` open and untouched).
 - **WP79 AC4 re-wording is WRITTEN AND AWAITING THE OWNER** — `ImplementationReport_WP122.md` §1.3. The
   in-source comment was rewritten (it lives in the file WP122 owns); **the charter's and the `BUILD_SPEC`'s
   copies are the owner's and were deliberately left untouched.**
