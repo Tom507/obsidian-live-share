@@ -1,8 +1,11 @@
 # WP125 Deployment Report
 
-**Date:** 2026-08-10  
-**Release:** `0.7.1`  
-**Deployment status:** `DEPLOYED`  
+**Date:** 2026-08-10
+
+**Release:** `0.7.1`
+
+**Deployment status:** `DEPLOYED`
+
 **Live verification status:** `OPERATOR_RELOAD_REQUIRED`
 
 ## Release gates
