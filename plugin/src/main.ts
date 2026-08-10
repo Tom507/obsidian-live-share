@@ -236,7 +236,22 @@ export default class LiveSharePlugin extends Plugin {
   // with `canvasAdapters` (same mount, same teardown), and it is the ONLY clock
   // this fix introduces: the batch selection, the busy gate and the counters all
   // live in the adapter, so this map holds a timer handle and nothing else.
-  private canvasRepaintSweeps = new Map<string, ReturnType<typeof setInterval>>();
+  private canvasRepaintSweeps = new Map<
+    string,
+    {
+      interval: ReturnType<typeof setInterval>;
+      active: boolean;
+      pending: boolean;
+      running: boolean;
+      rerun: boolean;
+      eventRequests: number;
+      coalescedRequests: number;
+      eventRuns: number;
+      periodicRuns: number;
+      lastRunAt: number | null;
+      lastTriggerKind: "event" | "periodic" | null;
+    }
+  >();
   // WP37 (C37) — the per-record deferral queue for view applies withheld while an
   // inline editor is focused. Constructed here and INJECTED; every rule about what
   // goes in, what coalesces and what comes out lives in
@@ -3848,6 +3863,7 @@ export default class LiveSharePlugin extends Plugin {
     const handle = this.canvasSync?.getCanvasDocHandle(rawPath);
     if (!handle) return null;
     try {
+      const canonical = toCanonicalPath(normalizePath(rawPath));
       const adapter = createCanvasAdapter(view, {
         // US6: attach the status console so `ADAPTER PATCH:` and `DRAG WATCHDOG:` are
         // recorded instead of silently dropped. `CanvasAdapterLogger` declares `log`
@@ -3857,11 +3873,13 @@ export default class LiveSharePlugin extends Plugin {
           log: (category, message) => this.logger.debug(category, message),
           warn: (category, message) => this.logger.warn(category, message),
         },
+        requestRepaintSweep: () => this.requestCanvasRepaintSweep(canonical),
+        getRepaintTriggerReport: () => this.describeCanvasRepaintTrigger(canonical),
       });
       // Register for live-view reconciliation (kept in lockstep with the presence).
-      this.canvasAdapters.set(toCanonicalPath(normalizePath(rawPath)), adapter);
+      this.canvasAdapters.set(canonical, adapter);
       // B72 (WP3) — and the restoring sweep, in the same lockstep.
-      this.startCanvasRepaintSweep(toCanonicalPath(normalizePath(rawPath)), adapter);
+      this.startCanvasRepaintSweep(canonical, adapter);
       // WP37 (C37 AC5) — the BLUR exit of the deferral. Forwarding only: the
       // adapter reports that an inline editor ended, and the drain re-runs one
       // ordinary reconcile pass. Fires for a watchdog-released editor too, so a
@@ -4109,6 +4127,19 @@ export default class LiveSharePlugin extends Plugin {
   private startCanvasRepaintSweep(canonical: string, adapter: CanvasAdapter): void {
     if (this.canvasRepaintSweeps.has(canonical)) return;
     if (typeof adapter.sweepRepaint !== "function") return;
+    const state = {
+      interval: undefined as unknown as ReturnType<typeof setInterval>,
+      active: true,
+      pending: false,
+      running: false,
+      rerun: false,
+      eventRequests: 0,
+      coalescedRequests: 0,
+      eventRuns: 0,
+      periodicRuns: 0,
+      lastRunAt: null as number | null,
+      lastTriggerKind: null as "event" | "periodic" | null,
+    };
     const handle = setInterval(() => {
       const live = this.canvasAdapters.get(canonical);
       // The adapter can be replaced or dropped between ticks; a sweep must never
@@ -4119,18 +4150,72 @@ export default class LiveSharePlugin extends Plugin {
       }
       try {
         live.sweepRepaint?.();
+        state.periodicRuns++;
+        state.lastRunAt = Date.now();
+        state.lastTriggerKind = "periodic";
       } catch (err) {
         this.logger.debug("canvas", `repaint sweep ${canonical}: tick threw — ${String(err)}`);
       }
     }, REPAINT_SWEEP_PERIOD_MS);
-    this.canvasRepaintSweeps.set(canonical, handle);
+    state.interval = handle;
+    this.canvasRepaintSweeps.set(canonical, state);
+  }
+
+  private requestCanvasRepaintSweep(canonical: string): void {
+    const state = this.canvasRepaintSweeps.get(canonical);
+    if (!state?.active) return;
+    state.eventRequests++;
+    if (state.running) {
+      state.rerun = true;
+      state.coalescedRequests++;
+      return;
+    }
+    if (state.pending) {
+      state.coalescedRequests++;
+      return;
+    }
+    state.pending = true;
+    queueMicrotask(() => {
+      if (!state.active || this.canvasRepaintSweeps.get(canonical) !== state) return;
+      state.pending = false;
+      state.running = true;
+      try {
+        this.canvasAdapters.get(canonical)?.sweepRepaint?.();
+        state.eventRuns++;
+        state.lastRunAt = Date.now();
+        state.lastTriggerKind = "event";
+      } finally {
+        state.running = false;
+        if (state.rerun) {
+          state.rerun = false;
+          this.requestCanvasRepaintSweep(canonical);
+        }
+      }
+    });
+  }
+
+  private describeCanvasRepaintTrigger(canonical: string): Record<string, unknown> | null {
+    const state = this.canvasRepaintSweeps.get(canonical);
+    if (!state) return null;
+    return {
+      eventRequests: state.eventRequests,
+      coalescedRequests: state.coalescedRequests,
+      eventRuns: state.eventRuns,
+      periodicRuns: state.periodicRuns,
+      lastTriggerKind: state.lastTriggerKind,
+      lastRunAgeMs: state.lastRunAt === null ? null : Math.max(0, Date.now() - state.lastRunAt),
+      pending: state.pending,
+    };
   }
 
   /** B72 (WP3) — stop it. Called from every path that drops an adapter. */
   private stopCanvasRepaintSweep(canonical: string): void {
-    const handle = this.canvasRepaintSweeps.get(canonical);
-    if (handle === undefined) return;
-    clearInterval(handle);
+    const state = this.canvasRepaintSweeps.get(canonical);
+    if (state === undefined) return;
+    state.active = false;
+    state.pending = false;
+    state.rerun = false;
+    clearInterval(state.interval);
     this.canvasRepaintSweeps.delete(canonical);
   }
 
