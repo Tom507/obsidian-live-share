@@ -4,7 +4,7 @@
 // package's defect is "a function that was never called" and a double standing
 // in for the caller would hide it perfectly.
 //
-//   REAL: the NeuralAngels relay (`server/src`, in-process), both peers'
+//   REAL: the project relay (`server/src`, in-process), both peers'
 //         `SyncManager`s and `Y.Doc`s, both peers' `ManifestManager`s and
 //         `BackgroundSync`es, the manifest publication, `syncFromManifest`,
 //         `subscribe`, `preserveLocalVersion`, every floor and every ledger.

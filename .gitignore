@@ -44,7 +44,9 @@ yarn-error.log*
 pnpm-debug.log*
 
 # Generated test and E2E output
+/workflowArtifacts/
 tools/e2e/*_results/
+tools/e2e/diag-results/
 test-results/
 playwright-report/
 *.log

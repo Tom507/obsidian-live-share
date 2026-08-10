@@ -60,7 +60,7 @@ const PATH = "ops/runbook.canvas";
  * |---|---|---|
  * | WP21 charter | `40528ad8…db29dd9`, 22 551 B | the original pin |
  * | **WP120**, 2026-08-08 | `2cefc9a8…f07ff16c9`, 29 831 B | **owner decision**, on
- * |   record in `workflowArtifacts/canvas-v2/DISPATCHER_STATE.md` §5: *"`canvas-
+ * |   historical dispatcher record: *"`canvas-
  * |   presence.ts`'s byte-unchanged pin is LIFTED for the lock-lifetime repair
  * |   only. The pin must be re-established with a new digest, not deleted."* |
  *

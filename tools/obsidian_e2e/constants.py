@@ -1,6 +1,6 @@
 """Shared constants for the real-Obsidian E2E rig — the single owning module (WP43).
 
-Authority: ``workflowArtifacts/canvas-v2/T3_SharedContract.md``. Every value below is
+Authority: the release E2E contract. Every value below is
 transcribed **verbatim** from that contract. WP44–WP49 import from here; no other module
 may re-declare any of these values or invent a variant name. If a value here looks wrong,
 the fix is to amend the contract and this file together — never to shadow it locally.

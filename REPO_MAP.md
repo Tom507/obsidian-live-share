@@ -7,6 +7,8 @@ Tree state: own git repo, HEAD `4b34d5e` (**2026-07-20 17:55 +0200**) + a large 
 
 > **Historical snapshot note.** This structural map was generated during the Canvas V2 redesign and retains the code-state observations from that mapping run. The release branch promotes the public companion documents to the repository root and excludes internal workflow records.
 
+> **v0.7.0 addendum (2026-08-09).** The detailed line counts below remain a historical mapping snapshot. The current release tree additionally includes host-mediated guest Canvas creation (`files/canvas-create*.ts`), discard and conflict-copy guards, attestation/single-writer and terminal-outcome helpers, bounded presence expiry, host-file persistence for guest edits, record-based convergence tooling, and the targeted Canvas repaint/repair sweep. Current status and verdicts live in `BUILD_SPEC_ObsidianLiveShare.md`.
+
 Task context: structural map for the **canvas CRDT V2 redesign** described in `CONCEPT_V2.md` (shadow diff, atomic registers, tombstones, sidecar history, canonical serialization). Weaknesses W1–W10 drive the relevance tags below.
 
 Verification note: every line number, export, size and test count below was read or **executed** off the working tree for this refresh, not copied from a report. Where a companion document and the tree disagree, the tree is recorded and the disagreement is called out in **Notes**.
@@ -23,8 +25,8 @@ Companion documents — read these instead of re-deriving:
 ```text
 obsidian-live-share/
 ├── ARCHITECTURE.md              ← verified architecture + US6 log-signature table (untracked, 82 KB)
-├── manifest.json                ← REAL plugin manifest, v0.6.1 (see Notes — not a symlink)
-├── manifest-beta.json / versions.json                  ← release metadata (0.6.0 + 0.6.1 added)
+├── manifest.json                ← release plugin manifest, v0.7.0
+├── manifest-beta.json / versions.json                  ← release metadata
 ├── docker-compose.yml / Dockerfile / flake.nix         ← relay deployment (off limits)
 ├── biome.json                   ← lint/format config (advisory here — see Notes)
 ├── .github/workflows/           ← ci.yml (lint+build+test, node 20/22, server & plugin), release.yml
@@ -491,7 +493,7 @@ Both logger attachments (`main.ts:341`, `main.ts:1240`) are edits in the file wi
 - **`ARCHITECTURE.md` is 82 KB**, not the 37 KB the previous map recorded. Still untracked.
 - **Vitest 4 removed the `basic` reporter.** `--reporter=basic` dies with `ERR_LOAD_URL`. Use the default or `--reporter=dot`. This cost one wasted run during this refresh.
 - **`wp5/latency.test.ts` sleeps 33.5 s by design.** Any automated invocation needs ≥90 s of headroom; a 41 s wall time is the floor, not a hang.
-- **Historical version discrepancy.** The mapping snapshot carried **0.6.1** in root `manifest.json` and `plugin/package.json`, with `versions.json` listing both `0.6.0` and `0.6.1`; an internal handover still claimed that 0.6.0 was unchanged. Verify version consistency before any release.
+- **Version boundary.** The current release metadata is **0.7.0**. Older version observations elsewhere in this map belong to the 2026-07-31 historical snapshot.
 - **SYMLINK.** Root `manifest.json` is the real 244-byte file; **`plugin/manifest.json` is a 55-byte symlink pointing at `/home/mewski/Projects/obsidian-live-share/manifest.json`**, a POSIX absolute path that does not resolve on Windows. Do not read or edit it.
 - **`plugin/main.js` (626 KB) and `server/dist/` are committed build output.** Never hand-edit; regenerate with `npm run build`.
 - **Historical working tree.** This map was originally generated from 22 modified and 13 untracked paths on top of `4b34d5e`, spanning two development rounds. Those observations describe the mapping snapshot, not the current release branch.

@@ -5,7 +5,7 @@
 // standing in for the thing that should have recorded it would hide every one
 // of them perfectly.
 //
-//   REAL: the NeuralAngels relay (`server/src`, in-process), every peer's
+//   REAL: the project relay (`server/src`, in-process), every peer's
 //         `SyncManager`, `Y.Doc` and `Y.Text`, every peer's `ManifestManager`
 //         and `BackgroundSync`, the real `subscribe()`, the real
 //         `syncFromManifest()`, the real `ensureFolder()`, the real

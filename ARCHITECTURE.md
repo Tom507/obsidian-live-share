@@ -1,8 +1,8 @@
 # Obsidian Live Share — Architecture
 
-> **Current architecture reference.** Rewritten on 2026-08-07 against the committed Canvas CRDT V2 implementation and the settled WP1–WP95 feature baseline. Active S104–S113 investigations remain working-state notes in the build specification and are not used to redefine the architecture here.
+> **Current architecture reference.** Updated on 2026-08-09 against the v0.7.0 release tree, including the committed WP108–WP124 convergence work and the B72/B73 Canvas repaint mitigation.
 >
-> For exact product verdicts, incomplete work, and release blockers, see [BUILD_SPEC_ObsidianLiveShare.md](workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md). Historical design papers remain under `workflowArtifacts/` and do not override this document.
+> For exact product verdicts, incomplete work, and release gates, see [BUILD_SPEC_ObsidianLiveShare.md](BUILD_SPEC_ObsidianLiveShare.md). Internal workflow artifacts are intentionally excluded from the release branch.
 
 ![Runtime architecture](docs/assets/architecture-overview.svg)
 
@@ -189,6 +189,12 @@ Main modules:
 - `plugin/src/files/canvas-persistence.ts`
 - `plugin/src/main.ts`
 
+### View repaint and repair
+
+Obsidian's live Canvas model, the shared document, and the `.canvas` file can agree while a card's DOM element still shows an old position. After each successful remote geometry apply, `CanvasAdapter.repaintNode` re-seats that card from the model. A low-rate, bounded round-robin sweep supplies a restoring force for paths that do not identify one changed card. Both paths defer while the board is being dragged or edited.
+
+This is a compatibility mitigation over Obsidian's private Canvas controller, not a root-cause fix. Three-vault live validation observed the sweep repairing real stale paints after targeted repaint was installed. See [Known issues](docs/KNOWN_ISSUES.md).
+
 ### Delete authorization
 
 Absence is not permission to delete. A record may be deleted only when the observation is complete and the applicable surface previously issued a matching receipt:
@@ -234,6 +240,15 @@ Main modules:
 - `plugin/src/canvas/canvas-epoch.ts`
 - `plugin/src/canvas/canvas-import-command.ts`
 - `plugin/src/files/canvas-import.ts`
+
+### Guest-created and imported canvases
+
+A guest does not mint Canvas identity or seed shared truth directly. It sends a structured `canvas-create-request` containing the path and complete Canvas payload over CONTROL. The host validates path safety, shared-surface membership, protected paths, payload size, and Canvas shape; materializes the file; creates the manifest/GUID identity; and seeds the shared document. A `canvas-create-result` makes acceptance or refusal visible to the requester, which then adopts the host-owned document. This preserves host-only seed and manifest authority while supporting new and imported guest canvases.
+
+Main modules:
+
+- `plugin/src/files/canvas-create.ts`
+- `plugin/src/files/canvas-create-decision.ts`
 
 ## Presence and canvas interaction
 
@@ -336,7 +351,7 @@ The deployment can combine independent controls:
 
 These controls are not interchangeable. In particular, browser SSO or reverse-proxy forward authentication does not automatically authenticate Obsidian's WebSocket client: Electron does not carry the browser's SSO cookie into the plugin's MUX and CONTROL connections. A deployment may safely place a credential/download landing page behind SSO while routing the WebSocket and relay REST paths around that browser gate, but those bypassed paths must still enforce the relay's own `SERVER_PASSWORD`, room token, and optional JWT policy.
 
-The NeuralAngels deployment uses exactly that external pattern. Its SSO proxy, landing page, secret generation, and network isolation live outside this repository; no NeuralAngels identity provider or proprietary header contract is compiled into the public plugin or relay. The distributable remains self-hostable with the upstream-style server password and optional GitHub OAuth/JWT flow.
+Organization-specific SSO proxies, landing pages, secret generation, and network isolation belong outside this repository. No proprietary identity provider or private header contract is compiled into the plugin or relay; the distributable remains self-hostable with a server password and optional GitHub OAuth/JWT flow.
 
 ### Encryption
 
@@ -409,7 +424,7 @@ obsidian-live-share/
 │   └── src/
 ├── tools/obsidian_e2e/             ← real two-vault orchestration utilities
 ├── docs/                           ← user/developer documentation and diagrams
-├── workflowArtifacts/              ← specification and historical engineering record
+├── BUILD_SPEC_ObsidianLiveShare.md ← authoritative product and release contract
 ├── ARCHITECTURE.md                 ← this document
 ├── README.md                       ← public project entry point
 └── LICENSE                         ← MIT license and upstream notice
@@ -430,12 +445,14 @@ obsidian-live-share/
 
 ## Known incomplete areas
 
-The architecture is implemented far beyond the original upstream design, but the project is still under active stabilization. The authoritative list is maintained in the [build specification](workflowArtifacts/BUILD_SPEC_ObsidianLiveShare.md). At the current settled baseline:
+The architecture is implemented far beyond the original upstream design, but the project remains under active stabilization. The authoritative list is maintained in the [build specification](BUILD_SPEC_ObsidianLiveShare.md). At the current settled baseline:
 
 - Room-mode consensus and Receive-and-Persist are incomplete as a full phase.
 - Operation capture is not yet promoted as the universal primary Canvas source.
 - The final real-host release matrix is not complete.
 - Cross-platform canonical path identity needs a future wire-format decision.
 - Some durable-refusal and UI-lifecycle edge cases remain under investigation.
+- A Canvas card can still become visually stale even though document and disk state are correct; v0.7.0 repairs this through targeted repaint and a background sweep, but the producing path remains open.
+- Arrow rendering is not yet covered by the card-paint validation.
 
 These are stated boundaries, not hidden “probably fine” assumptions.

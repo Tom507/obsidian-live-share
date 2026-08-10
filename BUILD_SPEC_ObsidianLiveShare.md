@@ -1,9 +1,9 @@
 # BUILD SPEC — Obsidian Live Share
 
 > **Status:** authoritative current-state specification
-> **As-of:** 2026-08-07, branch `fix-bugs-and-raceconditions`, settled committed feature baseline through WP95
+> **As-of:** 2026-08-09, branch `release`, committed v0.7.0 baseline through WP124 and B73
 > **Authority rule:** this file is the single source of truth for intended behaviour, implemented feature level, release gates, and open product risks. `CONCEPT_V2.md` is supporting design context and does not override this file. Internal task charters, dispatcher state, implementation reports, and validation records remain engineering-history references and are intentionally not included in the release branch.
-> **Active-investigation boundary:** S104–S113 are recorded in Section 1.1 as active-work notes. Their entries preserve the current investigation subjects but do not alter the settled feature, risk, or release verdicts elsewhere in this specification until the active batches finish.
+> **Release boundary:** Internal workflow artifacts are excluded from this branch. This specification records only reproduced verdicts from committed code; historical signal and work-package identifiers are retained only where they identify accepted evidence.
 
 ## 1. Evidence and verdict policy
 
@@ -19,11 +19,11 @@ The accepted verdict vocabulary is:
 - **Withdrawn:** the alleged product defect was falsified; no product fix is required for that claim.
 - **Unverified:** plausible or argued, but not accepted as a fact.
 
-Historical suite totals are evidence only for the exact clean commit on which they were measured. The latest fully bracketed clean-tree gate recorded for WP95 was **2792/2792 tests in 387/387 files, TypeScript clean, zero failures**, at commit `baa9aa0`. Later packages reported their own green gates, including B60 at **2805/2805 in 389/389 files**, but the present working tree contains unrelated uncommitted UI changes and therefore has no new authoritative whole-tree figure in this document.
+Historical suite totals are evidence only for the exact clean commit on which they were measured. The latest accepted committed plugin gate is WP124 at **3375/3375 tests in 444/444 files, TypeScript clean, zero failures**. The latest accepted server gate is **149/149 tests** from the WP117 verification window. B73's repaint behavior was subsequently live-verified on three vaults; that live result does not silently claim a newer whole-tree automated total.
 
-### 1.1 Active work sidebar — S104–S113
+### 1.1 Historical work sidebar — S104–S113
 
-> **Provisional by design.** This table records what the active bug-fix work is investigating. It is not a second status register, does not promote a provisional mechanism to fact, and does not change the release blockers in Section 13. When a batch settles, its reproduced and qualified verdict must be promoted into the applicable normative section and this sidebar entry retired or rewritten as historical context.
+> **Historical context only.** These were the investigation subjects at the previous documentation boundary. They are retained as side notes, not current verdicts; completed outcomes are stated immediately after the table and in the normative sections below.
 
 | Signal | Active-work note |
 |---|---|
@@ -37,6 +37,15 @@ Historical suite totals are evidence only for the exact clean commit on which th
 | **S111** | Harness wiring can hide production wiring-order defects: tests that call `setLogger` directly do not prove `onload()` constructs and attaches dependencies in the correct order. Active work is using the real lifecycle seam. |
 | **S112** | The E2E file-operation endpoint reader accepts fields the production operation type ignores. A malformed rename therefore looked valid to the instrument and manufactured S105. Active work is tightening the instrument to the declared discriminated operation types. |
 | **S113** | A bounded log poll ended before the measured renderer/flush clamp. Later lines existed on disk, so the in-arm silence was not evidence. Active work must use a proven watermark/flush horizon and positive control before interpreting absence. |
+
+Committed outcomes after that sidebar:
+
+- WP108–WP110 corrected mute intent handling, session-created note publication, rename-channel reporting, and empty-write diagnostics.
+- WP114–WP117 added event-driven mirror progress, safer conflict-copy decisions, explicit terminal outcomes, attestation/single-writer guards, and host-mediated guest Canvas creation/import.
+- WP120 added origin-tagged presence claims with bounded idle expiry; WP122 made ordinary guest Canvas edits persist to the host file. Both were live-verified.
+- WP123/WP124 replaced byte-only convergence claims with a canonical record oracle and wired it into the live driver.
+- WP121's discard guard and conflict copy are implemented and headless-tested, but were not demonstrated live in the accepted validation window.
+- B72/B73 added targeted repaint and a bounded round-robin repair sweep. The sweep repaired real stale paints during three-vault validation, so this is a mitigation rather than a root-cause fix.
 
 ## 2. Product purpose and supported deployment
 
@@ -232,8 +241,8 @@ The matrix must prove all of the following before WP7 can pass:
 every peer.** The owner has ruled this a required capability, not an optional one: *"this is a big
 limitation if it doesn't work."*
 
-**Current behaviour (`S122`, open):** a guest-created `.canvas` reaches **nobody** and enters **no client's
-manifest, including its own.** Three doors close at once and none of them is individually wrong:
+**Historical pre-WP117 behavior (`S122`, closed):** a guest-created `.canvas` reached nobody and entered no
+client manifest. Three deliberate authority doors exposed the missing host-mediated path:
 
 | Door | Refusal | Deliberate |
 |---|---|---|
@@ -274,14 +283,16 @@ Requirements on the implementation:
    replaced by an adopt path.
 5. Import is explicitly in scope — the owner named *"new or imported"* canvases together.
 
-### `canvas-presence.ts` - the byte-unchanged pin is LIFTED for one repair - owner decision 2026-08-08
+**Current verdict: implemented and live-verified.** WP117 added `canvas-create-request` / `canvas-create-result`, host-side validation and materialization, host-owned GUID/manifest seeding, requester adoption, timeout and visible refusal paths, and product wiring across CONTROL. The later live battery confirmed guest creation on the real product path. Canvas JSON is not routed through character-merge text synchronization.
+
+### `canvas-presence.ts` - the byte-unchanged pin was lifted and re-established for one repair
 
 **WP21 AC2 requires `canvas-presence.ts` byte-unchanged, enforced by a live SHA-256 pin, and the quality
 gates make any modification an automatic ESCALATE.** WP119 hit that gate: it built the presence-lock
 lifetime repair, measured it green over six rows, and then **reverted its own working fix** rather than
 break the pin. That was the correct behaviour and it is why this decision exists.
 
-**The owner has authorised the change.** The scope is exactly one repair:
+**Implemented scope.** The authorized repair landed as follows:
 
 - **Authorised:** giving presence locks a lifetime - origin-tagged claims with idle expiry, swept on the
   awareness change *before* `reconcileClaims`, with an injected clock. This is what makes the behaviour
@@ -289,7 +300,7 @@ break the pin. That was the correct behaviour and it is why this decision exists
 - **NOT authorised:** anything else in that file. The pin exists because this module is load-bearing for
   `I11` and for the single-writer rule.
 
-**The pin must be RE-ESTABLISHED, not removed.** Update the digest to the new content in the same commit,
+**The pin was re-established, not removed.** The digest was updated with the new content in the same commit,
 so the guard keeps doing its job for the next change. **A pin deleted to make a change pass is a guard that
 silently stops guarding** - which is the `S162` shape, and this initiative has already been bitten by a test
 that pinned a defect.
@@ -324,7 +335,7 @@ Three consequences, and they are requirements, not preferences:
 (`S167` chunking) as the **last** step, then sweep the remaining small items into a **known-issues
 catalogue** rather than fixing them one at a time.
 
-#### Open residual that must be closed with it
+#### Closed seed-authority residual
 
 `canvas-sync.ts` computes `peerKnowsDoc` as *"did bytes arrive across the await"*, which under `NO_PEERS`
 (see `S131`) is `false`, and `decideSeed` can then return `SEED_FROM_FILE`. **Blast radius:** a guest holding
@@ -332,15 +343,15 @@ a *stale* local canvas that wins the subscribe race seeds its stale content into
 host's later subscribe sees a non-empty document, `doc-wins`, and **the host's canvas is overwritten.** Real
 data loss, narrow reachability.
 
-It is listed here rather than under §8 because the two decisions are the same decision: **if guests never
-seed, this residual closes with it.** Implementing guest canvas creation as host-mediated is what makes the
-residual closable rather than worse.
+WP117 closed this reachability path by keeping seed authority on the host while giving guests an explicit host-mediated creation/adoption path. Guests do not win an empty-document subscription race by seeding stale local bytes.
 
 ## 8. Open product and reliability risks
 
 Only demonstrated or statically closed findings are listed as facts. Historical signals that were falsified are excluded or explicitly marked withdrawn.
 
 ### High impact
+
+- **Canvas stale-paint producer (mitigated, open):** a card can remain painted at stale coordinates while the shared document, live model, and `.canvas` file are correct. Targeted repaint plus a bounded round-robin sweep is live-verified and repaired real damage on both guests; therefore the producing path is not considered fixed. Arrow routing remains unexamined. See `docs/KNOWN_ISSUES.md`.
 
 - **S76 — canonical path identity collision:** the Windows canonicalizer can map a real fullwidth-character filename and a Windows-illegal ASCII spelling onto one identity, while another platform keeps them distinct. This is an open wire-format and primary-key risk.
 - **S92/S93 — refusal protection depends on reachable lifecycle/UI state:** record and restore paths were mutually exclusive in the measured shape, and protection of an existing file could depend on a host leaf/writer being attached. S81's specific durability verdict is closed, but these broader lifecycle risks remain open.
@@ -353,6 +364,8 @@ Only demonstrated or statically closed findings are listed as facts. Historical 
 - **S40 residue:** the offline queue has no general retention/cap policy; session teardown is no longer accepted as its accidental bound.
 
 ### Instrument and observability risks
+
+- **Paint-rectangle diagnostic bias:** the tested screen-rectangle cross-check has a roughly 60 px vertical offset. Until corrected, inline transform/style is the trusted stale-paint signal.
 
 - **S65:** debug-log flush lag can exceed short bounded polling windows. Absence from a log is not evidence until the sink, setting, watermark, flush horizon, and positive control are established.
 - **S66:** a link-break command that auto-reconnects is not a valid negative control.
@@ -537,9 +550,9 @@ Absence selects among records already authorized by a surface receipt; absence d
   green run under symmetric delay must not be quoted as covering it.
 - Live suites that share the same two Obsidian instances must run serially.
 
-### Release blockers
+### Gates for a release beyond v0.7.0
 
-Release is blocked while any of these remain true:
+Version 0.7.0 has shipped with the display limitation documented above. A later release must not claim the remaining validation boundary closed while any of these remain true:
 
 - WP7's real-host gate has not passed with the gate-correctness chain in Section 7.
 - A current build can translate incomplete manifest/read/refusal state into destructive deletion.
@@ -567,7 +580,15 @@ This is the current normative status summary. Detailed task charters and reports
 | WP89 | Partial |
 | WP90–WP95 | Implemented; the broader residual signals in Section 8 remain open where stated |
 
-No work-package number, suite count, signal number, or status may be changed here from a task report alone. The verdict must be reproduced against the current code or backed by an already accepted Dispatcher verification with its qualification preserved.
+| WP108–WP110, WP114–WP117 | Implemented reliability, reporting, mirror, safety, and host-mediated creation packages |
+| WP119 | Implemented single-node loser revert; its original denial premise is historical, not a current write gate |
+| WP120 | Implemented and live-verified bounded origin-tagged presence claims |
+| WP121 | Implemented and headless-tested discard guard/conflict copy; not live-demonstrated in the accepted battery |
+| WP122 | Implemented and live-verified guest-edit persistence to the host file |
+| WP123–WP124 | Implemented canonical-record convergence oracle and live-driver integration |
+| B72/B73 | Targeted repaint and bounded repair sweep implemented and live-verified; underlying stale-paint producer remains open |
+
+No work-package number, suite count, signal number, or status may be changed here from a task report alone. The verdict must be reproduced against the current code or backed by accepted verification with its qualification preserved.
 
 ## 15. Non-goals
 

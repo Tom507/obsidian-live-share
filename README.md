@@ -9,7 +9,7 @@
   <img alt="MIT License" src="https://img.shields.io/badge/license-MIT-22c55e.svg">
   <img alt="Obsidian desktop" src="https://img.shields.io/badge/Obsidian-desktop-7c3aed.svg">
   <img alt="Yjs CRDT" src="https://img.shields.io/badge/CRDT-Yjs-2563eb.svg">
-  <img alt="Project status" src="https://img.shields.io/badge/status-active%20stabilization-f59e0b.svg">
+  <img alt="Project status" src="https://img.shields.io/badge/release-v0.7.0-22c55e.svg">
 </p>
 
 ![Live Share runtime architecture](docs/assets/architecture-overview.svg)
@@ -19,7 +19,7 @@ Live Share turns a self-hosted relay and two Obsidian desktop clients into a col
 This repository began as a fork of [Mewski/obsidian-live-share](https://github.com/Mewski/obsidian-live-share) and has since undergone a substantial architectural rewrite. The original and modified work remains available under the MIT License.
 
 > [!IMPORTANT]
-> This branch is under active stabilization and is not yet presented as a finished public release. The core collaboration system is implemented and tested extensively, but the final two-instance release matrix and several edge-case investigations are still open. See [Project status](#project-status).
+> Version 0.7.0 is released and remains under active stabilization. Its current Canvas display defect is mitigated by targeted repaint and a bounded repair sweep, but the producing path is not fully fixed. See [Known issues](docs/KNOWN_ISSUES.md) and [Project status](#project-status).
 
 ## Why this version exists
 
@@ -47,6 +47,7 @@ The main architectural changes are:
 - File and folder create, delete, rename, and binary transfer.
 - Offline operation queue and reconnect support.
 - Offline-edit preservation: a guest's divergent local file is copied into a dedicated conflicts folder before the host version is applied.
+- Host-mediated creation and import of guest-created canvases, with validation and host-owned identity/seed authority.
 - Presentation, follow, summon, and collaborator controls.
 
 ### Access and safety
@@ -71,6 +72,8 @@ The main architectural changes are:
 - Editing-aware deferral and blur merge.
 - Explicit import instead of accidental reseeding.
 - Empty-document safeguards that distinguish missing CRDT content from an intentional delete.
+- Event-driven mirror materialization, bounded presence-claim expiry, and record-based convergence diagnostics.
+- Targeted card repaint plus a low-rate repair sweep for the known Canvas view-layer defect.
 
 ### Offline conflict preservation
 
@@ -110,6 +113,8 @@ Read [ARCHITECTURE.md](ARCHITECTURE.md) for the full runtime, document model, se
 Canvas collaboration uses the public `.canvas` file format and a guarded adapter over Obsidian's currently undocumented live Canvas controller. The adapter is needed for live geometry, selection, dragging, inline-editor protection, and non-destructive view updates. These internal members are not part of Obsidian's stable public plugin API and may change between Obsidian releases.
 
 The dependency is isolated in `plugin/src/canvas/canvas-adapter.ts`, capability-checked at runtime, restored when the adapter is destroyed, and designed to fall back to file-driven synchronization when a live capability is unavailable. Nevertheless, new Obsidian versions must be compatibility-tested before they are declared supported. This project is an independent community plugin and is not affiliated with or endorsed by Obsidian.
+
+Version 0.7.0 also works around an observed Obsidian view-layer failure in which document state and `.canvas` bytes are correct but a card remains painted at a stale position. Remote applies repaint the affected card, and a bounded round-robin sweep repairs residual stale cards without running during drag or inline editing. Live validation proved that the sweep repairs real damage, so this is intentionally documented as a mitigation, not a root-cause fix.
 
 ## Quick start
 
@@ -284,7 +289,7 @@ Useful plugin commands:
 
 ## Project status
 
-The settled implementation includes Canvas V2 foundations, sidecar/GUID/epoch identity, editing-aware reconcile, durable refusal protection, relay checkpoints, offline conflict preservation, empty-write protection, event-driven Canvas mirror materialization, and the real-Obsidian test infrastructure.
+The settled implementation includes Canvas V2 foundations, sidecar/GUID/epoch identity, editing-aware reconcile, durable refusal protection, relay checkpoints, offline conflict preservation, empty-write protection, host-mediated guest Canvas creation/import, event-driven Canvas mirror materialization, bounded presence claims, host-file persistence of guest Canvas edits, record-based convergence checks, and real-Obsidian test infrastructure.
 
 Still incomplete or under active validation:
 
@@ -293,6 +298,8 @@ Still incomplete or under active validation:
 - Promotion of model-driven operation capture as the universal Canvas path.
 - Some cross-platform identity and lifecycle edge cases.
 - Compatibility validation whenever Obsidian changes its undocumented Canvas controller.
+- Root-cause elimination of the Canvas stale-paint defect; v0.7.0 contains a live-verified repair mechanism.
+- Arrow-rendering validation; current paint diagnostics cover cards, not edge routing.
 
 The canonical current-state contract is [BUILD_SPEC_ObsidianLiveShare.md](BUILD_SPEC_ObsidianLiveShare.md). Internal workflow records remain an engineering audit trail and are intentionally excluded from the release branch.
 
@@ -321,6 +328,7 @@ The project is licensed under the [MIT License](LICENSE). You may use, modify, d
 
 - [Current architecture](ARCHITECTURE.md)
 - [Security model](docs/security.md)
+- [Known issues](docs/KNOWN_ISSUES.md)
 - [Authoritative build specification](BUILD_SPEC_ObsidianLiveShare.md)
 - [Canvas V2 concept](CONCEPT_V2.md)
 - [Repository map](REPO_MAP.md)

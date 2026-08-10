@@ -41,7 +41,7 @@ The console silently stopped capturing for eleven minutes during the last live
 run, and one arm was lost to a driver caching stale targets. Therefore:
 
   * every raw response is written to
-    ``workflowArtifacts/canvas-v2/diag/<label>-<peer>.json`` **before** anything
+    ``tools/e2e/diag-results/<label>-<peer>.json`` **before** anything
     is printed, and the paths are printed. The table is a rendering of files on
     disk, not of something that lived only in a console.
   * ports are resolved freshly on every invocation. Nothing is cached.
@@ -76,7 +76,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 # The canonical artifact root. Written BEFORE anything is printed (`S186`).
-DIAG_DIR = Path(__file__).resolve().parents[2] / "workflowArtifacts" / "canvas-v2" / "diag"
+DIAG_DIR = Path(__file__).resolve().parent / "diag-results"
 
 PEER_NAMES = ["A", "B", "C", "D", "E", "F"]
 

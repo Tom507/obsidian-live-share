@@ -41,6 +41,9 @@ being repaired instantly.
 **Workaround if you ever see it.** Close the canvas tab and reopen it. A remount rebuilds every card from the
 document, which is always correct.
 
+The live three-vault validation observed `REPAIRED=1` on both guests. That is positive evidence that the
+repair sweep is doing necessary work, and equally strong evidence that the underlying producer still exists.
+
 ---
 
 ## 2. Arrows between cards are not checked (unexamined)
@@ -60,3 +63,12 @@ This is recorded rather than repaired, at the maintainer's direction, because it
 
 Diagnostic output reports a blank vault name, so captures are identified by port number alone. It affects
 troubleshooting output only and has no effect on syncing.
+
+---
+
+## 4. Paint-rectangle diagnostics have a vertical offset (developer-facing)
+
+The diagnostic cross-check between an element's screen rectangle and its model position currently reports a
+roughly 60 px vertical bias in the tested Obsidian layout. Until that instrument is corrected, maintainers
+should use the element's inline transform/style verdict to identify a stale card paint. This affects diagnosis
+only; it does not move cards or alter synchronized data.
