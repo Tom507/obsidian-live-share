@@ -1,0 +1,3 @@
+
+=== Run 1 :: Retry UI smoke primary rollback then fixed B ===
+{"fixedBootMs": 23922, "fixedDisk": "C47EF17EEC4809FA9DD864DB4069ED6AA5150467EFBEF2AB31998413486F5025", "fixedExpected": "C47EF17EEC4809FA9DD864DB4069ED6AA5150467EFBEF2AB31998413486F5025", "fixedRuntime": {"diagProto": 4, "ok": true}, "primaryBootMs": 26625, "primaryDisk": "977C37225134D113CD9CDC8F526DC0E5572771889D95D15C7BDE55C03E2F6D3A", "primaryExpected": "977C37225134D113CD9CDC8F526DC0E5572771889D95D15C7BDE55C03E2F6D3A", "primaryRuntime": {"diagProto": 3, "ok": true}, "restored": true, "scope": "owned test vault B only"}

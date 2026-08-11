@@ -1,0 +1,19 @@
+
+=== Run 1 :: Final A B C fixed bundle hash census ===
+[
+    {
+        "Path":  "H:\\Developement\\_NeuralAngels\\ObsidianOrga\\.obsidian\\plugins\\live-share\\main.js",
+        "SHA256":  "C47EF17EEC4809FA9DD864DB4069ED6AA5150467EFBEF2AB31998413486F5025",
+        "Bytes":  6006911
+    },
+    {
+        "Path":  "H:\\Developement\\_NeuralAngels\\ObsidianOrga - Kopie\\.obsidian\\plugins\\live-share\\main.js",
+        "SHA256":  "C47EF17EEC4809FA9DD864DB4069ED6AA5150467EFBEF2AB31998413486F5025",
+        "Bytes":  6006911
+    },
+    {
+        "Path":  "H:\\Developement\\_NeuralAngels\\ObsidianOrga - W4TestC\\.obsidian\\plugins\\live-share\\main.js",
+        "SHA256":  "C47EF17EEC4809FA9DD864DB4069ED6AA5150467EFBEF2AB31998413486F5025",
+        "Bytes":  6006911
+    }
+]

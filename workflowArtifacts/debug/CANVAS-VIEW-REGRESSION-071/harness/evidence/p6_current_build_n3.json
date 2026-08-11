@@ -1,0 +1,40 @@
+{
+  "schema": "canvas-view-regression-071/p6-current-build-n3/v1",
+  "branch": "fix-bugs-and-raceconditions",
+  "head": "a53ec515eb3272c41179914575f1033f37d2caeb",
+  "deployedMainSha256": "9A2A7F8983E6FE9D73AE6D47F5C38351D23694B4AF143B321381FE0B286C267A",
+  "probe": "harness/probes/p6_live_structural_cause.py",
+  "security": { "authorizedPath": "_liveshare-test/SyncTesting.canvas", "nodeTextPrinted": false, "credentialsOrDataJsonRead": false, "productionSourceChanged": false },
+  "runs": [
+    {
+      "consoleId": "a8b45be3", "exitCode": 0, "order": "structural-setData-while-A-occluded-then-activate-A", "originalX": 900, "targetX": 960, "arrivalMs": 906,
+      "baseline": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 900, "paintX": 900, "styleVerdict": "agree" },
+      "arrival": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 900, "styleVerdict": "DIVERGENT" },
+      "after3s": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 900, "styleVerdict": "DIVERGENT" },
+      "arrivalCounterDelta": { "cursor": -9, "deferred": 4, "sources": { "structuralSeam": { "attempts": 1, "deferred": 1 }, "sweep": { "attempts": 3, "deferred": 3 } }, "structuralChangedIds": 1, "ticks": 1, "trigger": { "coalescedRequests": 1, "eventRequests": 2, "eventRuns": 1, "lastRunAgeMs": -52177 }, "visited": 3 },
+      "after3sCounterDelta": { "cursor": -9, "deferred": 4, "sources": { "structuralSeam": { "attempts": 1, "deferred": 1 }, "sweep": { "attempts": 3, "deferred": 3 } }, "structuralChangedIds": 1, "ticks": 1, "trigger": { "coalescedRequests": 1, "eventRequests": 2, "eventRuns": 1, "lastRunAgeMs": -49173 }, "visited": 3 },
+      "afterActivateA": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 960, "styleVerdict": "agree" }, "activateRecoveryMs": 0,
+      "restoration": { "complete": true, "exactTextA": true, "exactTextC": true, "green": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 900, "paintX": 900, "styleVerdict": "agree" }, "recoveryMs": 250 }
+    },
+    {
+      "consoleId": "d8e26541", "exitCode": 0, "order": "structural-setData-while-A-occluded-then-activate-A", "originalX": 900, "targetX": 960, "arrivalMs": 281,
+      "baseline": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 900, "paintX": 900, "styleVerdict": "agree" },
+      "arrival": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 900, "styleVerdict": "DIVERGENT" },
+      "after3s": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 900, "styleVerdict": "DIVERGENT" },
+      "arrivalCounterDelta": { "cursor": 3, "deferred": 7, "sources": { "structuralSeam": { "attempts": 1, "deferred": 1 }, "sweep": { "attempts": 6, "deferred": 6 } }, "structuralChangedIds": 1, "ticks": 2, "trigger": { "coalescedRequests": 1, "eventRequests": 2, "eventRuns": 1, "lastRunAgeMs": -1160, "periodicRuns": 1 }, "visited": 6 },
+      "after3sCounterDelta": { "cursor": 6, "deferred": 16, "sources": { "structuralSeam": { "attempts": 1, "deferred": 1 }, "sweep": { "attempts": 15, "deferred": 15 } }, "structuralChangedIds": 1, "ticks": 5, "trigger": { "coalescedRequests": 1, "eventRequests": 2, "eventRuns": 1, "lastRunAgeMs": -1138, "periodicRuns": 4 }, "visited": 15 },
+      "afterActivateA": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 960, "styleVerdict": "agree" }, "activateRecoveryMs": 0,
+      "restoration": { "complete": true, "exactTextA": true, "exactTextC": true, "green": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 900, "paintX": 900, "styleVerdict": "agree" }, "recoveryMs": 250 }
+    },
+    {
+      "consoleId": "bcbb1e49", "exitCode": 0, "order": "structural-setData-while-A-occluded-then-activate-A", "originalX": 900, "targetX": 960, "arrivalMs": 1157,
+      "baseline": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 900, "paintX": 900, "styleVerdict": "agree" },
+      "arrival": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 900, "styleVerdict": "DIVERGENT" },
+      "after3s": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 900, "styleVerdict": "DIVERGENT" },
+      "arrivalCounterDelta": { "cursor": -5, "deferred": 10, "sources": { "structuralSeam": { "attempts": 1, "deferred": 1 }, "sweep": { "attempts": 9, "deferred": 9 } }, "structuralChangedIds": 1, "ticks": 3, "trigger": { "coalescedRequests": 1, "eventRequests": 2, "eventRuns": 1, "lastRunAgeMs": -1288, "periodicRuns": 2 }, "visited": 9 },
+      "after3sCounterDelta": { "cursor": -2, "deferred": 19, "sources": { "structuralSeam": { "attempts": 1, "deferred": 1 }, "sweep": { "attempts": 18, "deferred": 18 } }, "structuralChangedIds": 1, "ticks": 6, "trigger": { "coalescedRequests": 1, "eventRequests": 2, "eventRuns": 1, "lastRunAgeMs": -1289, "periodicRuns": 5 }, "visited": 18 },
+      "afterActivateA": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 960, "paintX": 960, "styleVerdict": "agree" }, "activateRecoveryMs": 15,
+      "restoration": { "complete": true, "exactTextA": true, "exactTextC": true, "green": { "active": true, "attachment": "attached", "leafId": "leaf-3", "modelX": 900, "paintX": 900, "styleVerdict": "agree" }, "recoveryMs": 250 }
+    }
+  ]
+}

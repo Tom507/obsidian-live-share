@@ -219,6 +219,8 @@ export default class LiveSharePlugin extends Plugin {
   // WP2/WP3: one presence controller per open, subscribed canvas (keyed by
   // canonical path). Owns that canvas' cursor/lock awareness + DOM overlay.
   private canvasPresences = new Map<string, CanvasPresence>();
+  /** Exact Obsidian view currently owned by each path-level Canvas presence. */
+  private canvasPresenceViews = new Map<string, unknown>();
   // WP-scatter: live Canvas adapters keyed by canonical path, so remote deltas can
   // patch the OPEN canvas view (Obsidian ignores external .canvas writes). Kept in
   // lockstep with canvasPresences (same mount/teardown sites).
@@ -2696,6 +2698,7 @@ export default class LiveSharePlugin extends Plugin {
   private syncCanvasPresences() {
     if (!this.canvasSync) return;
     const activePaths = new Set<string>();
+    const activeViews = new Map<string, unknown[]>();
     let leaves: Array<{ view?: unknown }> = [];
     try {
       leaves = this.app.workspace.getLeavesOfType("canvas") as Array<{ view?: unknown }>;
@@ -2797,6 +2800,9 @@ export default class LiveSharePlugin extends Plugin {
       if (!rawPath || !subscribed) continue;
       const canonical = toCanonicalPath(normalizePath(rawPath));
       activePaths.add(canonical);
+      const viewsForPath = activeViews.get(canonical) ?? [];
+      viewsForPath.push(leaf.view);
+      activeViews.set(canonical, viewsForPath);
       if (this.canvasPresences.has(canonical)) continue;
       let viewType = "?";
       try {
@@ -2806,15 +2812,47 @@ export default class LiveSharePlugin extends Plugin {
       }
       this.logger.debug("canvas", `detected canvas leaf path=${rawPath} viewType=${viewType}`);
       const presence = this.mountCanvasPresence(rawPath, leaf.view);
-      if (presence) this.canvasPresences.set(canonical, presence);
+      if (presence) {
+        this.canvasPresences.set(canonical, presence);
+        this.canvasPresenceViews.set(canonical, leaf.view);
+      }
     }
     for (const [path, presence] of this.canvasPresences) {
-      if (!activePaths.has(path)) {
+      const viewsForPath = activeViews.get(path) ?? [];
+      const ownerView = this.canvasPresenceViews.get(path);
+      if (activePaths.has(path) && ownerView !== undefined && !viewsForPath.includes(ownerView)) {
+        // The path is still open, but the exact leaf that owns the adapter was
+        // closed. Every path-level repaint route would otherwise keep addressing
+        // that detached Canvas forever. Hand ownership to one surviving leaf at
+        // the same lifecycle seam that observed the close.
+        presence.destroy();
+        this.canvasPresences.delete(path);
+        this.canvasPresenceViews.delete(path);
+        this.canvasAdapters.delete(path);
+        this.stopCanvasRepaintSweep(path);
+        this.canvasBindings.get(path)?.destroy();
+        this.canvasBindings.delete(path);
+        this.canvasModelBridges.get(path)?.destroy();
+        this.canvasModelBridges.delete(path);
+
+        const replacementView = viewsForPath[0] as
+          | { file?: { path?: string }; getViewType?: () => string }
+          | undefined;
+        const replacementPath = replacementView?.file?.path;
+        if (replacementPath) {
+          const replacement = this.mountCanvasPresence(replacementPath, replacementView);
+          if (replacement) {
+            this.canvasPresences.set(path, replacement);
+            this.canvasPresenceViews.set(path, replacementView);
+          }
+        }
+      } else if (!activePaths.has(path)) {
         // WP37 (C37 AC5) — the VIEW-CLOSE exit. Drained BEFORE the adapter is
         // dropped, so the queue never outlives the surface it was held for.
         this.drainCanvasDeferrals(path, "canvas view closed");
         presence.destroy();
         this.canvasPresences.delete(path);
+        this.canvasPresenceViews.delete(path);
         this.canvasAdapters.delete(path);
         // B72 (WP3) — the sweep's only clock, stopped with the surface it swept.
         this.stopCanvasRepaintSweep(path);
@@ -4381,6 +4419,7 @@ export default class LiveSharePlugin extends Plugin {
     // names, and this method cannot be async without changing two sync callers.
     void this.flushSeedRefusals();
     this.canvasPresences.clear();
+    this.canvasPresenceViews.clear();
     // B72 (WP3) — every sweep interval, on BOTH destroy paths. A timer that
     // outlived its adapter would keep a private-canvas reference alive and paint
     // through a view the plugin has already let go of.

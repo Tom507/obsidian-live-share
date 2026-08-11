@@ -1,0 +1,3 @@
+
+=== Run 1 :: Execute inspected German app reload and prove A B C endpoints ===
+{"allEndpointsRestarted": false, "before": {"A": 4, "B": 4, "C": 4}, "clients": {"A": {"okObservations": 19, "postDiagProto": 4, "provedRestart": true, "unavailableObservations": 1}, "B": {"okObservations": 4225, "postDiagProto": 4, "provedRestart": false, "unavailableObservations": 0}, "C": {"okObservations": 4042, "postDiagProto": 4, "provedRestart": false, "unavailableObservations": 0}}, "diskVersion": "0.7.2", "elapsedMs": 50266, "selectedVisibleLabel": "Anwendung neu laden, ohne zu speichern"}
