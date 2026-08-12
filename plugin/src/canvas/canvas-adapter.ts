@@ -205,7 +205,7 @@ export interface CanvasAdapter {
    * `clearFlags` precedent, so every hand-rolled adapter double in the existing
    * tests stays valid. Callers read it as `adapter.repaintNode?.(id)`.
    */
-  repaintNode?(nodeId: string): RepaintOutcome;
+  repaintNode?(nodeId: string, source?: RepaintSource): RepaintOutcome;
   /**
    * B72 (WP3) — ONE TICK of the low-rate restoring sweep. Caller-driven on
    * purpose: the adapter owns no timer for it, so a test drives the coverage
@@ -372,6 +372,15 @@ export type RepaintOutcome =
   | "missing"
   | "unsupported";
 
+export type RepaintSource = "perNodeSeam" | "structuralSeam" | "sweep";
+
+export interface RepaintSourceCounters {
+  attempts: number;
+  repairs: number;
+  deferred: number;
+  interacting: number;
+}
+
 /** One sweep tick's tally. Every field is a count of outcomes actually returned. */
 export interface RepaintSweepTick {
   /** Ids the plan selected this tick. */
@@ -409,6 +418,9 @@ export interface RepaintSweepReport {
   /** The batch size the last tick used, and the node count it was derived from. */
   lastBatchSize: number;
   lastNodeCount: number;
+  sources: Record<RepaintSource, RepaintSourceCounters>;
+  structuralChangedIds: number;
+  trigger: Record<string, unknown> | null;
 }
 
 /**
@@ -491,8 +503,12 @@ export function planRepaintSweep(input: {
   const liveSet = new Set(live);
   const picked: string[] = [];
   const seen = new Set<string>();
+  // Priority is latency, never ownership. Reserve one slot for round-robin on
+  // multi-node boards so a permanently detached priority set cannot starve the
+  // rest of the board. A one-node board is both priority and round-robin.
+  const priorityLimit = n > 1 ? Math.max(0, batch - 1) : batch;
   for (const id of input.priority ?? []) {
-    if (picked.length >= batch) break;
+    if (picked.length >= priorityLimit) break;
     if (!liveSet.has(id) || seen.has(id)) continue;
     picked.push(id);
     seen.add(id);
@@ -669,6 +685,9 @@ export interface CanvasAdapterOpts {
    * `Date.now()` directly and this option cannot reach it.
    */
   now?: () => number;
+  /** Ask the lifecycle owner for one coalesced, event-driven sweep. */
+  requestRepaintSweep?: () => void;
+  getRepaintTriggerReport?: () => Record<string, unknown> | null;
 }
 
 /**
@@ -681,6 +700,7 @@ export interface CanvasAdapterOpts {
 export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {}): CanvasAdapter {
   const logger = opts.logger;
   const now = typeof opts.now === "function" ? opts.now : () => Date.now();
+  const requestRepaintSweep = opts.requestRepaintSweep;
   const canvas = (view as PrivateCanvasView | null | undefined)?.canvas as PrivateCanvas | undefined;
   const hasCanvas = !!canvas && typeof canvas === "object";
 
@@ -741,10 +761,21 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
     lastBatchSize: 0,
     lastNodeCount: 0,
   };
+  const sourceCounters: Record<RepaintSource, RepaintSourceCounters> = {
+    perNodeSeam: { attempts: 0, repairs: 0, deferred: 0, interacting: 0 },
+    structuralSeam: { attempts: 0, repairs: 0, deferred: 0, interacting: 0 },
+    sweep: { attempts: 0, repairs: 0, deferred: 0, interacting: 0 },
+  };
+  let structuralChangedIds = 0;
 
   /** Record one repaint outcome and hand it straight back. Counting is not deciding. */
-  function tallyRepaint(outcome: RepaintOutcome): RepaintOutcome {
+  function tallyRepaint(outcome: RepaintOutcome, source: RepaintSource): RepaintOutcome {
     sweepCounters[outcome]++;
+    const counters = sourceCounters[source];
+    counters.attempts++;
+    if (outcome === "repaired") counters.repairs++;
+    if (outcome === "deferred") counters.deferred++;
+    if (outcome === "interacting") counters.interacting++;
     return outcome;
   }
 
@@ -1467,11 +1498,11 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
 
     // ---- B72 (WP2/WP3) — the repaint half of an apply ----------------------
 
-    repaintNode(nodeId: string): RepaintOutcome {
+    repaintNode(nodeId: string, source: RepaintSource = "perNodeSeam"): RepaintOutcome {
       const node = canvas?.nodes?.get(nodeId);
       if (!node) {
         repaintPending.delete(nodeId);
-        return tallyRepaint("missing");
+        return tallyRepaint("missing", source);
       }
       // THE ONE DEFINER, not a second predicate (rule 10). `classifyBusyGate` is
       // the same pure classifier `main.ts#reconcileLiveCanvas` and
@@ -1484,12 +1515,12 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
         busy: this.isBusy(),
         editingNodeId: this.getEditingNodeId?.() ?? null,
       });
-      if (gate === "defer-drag" || gate === "editing") return tallyRepaint("interacting");
+      if (gate === "defer-drag" || gate === "editing") return tallyRepaint("interacting", source);
       // …and the per-card arm on top of the board-wide one, exactly as
       // `applyNodeGeometry` has it: `dragTargetId` OUTLIVES a watchdog release,
       // so the one card the user may still be holding stays protected after the
       // board-wide flag has been let go.
-      if (isDragTarget(nodeId)) return tallyRepaint("interacting");
+      if (isDragTarget(nodeId)) return tallyRepaint("interacting", source);
 
       const el = node.nodeEl as (HTMLElement & { parentNode?: unknown }) | undefined;
       const attached = !!el?.parentNode;
@@ -1500,11 +1531,15 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
         // sweep repaints it first when it comes back (bounded by node count).
         repaintPending.add(nodeId);
         enqueueRepaint(node);
-        return tallyRepaint("deferred");
+        // A sweep finding the same off-screen card must not recursively schedule
+        // itself forever. Apply seams request recovery; the periodic clock gives
+        // a detached card later opportunities after it becomes visible.
+        if (source !== "sweep") requestRepaintSweep?.();
+        return tallyRepaint("deferred", source);
       }
       if (typeof node.render !== "function") {
         enqueueRepaint(node);
-        return tallyRepaint("requested");
+        return tallyRepaint("requested", source);
       }
       // Was it demonstrably wrong BEFORE we touched it? Read first, repaint
       // second — this is the only moment the answer exists, and it is what makes
@@ -1521,10 +1556,10 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
       try {
         node.render();
       } catch {
-        return tallyRepaint("unsupported");
+        return tallyRepaint("unsupported", source);
       }
       repaintPending.delete(nodeId);
-      return tallyRepaint(stale ? "repaired" : "repainted");
+      return tallyRepaint(stale ? "repaired" : "repainted", source);
     },
 
     sweepRepaint(): RepaintSweepTick {
@@ -1558,7 +1593,7 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
       sweepCursor = plan.cursor;
       const outcomes: Record<string, number> = {};
       for (const id of plan.ids) {
-        const outcome = this.repaintNode?.(id) ?? "unsupported";
+        const outcome = this.repaintNode?.(id, "sweep") ?? "unsupported";
         outcomes[outcome] = (outcomes[outcome] ?? 0) + 1;
       }
       sweepCounters.visited += plan.ids.length;
@@ -1570,6 +1605,13 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
         ...sweepCounters,
         cursor: sweepCursor,
         pendingCount: repaintPending.size,
+        sources: {
+          perNodeSeam: { ...sourceCounters.perNodeSeam },
+          structuralSeam: { ...sourceCounters.structuralSeam },
+          sweep: { ...sourceCounters.sweep },
+        },
+        structuralChangedIds,
+        trigger: opts.getRepaintTriggerReport?.() ?? null,
       };
     },
 
@@ -1580,8 +1622,27 @@ export function createCanvasAdapter(view: unknown, opts: CanvasAdapterOpts = {})
       if (dragActive()) return false;
       const c = canvas as PrivateCanvas | undefined;
       if (!c || typeof c.setData !== "function") return false;
+      const handed = (data as { nodes?: unknown } | null | undefined)?.nodes;
+      const changed: string[] = [];
+      if (Array.isArray(handed)) {
+        for (const record of handed) {
+          if (!record || typeof record !== "object") continue;
+          const r = record as Record<string, unknown>;
+          if (typeof r.id !== "string") continue;
+          const live = c.nodes?.get(r.id);
+          if (!live) continue;
+          if (
+            typeof r.x === "number" && typeof r.y === "number" &&
+            typeof r.width === "number" && typeof r.height === "number" &&
+            (live.x !== r.x || live.y !== r.y || live.width !== r.width || live.height !== r.height)
+          ) changed.push(r.id);
+        }
+      }
       try {
         c.setData(data);
+        structuralChangedIds += changed.length;
+        for (const id of changed) this.repaintNode?.(id, "structuralSeam");
+        requestRepaintSweep?.();
         c.requestFrame?.();
         return true;
       } catch {

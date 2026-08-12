@@ -130,6 +130,7 @@ function makeHarness(options: {
     app: { workspace: { getLeavesOfType: () => leaves } },
     logger: { debug: () => {}, log: () => {}, warn: () => {}, error: () => {} },
     canvasPresences: new Map<string, unknown>(),
+    canvasPresenceViews: new Map<string, unknown>(),
     canvasAdapters: new Map<string, unknown>(),
     canvasBindings: new Map<string, unknown>(),
     canvasModelBridges: new Map<string, unknown>(),

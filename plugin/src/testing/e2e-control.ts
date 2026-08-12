@@ -3061,21 +3061,68 @@ function endpointChanged(
 // transaction, no `requestSave`. The only mutation this whole path can cause is
 // the one a keystroke causes — characters in an open editor.
 
+interface CanvasWorkspaceLeafLike {
+  id?: unknown;
+  isDeferred?: unknown;
+  view?: { canvas?: unknown; file?: { path?: unknown } };
+}
+
+interface CanvasWorkspaceLeavesResult {
+  leaves: CanvasWorkspaceLeafLike[];
+  activeLeaf: unknown;
+  error: string | null;
+}
+
+/**
+ * Canvas leaves Obsidian currently has open, in workspace order.
+ *
+ * This is deliberately leaf-level rather than adapter-level: Obsidian may mount
+ * the same file in several tabs while Live Share's adapter registry holds only
+ * one entry for the path. Reading the workspace is the only way a surviving
+ * duplicate remains observable after that tracked leaf closes.
+ */
+function resolveCanvasLeavesResult(plugin: E2EPluginLike): CanvasWorkspaceLeavesResult {
+  const workspace = plugin.app?.workspace as
+    | { getLeavesOfType?: (t: string) => unknown[]; activeLeaf?: unknown }
+    | undefined;
+  if (!workspace || typeof workspace.getLeavesOfType !== "function") {
+    return {
+      leaves: [],
+      activeLeaf: null,
+      error: "Obsidian workspace exposes no getLeavesOfType('canvas') API",
+    };
+  }
+  let rawLeaves: unknown[];
+  try {
+    rawLeaves = workspace.getLeavesOfType("canvas") ?? [];
+  } catch (err) {
+    return {
+      leaves: [],
+      activeLeaf: workspace.activeLeaf ?? null,
+      error: `workspace.getLeavesOfType('canvas') threw: ${diagErrorText(err)}`,
+    };
+  }
+  if (!Array.isArray(rawLeaves)) {
+    return {
+      leaves: [],
+      activeLeaf: workspace.activeLeaf ?? null,
+      error: `workspace.getLeavesOfType('canvas') returned ${
+        rawLeaves === null ? "null" : typeof rawLeaves
+      }, not an array`,
+    };
+  }
+  const leaves = rawLeaves.filter(
+    (leaf): leaf is CanvasWorkspaceLeafLike => leaf !== null && typeof leaf === "object",
+  );
+  return { leaves, activeLeaf: workspace.activeLeaf ?? null, error: null };
+}
+
 /** Views of the canvas leaves Obsidian currently has open, in workspace order. */
 function resolveCanvasViews(plugin: E2EPluginLike): Array<{ canvas?: unknown; file?: { path?: unknown } }> {
-  const workspace = plugin.app?.workspace as
-    | { getLeavesOfType?: (t: string) => unknown[] }
-    | undefined;
-  if (!workspace || typeof workspace.getLeavesOfType !== "function") return [];
-  let leaves: unknown[];
-  try {
-    leaves = workspace.getLeavesOfType("canvas") ?? [];
-  } catch {
-    return [];
-  }
+  const { leaves } = resolveCanvasLeavesResult(plugin);
   const views: Array<{ canvas?: unknown; file?: { path?: unknown } }> = [];
-  for (const leaf of Array.isArray(leaves) ? leaves : []) {
-    const view = (leaf as { view?: unknown } | null)?.view;
+  for (const leaf of leaves) {
+    const view = leaf.view;
     if (view && typeof view === "object") {
       views.push(view as { canvas?: unknown; file?: { path?: unknown } });
     }
@@ -3209,8 +3256,12 @@ function resolveCommandRegistry(plugin: E2EPluginLike): {
  * `diagProto: 1` has three planes and CANNOT answer a paint question; the
  * driver must say so rather than render three planes as if that were the whole
  * reading.
+ * `4` — CANVAS-VIEW-REGRESSION-071 added `leafCensus`, an independent
+ * paint/model reading for every same-path Obsidian Canvas leaf. Protocol 3 can
+ * only see the single adapter-registry target and cannot answer a duplicate-tab
+ * lifecycle question.
  */
-const CANVAS_DIAG_PROTO = 3;
+const CANVAS_DIAG_PROTO = 4;
 
 /** Per-plane node cap. The owner's board is 11; 500 is the honesty ceiling (R7). */
 const CANVAS_DIAG_MAX_NODES = 500;
@@ -3845,7 +3896,16 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
   }
   const target = targets[0];
   if (!target.adapter) return diagPlaneUnavailable(target.adapterReason);
-  const adapter = target.adapter;
+  return diagPaintCensusForAdapter(target.adapter);
+}
+
+/**
+ * The paint/model reader over an already narrowed, read-only Canvas surface.
+ * Kept separate from registry lookup so the leaf census can reuse the exact
+ * paint oracle without constructing a production adapter (which would patch
+ * Obsidian interaction methods and create an observer effect).
+ */
+function diagPaintCensusForAdapter(adapter: DiagAdapterLike): DiagPlaneCensus {
   try {
     if (adapter.isAvailable() !== true) {
       return diagPlaneUnavailable("the adapter reports the private canvas API unavailable");
@@ -4199,6 +4259,150 @@ function diagPaintCensus(plugin: E2EPluginLike, path: string): DiagPlaneCensus {
   } catch (err) {
     return diagPlaneUnavailable(`paint read threw: ${diagErrorText(err)}`);
   }
+}
+
+interface DiagCanvasLeafReading {
+  /** Stable only for the lifetime of this diagnostic host; never read from Obsidian internals. */
+  leafId: string;
+  /** Optional private runtime label, reported only when Obsidian already exposes a string. */
+  runtimeLeafId: string | null;
+  /** Position in `workspace.getLeavesOfType("canvas")` for this response. */
+  workspaceOrdinal: number;
+  active: boolean;
+  deferred: boolean | null;
+  canvasAvailable: boolean;
+  reason: string;
+  model: DiagPlaneCensus;
+  paint: DiagPlaneCensus;
+}
+
+interface DiagCanvasLeafCensus {
+  available: boolean;
+  reason: string;
+  path: string;
+  count: number;
+  duplicate: boolean;
+  leaves: DiagCanvasLeafReading[];
+}
+
+function diagLeafCensusUnavailable(path: string, reason: string): DiagCanvasLeafCensus {
+  return {
+    available: false,
+    reason,
+    path: normalizePath(path),
+    count: 0,
+    duplicate: false,
+    leaves: [],
+  };
+}
+
+/**
+ * Narrow Obsidian's existing private `view.canvas` to pure reads only.
+ *
+ * This is intentionally NOT `createCanvasAdapter(view)`: that production
+ * constructor wraps selection/drag/viewport methods. The diagnostic only reads
+ * the node map, viewport, wrapper and existing card elements.
+ */
+function narrowLeafCanvasReadAdapter(value: unknown): { adapter: DiagAdapterLike | null; reason: string } {
+  if (value === null || typeof value !== "object") {
+    return { adapter: null, reason: "the Canvas leaf exposes no view.canvas object" };
+  }
+  const canvas = value as {
+    nodes?: unknown;
+    x?: unknown;
+    y?: unknown;
+    zoom?: unknown;
+    scale?: unknown;
+    wrapperEl?: unknown;
+    canvasEl?: unknown;
+  };
+  if (!(canvas.nodes instanceof Map)) {
+    return { adapter: null, reason: "the Canvas leaf's view.canvas.nodes is not a Map" };
+  }
+  if (typeof canvas.zoom !== "number") {
+    return { adapter: null, reason: "the Canvas leaf's view.canvas.zoom is not a number" };
+  }
+  const nodes = canvas.nodes as Map<unknown, unknown>;
+  const adapter: DiagAdapterLike = {
+    isAvailable: () => true,
+    getLiveNodeIds: () =>
+      new Set(
+        [...nodes.keys()].filter((id): id is string => typeof id === "string" && id.length > 0),
+      ),
+    getNodeGeometry: (nodeId) => diagGeometryOf(nodes.get(nodeId)),
+    getViewport: () => {
+      if (
+        typeof canvas.x !== "number" ||
+        typeof canvas.y !== "number" ||
+        typeof canvas.zoom !== "number"
+      ) {
+        return null;
+      }
+      return typeof canvas.scale === "number" && Number.isFinite(canvas.scale)
+        ? { x: canvas.x, y: canvas.y, zoom: canvas.zoom, scale: canvas.scale }
+        : { x: canvas.x, y: canvas.y, zoom: canvas.zoom };
+    },
+    getNodeEl: (nodeId) =>
+      (nodes.get(nodeId) as { nodeEl?: unknown } | null | undefined)?.nodeEl ?? null,
+    getOverlayHost: () => canvas.wrapperEl ?? canvas.canvasEl ?? null,
+  };
+  return { adapter, reason: "" };
+}
+
+/**
+ * Pure leaf-level census for one authorized path.
+ *
+ * Path metadata is the filter: a non-matching leaf's `view.canvas`, node model
+ * and DOM are never read. Both sides are normalized before exact comparison so
+ * Windows separators cannot hide a matching leaf or broaden the request.
+ */
+function diagCanvasLeafCensus(
+  plugin: E2EPluginLike,
+  rawPath: string,
+  identify: (leaf: object) => string,
+): DiagCanvasLeafCensus {
+  const path = normalizePath(rawPath);
+  const { leaves, activeLeaf, error } = resolveCanvasLeavesResult(plugin);
+  if (error !== null) return diagLeafCensusUnavailable(path, error);
+
+  const out: DiagCanvasLeafReading[] = [];
+  for (let workspaceOrdinal = 0; workspaceOrdinal < leaves.length; workspaceOrdinal++) {
+    const leaf = leaves[workspaceOrdinal];
+    const view = leaf.view;
+    const viewPath = view?.file?.path;
+    if (typeof viewPath !== "string" || normalizePath(viewPath) !== path) continue;
+
+    // Only after the exact-path gate may the private canvas surface be read.
+    const narrowed = narrowLeafCanvasReadAdapter(view?.canvas);
+    const model = narrowed.adapter
+      ? diagPlaneFrom([...narrowed.adapter.getLiveNodeIds()], (id) =>
+          narrowed.adapter!.getNodeGeometry(id),
+        )
+      : diagPlaneUnavailable(narrowed.reason);
+    const paint = narrowed.adapter
+      ? diagPaintCensusForAdapter(narrowed.adapter)
+      : diagPlaneUnavailable(narrowed.reason);
+    out.push({
+      leafId: identify(leaf),
+      runtimeLeafId: typeof leaf.id === "string" && leaf.id.length > 0 ? leaf.id : null,
+      workspaceOrdinal,
+      active: leaf === activeLeaf,
+      deferred: typeof leaf.isDeferred === "boolean" ? leaf.isDeferred : null,
+      canvasAvailable: narrowed.adapter !== null,
+      reason: narrowed.reason,
+      model,
+      paint,
+    });
+  }
+
+  return {
+    available: true,
+    reason: "",
+    path,
+    count: out.length,
+    duplicate: out.length > 1,
+    leaves: out,
+  };
 }
 
 /**
@@ -4644,6 +4848,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
   let armedAt = 0;
   let armedPath: string | null = null;
   let armCensus: DiagCensus | null = null;
+  let armLeafCensus: DiagCanvasLeafCensus | null = null;
   const ring: DiagRow[] = [];
   let dropped = 0;
   /** Paths whose live surfaces this arm actually wrapped. Compared against `mountedPaths`. */
@@ -4668,6 +4873,21 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
    * label, so a default is never mistaken for a measurement (`S155`'s shape).
    */
   let causeNow: string | null = null;
+
+  // WorkspaceLeaf has no public ID in Obsidian's API. Assign a stable,
+  // diagnostic-local identity without writing to the leaf or relying on a
+  // private field that may disappear between Obsidian versions.
+  const leafIds = new WeakMap<object, string>();
+  let nextLeafId = 1;
+  const identifyLeaf = (leaf: object): string => {
+    const existing = leafIds.get(leaf);
+    if (existing) return existing;
+    const assigned = `leaf-${nextLeafId++}`;
+    leafIds.set(leaf, assigned);
+    return assigned;
+  };
+  const leafCensus = (path: string): DiagCanvasLeafCensus =>
+    diagCanvasLeafCensus(plugin, path, identifyLeaf);
 
   /** Which paths this build can see mounted, for the arm/dump gap report (R7). */
   const mountedPaths = (): string[] => resolveDiagTargets(plugin).map((t) => t.path).sort();
@@ -5283,6 +5503,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
             diagProto: CANVAS_DIAG_PROTO,
             armed,
             census: await diagCensus(plugin, req.path),
+            leafCensus: leafCensus(req.path),
             awareness: diagAwarenessSnapshot(plugin, req.path),
             mountedPaths: mountedPaths(),
           };
@@ -5315,6 +5536,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
           armed = true;
           armedAt = Date.now();
           armedPath = req.path;
+          armLeafCensus = leafCensus(req.path);
           install(req.path);
           armCensus = await diagCensus(plugin, req.path);
           return {
@@ -5327,6 +5549,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
             mountedPaths: mountedPaths(),
             ringCapacity: CANVAS_DIAG_RING_CAPACITY,
             census: armCensus,
+            leafCensus: armLeafCensus,
             awareness: diagAwarenessSnapshot(plugin, req.path),
             notes: [...notes],
           };
@@ -5354,11 +5577,18 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
               reason:
                 "not armed: there is no baseline census to diff against, so no delta on this peer is evidence",
               mountedPaths: mountedPaths(),
+              leafCensus: req.path
+                ? leafCensus(req.path)
+                : diagLeafCensusUnavailable(
+                    "",
+                    "not armed and no path was supplied, so no leaf census can be taken",
+                  ),
             };
           }
           const path = req.path ?? armedPath;
           if (!path) throw new Error("canvas.diag op 'dump' requires a 'path'");
           const census = await diagCensus(plugin, path);
+          const currentLeafCensus = leafCensus(path);
           const delta = diagUnattributed(
             path === armedPath ? armCensus : null,
             census,
@@ -5389,6 +5619,8 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
             events: [...ring],
             armCensus,
             census,
+            armLeafCensus,
+            leafCensus: currentLeafCensus,
             awareness: diagAwarenessSnapshot(plugin, path),
             unattributed: delta.unattributed,
             attributed: delta.attributed,
@@ -5401,6 +5633,7 @@ function createCanvasDiagnostic(plugin: E2EPluginLike): CanvasDiagnostic {
           armed = false;
           armedPath = null;
           armCensus = null;
+          armLeafCensus = null;
           ring.length = 0;
           dropped = 0;
           notes = [];

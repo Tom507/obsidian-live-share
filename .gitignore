@@ -43,8 +43,16 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# Generated test and E2E output
+# Internal engineering artifacts — NOT generated output, and not discarded.
+# Dispatcher state, task charters, debug reports, blind verification sets and raw
+# diagnostic dumps. This repository is PUBLIC and ships a distributable Obsidian
+# plugin; those artifacts carry local filesystem paths and are not part of the
+# product. They live in their own PRIVATE repository, checked out in place at
+# workflowArtifacts/ as a nested git repo, with the full 305-commit history carried
+# over by `git subtree split`.
 /workflowArtifacts/
+
+# Generated test and E2E output
 tools/e2e/*_results/
 tools/e2e/diag-results/
 test-results/

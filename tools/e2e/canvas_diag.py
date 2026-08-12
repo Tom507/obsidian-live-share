@@ -366,6 +366,13 @@ def print_repaint_sweep(peers: list[dict]) -> None:
             print(f"  {p['name']}: UNAVAILABLE — {rep.get('reason')}")
             continue
         c = rep.get("counters") or {}
+        sources = c.get("sources")
+        trigger = c.get("trigger")
+        if not isinstance(sources, dict) or not isinstance(trigger, dict):
+            print(
+                f"  {p['name']}: WP125 SPLIT METRICS UNAVAILABLE — pre-WP125 bundle; "
+                f"aggregate B72 counters follow and MUST NOT be attributed to any caller"
+            )
         print(
             f"  {p['name']}: REPAIRED={c.get('repaired')}  "
             f"(ticks={c.get('ticks')} visited={c.get('visited')} "
@@ -373,6 +380,17 @@ def print_repaint_sweep(peers: list[dict]) -> None:
             f"requested={c.get('requested')} interacting={c.get('interacting')} "
             f"missing={c.get('missing')} unsupported={c.get('unsupported')})"
         )
+        if isinstance(sources, dict) and isinstance(trigger, dict):
+            print(
+                f"      perNodeSeam={sources.get('perNodeSeam')} "
+                f"structuralSeam={sources.get('structuralSeam')} "
+                f"sweep={sources.get('sweep')} changedIds={c.get('structuralChangedIds')}"
+            )
+            print(
+                f"      trigger={trigger.get('lastTriggerKind')} eventRequests={trigger.get('eventRequests')} "
+                f"coalesced={trigger.get('coalescedRequests')} eventRuns={trigger.get('eventRuns')} "
+                f"periodicRuns={trigger.get('periodicRuns')} lastRunAgeMs={trigger.get('lastRunAgeMs')}"
+            )
         print(
             f"      skippedBusy={c.get('skippedBusy')} skippedEmpty={c.get('skippedEmpty')} "
             f"cursor={c.get('cursor')} pending(off-screen)={c.get('pendingCount')} "

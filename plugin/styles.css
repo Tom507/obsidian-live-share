@@ -314,13 +314,27 @@
 
 /* Per-node held ring: applied directly to the Obsidian canvas node card
    (node.nodeEl). Purely visual — never persisted to the .canvas file. The
-   holder color is injected as the --ls-hold-color custom property. */
+   holder color is injected as the --ls-hold-color custom property.
+
+   NEVER declare a layout property here. This class lands on an element
+   Obsidian owns and lays out. Obsidian ships
+       .canvas-node { position: absolute; width: 0; height: 0 }
+   with NO top/left, and CanvasNode.render() writes the real geometry as an
+   inline `transform: translate(x, y)` plus inline width/height. Every card is
+   therefore placed at its STATIC position and moved only by that transform.
+   Forcing one card to `position: relative` puts it back in normal flow, where
+   its inline height becomes flow height and pushes the static position of every
+   LATER .canvas-node sibling down by exactly that card's height — the whole
+   board below a held card jumps (B75). `outline`, `outline-offset`,
+   `box-shadow` and `border-radius` do not affect layout, which is why the ring
+   is drawn with those and nothing else. The held tag anchors correctly without
+   `position: relative` because an absolutely positioned .canvas-node is already
+   a containing block for its absolutely positioned descendants. */
 .ls-canvas-held-ring {
   outline: 2px solid var(--ls-hold-color, var(--interactive-accent));
   outline-offset: 2px;
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--ls-hold-color, #7c3aed) 35%, transparent);
   border-radius: 6px;
-  position: relative;
 }
 
 .ls-canvas-held-tag {

@@ -219,6 +219,8 @@ export default class LiveSharePlugin extends Plugin {
   // WP2/WP3: one presence controller per open, subscribed canvas (keyed by
   // canonical path). Owns that canvas' cursor/lock awareness + DOM overlay.
   private canvasPresences = new Map<string, CanvasPresence>();
+  /** Exact Obsidian view currently owned by each path-level Canvas presence. */
+  private canvasPresenceViews = new Map<string, unknown>();
   // WP-scatter: live Canvas adapters keyed by canonical path, so remote deltas can
   // patch the OPEN canvas view (Obsidian ignores external .canvas writes). Kept in
   // lockstep with canvasPresences (same mount/teardown sites).
@@ -236,7 +238,22 @@ export default class LiveSharePlugin extends Plugin {
   // with `canvasAdapters` (same mount, same teardown), and it is the ONLY clock
   // this fix introduces: the batch selection, the busy gate and the counters all
   // live in the adapter, so this map holds a timer handle and nothing else.
-  private canvasRepaintSweeps = new Map<string, ReturnType<typeof setInterval>>();
+  private canvasRepaintSweeps = new Map<
+    string,
+    {
+      interval: ReturnType<typeof setInterval>;
+      active: boolean;
+      pending: boolean;
+      running: boolean;
+      rerun: boolean;
+      eventRequests: number;
+      coalescedRequests: number;
+      eventRuns: number;
+      periodicRuns: number;
+      lastRunAt: number | null;
+      lastTriggerKind: "event" | "periodic" | null;
+    }
+  >();
   // WP37 (C37) — the per-record deferral queue for view applies withheld while an
   // inline editor is focused. Constructed here and INJECTED; every rule about what
   // goes in, what coalesces and what comes out lives in
@@ -2681,6 +2698,7 @@ export default class LiveSharePlugin extends Plugin {
   private syncCanvasPresences() {
     if (!this.canvasSync) return;
     const activePaths = new Set<string>();
+    const activeViews = new Map<string, unknown[]>();
     let leaves: Array<{ view?: unknown }> = [];
     try {
       leaves = this.app.workspace.getLeavesOfType("canvas") as Array<{ view?: unknown }>;
@@ -2782,6 +2800,9 @@ export default class LiveSharePlugin extends Plugin {
       if (!rawPath || !subscribed) continue;
       const canonical = toCanonicalPath(normalizePath(rawPath));
       activePaths.add(canonical);
+      const viewsForPath = activeViews.get(canonical) ?? [];
+      viewsForPath.push(leaf.view);
+      activeViews.set(canonical, viewsForPath);
       if (this.canvasPresences.has(canonical)) continue;
       let viewType = "?";
       try {
@@ -2791,15 +2812,47 @@ export default class LiveSharePlugin extends Plugin {
       }
       this.logger.debug("canvas", `detected canvas leaf path=${rawPath} viewType=${viewType}`);
       const presence = this.mountCanvasPresence(rawPath, leaf.view);
-      if (presence) this.canvasPresences.set(canonical, presence);
+      if (presence) {
+        this.canvasPresences.set(canonical, presence);
+        this.canvasPresenceViews.set(canonical, leaf.view);
+      }
     }
     for (const [path, presence] of this.canvasPresences) {
-      if (!activePaths.has(path)) {
+      const viewsForPath = activeViews.get(path) ?? [];
+      const ownerView = this.canvasPresenceViews.get(path);
+      if (activePaths.has(path) && ownerView !== undefined && !viewsForPath.includes(ownerView)) {
+        // The path is still open, but the exact leaf that owns the adapter was
+        // closed. Every path-level repaint route would otherwise keep addressing
+        // that detached Canvas forever. Hand ownership to one surviving leaf at
+        // the same lifecycle seam that observed the close.
+        presence.destroy();
+        this.canvasPresences.delete(path);
+        this.canvasPresenceViews.delete(path);
+        this.canvasAdapters.delete(path);
+        this.stopCanvasRepaintSweep(path);
+        this.canvasBindings.get(path)?.destroy();
+        this.canvasBindings.delete(path);
+        this.canvasModelBridges.get(path)?.destroy();
+        this.canvasModelBridges.delete(path);
+
+        const replacementView = viewsForPath[0] as
+          | { file?: { path?: string }; getViewType?: () => string }
+          | undefined;
+        const replacementPath = replacementView?.file?.path;
+        if (replacementPath) {
+          const replacement = this.mountCanvasPresence(replacementPath, replacementView);
+          if (replacement) {
+            this.canvasPresences.set(path, replacement);
+            this.canvasPresenceViews.set(path, replacementView);
+          }
+        }
+      } else if (!activePaths.has(path)) {
         // WP37 (C37 AC5) — the VIEW-CLOSE exit. Drained BEFORE the adapter is
         // dropped, so the queue never outlives the surface it was held for.
         this.drainCanvasDeferrals(path, "canvas view closed");
         presence.destroy();
         this.canvasPresences.delete(path);
+        this.canvasPresenceViews.delete(path);
         this.canvasAdapters.delete(path);
         // B72 (WP3) — the sweep's only clock, stopped with the surface it swept.
         this.stopCanvasRepaintSweep(path);
@@ -3848,6 +3901,7 @@ export default class LiveSharePlugin extends Plugin {
     const handle = this.canvasSync?.getCanvasDocHandle(rawPath);
     if (!handle) return null;
     try {
+      const canonical = toCanonicalPath(normalizePath(rawPath));
       const adapter = createCanvasAdapter(view, {
         // US6: attach the status console so `ADAPTER PATCH:` and `DRAG WATCHDOG:` are
         // recorded instead of silently dropped. `CanvasAdapterLogger` declares `log`
@@ -3857,11 +3911,13 @@ export default class LiveSharePlugin extends Plugin {
           log: (category, message) => this.logger.debug(category, message),
           warn: (category, message) => this.logger.warn(category, message),
         },
+        requestRepaintSweep: () => this.requestCanvasRepaintSweep(canonical),
+        getRepaintTriggerReport: () => this.describeCanvasRepaintTrigger(canonical),
       });
       // Register for live-view reconciliation (kept in lockstep with the presence).
-      this.canvasAdapters.set(toCanonicalPath(normalizePath(rawPath)), adapter);
+      this.canvasAdapters.set(canonical, adapter);
       // B72 (WP3) — and the restoring sweep, in the same lockstep.
-      this.startCanvasRepaintSweep(toCanonicalPath(normalizePath(rawPath)), adapter);
+      this.startCanvasRepaintSweep(canonical, adapter);
       // WP37 (C37 AC5) — the BLUR exit of the deferral. Forwarding only: the
       // adapter reports that an inline editor ended, and the drain re-runs one
       // ordinary reconcile pass. Fires for a watchdog-released editor too, so a
@@ -4109,6 +4165,19 @@ export default class LiveSharePlugin extends Plugin {
   private startCanvasRepaintSweep(canonical: string, adapter: CanvasAdapter): void {
     if (this.canvasRepaintSweeps.has(canonical)) return;
     if (typeof adapter.sweepRepaint !== "function") return;
+    const state = {
+      interval: undefined as unknown as ReturnType<typeof setInterval>,
+      active: true,
+      pending: false,
+      running: false,
+      rerun: false,
+      eventRequests: 0,
+      coalescedRequests: 0,
+      eventRuns: 0,
+      periodicRuns: 0,
+      lastRunAt: null as number | null,
+      lastTriggerKind: null as "event" | "periodic" | null,
+    };
     const handle = setInterval(() => {
       const live = this.canvasAdapters.get(canonical);
       // The adapter can be replaced or dropped between ticks; a sweep must never
@@ -4119,18 +4188,72 @@ export default class LiveSharePlugin extends Plugin {
       }
       try {
         live.sweepRepaint?.();
+        state.periodicRuns++;
+        state.lastRunAt = Date.now();
+        state.lastTriggerKind = "periodic";
       } catch (err) {
         this.logger.debug("canvas", `repaint sweep ${canonical}: tick threw — ${String(err)}`);
       }
     }, REPAINT_SWEEP_PERIOD_MS);
-    this.canvasRepaintSweeps.set(canonical, handle);
+    state.interval = handle;
+    this.canvasRepaintSweeps.set(canonical, state);
+  }
+
+  private requestCanvasRepaintSweep(canonical: string): void {
+    const state = this.canvasRepaintSweeps.get(canonical);
+    if (!state?.active) return;
+    state.eventRequests++;
+    if (state.running) {
+      state.rerun = true;
+      state.coalescedRequests++;
+      return;
+    }
+    if (state.pending) {
+      state.coalescedRequests++;
+      return;
+    }
+    state.pending = true;
+    queueMicrotask(() => {
+      if (!state.active || this.canvasRepaintSweeps.get(canonical) !== state) return;
+      state.pending = false;
+      state.running = true;
+      try {
+        this.canvasAdapters.get(canonical)?.sweepRepaint?.();
+        state.eventRuns++;
+        state.lastRunAt = Date.now();
+        state.lastTriggerKind = "event";
+      } finally {
+        state.running = false;
+        if (state.rerun) {
+          state.rerun = false;
+          this.requestCanvasRepaintSweep(canonical);
+        }
+      }
+    });
+  }
+
+  private describeCanvasRepaintTrigger(canonical: string): Record<string, unknown> | null {
+    const state = this.canvasRepaintSweeps.get(canonical);
+    if (!state) return null;
+    return {
+      eventRequests: state.eventRequests,
+      coalescedRequests: state.coalescedRequests,
+      eventRuns: state.eventRuns,
+      periodicRuns: state.periodicRuns,
+      lastTriggerKind: state.lastTriggerKind,
+      lastRunAgeMs: state.lastRunAt === null ? null : Math.max(0, Date.now() - state.lastRunAt),
+      pending: state.pending,
+    };
   }
 
   /** B72 (WP3) — stop it. Called from every path that drops an adapter. */
   private stopCanvasRepaintSweep(canonical: string): void {
-    const handle = this.canvasRepaintSweeps.get(canonical);
-    if (handle === undefined) return;
-    clearInterval(handle);
+    const state = this.canvasRepaintSweeps.get(canonical);
+    if (state === undefined) return;
+    state.active = false;
+    state.pending = false;
+    state.rerun = false;
+    clearInterval(state.interval);
     this.canvasRepaintSweeps.delete(canonical);
   }
 
@@ -4213,11 +4336,35 @@ export default class LiveSharePlugin extends Plugin {
     // `plan: "geometry"` ⇒ `exhaustive === false`, so this pass grants a licence
     // for the one node it confirmed and revokes nothing — a per-node revert proves
     // nothing about the membership of the rest of the board (S83).
+    //
+    // B76 — THE RECEIPT CARRIES WHAT THIS PASS APPLIED, NOT WHAT IT WANTED.
+    //
+    // `buildApplyReceipt` puts EVERY own key of the record it is handed into
+    // `fields` (`toReceiptFields`), and `advanceFromReceipt` advances every one
+    // of them on a confirmed line. On every OTHER geometry route that is exactly
+    // right, because `planReconcile` only returns `"geometry"` when the
+    // non-geometry fields already equal the basis — so "desired" and "applied"
+    // are the same set. THIS route is the one place that invariant does not
+    // hold: it hard-codes `plan: "geometry"` for a record whose `text` may
+    // differ, and `applyNodeGeometry` writes x/y/width/height and nothing else.
+    // Handing it the whole shared record made the shadow claim the winner's
+    // `text` reached a surface that the log line three statements below
+    // simultaneously reports it was NOT applied to. The shadow is also the
+    // three-way merge's `base` (`canvas-sync.ts::writeCollabText`), so the next
+    // local capture diffed against a string that was never on screen and
+    // computed the peer's characters as a DELETION — permanent, silent text
+    // loss that every convergence oracle in this repo is blind to, because both
+    // replicas converge on the survivor.
+    //
+    // Projecting to the four applied keys is enough on its own: `advanceRecord`
+    // is a partial upsert (I7 — "a field NOT mentioned is left exactly as it
+    // was"), so the shadow keeps whatever it honestly knew about `text` instead
+    // of learning a lie. `id` stays because the receipt is keyed on it.
     const summary = advanceFromReceipt(
       shadow,
       buildApplyReceipt({
         path: canonical,
-        desired: { nodes: [desired], edges: [] },
+        desired: { nodes: [{ id: nodeId, x, y, width, height }], edges: [] },
         plan: "geometry",
         nodeOutcomes: new Map<string, ApplyOutcome>([[nodeId, outcome]]),
       }),
@@ -4296,6 +4443,7 @@ export default class LiveSharePlugin extends Plugin {
     // names, and this method cannot be async without changing two sync callers.
     void this.flushSeedRefusals();
     this.canvasPresences.clear();
+    this.canvasPresenceViews.clear();
     // B72 (WP3) — every sweep interval, on BOTH destroy paths. A timer that
     // outlived its adapter would keep a private-canvas reference alive and paint
     // through a view the plugin has already let go of.
