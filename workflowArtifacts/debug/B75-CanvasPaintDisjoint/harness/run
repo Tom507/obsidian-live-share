@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""B75-CanvasPaintDisjoint — harness runner.
+
+    python run --all
+    python run --probes P1,P4
+    python run --kind code-level
+    python run --kind integration
+    python run --list
+
+Prints exactly one `<id> PASS|FAIL` line per probe and exits non-zero if any
+probe failed. Probe stdout is streamed above its verdict line.
+
+Two kinds:
+  code-level   vitest, no live application. Safe anywhere, any time.
+  integration  the live three-vault rig on ports 39431/39432/39433. Read-only:
+               no probe writes to a vault, a repo or the plugin. A peer that
+               cannot be reached makes its probe FAIL with the reason, never
+               pass with a zero.
+"""
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+HARNESS = Path(__file__).resolve().parent
+REPO = HARNESS.parents[3]
+PROBES = HARNESS / "probes"
+VITEST = REPO / "plugin" / "node_modules" / "vitest" / "vitest.mjs"
+
+# id -> (kind, file). The single source of truth the runner dispatches on;
+# HARNESS.md is a rendering of this table.
+REGISTRY: dict[str, tuple[str, str]] = {
+    "P1": ("code-level", "probe_P1_plugin_css_on_host_elements.test.ts"),
+    "P2": ("code-level", "probe_P2_host_dom_ownership.test.ts"),
+    "P3": ("code-level", "probe_P3_obsidian_private_api_drift.test.ts"),
+    "P4": ("integration", "probe_P4_paint_vs_model.py"),
+    "P5": ("integration", "probe_P5_cross_peer_painted_geometry.py"),
+    "P6": ("integration", "probe_P6_quiescent_repaint_sweep.py"),
+    "P7": ("integration", "probe_P7_reopen_stability.py"),
+}
+
+
+def run_vitest(probe_id: str, filename: str, extra: list[str]) -> bool:
+    if not VITEST.exists():
+        print(f"    cannot run: {VITEST} is missing — run `npm ci` in plugin/")
+        print(f"{probe_id} FAIL")
+        return False
+    cmd = [
+        "node", str(VITEST), "run",
+        "--config", str(HARNESS / "vitest.config.mjs"),
+        filename.replace(".test.ts", ""),
+        *extra,
+    ]
+    print(f"    $ {' '.join(cmd)}")
+    proc = subprocess.run(cmd, cwd=str(REPO / "plugin"))
+    ok = proc.returncode == 0
+    print(f"{probe_id} {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
+def run_python(probe_id: str, filename: str, extra: list[str]) -> bool:
+    cmd = [sys.executable, str(PROBES / filename), *extra]
+    print(f"    $ {' '.join(cmd)}")
+    proc = subprocess.run(cmd, cwd=str(HARNESS))
+    # The probe prints its own `<id> PASS|FAIL` line.
+    return proc.returncode == 0
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description="B75 harness runner", allow_abbrev=False)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--all", action="store_true", help="run every probe")
+    g.add_argument("--probes", default=None, help="comma-separated probe ids, e.g. P1,P4")
+    g.add_argument("--kind", default=None, choices=["code-level", "integration"])
+    g.add_argument("--list", action="store_true", help="print the registry and exit")
+    args, extra = ap.parse_known_args(argv)
+
+    if args.list:
+        for pid, (kind, filename) in REGISTRY.items():
+            print(f"{pid}\t{kind}\t{filename}")
+        return 0
+
+    if args.probes:
+        wanted = [p.strip().upper() for p in args.probes.split(",") if p.strip()]
+        unknown = [p for p in wanted if p not in REGISTRY]
+        if unknown:
+            print(f"unknown probe id(s): {', '.join(unknown)}", file=sys.stderr)
+            return 2
+    elif args.kind:
+        wanted = [p for p, (k, _) in REGISTRY.items() if k == args.kind]
+    elif args.all:
+        wanted = list(REGISTRY)
+    else:
+        ap.print_help()
+        return 2
+
+    failed: list[str] = []
+    for pid in wanted:
+        kind, filename = REGISTRY[pid]
+        print(f"\n--- {pid} [{kind}] {filename} ---")
+        ok = run_vitest(pid, filename, extra) if kind == "code-level" else run_python(pid, filename, extra)
+        if not ok:
+            failed.append(pid)
+
+    print(f"\n{len(wanted) - len(failed)}/{len(wanted)} probes PASS")
+    if failed:
+        print(f"FAILED: {', '.join(failed)}")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

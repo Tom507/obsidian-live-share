@@ -1,0 +1,24 @@
+{
+  "obsidianVersion": "1.13.6",
+  "bundleDir": "H:\\tmp\\liveshare_debug\\asar1136",
+  "symbolOccurrences": {
+    "wrapperEl": 37,
+    "canvasEl": 18,
+    "nodeEl": 34,
+    "markMoved": 7,
+    "requestSave": 155,
+    "getData": 48,
+    "setData": 51,
+    "startEditing": 12,
+    "isEditing": 14,
+    "virtualize": 9,
+    "zoomToSelection": 6,
+    "selectOnly": 15,
+    "posFromEvt": 31,
+    "requestFrame": 19,
+    "zoomBreakpoint": 6,
+    "canvas-node": 17,
+    "canvas-node-container": 1,
+    "canvas-wrapper": 1
+  }
+}
