@@ -4336,11 +4336,35 @@ export default class LiveSharePlugin extends Plugin {
     // `plan: "geometry"` ⇒ `exhaustive === false`, so this pass grants a licence
     // for the one node it confirmed and revokes nothing — a per-node revert proves
     // nothing about the membership of the rest of the board (S83).
+    //
+    // B76 — THE RECEIPT CARRIES WHAT THIS PASS APPLIED, NOT WHAT IT WANTED.
+    //
+    // `buildApplyReceipt` puts EVERY own key of the record it is handed into
+    // `fields` (`toReceiptFields`), and `advanceFromReceipt` advances every one
+    // of them on a confirmed line. On every OTHER geometry route that is exactly
+    // right, because `planReconcile` only returns `"geometry"` when the
+    // non-geometry fields already equal the basis — so "desired" and "applied"
+    // are the same set. THIS route is the one place that invariant does not
+    // hold: it hard-codes `plan: "geometry"` for a record whose `text` may
+    // differ, and `applyNodeGeometry` writes x/y/width/height and nothing else.
+    // Handing it the whole shared record made the shadow claim the winner's
+    // `text` reached a surface that the log line three statements below
+    // simultaneously reports it was NOT applied to. The shadow is also the
+    // three-way merge's `base` (`canvas-sync.ts::writeCollabText`), so the next
+    // local capture diffed against a string that was never on screen and
+    // computed the peer's characters as a DELETION — permanent, silent text
+    // loss that every convergence oracle in this repo is blind to, because both
+    // replicas converge on the survivor.
+    //
+    // Projecting to the four applied keys is enough on its own: `advanceRecord`
+    // is a partial upsert (I7 — "a field NOT mentioned is left exactly as it
+    // was"), so the shadow keeps whatever it honestly knew about `text` instead
+    // of learning a lie. `id` stays because the receipt is keyed on it.
     const summary = advanceFromReceipt(
       shadow,
       buildApplyReceipt({
         path: canonical,
-        desired: { nodes: [desired], edges: [] },
+        desired: { nodes: [{ id: nodeId, x, y, width, height }], edges: [] },
         plan: "geometry",
         nodeOutcomes: new Map<string, ApplyOutcome>([[nodeId, outcome]]),
       }),
