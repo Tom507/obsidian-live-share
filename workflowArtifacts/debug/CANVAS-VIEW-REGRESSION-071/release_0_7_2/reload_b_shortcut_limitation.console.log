@@ -1,3 +1,0 @@
-
-=== Run 1 :: Reload owned B with monitored Ctrl R fallback ===
-{"diskVersion": "0.7.2", "label": "B", "okObservations": 3572, "postDiagProto": 4, "preDiagProto": 4, "provedRestart": false, "reloadMethod": "Ctrl+R after visible command-palette search showed no reload command", "restartMs": 50031, "unavailableObservations": 0}

@@ -1,3 +1,0 @@
-
-=== Run 1 :: Monitor German C reload transition ===
-{"last": {"diagProto": 4, "ok": true}, "okObservations": 2, "provedRestart": true, "restartMs": 625, "selectedVisibleLabel": "Anwendung neu laden, ohne zu speichern", "unavailableObservations": 1}

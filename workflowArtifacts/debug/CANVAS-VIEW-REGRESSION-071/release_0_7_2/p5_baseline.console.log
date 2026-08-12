@@ -1,3 +1,0 @@
-
-=== Run 1 :: 0.7.2 baseline P5 live leaf paint census ===
-LIVE_LEAF_PAINT_MODEL_CLEAR [{"duplicate": false, "leafCount": 1, "leaves": [{"active": true, "deferred": false, "detached": [], "leafId": "leaf-1", "modelCount": 10, "ordinal": 0, "paintCount": 10, "rectOrStyleDivergent": [], "runtimeLeafId": "40e7715821b39478", "styleDivergent": [], "unpainted": []}], "port": 39431, "registryMounted": true}, {"duplicate": false, "leafCount": 1, "leaves": [{"active": true, "deferred": false, "detached": [], "leafId": "leaf-1", "modelCount": 10, "ordinal": 0, "paintCount": 10, "rectOrStyleDivergent": [], "runtimeLeafId": "c06a3a8bce1bc781", "styleDivergent": [], "unpainted": []}], "port": 39433, "registryMounted": true}]
