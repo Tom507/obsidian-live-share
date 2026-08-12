@@ -1,53 +1,64 @@
 # Known issues
 
-Current as of **v0.7.0**.
+Current as of **v0.7.3**.
 
 ---
 
-## 1. A shared canvas can paint a card in the wrong place (mitigated, not fixed)
+## Fixed in v0.7.3 — a shared canvas painting cards in the wrong place
 
-**Severity:** cosmetic — **your data is never affected.**
+This was issue §1 in v0.7.0–v0.7.2, where it was recorded as *"mitigated, not fixed — a producing path
+remains unidentified"*. **The producing path has been identified and removed.** The entry is kept here, rather
+than deleted, because the earlier releases described the symptom at length and anyone who read that
+description deserves to know what it actually was.
 
-**What you may see.** On a shared canvas, after someone moves a card, another peer's screen can show a
-different card sitting somewhere it does not belong. Move a few more cards and the picture can look badly
-scrambled.
+**What you saw.** On a shared canvas, when another peer grabbed a card, some of *your* cards jumped out of
+place. Panning made it worse and rearranged things differently each time. Cards would sometimes snap back
+into place on their own, only to come apart again on the next action.
 
-**What is actually happening.** Nothing is wrong with the board. Measured across three live vaults with the
-canvas open on all of them: the moved card reaches every peer's **shared document** and every peer's
-**`.canvas` file on disk** correctly and identically, and it is the only record that changes. The defect is in
-**rendering only** — Obsidian updates a card's stored coordinates and, on certain paths, never repaints the
-element, so the pixels lag a document that is entirely correct.
+**What it actually was.** A single CSS declaration, in this plugin, in `plugin/styles.css`.
 
-**Why it looked like it was getting worse.** Each mis-paint persists until something repaints that card, so
-they accumulate on screen while the underlying board stays perfectly in sync.
+The highlight ring drawn around a card that a remote peer is holding was applied as a class on Obsidian's own
+card element, and that class declared `position: relative`. Obsidian lays its canvas out with
+`.canvas-node { position: absolute; width: 0; height: 0 }` and writes each card's real geometry as an
+*inline* transform and inline width/height. Forcing one card to `position: relative` put it back into the
+normal document flow at its real height, which pushed every card *after it in DOM order* down by exactly that
+card's height.
 
-**What v0.7.0 does about it.**
+That also explains the two things that made it look random. Obsidian re-appends a card to the end of the DOM
+whenever it scrolls back into view, so **panning re-orders the DOM** — a different set of cards ended up
+"after" the held card each time. And when the held card itself happened to be re-appended last, there was
+nothing after it, so the board **snapped back to correct** until the next change.
 
-- **Targeted repaint — this is what actually fixes it today.** When a remote change is applied to a card, that
-  card is repainted immediately. In live validation across three machines this fired **12 times** and every
-  single call found genuinely stale pixels and corrected them.
-- **A background repair sweep**, intended as a safety net for damage from paths we have not yet identified.
-  **It does not currently work — see below.** It is inert, not harmful.
+**Why it took so long to find.** The symptom looked exactly like a sync failure, and it was not: the shared
+document, every peer's model, and every `.canvas` file on disk were correct and identical throughout. Several
+rounds of work went into repainting cards that were never painted wrong. The instrument that compared a
+card's *stored* position with its *inline transform* agreed in every one of 650 measurements — because that
+comparison was never where the fault was. The fault was one layer further out, between the transform and the
+pixels the browser actually laid out, and the one reading that did show it had been dismissed as a
+measurement error.
 
-Both are suppressed while you are dragging a card or typing in one, so they cannot interfere with editing.
+**Your data was never affected at any point,** in any version. This was always a rendering defect.
 
-**The safety net is not working in 0.7.0.** Measured over 270 seconds on three peers: **0 repairs across 5538
-sweep calls.** Two independent causes, both confirmed:
+**The fix** is the removal of that one declaration. The ring looks exactly the same — `outline`,
+`box-shadow` and `border-radius` do not affect layout, which is why the ring is drawn with those and nothing
+else.
 
-- The batch is filled from a priority list of off-screen cards that never empties, so the round-robin cursor
-  never advances past its starting position — the sweep re-examines the same few cards forever.
-- The 1-second timer is throttled by the browser engine to roughly **one tick per minute** when the window is
-  not in the foreground, so even a working sweep would take minutes rather than seconds to cover a board.
+---
 
-**So: the visible improvement in 0.7.0 comes entirely from the targeted repaint.** That is a real fix for the
-common path and it is doing the work. The safety net is a stub until repaired.
+## 1. The background repair sweep is inert
 
-**Why this is still "mitigated" and not "fixed".** One producing path is named and open: a whole-board reload
-(triggered by, among other things, moving a card that an arrow connects to) hands the entire board to Obsidian
-at once and has no single card to repaint. It was meant to be covered by the sweep, and currently is not.
+**Severity:** low — it is dead weight, not a hazard. Nothing depends on it any more.
 
-**Workaround if you ever see it.** Close the canvas tab and reopen it. A remount rebuilds every card from the
-document, which is always correct.
+v0.7.0 added a background "repair sweep" as a safety net against mis-painted cards. Measurement shows it has
+never repaired anything: across 48 diagnostic records, **72,961 sweep attempts and 0 repairs**, and the
+structural-repaint path recorded **0 attempts**. Two confirmed causes: the batch is filled from a priority
+list of off-screen cards that never empties, so the round-robin cursor never advances; and its 1-second timer
+is throttled by the browser engine to roughly one tick per minute when the window is not in the foreground.
+
+This mattered a great deal while the canvas was believed to be mis-painting, because the sweep was thought to
+be holding the line. It was not — and now that the actual cause is gone, there is nothing for it to repair.
+It is left in place, and recorded here, rather than removed in the same change that fixed the rendering
+defect. Removing it is its own piece of work.
 
 ---
 
@@ -68,3 +79,15 @@ This is recorded rather than repaired, at the maintainer's direction, because it
 
 Diagnostic output reports a blank vault name, so captures are identified by port number alone. It affects
 troubleshooting output only and has no effect on syncing.
+
+---
+
+## 4. Convergence checks cannot see a rendering defect (developer-facing)
+
+The end-to-end convergence tooling compares the **shared document** — node and edge records — and reports
+agreement between peers. It does not read a single pixel. A board whose cards are all painted in the wrong
+place still reports as converged, because by that definition it *is*.
+
+This is worth stating plainly because it is how the v0.7.0–v0.7.2 defect above stayed hidden for so long:
+every automated check agreed the board was fine, and every one of them was answering a different question
+than the one being asked. A rendering fault needs an oracle that measures laid-out geometry.
